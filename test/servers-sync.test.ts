@@ -51,6 +51,9 @@ test("only the synced folders' and single files' plain paths are taken", () => {
         ".claude/.credentials.json",
         ".claude/.claude.json",
         ".codex/auth.json",
+        // A CLI's own, which it keeps level itself on each machine.
+        ".claude/skills/synced/org_user/pdf/SKILL.md",
+        ".codex/skills/.system/imagegen/SKILL.md",
         ".cavvy/skills/a/.env",
         ".cavvy/skills/a/id_ed25519",
         ".cavvy/skills/../settings.json",
@@ -71,6 +74,7 @@ test("a server gets this machine's skills and commands, not a file that holds a 
     // Claude Code's own, from the account it's signed in to: it keeps those level itself on each machine. A skill
     // of the user's that happens to hold a folder called that is theirs.
     put(join(claude, "skills", "synced", "org_user", "pdf", "SKILL.md"), "From the account.");
+    put(join(process.env.CODEX_HOME!, "skills", ".system", "imagegen", "SKILL.md"), "Codex's own.");
     put(join(claude, "skills", "ship", "synced", "notes.md"), "Mine.");
     put(join(iso.home, "skills", "deploy", "SKILL.md"), "Use the key AKIAIOSFODNN7EXAMPLE to deploy.");
     put(join(iso.home, "skills", "deploy", ".env"), "X=1");

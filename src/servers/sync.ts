@@ -12,7 +12,7 @@ import { homedir } from "os";
 import { basename, dirname, join } from "path";
 import { cavvyHome, paths } from "../config/paths";
 import { matchesSecretPattern } from "../util/secret-patterns";
-import { CLI_SYNCED, isProtectedCredentialPath, MAX_FILE, MAX_FILES, MAX_TOTAL, SECRET_NAME, SKIP_DIR } from "./copy";
+import { cliOwned, isProtectedCredentialPath, MAX_FILE, MAX_FILES, MAX_TOTAL, SECRET_NAME, SKIP_DIR } from "./copy";
 
 interface SyncRoot {
     from: string;
@@ -75,7 +75,7 @@ const SYNCED_SINGLE_PATHS = new Set([
 
 /** A path a server takes: under one of the synced folders or one of the synced single files, in plain parts. */
 export function syncablePath(p: unknown): p is string {
-    if (typeof p !== "string" || p.length > 300 || /[\0-\x1f\\]/.test(p) || p.startsWith(`${CLI_SYNCED}/`)) return false;
+    if (typeof p !== "string" || p.length > 300 || /[\0-\x1f\\]/.test(p) || cliOwned(p)) return false;
     if (!SYNCED_SINGLE_PATHS.has(p) && !SYNCED_DIR_PATH.test(p)) return false;
     const parts = p.split("/");
     if (parts.length > 9 || !parts.every((x) => x !== "" && x !== "." && x !== "..")) return false;
@@ -122,7 +122,7 @@ export function localSyncFiles(): Map<string, SyncFile> {
         }
         for (const name of names) {
             const dest = `${to}/${name}`;
-            if (SKIP_DIR.has(name) || dest === CLI_SYNCED || out.size >= MAX_FILES) continue;
+            if (SKIP_DIR.has(name) || cliOwned(dest) || out.size >= MAX_FILES) continue;
             const path = join(from, name);
             try {
                 const l = lstatSync(path);
@@ -189,7 +189,7 @@ export function syncedWatchTargets(): { recursive: string[]; shallow: { dir: str
         recursive.add(r.from);
         try {
             for (const name of readdirSync(r.from)) {
-                if (SKIP_DIR.has(name) || `${r.to}/${name}` === CLI_SYNCED) continue;
+                if (SKIP_DIR.has(name) || cliOwned(`${r.to}/${name}`)) continue;
                 const entry = join(r.from, name);
                 try {
                     if (lstatSync(entry).isSymbolicLink() && statSync(entry).isDirectory() && !isProtectedCredentialPath(entry)) {
