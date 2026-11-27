@@ -177,10 +177,14 @@ jobs:
         run: |
           tag="$GITHUB_REF_NAME"
           version="${tag#v}"
-          if draft=$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null); then
-            if [ "$draft" != true ]; then echo "$tag is already published: its files aren't replaced." >&2; exit 1; fi
-          else
+          # A draft is made only when there's no release for the tag; any other answer stops here.
+          if found=$(gh release view "$tag" --json isDraft --jq .isDraft 2>&1); then
+            if [ "$found" != true ]; then echo "$tag is already published: its files aren't replaced." >&2; exit 1; fi
+          elif [ "$found" = "release not found" ]; then
             gh release create "$tag" --draft --title "$tag" --notes "" --verify-tag
+          else
+            echo "$found" >&2
+            exit 1
           fi
           gh release upload "$tag" "$RUNNER_TEMP"/release/* --clobber
           case "$version" in
