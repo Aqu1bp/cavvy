@@ -248,7 +248,8 @@ export async function downloadZip(src: ReleaseSource, m: DesktopManifest, file: 
                 // More than it said: not that file. Stopped here, not once a disk is full.
                 if (got > m.zip.size) throw new Refused("unsigned", `${m.zip.name} is bigger than the ${m.zip.size} bytes its description says`);
                 hash.update(chunk);
-                await out.write(chunk);
+                // All of it, however many writes that takes.
+                for (let at = 0; at < chunk.length; ) at += (await out.write(chunk, at, chunk.length - at)).bytesWritten;
                 onProgress(got / m.zip.size);
             }
         } finally {
@@ -282,8 +283,8 @@ function linkInside(entry: string, target: string, top: string): boolean {
     return to === top || to.startsWith(`${top}/`);
 }
 
-/** A path as the disk compares it: case and Unicode normalization aside. */
-const fold = (path: string) => path.normalize("NFD").toLowerCase();
+/** A path as the disk compares it, for the printable ASCII names scanZip takes: case aside. */
+const fold = (path: string) => path.toLowerCase();
 
 /** Whether a zip extra field gives the entry another name (Info-ZIP's Unicode path, 0x7075), which some extractors use. */
 function hasPathField(extra: Buffer): boolean {
@@ -360,7 +361,8 @@ export function scanZip(file: string): string {
             if (flags & 1) bad("is encrypted");
             if (method !== 0 && method !== 8) bad(`uses compression method ${method}`);
             const name = raw.toString("utf8");
-            if (!Buffer.from(name, "utf8").equals(raw) || /[\0\\]/.test(name) || name.startsWith("/")) bad(`has an entry named ${JSON.stringify(name)}`);
+            // Printable ASCII only (an app's names are), so comparing them lowercased is how the disk compares them.
+            if (!/^[\x20-\x7e]+$/.test(name) || name.includes("\\") || name.startsWith("/")) bad(`has an entry named ${JSON.stringify(name)}`);
             const isDirName = name.endsWith("/");
             const path = isDirName ? name.slice(0, -1) : name;
             const parts = path.split("/");
@@ -522,7 +524,7 @@ export const oldCopy = (bundle: string) => join(dirname(bundle), `.${basename(bu
  *   $1 the app's pid    $2 the new app (in partialDir)   $3 the installed app   $4 where the old one is kept
  *   $5 the bundle's requirement   $6 the server's   $7 the pending record   $8 the note it leaves when it gives up
  *   $9 how to open it: "open", or "exec" (a test's app, opened with its environment)   $10 the new version
- *   $11 how long the new one has to open (seconds)   $12 the new version's commit
+ *   $11 how long the new one has to open (seconds)   $12 the new version's commit   $13 its architecture
  *
  * It waits for the app to quit (up to 10 minutes: a "Quit without saving?" may be open; the server stops it if
  * that's cancelled). Then: the new app checked again (signature, release.json, quarantine), the installed one renamed
@@ -532,11 +534,12 @@ export const oldCopy = (bundle: string) => join(dirname(bundle), `.${basename(bu
  * installed path (the old one, wherever a rename put it back from) and a note saying why.
  */
 export const RESTART_HELPER = `
-pid=$1; new=$2; dest=$3; old=$4; req=$5; sreq=$6; pending=$7; note=$8; how=$9; version=\${10}; wait=\${11}; commit=\${12}
+pid=$1; new=$2; dest=$3; old=$4; req=$5; sreq=$6; pending=$7; note=$8; how=$9; version=\${10}; wait=\${11}; commit=\${12}; arch=\${13}
 part=$(/usr/bin/dirname "$new")
 say() { printf '{"reason":"%s","version":"%s"}\\n' "$1" "$version" > "$note"; }
 launch() { [ -d "$1" ] || return; if [ "$how" = exec ]; then "$1/Contents/MacOS/cavvy-desktop" >/dev/null 2>&1 & else /usr/bin/open "$1"; fi; }
-give_up() { /bin/rm -rf "$part"; /bin/rm -f "$pending"; say "$1"; launch "$dest"; exit 1; }
+give_up() { /bin/rm -rf "$part"; /bin/rm -f "$pending"; say "$1"; reopen; exit 1; }
+reopen() { if [ -d "$dest" ]; then launch "$dest"; else launch "$old"; fi; }
 field() { /usr/bin/plutil -extract "$1" raw -o - "$new/Contents/Resources/release.json" 2>/dev/null; }
 i=0
 while kill -0 "$pid" 2>/dev/null; do
@@ -545,7 +548,7 @@ while kill -0 "$pid" 2>/dev/null; do
 done
 /usr/bin/codesign --verify --deep --strict -R="$req" "$new" >/dev/null 2>&1 || give_up unsigned
 /usr/bin/codesign --verify --strict -R="$sreq" "$new/Contents/MacOS/cavvy" >/dev/null 2>&1 || give_up unsigned
-[ "$(field version)" = "$version" ] && [ "$(field commit)" = "$commit" ] || give_up unsigned
+[ "$(field version)" = "$version" ] && [ "$(field commit)" = "$commit" ] && [ "$(field arch)" = "$arch" ] || give_up unsigned
 /usr/bin/xattr -p com.apple.quarantine "$new" >/dev/null 2>&1 && give_up unsigned
 /bin/rm -rf "$old"
 /bin/mv "$dest" "$old" 2>/dev/null || give_up management
@@ -568,5 +571,5 @@ if /bin/mv "$dest" "$failed" 2>/dev/null; then
     else /bin/mv "$failed" "$dest" 2>/dev/null; say install; fi
 else say install; fi
 /bin/rm -f "$pending.rollback"
-launch "$dest"
+reopen
 `;

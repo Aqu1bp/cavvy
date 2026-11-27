@@ -250,7 +250,7 @@ export class AppUpdates {
     /** A downloaded app: what's known of it, worked out once. */
     private rel?: Promise<ReleaseApp>;
     /** The release downloaded and checked, unpacked beside the app: restarting puts it in place. */
-    private ready?: { version: string; commit: string; app: string };
+    private ready?: { version: string; commit: string; arch: string; app: string };
     /** The release the last failure was about: a check finding a newer one clears it. */
     private failedFor?: string;
     private helper?: ChildProcess;
@@ -632,7 +632,7 @@ export class AppUpdates {
             const app = checkTree(part, top);
             await verifyApp(app, r.req!, m, this.run);
             say(`checked: signed by Cavvy, meets this app's signature, ${top} is ${m.version}`);
-            this.ready = { version: m.version, commit: m.commit, app };
+            this.ready = { version: m.version, commit: m.commit, arch: m.arch, app };
             this.failedFor = undefined;
             rmSync(tmp, { recursive: true, force: true });
             tmp = undefined;
@@ -660,7 +660,7 @@ export class AppUpdates {
         try {
             writeFileSync(pendingPath(), JSON.stringify(pending) + "\n");
             const how = this.releases === RELEASES ? "open" : "exec";
-            const args = [String(this.o.appPid ?? process.ppid), ready.app, r.bundle, pending.old, r.req!.bundle, r.req!.server, pendingPath(), notePath(), how, ready.version, String(NEW_APP_OPENS_S), ready.commit];
+            const args = [String(this.o.appPid ?? process.ppid), ready.app, r.bundle, pending.old, r.req!.bundle, r.req!.server, pendingPath(), notePath(), how, ready.version, String(NEW_APP_OPENS_S), ready.commit, ready.arch];
             // Its own session: the app quitting doesn't take it along.
             const helper = spawn("/bin/sh", ["-c", RESTART_HELPER, "sh", ...args], { detached: true, stdio: "ignore" });
             helper.unref();

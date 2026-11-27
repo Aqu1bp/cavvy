@@ -308,6 +308,7 @@ describe("the zip's shape", () => {
         expect(refusedBy(() => scan([{ name: "/tmp/evil", data: "x", mode: FILE }]))).toContain("named");
         expect(refusedBy(() => scan([...appEntries, { name: "Cavvy.app/a\\..\\b", data: "x", mode: FILE }]))).toContain("named");
         expect(refusedBy(() => scan([...appEntries, { name: "Cavvy.app/./x", data: "x", mode: FILE }]))).toContain("named");
+        expect(refusedBy(() => scan([...appEntries, { name: "Cavvy.app/Contents/\u00c9t\u00e9", data: "x", mode: FILE }]))).toContain("named");
     });
     test("symlinks out of the app, absolute, or with .. in them: refused", () => {
         expect(refusedBy(() => scan([...appEntries, { name: "Cavvy.app/Contents/out", data: "/etc", mode: LINK }]))).toContain("symlink out");
@@ -594,7 +595,7 @@ describe.if(mac)("the restart helper (macOS)", () => {
         makeApp(join(part, "Cavvy.app"), { version: "1.3.0", id: o.newId, desktop: `#!/bin/sh\necho new >> "${join(dir, "opened")}"\n${clear}` });
         writeFileSync(join(dir, "pending.json"), "{}");
         const app = Bun.spawn(["/bin/sleep", "0.5"]);
-        const helper = Bun.spawn(["/bin/sh", "-c", RESTART_HELPER, "sh", String(app.pid), join(part, "Cavvy.app"), dest, join(apps, ".Cavvy.app.old"), REQ, SREQ, join(dir, "pending.json"), join(dir, "note.json"), "exec", "1.3.0", "2", o.commit ?? COMMIT], { stdout: "ignore", stderr: "pipe" });
+        const helper = Bun.spawn(["/bin/sh", "-c", RESTART_HELPER, "sh", String(app.pid), join(part, "Cavvy.app"), dest, join(apps, ".Cavvy.app.old"), REQ, SREQ, join(dir, "pending.json"), join(dir, "note.json"), "exec", "1.3.0", "2", o.commit ?? COMMIT, ARCH], { stdout: "ignore", stderr: "pipe" });
         return { dest, apps, part, helper };
     }
     const version = (app: string) => JSON.parse(readFileSync(join(app, "Contents", "Resources", "release.json"), "utf8")).version;
