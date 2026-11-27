@@ -3,10 +3,10 @@
 // made here and reach the servers with sync (servers/sync-state.ts); a server only needs each one signed in, which
 // its cell does in a terminal here, as `cavvy servers login` does.
 
-import { createEffect, createMemo, createSignal, For, Match, on, onMount, Show, Switch, type JSX } from "solid-js";
+import { createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, type JSX } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
 import type { AccountInfo, ProviderInfo } from "@shared/protocol";
-import { app, linkFor, reportError, toast } from "../state/app";
+import { app, linkFor, refreshProviders, reportError, rpc, toast } from "../state/app";
 import { connectCli } from "../state/actions";
 import { terminalActions } from "../state/ui";
 import type { Rpc } from "../lib/rpc";
@@ -58,7 +58,28 @@ export default function SubscriptionGrid(p: { here: string; servers: readonly st
             })
             .catch((e) => setFar(name, "problem", e instanceof Error ? e.message : String(e)));
     };
-    onMount(() => p.servers.forEach(open));
+    /** This computer's, the same way. */
+    const checkHere = async () => {
+        await Promise.all(app.providers.filter((pr) => pr.agentCli?.installed && pr.configured).map((pr) => rpc.call("accounts.list", { provider: pr.id, refresh: true }).catch(() => undefined)));
+        await refreshProviders().catch(() => undefined);
+    };
+    // A subscription can sign itself out (its sign-in expires): every machine is asked again when this shows, and when
+    // the user comes back to the window (from signing in elsewhere, or after a while). Nothing polls.
+    // Each check runs every CLI's own status command on every machine: not again within a few seconds of the last.
+    let checkedAt = 0;
+    const checkAll = () => {
+        if (Date.now() - checkedAt < 15_000) return;
+        checkedAt = Date.now();
+        void checkHere();
+        for (const name of p.servers) void check(name);
+    };
+    onMount(() => {
+        p.servers.forEach(open);
+        checkedAt = Date.now();
+        void checkHere();
+        window.addEventListener("focus", checkAll);
+    });
+    onCleanup(() => window.removeEventListener("focus", checkAll));
     createEffect(on(() => [...p.servers], (names) => names.forEach(open), { defer: true }));
     // Signed in on a server from here, or its keys changed: how its accounts stand is asked again there.
     createEffect(on(p.touched, () => p.servers.forEach((name) => void check(name)), { defer: true }));
