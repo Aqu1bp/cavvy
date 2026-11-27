@@ -5512,15 +5512,18 @@ export class Runtime {
         // When that can't say (a reftable repository, say), nothing read before is trusted.
         const branch = headBranch(this.ws.cwd);
         if (branch === undefined || !this.prRead || Date.now() - this.prRead.at >= 60_000 || this.prRead.branch !== branch) {
-            this.prRead = {
+            const read = {
                 at: Date.now(),
                 branch,
                 promise: gitPrState(this.ws.cwd).then((pr) => {
+                    // Another branch checked out while it was read: it may be that one's, so it isn't kept.
+                    if (headBranch(this.ws.cwd) !== branch && this.prRead === read) this.prRead = undefined;
                     // Merged or closed: with auto-settle on, the session is done with (engine.ts prEnded).
                     if ((pr?.state === "merged" || pr?.state === "closed") && !this.closed) this.engine.prEnded(this);
                     return { pr };
                 }),
             };
+            this.prRead = read;
         }
         return this.prRead.promise;
     }
@@ -5535,8 +5538,9 @@ export class Runtime {
         this.commitDone = done;
         try {
             const result = await done;
-            // For the branch it was published from, even if another was checked out meanwhile.
-            this.prRead = { at: Date.now(), branch, promise: Promise.resolve(result) };
+            // Kept for the branch it was published from, unless another was checked out meanwhile (its PR is then
+            // looked up for whichever that is).
+            this.prRead = branch !== undefined && headBranch(this.ws.cwd) === branch ? { at: Date.now(), branch, promise: Promise.resolve(result) } : undefined;
             return result;
         } finally {
             this.committing = false;
