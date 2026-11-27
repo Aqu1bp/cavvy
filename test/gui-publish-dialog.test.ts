@@ -69,12 +69,18 @@ test("PR click uses edited title, body, base and draft without auto-publishing",
     d.button("Open pull request").props.onClick(); await tick();
     expect(d.calls[1]!.params).toMatchObject({ action: "pr", title: "Edited", base: "release", body: "Description", draft: true, fingerprint: defaults.fingerprint });
     expect(d.result()).toEqual({ number: 7, url: "https://github.com/example/project/pull/7" });
-    // Not opened by itself: the toast offers it.
-    expect(d.opened).toEqual([]);
-    const [message, level, action] = d.toasts.at(-1)!;
+    // A new one opens on GitHub by itself.
+    expect(d.opened).toEqual(["https://github.com/example/project/pull/7"]);
+    expect(d.toasts.at(-1)).toEqual(["Opened PR #7", "success"]);
+
+    // A push to a branch that has one: the toast offers it.
+    const again = dialog(); await again.effects[0]!();
+    again.button("Push").props.onClick(); await tick();
+    expect(again.opened).toEqual([]);
+    const [message, level, action] = again.toasts.at(-1)!;
     expect([message, level, action.label]).toEqual(["Pushed origin/feature · PR #7", "success", "Open"]);
     action.run();
-    expect(d.opened).toEqual(["https://github.com/example/project/pull/7"]);
+    expect(again.opened).toEqual(["https://github.com/example/project/pull/7"]);
 });
 
 test("Generate fills the title and description from the small model, for the base shown; a failure keeps the commits' text", async () => {

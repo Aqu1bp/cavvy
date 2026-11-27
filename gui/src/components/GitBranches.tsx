@@ -14,6 +14,7 @@ import { changedOutside, refreshGitChanges, sessionReadReady } from "../state/ch
 import { withShortcut } from "../state/keybindings";
 import { gitDialog, requestComposerFocus, setGitDialog } from "../state/ui";
 import { ago, plural, tildify } from "../lib/format";
+import { openExternal } from "../lib/platform";
 import { Dialog } from "./ui/Dialog";
 import { Spinner } from "./ui/bits";
 
@@ -129,6 +130,11 @@ function BranchDialog(p: { cwd: string; sessionId?: string; query?: string }) {
     const at = folderAt(p.sessionId);
     const rpc = at.link;
     const [sync, { mutate: setSync, refetch: refetchSync }] = createResource(() => connFor(p.sessionId) === "open" && moved() + 1, () => rpc.call("git.sync", where).catch(() => undefined));
+    /** The session's branch's pull request, to open from here (read at most once a minute, as the Changes pane's). */
+    const [prOf] = createResource(
+        () => connFor(p.sessionId) === "open" && p.sessionId,
+        (id) => rpc.call("session.gitPrState", { id }).then((r) => r.pr, () => undefined),
+    );
     const [list, { refetch }] = createResource(
         () => connFor(p.sessionId) === "open",
         (): Promise<GitBranchList & { error?: string }> => rpc.call("git.branches", where).catch((e: unknown) => ({ local: [], remote: [], error: e instanceof Error ? e.message : String(e) })),
@@ -212,7 +218,9 @@ function BranchDialog(p: { cwd: string; sessionId?: string; query?: string }) {
         const when = (b: GitBranchEntry) => (b.at ? ago(b.at) : undefined);
         const out: Row[] = [];
         const pr = prRef(q());
-        // Nothing typed: a new branch named from the session's title comes first.
+        const mine = !query ? prOf() : undefined;
+        if (mine) out.push({ key: "openpr", label: `Pull request #${mine.number}`, desc: mine.title, action: "Open", icon: "pr", run: () => void (setGitDialog(undefined), openExternal(mine.url)) });
+        // Nothing typed: a new branch named from the session's title.
         if (!query && l.suggested) out.push({ key: "suggest", verb: "Create branch", label: l.suggested, desc: `From ${l.current ?? "HEAD"}`, icon: "create", run: () => void create(l.suggested!) });
         if (pr) out.push({ key: "pr", label: `Work on pull request #${pr}`, desc: "In a new worktree", icon: "pr", run: () => setGitDialog({ kind: "pr", cwd: p.cwd, sessionId: p.sessionId, query: q().trim(), start: true }) });
         // Git can't switch to a branch another worktree has: those go to that worktree, after the ones it can switch to.
@@ -331,7 +339,7 @@ function BranchDialog(p: { cwd: string; sessionId?: string; query?: string }) {
                                     <button class={`pal-row ${sel() === i() ? "sel" : ""} ${r.desc ? "two" : ""}`} title={r.title} disabled={r.disabled || Boolean(busy())} onMouseMove={() => setSel(i())} onClick={() => runAt(i())}>
                                         <span class="pal-ic">{icon(r)}</span>
                                         <span class="pal-text">
-                                            <Show when={r.verb} fallback={<span class={r.key === "pr" ? "pal-l" : "pal-l mono"}>{r.label}</span>}>
+                                            <Show when={r.verb} fallback={<span class={r.icon === "pr" ? "pal-l" : "pal-l mono"}>{r.label}</span>}>
                                                 <span class="pal-l">{r.verb} “<span class="mono">{r.label}</span>”</span>
                                             </Show>
                                             <Show when={r.desc}><span class="pal-d">{r.desc}</span></Show>
