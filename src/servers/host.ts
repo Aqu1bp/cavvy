@@ -495,14 +495,18 @@ export async function hostRun(args: string[], env: HostRunEnv): Promise<void> {
     writeState(0);
 
     const log = (msg: string) => process.stderr.write(`[${APP_NAME} host] ${redact(msg)}\n`);
+    const trace = process.env.CAVVY_HOST_DEBUG ? log : () => {};
+    trace("state-0");
     if (loginEnv) {
         const { adoptLoginPath } = await import("../server/login-env");
         await adoptLoginPath(paths.loginPath());
+        trace("login-env");
     }
     const { startServer } = await import("../server/server");
     const { defaultStatic } = await import("../server/cli");
     // What a CLI that isn't signed in is told to do says it's to be done here.
     (await import("../backends/account-login")).signInsOnServer();
+    trace("imports");
     const signIns = new MachineSignIns();
     // The GUI that came with this build. CAVVY_GUI_DIST, when set, is the only place looked in (tests name the build's own).
     const named = process.env.CAVVY_GUI_DIST;
@@ -511,6 +515,7 @@ export async function hostRun(args: string[], env: HostRunEnv): Promise<void> {
     let busy: (() => boolean) | undefined;
     const wake = process.platform === "darwin" ? new (await import("./wake")).WakeLock({ working: () => busy?.() ?? false }) : undefined;
     const srv = await startServer({ host: "127.0.0.1", port, signIns, run, staticDir, startCwd: homedir(), fallbackModel: env.fallbackModel, log, away: true, working: join(hostDir(), "working.json"), onTurns: wake && ((running) => wake.turnsRunning(running)) });
+    trace(`server-port=${srv.port}`);
     busy = () => srv.engine.activity().working > 0;
     for (const n of env.notes) log(`note: ${n}`);
 

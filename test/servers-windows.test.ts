@@ -287,7 +287,7 @@ process.exit(await proc.exited);
                     });
                     // Probe running the compiled exe directly for 4s to see exact startup output/error.
                     const probe = Bun.spawn([join(sdir, "builds", buildId, "cavvy.exe"), "host", "run", "--login-env", "--port", "0"], {
-                        env: { ...process.env, CAVVY_HOME: join(remoteHome, ".cavvy-probe"), CAVVY_NO_KEYCHAIN: "1" },
+                        env: { ...process.env, CAVVY_HOME: join(remoteHome, ".cavvy-probe"), CAVVY_NO_KEYCHAIN: "1", CAVVY_HOST_DEBUG: "1" },
                         stdin: "ignore",
                         stdout: "pipe",
                         stderr: "pipe",
