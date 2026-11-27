@@ -851,7 +851,7 @@ function Providers() {
     });
     const withServers = () => listed().length > 0;
     // Subscriptions are signed in on each machine: one table across them, the same in a window on any of them. Keys
-    // go with sync; a server's own local models are its own (the window's own machine's are in its sections).
+    // go with sync; a server's own local models are its own.
     return (
         <>
             <Show when={withServers()}>
@@ -862,8 +862,8 @@ function Providers() {
                 </Section>
             </Show>
             <ProviderSections noSubscriptions={withServers()} synced={!machine && listed().some((s) => s.syncOn)} />
-            <Show when={withServers()}>
-                <For each={listed().filter((s) => s.name !== machine)}>{(s) => <ServerLocalModels name={s.name} />}</For>
+            <Show when={!machine && withServers()}>
+                <For each={listed()}>{(s) => <ServerLocalModels name={s.name} />}</For>
             </Show>
         </>
     );

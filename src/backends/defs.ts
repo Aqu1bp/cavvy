@@ -190,7 +190,8 @@ const CODEX: AgentCliDef = {
         product: "Codex",
         install: "Install the Codex CLI (curl -fsSL https://chatgpt.com/codex/install.sh | sh)",
         // Its own installer: a binary in ~/.local/bin, without Node (a server rarely has it). With no terminal it asks nothing.
-        installCommand: "curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh",
+        // Fetched first: piped, a failed download would still end as `sh` does, with 0.
+        installCommand: 'script="$(curl -fsSL https://chatgpt.com/codex/install.sh)" && printf "%s\n" "$script" | CODEX_NON_INTERACTIVE=1 sh',
         signIn: "codex login",
         // `codex login` waits for the browser on a port of its own machine, and says to use this where there's none.
         signInAway: "codex login --device-auth",
