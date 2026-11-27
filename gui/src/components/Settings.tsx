@@ -498,8 +498,6 @@ function Appearance() {
     );
 }
 
-const [removingProviders, setRemovingProviders] = createSignal<ReadonlySet<string>>(new Set());
-
 /**
  * The servers' state and what's done to them (state/servers.ts), which comes with their own code: asked for when
  * Providers opens on a computer that has servers, so a window doesn't start with it. Until then there are none to show.
@@ -521,6 +519,8 @@ async function connectThere(pr: ProviderInfo, at: ProvidersAt, failed: (e: unkno
     await at.changed().catch(reportError);
     return true;
 }
+
+const [removingProviders, setRemovingProviders] = createSignal<ReadonlySet<string>>(new Set());
 
 function ProviderRow(p: { pr: ProviderInfo }) {
     const at = useProvidersAt();
