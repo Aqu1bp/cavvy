@@ -1,5 +1,6 @@
-// What Settings → About and the rail say about the desktop app's updates from
-// main (src/server/app-update.ts), from the server's AppUpdateInfo.
+// What Settings → About and the rail say about the desktop app's updates
+// (src/server/app-update.ts), from the server's AppUpdateInfo: from main for an
+// app built from a checkout, to the latest release for a downloaded one.
 
 import type { AppUpdateInfo } from "@shared/protocol";
 import { ago } from "./format";
@@ -7,8 +8,15 @@ import { ago } from "./format";
 export interface UpdateView {
     title: string;
     detail?: string;
-    /** The row's button: check again, or update (with Check now beside it: main may have moved since). */
-    action?: "check" | "update";
+    /**
+     * The row's button: check again, or update (with Check now beside it: main may have moved since), or restart into
+     * a release that's downloaded and checked.
+     */
+    action?: "check" | "update" | "restart";
+    /** The release's notes, to open. */
+    notes?: string;
+    /** Why the update can't be had on this Mac (it needs a newer macOS): said in place of the button. */
+    problem?: string;
     /** A check or an update under way: a spinner in place of the button. */
     busy: boolean;
     /** Sessions working now, which the restart would stop. */
@@ -17,7 +25,7 @@ export interface UpdateView {
      * The rail's icon beside Settings, while there's an update or one is running: ready (click
      * to update), busy (a spinner), failed (red; click to try again). `label`: its tooltip, the words it doesn't show.
      */
-    rail?: { state: "ready" | "busy" | "failed"; label: string };
+    rail?: { state: "ready" | "busy" | "failed"; label: string; progress?: number };
 }
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
@@ -30,6 +38,7 @@ function checked(at: number, now: number): string {
 /** `working`: sessions running a turn now. */
 export function updateView(u: AppUpdateInfo | undefined, working: number, now = Date.now()): UpdateView | undefined {
     if (!u) return undefined;
+    if (u.release) return releaseView(u, working, now);
     if (u.unavailable) return { title: "Updates from main", detail: u.unavailable, busy: false };
     if (u.updating) {
         if (u.updating.restarting) return { title: "Restarting Cavvy…", detail: "The new build is installed.", busy: true, rail: { state: "busy", label: "The update is installed: Cavvy is restarting" } };
@@ -59,4 +68,50 @@ export function updateView(u: AppUpdateInfo | undefined, working: number, now = 
     // Checked, but never compared with main (it couldn't fetch, and had no main from before): the error says why.
     if (!u.installed) return { title: "Couldn't check for updates", action: "check", busy: false };
     return { title: "Cavvy is up to date", detail: `Built from main ${u.installed} · ${checked(u.checkedAt, now)}`, action: "check", busy: false };
+}
+
+const stops = (working: number) => `${plural(working, "session")} working: restarting stops ${working === 1 ? "it" : "them"}.`;
+
+/** A downloaded app: `installed` and `latest` are versions. */
+function releaseView(u: AppUpdateInfo, working: number, now: number): UpdateView {
+    if (u.unavailable) return { title: "Updates", detail: u.unavailable, busy: false };
+    if (u.updating) {
+        if (u.updating.restarting) return { title: "Restarting Cavvy…", busy: true, rail: { state: "busy", label: "Restarting Cavvy" } };
+        return {
+            title: `Updating to Cavvy ${u.latest}…`,
+            detail: u.updating.line,
+            busy: true,
+            warn: working ? `Cavvy restarts when the download is done: ${plural(working, "session")} working then will stop.` : undefined,
+            rail: { state: "busy", label: `Updating Cavvy: ${u.updating.line}`, progress: u.updating.progress },
+        };
+    }
+    const failed = u.failed ? { state: "failed" as const, label: "Couldn't update. Click to try again." } : undefined;
+    const when = u.checkedAt ? checked(u.checkedAt, now) : undefined;
+    if (u.ready) {
+        return {
+            title: `Cavvy ${u.latest} is ready`,
+            detail: "Restart Cavvy to finish updating.",
+            action: "restart",
+            busy: u.checking,
+            warn: working ? stops(working) : undefined,
+            rail: failed ?? { state: "ready", label: `Cavvy ${u.latest} is ready. Click to restart.` },
+        };
+    }
+    if (u.available) {
+        const title = `Cavvy ${u.latest} is available`;
+        const detail = [`This is ${u.installed}`, when].filter(Boolean).join(" · ");
+        if (u.needsSystem) return { title, detail, notes: u.notes, problem: `This update needs macOS ${u.needsSystem}.`, action: "check", busy: u.checking };
+        return {
+            title,
+            detail,
+            notes: u.notes,
+            action: "update",
+            busy: u.checking,
+            warn: working ? stops(working) : undefined,
+            rail: failed ?? { state: "ready", label: `${title}. Click to update and restart Cavvy.` },
+        };
+    }
+    if (u.checking) return { title: "Checking for updates…", busy: true };
+    if (!u.checkedAt) return { title: "Updates", detail: "Not checked yet.", action: "check", busy: false };
+    return { title: "Cavvy is up to date", detail: [u.installed, when].filter(Boolean).join(" · "), action: "check", busy: false };
 }
