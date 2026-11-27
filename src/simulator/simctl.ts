@@ -88,6 +88,8 @@ export type Availability = { ok: true; developerDir: string } | { ok: false; err
 let availability: { at: number; value: Availability } | undefined;
 /** The lookup under way: everyone who asks meanwhile gets its answer. */
 let looking: Promise<Availability> | undefined;
+/** How long a lookup is waited for: past its own limits (10 s, then 20 s), which a simctl that won't end when told to outlasts. */
+const LOOKUP_MS = 35_000;
 
 /**
  * Whether Xcode's simulators can be used here (macOS with Xcode chosen by xcode-select), looked up at most once a
@@ -98,8 +100,12 @@ export async function simulatorsAvailable(): Promise<Availability> {
     if (forced) return forced;
     if (availability && Date.now() - availability.at < 60_000) return availability.value;
     if (looking) return looking;
+    // Shared, one that never ended would be every later session's answer too: none found, once it's had its time.
+    let timer: ReturnType<typeof setTimeout>;
+    const late = new Promise<Availability>((resolve) => (timer = setTimeout(resolve, LOOKUP_MS, { ok: false, error: "Simulators need Xcode." })));
     // Its answer is kept, and it stops being the lookup under way, only if it still is one (setRunner starts over).
-    const mine: Promise<Availability> = lookUp().then((value) => {
+    const mine: Promise<Availability> = Promise.race([lookUp(), late]).then((value) => {
+        clearTimeout(timer);
         if (looking === mine) {
             availability = { at: Date.now(), value };
             looking = undefined;

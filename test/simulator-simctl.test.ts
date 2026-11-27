@@ -1,10 +1,26 @@
 // What simctl says (src/simulator/simctl.ts): the devices that can run, in the order the pane and the agent list them,
 // its errors without their boilerplate, and what another tool has taken of a device's input.
-import { expect, test } from "bun:test";
+import { expect, jest, setSystemTime, test } from "bun:test";
 import { afterEach } from "bun:test";
 import { cutInputs, keyboardOf, launch, parseDevices, pasteboard, runningFor, runtimeName, setRunner, simctlError, simulatorsAvailable, takeInput, typesAsUS } from "../src/simulator/simctl";
 
-afterEach(() => setRunner(undefined));
+const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+const simulatorsOff = process.env.CAVVY_SIMULATOR;
+
+/** As on a Mac with simulators on, whatever runs the tests (CI is Linux, where nothing is looked up), until the test ends. */
+function onAMac() {
+    Object.defineProperty(process, "platform", { ...platform, value: "darwin" });
+    delete process.env.CAVVY_SIMULATOR;
+}
+
+// Put back here, not by the test: one that times out doesn't leave the files after it on a Mac.
+afterEach(() => {
+    setRunner(undefined);
+    Object.defineProperty(process, "platform", platform);
+    if (simulatorsOff !== undefined) process.env.CAVVY_SIMULATOR = simulatorsOff;
+    jest.useRealTimers();
+    setSystemTime();
+});
 
 test("runtimes are named as iOS versions; other platforms aren't offered", () => {
     expect(runtimeName("com.apple.CoreSimulator.SimRuntime.iOS-27-0")).toBe("iOS 27.0");
@@ -139,62 +155,72 @@ test("the input process failing to restart: the service is said to have the inpu
     expect(calls.at(-1)).toBe("notifyutil -s com.apple.coredevice.dtuhidd.active 1 -p com.apple.coredevice.dtuhidd.active");
 });
 
-/** As on a Mac with simulators on, whatever runs the tests (CI is Linux, where nothing is looked up). */
-async function onAMac(body: () => Promise<void>) {
-    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
-    const off = process.env.CAVVY_SIMULATOR;
-    Object.defineProperty(process, "platform", { ...platform, value: "darwin" });
-    delete process.env.CAVVY_SIMULATOR;
-    try {
-        await body();
-    } finally {
-        Object.defineProperty(process, "platform", platform);
-        if (off !== undefined) process.env.CAVVY_SIMULATOR = off;
-    }
-}
-
 const xcode = (args: string[]) => (args[0] === "xcode-select" ? { code: 0, stdout: "/Applications/Xcode.app/Contents/Developer\n", stderr: "" } : { code: 0, stdout: "", stderr: "" });
 
-test("sessions asking at once whether there are simulators share one lookup", () =>
-    onAMac(async () => {
-        let helps = 0;
-        setRunner(async (args) => {
-            if (args.includes("help")) helps++;
-            // Slow, as on a busy Mac: everyone asks before the first answer is in.
-            await new Promise((r) => setTimeout(r, 30));
-            return xcode(args);
-        });
-        const answers = await Promise.all(Array.from({ length: 10 }, () => simulatorsAvailable()));
-        expect(helps).toBe(1);
-        expect(answers.every((a) => a.ok)).toBe(true);
-        // Within the minute the answer is kept: no lookup at all.
-        await simulatorsAvailable();
-        expect(helps).toBe(1);
-    }));
+test("sessions asking at once whether there are simulators share one lookup", async () => {
+    onAMac();
+    let helps = 0;
+    setRunner(async (args) => {
+        if (args.includes("help")) helps++;
+        // Slow, as on a busy Mac: everyone asks before the first answer is in.
+        await new Promise((r) => setTimeout(r, 30));
+        return xcode(args);
+    });
+    const answers = await Promise.all(Array.from({ length: 10 }, () => simulatorsAvailable()));
+    expect(helps).toBe(1);
+    expect(answers.every((a) => a.ok)).toBe(true);
+    // Within the minute the answer is kept: no lookup at all.
+    await simulatorsAvailable();
+    expect(helps).toBe(1);
+});
 
-test("a lookup that outlives its runner neither answers for the next one nor ends its lookup", () =>
-    onAMac(async () => {
-        const old = Promise.withResolvers<void>();
-        // Xcode is found, then its simctl fails: the second step is the old runner's too, not the next one's.
-        setRunner(async (args) => {
-            await old.promise;
-            return args[0] === "xcode-select" ? xcode(args) : { code: 1, stdout: "", stderr: "" };
-        });
-        const stale = simulatorsAvailable();
-        const next = Promise.withResolvers<void>();
-        let helps = 0;
-        setRunner(async (args) => {
-            if (args.includes("help")) helps++;
-            await next.promise;
-            return xcode(args);
-        });
-        const first = simulatorsAvailable();
-        old.resolve();
-        expect((await stale).ok).toBe(false);
-        // The old one's answer isn't kept, and the new lookup is still the one under way: asking again joins it.
-        const second = simulatorsAvailable();
-        next.resolve();
-        expect([(await first).ok, (await second).ok]).toEqual([true, true]);
-        expect(helps).toBe(1);
-        expect((await simulatorsAvailable()).ok).toBe(true);
-    }));
+test("a lookup that outlives its runner neither answers for the next one nor ends its lookup", async () => {
+    onAMac();
+    const old = Promise.withResolvers<void>();
+    // Xcode is found, then its simctl fails: the second step is the old runner's too, not the next one's.
+    setRunner(async (args) => {
+        await old.promise;
+        return args[0] === "xcode-select" ? xcode(args) : { code: 1, stdout: "", stderr: "" };
+    });
+    const stale = simulatorsAvailable();
+    const next = Promise.withResolvers<void>();
+    let helps = 0;
+    setRunner(async (args) => {
+        if (args.includes("help")) helps++;
+        await next.promise;
+        return xcode(args);
+    });
+    const first = simulatorsAvailable();
+    old.resolve();
+    expect((await stale).ok).toBe(false);
+    // The old one's answer isn't kept, and the new lookup is still the one under way: asking again joins it.
+    const second = simulatorsAvailable();
+    next.resolve();
+    expect([(await first).ok, (await second).ok]).toEqual([true, true]);
+    expect(helps).toBe(1);
+    expect((await simulatorsAvailable()).ok).toBe(true);
+});
+
+test("a lookup that never ends isn't every later session's answer: none found after its time, then looked for again", async () => {
+    onAMac();
+    jest.useFakeTimers();
+    let stuck = true;
+    let asked = 0;
+    // A simctl that doesn't end when it's told to: its call never comes back.
+    setRunner(async (args) => {
+        asked++;
+        if (stuck) await new Promise(() => {});
+        return xcode(args);
+    });
+    const waiting = [simulatorsAvailable(), simulatorsAvailable()];
+    jest.advanceTimersByTime(34_999);
+    expect(await Promise.race([...waiting, "waiting"])).toBe("waiting");
+    jest.advanceTimersByTime(1);
+    expect(await Promise.all(waiting)).toEqual([{ ok: false, error: "Simulators need Xcode." }, { ok: false, error: "Simulators need Xcode." }]);
+    expect(asked).toBe(1);
+    // Kept for its minute like any answer, then the next session looks afresh.
+    stuck = false;
+    expect((await simulatorsAvailable()).ok).toBe(false);
+    setSystemTime(new Date(Date.now() + 61_000));
+    expect((await simulatorsAvailable()).ok).toBe(true);
+});
