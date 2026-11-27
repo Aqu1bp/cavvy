@@ -561,11 +561,17 @@ export async function settle(id: string, settled: boolean): Promise<boolean> {
 
 /** At once, without asking: the server moves its files to the trash, and the toast's Undo puts them back. Whether it was done. */
 export async function deleteSession(id: string): Promise<boolean> {
+    let r: Awaited<ReturnType<typeof rpc.call<"session.delete">>>;
     try {
-        await rpc.call("session.delete", { id });
+        r = await rpc.call("session.delete", { id });
     } catch (e) {
         reportError(e);
         return false;
+    }
+    // Never saved: nothing for Undo to bring back.
+    if (r?.unsaved) {
+        toast("Session deleted", "info");
+        return true;
     }
     toast(
         "Session deleted",

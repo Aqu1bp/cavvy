@@ -199,6 +199,29 @@ describe("session.delete", () => {
         }
     });
 
+    test("one never saved (only a ! command run) is closed and gone, with nothing to restore", async () => {
+        const engine = new Engine({ unloadAfterMs: 100 });
+        const events: ServerEvent[] = [];
+        const c = { subs: new Set<string>(), send: (e: ServerEvent) => void events.push(e) };
+        engine.clients.add(c);
+        try {
+            const snap = (await engine.handle(c, "session.create", { cwd: createDemoProject(tempDir("cavvy-del-proj-"), { git: false }) })) as SessionSnapshot;
+            const id = snap.state.id;
+            const rt = engine.runtimes.get(id)!;
+            await engine.handle(c, "session.send", { id, text: "!echo only-shell" });
+            for (let i = 0; i < 200 && !(rt.idle && rt.view.turns.length); i++) await Bun.sleep(25);
+            expect(rt.idle).toBe(true);
+            expect(findSessionAnywhere(id)).toBeUndefined();
+            await engine.handle(c, "session.snooze", { id, until: Date.now() + DAY });
+            expect(await engine.handle(c, "session.delete", { id })).toEqual({ unsaved: true });
+            expect(engine.runtimes.has(id)).toBe(false);
+            expect(events.some((e) => e.type === "sessions.remove" && e.id === id)).toBe(true);
+            expect(JSON.stringify(store())).not.toContain(id);
+        } finally {
+            await engine.stop();
+        }
+    });
+
     test("opening it while it's being deleted waits, then finds nothing (and makes nothing)", async () => {
         const { engine, c, id, f } = await setup();
         try {

@@ -2672,7 +2672,8 @@ export interface Methods {
     /** Never settled by itself when it's been idle (`on`), or as any other again. */
     "session.neverSettle": { params: { id: string; on: boolean }; result: null };
     /** Moves its files to the trash (sessions.remove follows); session.restore puts them back for a week. */
-    "session.delete": { params: { id: string }; result: null };
+    /** `unsaved`: it was never saved, so it was only closed: there's nothing for session.restore to bring back. */
+    "session.delete": { params: { id: string }; result: null | { unsaved: true } };
     "session.restore": { params: { id: string }; result: null };
     /** The sessions in the trash (deleted in the past week), the most recently deleted first. */
     /** `servers`: those deleted on the servers this machine is connected to (each row says which), not its own. */

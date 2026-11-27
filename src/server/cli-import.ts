@@ -29,14 +29,37 @@ const linkCache = new Map<string, { mtimeMs: number; size: number; links: CliLin
 export interface CavvyLinks {
     /** CLI sessions a Cavvy session holds (imported, or run on as its backend): to that session's id. The newest wins. */
     held: Map<string, string>;
-    /** Ones Cavvy's sub-agents (Task, delegate) or side chats ran on: nobody's conversation to pick up. */
+    /** Ones Cavvy's sub-agents (Task, delegate), side chats or deleted sessions ran on: nobody's conversation to pick up. */
     subagent: Set<string>;
 }
 
-/** The CLI sessions side chats ran on, kept after the side chats are discarded: a `subagent` line each. */
-const sideChatRecord = () => join(cavvyHome(), "side-chat-cli.jsonl");
+/**
+ * The CLI sessions of Cavvy sessions and side chats that are gone (deleted, discarded), a `subagent` line each: they
+ * were Cavvy's, so they stay out of the list to continue.
+ */
+const goneRecord = () => join(cavvyHome(), "gone-cli-sessions.jsonl");
 
-/** A side chat about to be discarded (its folder): the CLI sessions it ran on stay out of the list to continue. */
+/** Session files about to go (a deleted session's, a discarded side chat's): their CLI sessions are noted first. */
+export function keepCliLinks(files: string[]) {
+    const lines = new Set<string>();
+    for (const f of files) {
+        try {
+            const links = cliLinks(f);
+            // One imported from a terminal (and continued since) was the person's before: it can be listed again.
+            const imported = new Set(links.filter((l) => l.kind === "import").map((l) => linkKey(l.provider, l.id)));
+            for (const l of links) if (!imported.has(linkKey(l.provider, l.id))) lines.add(JSON.stringify({ t: "subagent", provider: l.provider, id: l.id }));
+        } catch {
+            // unreadable: nothing to keep
+        }
+    }
+    try {
+        if (lines.size) appendFileSync(goneRecord(), `${[...lines].join("\n")}\n`, { mode: 0o600 });
+    } catch {
+        // Unsaved, it's listed under Continue again: not worth failing a delete or the server's start over.
+    }
+}
+
+/** A side chat about to be discarded (its folder). */
 export function keepSideChatLinks(dir: string) {
     let names: string[];
     try {
@@ -44,19 +67,7 @@ export function keepSideChatLinks(dir: string) {
     } catch {
         return;
     }
-    const lines = new Set<string>();
-    for (const n of names.filter((n) => n.endsWith(".jsonl"))) {
-        try {
-            for (const l of cliLinks(join(dir, n))) if (l.kind !== "import") lines.add(JSON.stringify({ t: "subagent", provider: l.provider, id: l.id }));
-        } catch {
-            // unreadable: nothing to keep
-        }
-    }
-    try {
-        if (lines.size) appendFileSync(sideChatRecord(), `${[...lines].join("\n")}\n`, { mode: 0o600 });
-    } catch {
-        // Unsaved, it's listed under Continue again: not worth failing a discard or the server's start over.
-    }
+    keepCliLinks(names.filter((n) => n.endsWith(".jsonl")).map((n) => join(dir, n)));
 }
 
 /** CLI sessions Cavvy already has, from the session files of these folders. */
@@ -99,10 +110,10 @@ export function cavvyLinks(folders: string[]): CavvyLinks {
         // none open
     }
     for (const s of sides) add(join(sideChatsDir(), s), true);
-    // And the ones discarded since.
+    // And those of side chats discarded and sessions deleted since.
     try {
-        const st = lstatSync(sideChatRecord());
-        if (st.isFile()) files.push({ file: sideChatRecord(), id: "", mtimeMs: st.mtimeMs, size: st.size, side: true });
+        const st = lstatSync(goneRecord());
+        if (st.isFile()) files.push({ file: goneRecord(), id: "", mtimeMs: st.mtimeMs, size: st.size, side: true });
     } catch {
         // none yet
     }

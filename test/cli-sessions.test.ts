@@ -479,6 +479,24 @@ describe("importing", () => {
         }
     });
 
+    test("one Cavvy ran itself isn't offered once that session is deleted, and is in Cavvy again on Undo", async () => {
+        turnOn();
+        const { id } = claudeSession(CLAUDE, { cwd: real, turns: TURNS });
+        const s = Session.create(real);
+        s.push({ role: "user", content: [{ type: "text", text: "hello" }], meta: { kind: "prompt" } });
+        s.setBackendSession("claude-code", id, 1);
+        s.release();
+        const { e, c } = await engine();
+        try {
+            expect(await e.handle(c, "session.delete", { id: s.meta.id })).toBeNull();
+            expect(e.cliSessionsList(cwd).sessions.find((x) => x.id === id)).toBeUndefined();
+            await e.handle(c, "session.restore", { id: s.meta.id });
+            expect(e.cliSessionsList(cwd).sessions.find((x) => x.id === id)?.cavvyId).toBe(s.meta.id);
+        } finally {
+            await e.stop();
+        }
+    });
+
     test("a Cavvy session kept under another path to the same folder counts too", async () => {
         turnOn();
         const { id } = claudeSession(CLAUDE, { cwd: real, turns: TURNS });

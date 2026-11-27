@@ -82,7 +82,7 @@ import { listServers } from "../servers/store";
 import type { WakeMemory } from "../agent/wakes";
 import { forkUiLogSoon, readSegments, readUiLogSoon, type UiLog } from "./history";
 import { CLI_SOURCES, findCliSession, listCliSessions, readCliTranscript, validCliId, type CliSource } from "./cli-sessions";
-import { cavvyLinks, importModel, keepSideChatLinks, linkKey, writeImportedSession, type CavvyLinks } from "./cli-import";
+import { cavvyLinks, importModel, keepCliLinks, keepSideChatLinks, linkKey, writeImportedSession, type CavvyLinks } from "./cli-import";
 import { CODEX_CLIENT_NAME } from "../backends/codex";
 import { checkId, claimForDelete, listTrash, locateSession, purgeTrash, restoreSession, trashSession, type SessionFlags } from "./session-delete";
 import { searchSessions, warmSearch } from "./search";
@@ -1862,7 +1862,8 @@ export class Engine {
      * Meanwhile opening or renaming it waits, as for one being unloaded, and
      * then finds nothing.
      */
-    private async deleteSession(id: string) {
+    /** Whether it went to the trash, for Undo: one never saved (nothing but `!` commands run, say) is only closed. */
+    private async deleteSession(id: string): Promise<boolean> {
         // A model still being set up (as it opens) isn't work to refuse over: wait for it, a while.
         const until = Date.now() + 10_000;
         for (;;) {
@@ -1879,7 +1880,9 @@ export class Engine {
         const snoozedUntil = store.snoozed?.[id]?.until;
         const flags: SessionFlags = { pinned: !!store.pinned?.includes(id), archived: !!store.archived?.includes(id), settled: !!store.settled?.includes(id), neverSettle: !!store.neverSettle?.includes(id), ...(snoozedUntil !== undefined ? { snoozedUntil } : {}) };
         // Held from before its runtime closes until it's in the trash, so a terminal can't take it in between.
-        const release = claimForDelete(locateSession(id).file);
+        const unsaved = !!rt && !findSessionAnywhere(id);
+        const release = unsaved ? () => {} : claimForDelete(locateSession(id).file);
+        let trashed = false;
         const work = (async () => {
             try {
                 if (rt) {
@@ -1897,7 +1900,12 @@ export class Engine {
                     if (rt.guest) this.guestGone(rt);
                     await rt.close().catch(() => undefined);
                 }
+                const file = unsaved ? findSessionAnywhere(id) : locateSession(id).file;
+                if (!file) return;
+                // Cavvy's own: its CLI sessions stay out of the list to continue once it's gone.
+                keepCliLinks([file]);
                 trashSession(id, flags);
+                trashed = true;
             } finally {
                 release();
             }
@@ -1931,6 +1939,7 @@ export class Engine {
             forgetPlay(s, id);
         });
         this.broadcast({ type: "sessions.remove", id });
+        return trashed;
     }
 
     private runtime(id: unknown): Runtime {
@@ -4085,8 +4094,7 @@ export class Engine {
                 return { path: writePlanFile({ cwd: rt.ws.cwd, home: cavvyHome(), input, text: plan.text, replace: p.replace === true }) };
             }
             case "session.delete":
-                await this.deleteSession(checkId(p.id));
-                return null;
+                return (await this.deleteSession(checkId(p.id))) ? null : { unsaved: true };
             case "session.restore": {
                 const id = checkId(p.id);
                 while (this.closing.has(id)) await this.afterClosing(id);
