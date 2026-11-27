@@ -14,9 +14,9 @@
 // environment (the commands are printed; nothing is set here), then delete the folder.
 
 import { randomBytes } from "crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { join, resolve } from "path";
+import { dirname, join, resolve } from "path";
 
 function stop(why: string): never {
     console.error(why);
@@ -63,8 +63,12 @@ export function makeCertificate(dir: string): { p12: string; password: string; s
 if (import.meta.main) {
     const dir = process.argv[2] ? resolve(process.argv[2]) : stop("Usage: bun scripts/release-codesign-cert.ts <new folder to put it in>");
     // A folder of its own that only you can open, so the private key is never where others can read it, even briefly.
-    if (existsSync(dir)) stop(`${dir} is already there: the certificate goes in a new folder.`);
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    mkdirSync(dirname(dir), { recursive: true });
+    try {
+        mkdirSync(dir, { mode: 0o700 });
+    } catch (e) {
+        stop((e as NodeJS.ErrnoException).code === "EEXIST" ? `${dir} is already there: the certificate goes in a new folder.` : `Couldn't make ${dir}: ${(e as Error).message}`);
+    }
     const made = makeCertificate(dir);
     // Readable only by you, as the key's file is.
     Bun.spawnSync(["chmod", "600", made.p12]);

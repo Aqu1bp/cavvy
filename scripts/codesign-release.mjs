@@ -295,7 +295,12 @@ export async function release(out, inputs, o) {
         return written;
     } finally {
         if (kc) deleteKeychain(kc.keychain);
-        rmSync(tmp, { recursive: true, force: true });
+        // Said, not thrown: a leftover (a disk image that wouldn't detach) mustn't hide why the release failed.
+        try {
+            rmSync(tmp, { recursive: true, force: true });
+        } catch (e) {
+            console.error(`Couldn't remove ${tmp}: ${e.message}`);
+        }
     }
 }
 
