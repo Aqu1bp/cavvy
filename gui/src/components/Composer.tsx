@@ -161,17 +161,19 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         mirror.scrollTop = ta.scrollTop;
     };
     createEffect(on(marked, syncMirror));
-    /** The field marked while it's scrolled: only then is its top faded (composer.css). Where it's scrolled to is read
-     *  only as it scrolls or changes size, and first of all then, while it's still laid out. */
-    const markScrolled = () => ta!.toggleAttribute("data-scrolled", ta!.scrollTop > 0);
+    /** The field scrolled or changed size: the layer goes with it, and the field is marked while it's scrolled, since
+     *  only then is its top faded (composer.css). Where it's scrolled to is read first, while it's still laid out, and
+     *  the mark made last, after what else is measured here (`first`): it restyles the field. */
+    const fieldMoved = (first?: () => void) => {
+        const scrolled = ta!.scrollTop > 0;
+        first?.();
+        syncMirror();
+        ta!.toggleAttribute("data-scrolled", scrolled);
+    };
     onMount(() => {
         if (!ta || typeof ResizeObserver === "undefined") return;
         const field = ta;
-        const observer = new ResizeObserver(() => {
-            markScrolled();
-            atCap(field);
-            syncMirror();
-        });
+        const observer = new ResizeObserver(() => fieldMoved(() => atCap(field)));
         observer.observe(field);
         onCleanup(() => observer.disconnect());
     });
@@ -989,10 +991,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                             onBlur={() => setFlipped(false)}
                             onPaste={onPaste}
                             onClick={() => updateMenu()}
-                            onScroll={() => {
-                                markScrolled();
-                                syncMirror();
-                            }}
+                            onScroll={() => fieldMoved()}
                             aria-label="Message"
                             role="combobox"
                             aria-autocomplete="list"
