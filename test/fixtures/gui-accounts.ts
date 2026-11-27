@@ -41,7 +41,8 @@ function fixture(initial = [defaultAccount], provider = "claude-code", extra: { 
         return catalog;
     };
     const Accounts = component(source, "Accounts", {
-        rpc: { call }, refreshProviders, refreshModels: async () => {},
+        // The machine the accounts are on (state/providers-at.ts): here, the window's own.
+        useProvidersAt: () => ({ link: { call }, refresh: refreshProviders, changed: async () => {} }),
         terminalActions: { loginAccount: (...args: any[]) => logins.push(args) },
         Menu: (p: any) => { menus.push(p); return solid.createMemo(() => p.open ? p.children : null); },
         Dialog: (p: any) => solid.createMemo(() => p.open ? p.children : null),
@@ -115,7 +116,7 @@ test("a connected provider shows its plan, a status dot and its one account's em
         expect(f.calls[0]).toEqual({ method: "accounts.list", params: { provider: "claude-code", refresh: true } });
         expect(f.nodes().find((n) => n.props.class === "tag")).toBeDefined();
         expect(text(f.nodes().find((n) => n.props.class === "tag")!)).toBe("Max");
-        expect(f.nodes().find((n) => n.props.class === "cli-dot")?.props["aria-label"]).toBe("Connected");
+        expect(f.nodes().find((n) => n.props.class === "cli-dot")?.props["aria-label"]).toBe("Signed in");
         expect(text(f.nodes().find((n) => n.props.class?.startsWith("prov-sub"))!)).toBe("me@example.test");
         f.button("Claude Code actions").props.onClick();
         expect(f.nodes().filter((n) => n.props.role === "menuitem").map((n) => text(n))).toEqual(["Add account…", "Sign in again", "Environment variables…", "Add another Claude Code…", "Refresh status", "Learn more…", "Turn off…"]);
@@ -140,6 +141,19 @@ test("a lone account's menu follows a status refresh", async () => {
         expect(f.button("Sign in again")).toBeDefined();
         expect(text(f.root)).toContain("me@example.test");
     } finally { f.dispose(); }
+});
+
+test("the dot waits for a sign-in that was checked, and a signed-out account has its sign-in beside it", () => {
+    const unchecked = fixture([{ ...defaultAccount }], "codex", { info: { configured: true } });
+    const out = fixture([{ ...defaultAccount, signedIn: false }], "codex", { info: { configured: true } });
+    try {
+        expect(unchecked.nodes().some((n) => n.props.class === "cli-dot")).toBe(false);
+        expect(text(unchecked.root)).not.toContain("Not signed in");
+        // Not in a menu: the row's own button.
+        expect(out.menus.some((m) => m.open)).toBe(false);
+        out.button("Sign in").props.onClick();
+        expect(out.logins[0].slice(0, 2)).toEqual(["codex", "default"]);
+    } finally { unchecked.dispose(); out.dispose(); }
 });
 
 test("a connected provider whose one account is signed out says so instead of the dot", () => {

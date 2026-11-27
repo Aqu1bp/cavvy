@@ -30,6 +30,11 @@
     color: var(--fg-2);
 }
 
+/* Kept in sync with this machine: the Machines menu's sync switch, on. */
+.server-sync-on {
+    color: var(--accent);
+}
+
 .server-actions {
     display: flex;
     justify-content: flex-end;

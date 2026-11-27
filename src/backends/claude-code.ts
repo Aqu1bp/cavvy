@@ -211,6 +211,8 @@ export interface ClaudeStatus {
     apiProvider?: string;
     email?: string;
     subscriptionType?: string;
+    /** True when status was inferred from non-zero text output rather than a definitive structured response. */
+    unconfirmed?: boolean;
 }
 
 /** `claude auth status --json`: Claude Code's own report of its sign-in. */
@@ -226,12 +228,13 @@ export async function claudeStatus(providerId = "claude-code", signal?: AbortSig
         // older versions print text
     }
     if (!j || typeof j !== "object") {
-        if (/not (logged|signed) in/i.test(r.stdout || r.stderr)) return { loggedIn: false };
+        if (/not (logged|signed) in/i.test(r.stdout || r.stderr)) return { loggedIn: false, ...(r.code !== 0 ? { unconfirmed: true } : {}) };
         if (r.code !== 0) throw new ProviderError(`claude auth status failed: ${cliMessage(r.stderr || r.stdout) || `exit ${r.code}`}`);
         return { loggedIn: !/not (logged|signed) in/i.test(r.stdout) };
     }
     const str = (k: string) => cliStatusString(j![k]);
-    return { loggedIn: j.loggedIn === true, authMethod: str("authMethod"), apiProvider: str("apiProvider"), email: str("email"), subscriptionType: str("subscriptionType") };
+    if (typeof j.loggedIn !== "boolean") throw new ProviderError("claude auth status returned an unexpected response");
+    return { loggedIn: j.loggedIn, authMethod: str("authMethod"), apiProvider: str("apiProvider"), email: str("email"), subscriptionType: str("subscriptionType") };
 }
 
 export function describeClaudeAuth(s: ClaudeStatus): string {

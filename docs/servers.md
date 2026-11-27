@@ -21,9 +21,22 @@ A CLI that's installed there and not signed in is offered at once: `Sign in to C
 
 API keys for the server are added there too (`cavvy --server box auth add`, or Settings in its GUI) and are kept in a file only your user there can read.
 
-You're offered a one-time copy of this machine's settings, memory, skills and commands (`--copy` or `--no-copy` to answer ahead). Nothing already on the server is replaced, and Cavvy says what the server took.
+When it's added you're asked `Sync box with this Mac?` (`--sync` or `--no-sync` to answer ahead; afterwards the sync button beside it in the Machines menu, or `cavvy servers sync box --on` / `--off`). With sync on, while the desktop app is open and connected to it (or whenever you run `cavvy servers sync [name]`), the server is kept level with this machine:
 
-While the desktop app is open and connected to the server, your skills and commands stay the same there as here, copy or not (so the app's copy leaves them out): one you add, change or delete here is added, changed or deleted there within a few seconds. A skill or command that's the server's own (one an agent there made, or one you changed there) is left as it is. A file named like a key, or with a key of a known format in it, stays here, as in the copy.
+- **Files:** skills (`~/.cavvy/skills`, `~/.claude/skills`, `~/.codex/skills`, `~/.agents/skills`), commands (`~/.cavvy/commands`, `~/.claude/commands`), custom agents (`~/.cavvy/agents`, `~/.claude/agents`, `~/.cavvy/agent-memory`), user memory and rules (`~/.cavvy/CAVVY.md`, `~/.claude/CLAUDE.md`, `~/.claude/rules`, `~/.codex/AGENTS.md`, `~/.codex/AGENTS.override.md`), themes (`~/.cavvy/themes`), and keybindings (`~/.cavvy/keybindings.json`).
+- **Settings, plugins and providers:** portable Cavvy settings, plain permission rules and portable MCP servers, remote plugin marketplaces and user-scoped plugins, non-local custom API providers, Vertex metadata, and which agent CLIs and Cavvy-managed named accounts you use.
+- **API keys and MCP secrets:** your Cavvy API keys, search keys and remote MCP server secrets (`env`/`headers`). On the server they're in a file under `~/.cavvy` that your user there can read, and sessions there run in Bypass, so an agent there can read them too.
+- **Agent CLIs:** one you use here that the server lacks is installed there with its own installer (Claude Code, Codex, OpenCode, Grok Build), in the background. Codex installs with npm, so it needs Node.js there. A failed install isn't tried again by itself: Settings → Providers shows **Install** for it, which runs the installer in a terminal you can watch. Signing it in is still yours: **Sign in** in the same place.
+
+Turning sync off takes the keys and secrets sync put there off the server (a key you changed on the server stays) and leaves the rest as it is. A server that can't be reached keeps them until it's next reached. Removing a server takes them off first when it's reachable. Sessions there that used one of those keys say `No API key for …` on their next request.
+
+Two of your computers can sync the same server. It keeps what both send: each computer's skills, settings and keys are there, and nothing on a computer changes, since sync only goes to the server. When both have the same thing (a skill, a setting, a key for one provider) in different versions, the server has the most recent change: a computer sends something again only once it changed there, so the other one doesn't put its own back. A computer that starts syncing adds what the server lacks and leaves what the other sent. Something goes from the server once neither computer has it. Removing the server from a computer lets go of what only that computer sent: the next sync from the other takes its settings and keys off (its files stay, as files always do).
+
+A server you haven't answered for (one added before sync could be turned on) gets your skills and commands, as servers always did, and nothing else.
+
+What a server has of its own (or a synced file or setting you changed there) is left as it is; machine-local settings (`permissions.defaultMode`, `sandbox`, `browser`, `simulator`, `editor`, `hooks`, `statusLine`, `env`) stay local to each machine. So does what couldn't work on a server: an MCP server that runs a program from this machine (`node server.js`) or sits at a local address, and a model server on this machine. A file named like a key, or with a key of a known format in it, never syncs.
+
+**CLI subscription sign-ins never sync:** Cavvy never reads, copies or sends Claude Code's, Codex's or other CLIs' own sign-in credentials. Sync mirrors your enabled CLIs and managed named account layout, and each server keeps its own independent login (`cavvy servers login <name> [cli] [--account <id>]`, or Settings → Providers on the server).
 
 Never copied: keys and sign-ins, hooks and the status line (they're commands, and would run there), and the permission mode. Permission rules and MCP servers can have a key written into them anywhere (an address's path, an option's value), so they go only when every word in them reads as a name: a rule of plain words with no options in it (`Bash(npm run lint:*)`), and an MCP server that's just a package to run (`npx -y @scope/server`) or a public address with a plain path. A long run of letters and digits, or groups of them, reads as a key and stays. A password that's an ordinary word can't be told from a command's own words, so look through your rules for one before you copy. The rest stay, and Cavvy says how many; add those on the server yourself (`cavvy --server box mcp add …`). A memory, skill or command file is left out when it's named like a key file or has a key of a known format in it.
 
@@ -103,7 +116,7 @@ A `LocalForward` in your SSH config for that host is opened along with Cavvy's o
 
 ### In the desktop app
 
-Under a new session's composer, the machine it will run on (**This Mac ▾**) lists your machines: this one and each server. **Add server…** asks for a name, an address (`user@host`) and, if ssh wouldn't find it by itself, a key file; it then does what `cavvy servers add` does: shows the server's key when this machine hasn't seen it, puts Cavvy there, offers the one-time copy, and says what the server lacks.
+Under a new session's composer, the machine it will run on (**This Mac ▾**) lists your machines: this one and each server. **Add server…** asks for a name, an address (`user@host`) and, if ssh wouldn't find it by itself, a key file; it then does what `cavvy servers add` does: shows the server's key when this machine hasn't seen it, puts Cavvy there, asks whether to keep it in sync with this machine, and says what the server lacks.
 
 The sidebar is one list of every machine's sessions. One on a server says which under its title (`box · my-app`); one on this machine doesn't. A click opens any of them. What a row offers (rename, regenerate title, pin, settle, snooze, never auto-settle, archive, delete, and Undo) works whichever machine the session is on. Grouped by project, a folder on a server is its own project, named with the server. Archiving a session that works in a worktree from another machine's window keeps the worktree and says so; a window on its own machine asks whether to remove it.
 
@@ -175,7 +188,8 @@ Either way the daemon's file is written by root on the Mac, from a script Cavvy 
 ```bash
 cavvy servers                 # the servers you've added
 cavvy servers check [name]    # is Cavvy running there, and what's missing
-cavvy servers login <name>    # sign Claude Code or Codex in there, and turn it on
+cavvy servers sync [name]     # sync now (--on / --off: keep it in sync, or stop)
+cavvy servers login <name>    # sign Claude Code or Codex in there (--account <id>)
 cavvy servers update <name>   # bring its Cavvy up to this machine's
 cavvy servers rollback <name> # put it back on the version before its last update
 cavvy servers stop <name>     # stop Cavvy there

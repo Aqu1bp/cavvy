@@ -872,3 +872,22 @@ test("a task reported late keeps the account of the turn that bound its host, or
         rmSync(cwd, { recursive: true, force: true });
     }
 });
+
+test("a CLI without accounts signs in from this computer: its one, in a terminal", async () => {
+    const fake = join(root, "fake-grok-login");
+    writeFileSync(fake, ["#!/bin/sh", "printf 'grok-login-ran %s\\n' \"$*\"", ""].join("\n"), { mode: 0o700 });
+    saveAgentConfig("grok", { path: fake });
+    const engine = new Engine({ startCwd: root, listModels: async () => [] });
+    const events: any[] = [];
+    const tab = { window: "grok-login-window", subs: new Set<string>(), send(e: any) { events.push(e); } };
+    engine.clients.add(tab);
+    const output = () => events.filter((e) => e.type === "terminal.data" && e.id === "grok-login").map((e) => e.data).join("");
+    try {
+        await engine.handle(tab, "terminal.open", { id: "grok-login", cwd: root, cols: 80, rows: 24, login: { provider: "grok", accountId: "default" } });
+        await until(() => output().includes("grok-login-ran"), "the sign-in");
+        // It has no named accounts to sign in.
+        await expect(engine.handle(tab, "terminal.open", { id: "grok-named", cwd: root, cols: 80, rows: 24, login: { provider: "grok", accountId: "work" } })).rejects.toMatchObject({ code: "invalid" });
+    } finally {
+        await engine.close?.();
+    }
+});

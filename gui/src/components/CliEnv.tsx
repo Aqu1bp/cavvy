@@ -2,7 +2,8 @@ import "../styles/cli-env.css";
 import { createMemo, createSignal, createUniqueId, Index, Show } from "solid-js";
 import { ChevronRight, Lock, LockOpen, Plus, X } from "lucide-solid";
 import type { AgentEnvVar, AgentInstanceInfo, ProviderInfo } from "@shared/protocol";
-import { refreshModels, refreshProviders, rpc, toast } from "../state/app";
+import { toast } from "../state/app";
+import { useProvidersAt } from "../state/providers-at";
 import { Dialog } from "./ui/Dialog";
 import { Spinner } from "./ui/bits";
 import { envNameProblem, looksSecret } from "@shared/env-names";
@@ -158,6 +159,8 @@ function Actions(p: { busy: boolean; blocked: boolean; label: string; onCancel: 
 
 /** The environment variables a CLI provider is started with, in a dialog. */
 export function EnvDialog(p: { provider: ProviderInfo; onClose: () => void }) {
+    // The machine Settings → Providers shows: this one, or a server.
+    const at = useProvidersAt();
     const [rows, setRows] = createSignal(envRows(p.provider.agentCli?.env));
     const [busy, setBusy] = createSignal(false);
     const [error, setError] = createSignal<string>();
@@ -167,10 +170,10 @@ export function EnvDialog(p: { provider: ProviderInfo; onClose: () => void }) {
         setBusy(true);
         setError(undefined);
         try {
-            await rpc.call("providers.setEnv", { provider: p.provider.id, vars: envVars(rows()) });
+            await at.link.call("providers.setEnv", { provider: p.provider.id, vars: envVars(rows()) });
             toast("Saved. Applies from the next message.", "success");
             p.onClose();
-            await Promise.all([refreshProviders(), refreshModels()]).catch(() => undefined);
+            await at.changed().catch(() => undefined);
         } catch (e) {
             setError(e instanceof Error ? e.message : String(e));
         } finally {
@@ -209,6 +212,7 @@ const lines = (text: string) => text.split("\n").map((l) => l.trim()).filter(Boo
 
 /** Add a named instance of a CLI, or change one: its name, path, arguments, variables and models. */
 export function InstanceDialog(p: { provider: ProviderInfo; instance?: AgentInstanceInfo; onClose: () => void }) {
+    const at = useProvidersAt();
     const cli = p.provider.name;
     const [name, setName] = createSignal(p.instance?.name ?? "");
     const [path, setPath] = createSignal(p.instance?.path ?? "");
@@ -224,11 +228,11 @@ export function InstanceDialog(p: { provider: ProviderInfo; instance?: AgentInst
         setError(undefined);
         const fields = { name: name().trim(), path: path().trim() || undefined, args: lines(args()), env: envVars(rows()), models: lines(models()) };
         try {
-            const r = p.instance ? await rpc.call("providers.updateInstance", { id: p.instance.id, ...fields }) : (await rpc.call("providers.addInstance", { base: p.provider.id, ...fields }), undefined);
+            const r = p.instance ? await at.link.call("providers.updateInstance", { id: p.instance.id, ...fields }) : (await at.link.call("providers.addInstance", { base: p.provider.id, ...fields }), undefined);
             toast(p.instance ? "Saved. Applies from the next message." : `Added ${shortName(fields.name)}`, "success");
             if (r) resetToast(r.reset);
             p.onClose();
-            await Promise.all([refreshProviders(), refreshModels()]).catch(() => undefined);
+            await at.changed().catch(() => undefined);
         } catch (e) {
             setError(e instanceof Error ? e.message : String(e));
         } finally {

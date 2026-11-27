@@ -129,7 +129,7 @@ export async function acpStatus(providerId: string, signal?: AbortSignal): Promi
             return { ...base, installed: true, path, signedIn: s.signedIn, description: `${def.name}, ${s.description}` };
         } catch (e) {
             if (signal?.aborted) throw new Error("aborted");
-            return { ...base, installed: true, path, signedIn: false, description: `${def.name} didn't answer: ${cliMessage((e as Error).message) || "no answer"}` };
+            return { ...base, installed: true, path, signedIn: false, probeFailed: true, description: `${def.name} didn't answer: ${cliMessage((e as Error).message) || "no answer"}` };
         }
     }
     const proc = new JsonLinesProcess(path, [...extraArgs(providerId), ...(def.acpArgs ?? [])], { cwd: homedir(), env: cliEnv(providerId) });
@@ -154,7 +154,7 @@ export async function acpStatus(providerId: string, signal?: AbortSignal): Promi
     } catch (e) {
         if (signal?.aborted) throw new Error("aborted");
         await Promise.race([proc.stderrEnded, Bun.sleep(500)]);
-        return { ...base, installed: true, path, signedIn: false, description: `${def.name} didn't start: ${cliMessage(proc.stderr()) || cliMessage((e as Error).message) || "no answer"}` };
+        return { ...base, installed: true, path, signedIn: false, probeFailed: true, description: `${def.name} didn't start: ${cliMessage(proc.stderr()) || cliMessage((e as Error).message) || "no answer"}` };
     } finally {
         clearTimeout(timer);
         signal?.removeEventListener("abort", kill);

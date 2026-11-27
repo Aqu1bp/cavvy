@@ -559,13 +559,16 @@ export function customProviders(): readonly ProviderDef[] {
     return providersNow().custom;
 }
 
+/** Derived environment variable name for a custom provider's API key. */
+export const customEnvKey = (id: string) => `${id.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_API_KEY`;
+
 function customProvidersOf(file: ProvidersFile): ProviderDef[] {
     return (file.custom ?? []).map((c) => ({
         id: c.id,
         name: c.name,
         kind: c.kind ?? "openai",
         baseUrl: c.baseUrl.replace(/\/+$/, ""),
-        envKeys: [`${c.id.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_API_KEY`],
+        envKeys: [customEnvKey(c.id)],
         requiresKey: c.requiresKey ?? true,
         headers: c.headers,
         maxTokensField: c.maxTokensField,

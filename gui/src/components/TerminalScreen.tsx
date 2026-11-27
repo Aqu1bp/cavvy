@@ -12,7 +12,7 @@ import { adoptBrowserState, browserState, loadBrowserState, showBrowser } from "
 import { RpcError, type ConnectionState, type Rpc } from "../lib/rpc";
 import { prefs } from "../state/prefs";
 import { terminalFontSize } from "../lib/text-size";
-import { setComposerAdd, setupObscured } from "../state/ui";
+import { setComposerAdd, setupObscured, terminalActions } from "../state/ui";
 import { EarlyInput, terminalInputChunks } from "../lib/terminal";
 import { isTerminalReply } from "@shared/terminal-reply";
 import { copyText, isMod, mod, openExternal } from "../lib/platform";
@@ -82,8 +82,10 @@ export default function TerminalScreen(p: { tab: Tab; visible: boolean; onClose:
     const exited = (code: number) => {
         opened = false;
         attach = true;
-        setEnded(`${p.tab.login ? "Login" : "Shell"} exited (${code})`);
-        if (p.tab.login) void link.call("accounts.list", { provider: p.tab.login.provider, refresh: true }).then(refreshProviders).catch(reportError);
+        setEnded(`${p.tab.login?.install ? "Install" : p.tab.login ? "Login" : "Shell"} exited (${code})`);
+        // A server's sign-in: the server is asked how it stands now. This machine's own: its account is.
+        if (p.tab.login?.server) terminalActions.serverSignedIn?.(p.tab.login.server);
+        else if (p.tab.login) void link.call("accounts.list", { provider: p.tab.login.provider, refresh: true }).then(refreshProviders).catch(reportError);
     };
     /** Disconnected from a shell that's still running: it comes back with the connection. */
     const [away, setAway] = createSignal(false);
@@ -395,7 +397,7 @@ export default function TerminalScreen(p: { tab: Tab; visible: boolean; onClose:
         </div></Show>
         <Show when={away() || ended()}><div class="terminal-message">
             <span>{away() ? "Disconnected. The process stays on the server and reconnects here." : ended()}</span>
-            <Show when={!away()}><button class="btn secondary sm" disabled={conn() !== "open" || restarting()} onClick={restart}><RotateCw size={12} /> {p.tab.login ? "Restart login" : "Restart shell"}</button></Show>
+            <Show when={!away()}><button class="btn secondary sm" disabled={conn() !== "open" || restarting()} onClick={restart}><RotateCw size={12} /> {p.tab.login?.install ? "Run again" : p.tab.login ? "Restart login" : "Restart shell"}</button></Show>
         </div></Show>
     </div>;
 }
