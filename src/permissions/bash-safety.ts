@@ -1170,7 +1170,7 @@ const SHELL_SYNTAX = /(^|[\s;&|])(if|then|else|elif|fi|for|while|until|do|done|c
  * a POSIX shell, silently with `2>/dev/null`). Before the search, it can't
  * run, quoted or not (`e""xit 1`, `command -p eval ...`).
  */
-const SHELL_WORDS = new Set([
+export const SHELL_WORDS = new Set([
     "if", "then", "else", "elif", "fi", "for", "while", "until", "do", "done", "case", "esac", "function", "select", "coproc", "repeat", "foreach", "end",
     "break", "continue", "eval", "exec", "exit", "export", "readonly", "return", "set", "shift", "times", "trap", "unset",
     "source", "alias", "unalias", "builtin", "emulate", "setopt", "unsetopt", "typeset", "declare", "local", "integer", "float", "hash", "rehash", "unhash",

@@ -26,8 +26,8 @@ import { basename, dirname, join, resolve } from "path";
 import type { HiddenReason, Tool } from "../tools/types";
 import type { PermissionMode } from "./modes";
 import { sandboxAllowedHosts, sandboxExcludedCommands, type Settings } from "../config/settings";
-import { findMatch, EDIT_TOOLS, READ_TOOLS, toolPath, type RuleTarget } from "./rules";
-import { accountTarget, ANALYSIS_LIMIT, analyzeCommand, commandsWithDirs, configTarget, dangerousReason, effectiveArgv, expandWord, type CommandAnalysis, CAVVY_FILES, cavvyHomeReads, isReadOnlyCommand, programNames, pushesDefaultBranch, sensitiveTarget, sensitiveWord, shellVars, type ShellEnv, suggestBashRules, TOUCHES_CREDENTIALS, withoutHeredocData } from "./bash-safety";
+import { findMatch, EDIT_TOOLS, READ_TOOLS, toolPath, workingBashRules, type RuleTarget } from "./rules";
+import { accountTarget, ANALYSIS_LIMIT, analyzeCommand, commandsWithDirs, configTarget, dangerousReason, effectiveArgv, expandWord, type CommandAnalysis, CAVVY_FILES, cavvyHomeReads, isReadOnlyCommand, programNames, pushesDefaultBranch, sensitiveTarget, sensitiveWord, shellVars, type ShellEnv, TOUCHES_CREDENTIALS, withoutHeredocData } from "./bash-safety";
 import { accessNeeded, looksDestructive, sandboxEnabled, sandboxKind, sandboxPolicy, type SandboxKind, type SandboxPolicy } from "./sandbox";
 import { stableStringify, type ApprovedAction } from "./classifier";
 import { isBrowserTool, isQuietBrowserCall, isReadOnly, isShellTool, isSimulatorTool } from "../tools/types";
@@ -567,7 +567,7 @@ export class PermissionChecker {
             case "execute": {
                 if (isShellTool(tool.name)) {
                     const cmd = t.command ?? "";
-                    const suggestions = suggestBashRules(cmd);
+                    const suggestions = workingBashRules(cmd);
                     const access = accessNeeded(judged, cwd);
                     const listed = allowedHostsOf(input);
                     const kind = mode === "auto" && input?.dangerouslyDisableSandbox !== true && !this.excluded(cmd) ? this.sandbox() : undefined;
