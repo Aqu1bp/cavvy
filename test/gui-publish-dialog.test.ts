@@ -4,7 +4,7 @@ import { componentCode, elements } from "./gui-component-harness";
 const node = (tag: string, props: object | null, ...children: unknown[]) => ({ tag, props: props ?? {}, children });
 const defaults = { fingerprint: "a".repeat(64), branch: "feature", remote: "origin", target: "feature", destination: "https://github.com/example/project.git", base: "main", protected: false, defaultUnknown: false, gh: true, title: "Prefilled", body: "Commits", hasUpstream: false };
 /** In a browser: the tab window.open gives, for the next dialog made. */
-const browserTab: { next?: { closed: boolean; opener: unknown; location: { href: string }; close(): void } } = {};
+const browserTab: { next?: { closed: boolean; opener: unknown; location: { href: string }; close(): void }; opens?: number } = {};
 
 function dialog(info = defaults, read?: () => Promise<unknown>, prText?: () => Promise<unknown>, publish?: () => Promise<unknown>) {
     const effects: (() => unknown)[] = [], calls: { method: string; params: any }[] = [], toasts: any[][] = [], opened: string[] = [];
@@ -17,7 +17,7 @@ function dialog(info = defaults, read?: () => Promise<unknown>, prText?: () => P
         rpc: { call: async (method: string, params: unknown) => { calls.push({ method, params }); return method === "session.gitPublishInfo" ? read ? read() : info : method === "session.gitPrText" ? prText!() : method === "session.gitPublish" && publish ? publish() : { pr: { number: 7, url: "https://github.com/example/project/pull/7" } }; } },
         toast(...args: any[]) { toasts.push(args); }, handleFor: () => ({}), commitUnavailable: () => blocked, refreshGitChanges() {}, openExternal(url: string) { opened.push(url); }, takeFocus() {},
         // The desktop app's window.open opens nothing (it returns null); a browser's gives the tab.
-        window: { open: () => browserTab.next ?? null },
+        window: { open: () => (browserTab.opens = (browserTab.opens ?? 0) + 1, browserTab.next ?? null) },
         Dialog: "Dialog", Spinner: "Spinner", Show: "Show", React: { Fragment: "Fragment" }, node,
     });
     // The dialog and its footer, where the buttons are.
@@ -94,7 +94,11 @@ test("in a browser the tab is opened during the click, then sent to the new PR, 
     browserTab.next = tab;
     try {
         const d = dialog(); await d.effects[0]!();
-        d.button("Open pull request").props.onClick(); await tick();
+        browserTab.opens = 0;
+        d.button("Open pull request").props.onClick();
+        // In the click itself, before the server answers.
+        expect(browserTab.opens).toBe(1);
+        await tick();
         expect([tab.location.href, tab.opener, d.opened]).toEqual(["https://github.com/example/project/pull/7", null, []]);
         const failing = { ...tab, closed: false, location: { href: "" }, close() { this.closed = true; } };
         browserTab.next = failing;

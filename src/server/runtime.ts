@@ -5509,8 +5509,9 @@ export class Runtime {
     gitPrState() {
         if (!this.ws.trusted || this.closed) return Promise.resolve({});
         // The branch checked out now, from the HEAD file (a terminal's checkout may not have reached the header yet).
-        const branch = headBranch(this.ws.cwd) ?? this.view.state.branch;
-        if (!this.prRead || Date.now() - this.prRead.at >= 60_000 || this.prRead.branch !== branch) {
+        // When that can't say (a reftable repository, say), nothing read before is trusted.
+        const branch = headBranch(this.ws.cwd);
+        if (branch === undefined || !this.prRead || Date.now() - this.prRead.at >= 60_000 || this.prRead.branch !== branch) {
             this.prRead = {
                 at: Date.now(),
                 branch,
@@ -5529,11 +5530,13 @@ export class Runtime {
         this.checkGitCommit("publishing");
         this.committing = true;
         this.commitAbort = new AbortController();
+        const branch = headBranch(this.ws.cwd);
         const done = gitPublish(this.ws.cwd, request, this.commitAbort.signal);
         this.commitDone = done;
         try {
             const result = await done;
-            this.prRead = { at: Date.now(), branch: headBranch(this.ws.cwd) ?? this.view.state.branch, promise: Promise.resolve(result) };
+            // For the branch it was published from, even if another was checked out meanwhile.
+            this.prRead = { at: Date.now(), branch, promise: Promise.resolve(result) };
             return result;
         } finally {
             this.committing = false;
