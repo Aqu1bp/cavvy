@@ -617,11 +617,11 @@ export function updateSettings(scope: SettingsScope, cwd: string, fn: (s: Settin
     if (scope === "local") ensureLocalGitignore(cwd);
 }
 
-/** Keep settings.local.json out of git without touching the user's root .gitignore. */
+/** Keep settings.local.json out of git without touching the user's root .gitignore, and this file too: it's Cavvy's, not a change to commit. */
 function ensureLocalGitignore(cwd: string) {
     const gi = join(dirname(paths.localSettings(cwd)), ".gitignore");
     try {
-        if (!existsSync(gi)) writeFileSync(gi, "settings.local.json\n");
+        if (!existsSync(gi)) writeFileSync(gi, ".gitignore\nsettings.local.json\n");
     } catch {
         // best effort
     }
