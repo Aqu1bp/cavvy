@@ -12,7 +12,11 @@ const work = mkdtempSync(join(tmpdir(), "cavvy-release-desktop-"));
 afterAll(() => rmSync(work, { recursive: true, force: true }));
 const root = join(import.meta.dir, "..");
 const { makeCertificate, VALID_DAYS } = await import("../scripts/release-codesign-cert.ts");
-const { release } = (await import("../scripts/codesign-release.mjs")) as { release: (out: string, inputs: string[], o: { p12?: string; password?: string; commit?: string; env?: Record<string, string> }) => Promise<Record<string, any>[]> };
+const { release, searchList, withoutKeychain } = (await import("../scripts/codesign-release.mjs")) as {
+    release: (out: string, inputs: string[], o: { p12?: string; password?: string; commit?: string; env?: Record<string, string> }) => Promise<Record<string, any>[]>;
+    searchList: (printed: string) => string[];
+    withoutKeychain: (list: string[], keychain: string) => string[];
+};
 
 const openssl = (args: string[]) => {
     const r = Bun.spawnSync(["openssl", ...args], { stdout: "pipe", stderr: "pipe" });
@@ -93,10 +97,32 @@ describe("signing a release's apps (scripts/codesign-release.mjs)", () => {
     const sha256 = (file: string) => createHash("sha256").update(readFileSync(file)).digest("hex");
     const requirement = (path: string) => /^designated => (.+)$/m.exec(Bun.spawnSync(["codesign", "-d", "-r-", path], { stdout: "pipe", stderr: "pipe" }).stdout.toString())?.[1];
 
+    test("the keychain is taken off the search list and nothing else is, however its path is spelt", () => {
+        const printed = '    "/Users/me/Library/Keychains/login.keychain-db"\n    "/private/var/folders/x/T/cavvy-codesign-1/codesign.keychain-db"\n    "/Library/Keychains/System.keychain"\n';
+        const list = searchList(printed);
+        expect(list).toEqual(["/Users/me/Library/Keychains/login.keychain-db", "/private/var/folders/x/T/cavvy-codesign-1/codesign.keychain-db", "/Library/Keychains/System.keychain"]);
+        expect(withoutKeychain(list, "/private/var/folders/x/T/cavvy-codesign-1/codesign.keychain-db")).toEqual(["/Users/me/Library/Keychains/login.keychain-db", "/Library/Keychains/System.keychain"]);
+        expect(withoutKeychain(list, "/private/var/folders/x/T/other/codesign.keychain-db")).toEqual(list);
+        expect(searchList("")).toEqual([]);
+        // On a Mac /var is /private/var: a keychain made in tmpdir() is listed under the other spelling.
+        if (mac) {
+            const dir = mkdtempSync(join("/var/tmp", "kc-"));
+            try {
+                const k = join(dir, "k.keychain-db");
+                writeFileSync(k, "");
+                expect(withoutKeychain([join("/private", k), "/a"], k)).toEqual(["/a"]);
+            } finally {
+                rmSync(dir, { recursive: true, force: true });
+            }
+        }
+    });
+
     test.skipIf(!mac)(
         "signs the app inside out with the certificate, and describes a zip and a disk image that hold it",
         async () => {
             const out = join(work, "signed");
+            const listed = () => Bun.spawnSync(["security", "list-keychains", "-d", "user"], { stdout: "pipe" }).stdout.toString();
+            const before = listed();
             const [m] = await release(out, [fakeApp().tar], { p12, password, commit: COMMIT, env: { GITHUB_REPOSITORY: "Aqu1bp/cavvy" } });
             const sha1 = cert.sha1.toLowerCase();
             const want = `identifier "dev.cavvy.desktop" and certificate leaf = H"${sha1}"`;
@@ -120,8 +146,8 @@ describe("signing a release's apps (scripts/codesign-release.mjs)", () => {
             expect(requirement(join(app, "Contents", "MacOS", "cavvy"))).toBe(`identifier "dev.cavvy.desktop.server" and certificate leaf = H"${sha1}"`);
             expect(requirement(join(app, "Contents", "Frameworks", "Cavvy Helper.app"))).toBe(`identifier "dev.cavvy.desktop.helper" and certificate leaf = H"${sha1}"`);
             expect(requirement(join(app, "Contents", "Resources", "app.asar.unpacked", "native.node"))).toContain(`certificate leaf = H"${sha1}"`);
-            // The keychain made for it is gone.
-            expect(Bun.spawnSync(["security", "list-keychains"], { stdout: "pipe" }).stdout.toString()).not.toContain("cavvy-codesign-");
+            // The keychain made for it is gone, and the search list is as it was.
+            expect(listed()).toBe(before);
         },
         180_000,
     );
