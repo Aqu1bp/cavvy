@@ -7,6 +7,7 @@
 import { createHash, generateKeyPairSync, randomBytes, sign } from "crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
+import { throwawaySigner } from "./throwaway-codesign";
 
 const CHANGES = [
     "Sidebar plan usage: a ring gauge per plan in place of tinted pills",
@@ -80,12 +81,12 @@ ${fail
 
 // gui:demo --update release: a downloaded app (a release build) a release behind. A stand-in Cavvy.app 1.2.0 the
 // server takes itself for, and on 127.0.0.1 a stand-in for Cavvy's releases with 1.3.0: signed with a key made here,
-// the zip of an app signed like the running one, so every check runs for real (macOS: codesign, ditto). The zip
+// the zip of an app signed like the running one (a throwaway certificate, scripts/throwaway-codesign.ts), so every check runs for real (macOS: codesign, ditto). The zip
 // comes slowly, so the download's progress shows. --update release-tampered serves a zip that isn't the one signed.
 // Nothing outside the demo's folder is touched; with no desktop app to quit, a finished update waits as ready.
 
-/** A tiny bundle, signed ad hoc with a requirement of its own (and its server under another), as a release is with its certificate. */
-function demoApp(at: string, version: string) {
+/** A tiny bundle, signed (and its server under an identifier of its own) as a release is, with a throwaway certificate. */
+function demoApp(at: string, version: string, sign: string[]) {
     const c = join(at, "Contents");
     mkdirSync(join(c, "MacOS"), { recursive: true });
     mkdirSync(join(c, "Resources"), { recursive: true });
@@ -98,8 +99,8 @@ function demoApp(at: string, version: string) {
         const r = Bun.spawnSync(["/usr/bin/codesign", ...a], { stderr: "pipe" });
         if (r.exitCode !== 0) throw new Error(`codesign: ${r.stderr.toString()}`);
     };
-    cs("-s", "-", "-i", "dev.cavvy.demo.server", '-r=designated => identifier "dev.cavvy.demo.server"', join(c, "MacOS", "cavvy"));
-    cs("-s", "-", '-r=designated => identifier "dev.cavvy.demo"', at);
+    cs(...sign, "-i", "dev.cavvy.demo.server", join(c, "MacOS", "cavvy"));
+    cs(...sign, at);
 }
 
 function demoArch() {
@@ -109,10 +110,12 @@ function demoArch() {
 export function createDemoRelease(root: string, tampered: boolean) {
     if (process.platform !== "darwin") throw new Error("gui:demo --update release needs macOS: it signs and checks apps with codesign.");
     const arch = demoArch();
+    const signer = throwawaySigner(join(root, "signer"));
     const bundle = join(root, "Applications", "Cavvy.app");
-    demoApp(bundle, "1.2.0");
+    demoApp(bundle, "1.2.0", signer.args);
     const build = join(root, "release-build");
-    demoApp(join(build, "Cavvy.app"), "1.3.0");
+    demoApp(join(build, "Cavvy.app"), "1.3.0", signer.args);
+    signer.remove();
     const zipFile = join(build, `Cavvy-1.3.0-${arch}.zip`);
     const z = Bun.spawnSync(["/usr/bin/ditto", "-c", "-k", "--keepParent", join(build, "Cavvy.app"), zipFile], { stderr: "pipe" });
     if (z.exitCode !== 0) throw new Error(`ditto: ${z.stderr.toString()}`);

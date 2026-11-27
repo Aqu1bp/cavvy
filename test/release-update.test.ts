@@ -1,10 +1,10 @@
 // A downloaded Cavvy updating itself to the latest release (src/server/release-update.ts, and app-update.ts's
 // release mode): the release's description and signature, the zip's shape, the app's signature and release.json,
 // and the restart helper putting it in place or the old app back. Fixtures are made here: a throwaway Ed25519 key,
-// a local stand-in for the releases on 127.0.0.1, and (on macOS) tiny bundles signed ad hoc with a requirement of
-// their own, which `codesign --verify -R` checks for real.
+// a local stand-in for the releases on 127.0.0.1, and (on macOS) tiny bundles signed with a throwaway self-signed
+// certificate in a keychain of its own (scripts/throwaway-codesign.ts), which `codesign --verify -R` checks for real.
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { generateKeyPairSync, sign, createHash, type KeyObject } from "crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
@@ -32,6 +32,7 @@ import {
 import { AppUpdates, capture } from "../src/server/app-update";
 import { installRecordPath } from "../src/config/desktop-install";
 import type { AppUpdateInfo } from "../src/server/protocol";
+import { throwawaySigner, type ThrowawaySigner } from "../scripts/throwaway-codesign";
 
 const mac = process.platform === "darwin";
 const ARCH: Arch = "arm64";
@@ -83,6 +84,10 @@ interface ZipEntry {
     name: string;
     data?: string;
     mode: number;
+    /** Extra field in both headers. */
+    extra?: Buffer;
+    /** Another name in the local header than the central one. */
+    localName?: string;
 }
 const DIR = 0o040755;
 const FILE = 0o100644;
@@ -94,6 +99,8 @@ function makeZip(entries: ZipEntry[]): Buffer {
     let offset = 0;
     for (const e of entries) {
         const name = Buffer.from(e.name, "utf8");
+        const lname = Buffer.from(e.localName ?? e.name, "utf8");
+        const extra = e.extra ?? Buffer.alloc(0);
         const data = Buffer.from(e.data ?? "", "utf8");
         const crc = crc32(data);
         const local = Buffer.alloc(30);
@@ -102,8 +109,9 @@ function makeZip(entries: ZipEntry[]): Buffer {
         local.writeUInt32LE(crc, 14);
         local.writeUInt32LE(data.length, 18);
         local.writeUInt32LE(data.length, 22);
-        local.writeUInt16LE(name.length, 26);
-        locals.push(local, name, data);
+        local.writeUInt16LE(lname.length, 26);
+        local.writeUInt16LE(extra.length, 28);
+        locals.push(local, lname, extra, data);
         const c = Buffer.alloc(46);
         c.writeUInt32LE(0x02014b50, 0);
         c.writeUInt16LE((3 << 8) | 20, 4);
@@ -112,10 +120,11 @@ function makeZip(entries: ZipEntry[]): Buffer {
         c.writeUInt32LE(data.length, 20);
         c.writeUInt32LE(data.length, 24);
         c.writeUInt16LE(name.length, 28);
+        c.writeUInt16LE(extra.length, 30);
         c.writeUInt32LE((e.mode << 16) >>> 0, 38);
         c.writeUInt32LE(offset, 42);
-        centrals.push(c, name);
-        offset += 30 + name.length + data.length;
+        centrals.push(c, name, extra);
+        offset += 30 + lname.length + extra.length + data.length;
     }
     const cd = Buffer.concat(centrals);
     const end = Buffer.alloc(22);
@@ -319,6 +328,20 @@ describe("the zip's shape", () => {
         expect(refusedBy(() => scan([...appEntries, { name: "Cavvy.app/Contents/fifo", mode: 0o010644 }]))).toContain("special");
         expect(refusedBy(() => scan([...appEntries, { name: "Cavvy.app/contents/", mode: DIR }]))).toContain("twice");
     });
+    test("an entry named two ways (another name in its local header, or a Unicode path field): refused", () => {
+        expect(refusedBy(() => scan([...appEntries, { name: "Cavvy.app/Contents/x", localName: "Cavvy.app/../../x", data: "x", mode: FILE }]))).toContain("two ways");
+        const up = Buffer.alloc(9);
+        up.writeUInt16LE(0x7075, 0);
+        up.writeUInt16LE(5, 2);
+        expect(refusedBy(() => scan([...appEntries, { name: "Cavvy.app/Contents/x", extra: up, data: "x", mode: FILE }]))).toContain("two ways");
+        const other = Buffer.alloc(8);
+        other.writeUInt16LE(0x5455, 0);
+        other.writeUInt16LE(4, 2);
+        expect(scan([...appEntries, { name: "Cavvy.app/Contents/x", extra: other, data: "x", mode: FILE }])).toBe("Cavvy.app");
+    });
+    test("something written through a symlink spelled in another case: refused", () => {
+        expect(refusedBy(() => scan([...appEntries, { name: "Cavvy.app/Contents/Frameworks/E.framework/Versions/CURRENT/evil", data: "x", mode: FILE }]))).toContain("through the symlink");
+    });
     test("not a zip, or one cut short: refused", () => {
         const f = join(dir, "junk.zip");
         writeFileSync(f, "not a zip at all");
@@ -343,6 +366,20 @@ describe("the zip's shape", () => {
 
 const ID = "dev.cavvy.test";
 const run: Run = (cmd, t = 60_000) => capture(cmd, "/", t);
+let signer: ThrowawaySigner | undefined;
+let REQ = "";
+let SREQ = "";
+beforeAll(async () => {
+    if (!mac) return;
+    signer = throwawaySigner(mkdtempSync(join(tmpdir(), "cavvy-release-signer-")));
+    const probe = mkdtempSync(join(tmpdir(), "cavvy-release-probe-"));
+    makeApp(join(probe, "P.app"), { version: "1.0.0" });
+    const req = (await runningRequirements(join(probe, "P.app"), run))!;
+    REQ = req.bundle;
+    SREQ = req.server;
+    rmSync(probe, { recursive: true, force: true });
+});
+afterAll(() => signer?.remove());
 
 function makeApp(at: string, o: { version: string; commit?: string; arch?: Arch; id?: string; serverId?: string; desktop?: string; adhoc?: boolean }) {
     const c = join(at, "Contents");
@@ -359,10 +396,13 @@ function makeApp(at: string, o: { version: string; commit?: string; arch?: Arch;
         const r = Bun.spawnSync(["/usr/bin/codesign", ...a], { stderr: "pipe" });
         if (r.exitCode !== 0) throw new Error(r.stderr.toString());
     };
-    if (o.adhoc) return cs("-s", "-", "--deep", at);
+    if (o.adhoc) {
+        cs("-s", "-", "-i", `${o.id ?? ID}.server`, `-r=designated => identifier "${o.id ?? ID}.server"`, join(c, "MacOS", "cavvy"));
+        return cs("-s", "-", `-r=designated => identifier "${o.id ?? ID}"`, at);
+    }
     const sid = o.serverId ?? `${o.id ?? ID}.server`;
-    cs("-s", "-", "-i", sid, `-r=designated => identifier "${sid}"`, join(c, "MacOS", "cavvy"));
-    cs("-s", "-", `-r=designated => identifier "${o.id ?? ID}"`, at);
+    cs(...signer!.args, "-i", sid, join(c, "MacOS", "cavvy"));
+    cs(...signer!.args, at);
 }
 
 function dittoZip(app: string, zip: string) {
@@ -374,9 +414,10 @@ function dittoZip(app: string, zip: string) {
 describe.if(mac)("the app's signature (macOS)", () => {
     const m = (version: string): DesktopManifest => ({ kind: "cavvy-desktop", version, commit: COMMIT, platform: "darwin", arch: ARCH, minimumSystemVersion: "13.0", zip: { name: `Cavvy-${version}-${ARCH}.zip`, size: 1, sha256: "0".repeat(64) } });
 
-    test("the running app's requirements are read from its own signature; ad hoc has none, so it doesn't update", async () => {
+    test("the running app's requirements are read from its own signature; ad hoc, even with a requirement of its own, has none, so it doesn't update", async () => {
         makeApp(join(dir, "Running.app"), { version: "1.2.0" });
-        expect(await runningRequirements(join(dir, "Running.app"), run)).toEqual({ bundle: `identifier "${ID}"`, server: `identifier "${ID}.server"` });
+        expect(await runningRequirements(join(dir, "Running.app"), run)).toEqual({ bundle: REQ, server: SREQ });
+        expect(REQ).toMatch(new RegExp(`^identifier "${ID}" and certificate leaf = H"[0-9a-f]{40}"$`));
         makeApp(join(dir, "AdHoc.app"), { version: "1.2.0", adhoc: true });
         expect(await designatedRequirement(join(dir, "AdHoc.app"), run)).toBeUndefined();
         expect(await runningRequirements(join(dir, "AdHoc.app"), run)).toBeUndefined();
@@ -390,20 +431,20 @@ describe.if(mac)("the app's signature (macOS)", () => {
         expect(scanZip(join(dir, "new.zip"))).toBe("Cavvy.app");
     });
     test("signed by someone else (another requirement), for the bundle or its server: refused", async () => {
-        const req = { bundle: `identifier "${ID}"`, server: `identifier "${ID}.server"` };
+        const req = { bundle: REQ, server: SREQ };
         makeApp(join(dir, "a", "Cavvy.app"), { version: "1.3.0", id: "dev.evil.app" });
         await expect(verifyApp(join(dir, "a", "Cavvy.app"), req, m("1.3.0"), run)).rejects.toMatchObject({ reason: "unsigned" });
         makeApp(join(dir, "b", "Cavvy.app"), { version: "1.3.0", serverId: "dev.evil.server" });
         await expect(verifyApp(join(dir, "b", "Cavvy.app"), req, m("1.3.0"), run)).rejects.toThrow(/server/);
     });
     test("changed after signing: refused", async () => {
-        const req = { bundle: `identifier "${ID}"`, server: `identifier "${ID}.server"` };
+        const req = { bundle: REQ, server: SREQ };
         makeApp(join(dir, "Cavvy.app"), { version: "1.3.0" });
         writeFileSync(join(dir, "Cavvy.app", "Contents", "Resources", "data", "added"), "x");
         await expect(verifyApp(join(dir, "Cavvy.app"), req, m("1.3.0"), run)).rejects.toMatchObject({ reason: "unsigned" });
     });
     test("release.json not the description's (another version, commit or arch): refused", async () => {
-        const req = { bundle: `identifier "${ID}"`, server: `identifier "${ID}.server"` };
+        const req = { bundle: REQ, server: SREQ };
         makeApp(join(dir, "Cavvy.app"), { version: "1.3.0", commit: COMMIT2 });
         await expect(verifyApp(join(dir, "Cavvy.app"), req, m("1.3.0"), run)).rejects.toThrow(/release\.json/);
         rmSync(join(dir, "Cavvy.app"), { recursive: true });
@@ -411,7 +452,7 @@ describe.if(mac)("the app's signature (macOS)", () => {
         await expect(verifyApp(join(dir, "Cavvy.app"), req, m("1.3.0"), run)).rejects.toThrow(/release\.json/);
     });
     test("quarantined: refused (it would ask again on its first open)", async () => {
-        const req = { bundle: `identifier "${ID}"`, server: `identifier "${ID}.server"` };
+        const req = { bundle: REQ, server: SREQ };
         makeApp(join(dir, "Cavvy.app"), { version: "1.3.0" });
         Bun.spawnSync(["/usr/bin/xattr", "-w", "com.apple.quarantine", "0081;00000000;Test;", join(dir, "Cavvy.app")]);
         await expect(verifyApp(join(dir, "Cavvy.app"), req, m("1.3.0"), run)).rejects.toThrow(/quarantined/);
@@ -543,11 +584,8 @@ describe.if(mac)("a downloaded app updating (macOS)", () => {
 // The restart helper, run for real against bundles in a temp folder (macOS)
 
 describe.if(mac)("the restart helper (macOS)", () => {
-    const REQ = `identifier "${ID}"`;
-    const SREQ = `identifier "${ID}.server"`;
-
     /** An "app" that's a sleep: the helper waits for it to end. A new app's launcher records that it opened, and (if `starts`) clears the pending record as its server would. */
-    function scene(o: { starts: boolean; newId?: string }) {
+    function scene(o: { starts: boolean; newId?: string; commit?: string }) {
         const apps = join(dir, "Apps");
         const dest = join(apps, "Cavvy.app");
         makeApp(dest, { version: "1.2.0", desktop: `#!/bin/sh\necho old >> "${join(dir, "opened")}"\n` });
@@ -556,7 +594,7 @@ describe.if(mac)("the restart helper (macOS)", () => {
         makeApp(join(part, "Cavvy.app"), { version: "1.3.0", id: o.newId, desktop: `#!/bin/sh\necho new >> "${join(dir, "opened")}"\n${clear}` });
         writeFileSync(join(dir, "pending.json"), "{}");
         const app = Bun.spawn(["/bin/sleep", "0.5"]);
-        const helper = Bun.spawn(["/bin/sh", "-c", RESTART_HELPER, "sh", String(app.pid), join(part, "Cavvy.app"), dest, join(apps, ".Cavvy.app.old"), REQ, SREQ, join(dir, "pending.json"), join(dir, "note.json"), "exec", "1.3.0", "2"], { stdout: "ignore", stderr: "pipe" });
+        const helper = Bun.spawn(["/bin/sh", "-c", RESTART_HELPER, "sh", String(app.pid), join(part, "Cavvy.app"), dest, join(apps, ".Cavvy.app.old"), REQ, SREQ, join(dir, "pending.json"), join(dir, "note.json"), "exec", "1.3.0", "2", o.commit ?? COMMIT], { stdout: "ignore", stderr: "pipe" });
         return { dest, apps, part, helper };
     }
     const version = (app: string) => JSON.parse(readFileSync(join(app, "Contents", "Resources", "release.json"), "utf8")).version;
@@ -588,6 +626,12 @@ describe.if(mac)("the restart helper (macOS)", () => {
         expect(existsSync(part)).toBe(false);
         expect(JSON.parse(readFileSync(join(dir, "note.json"), "utf8")).reason).toBe("unsigned");
     }, 20_000);
+    test("the unpacked app's release.json isn't the one checked (another commit): nothing replaced", async () => {
+        const { dest, helper } = scene({ starts: true, commit: COMMIT2 });
+        await helper.exited;
+        expect(version(dest)).toBe("1.2.0");
+        expect(JSON.parse(readFileSync(join(dir, "note.json"), "utf8")).reason).toBe("unsigned");
+    }, 20_000);
     test("the app can't be renamed (App Management, a locked folder): nothing replaced, with a note", async () => {
         const { dest, apps, helper } = scene({ starts: true });
         chmodSync(apps, 0o555);
@@ -617,5 +661,13 @@ describe.if(mac)("the restart helper (macOS)", () => {
         for (let i = 0; i < 100 && !v.get().failed; i++) await Bun.sleep(20);
         expect(v.get().failed).toBe("Cavvy 1.4.0 didn't open, so 1.3.0 was put back.");
         v.stop();
+        // The helper took the record first (its time ran out): it's putting the old one back, which stays.
+        mkdirSync(join(apps, ".Cavvy.app.old"));
+        writeFileSync(join(dir, "home", "app-update-pending.json.rollback"), "{}");
+        const w = new AppUpdates({ emit: () => undefined, bundle, platform: "darwin", releases: { base: "http://127.0.0.1:9", keys: [] }, firstCheckMs: 3_600_000 });
+        w.start();
+        await Bun.sleep(500);
+        expect(existsSync(join(apps, ".Cavvy.app.old"))).toBe(true);
+        w.stop();
     });
 });

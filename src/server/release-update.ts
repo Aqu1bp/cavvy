@@ -14,7 +14,8 @@
 // docs/app-updates.md says more.
 
 import { createHash } from "crypto";
-import { accessSync, constants, createWriteStream, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, closeSync, realpathSync, statSync } from "fs";
+import { open } from "fs/promises";
+import { accessSync, constants, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, closeSync, realpathSync, statSync } from "fs";
 import { basename, dirname, join, posix } from "path";
 import { inflateRawSync } from "zlib";
 import { pieces, RELEASE_KEYS, RELEASES_URL, signedBy, small } from "../servers/published";
@@ -239,18 +240,19 @@ export async function downloadZip(src: ReleaseSource, m: DesktopManifest, file: 
     try {
         const r = await fetch(url, { redirect: "follow", signal });
         if (!r.ok || !r.body) throw new Refused("download", `${url}: HTTP ${r.status}`);
-        const out = createWriteStream(file, { mode: 0o600 });
+        // Written straight, so a full disk is this update's failure, not the server's.
+        const out = await open(file, "w", 0o600);
         try {
             for await (const chunk of pieces(r, signal)) {
                 got += chunk.length;
                 // More than it said: not that file. Stopped here, not once a disk is full.
                 if (got > m.zip.size) throw new Refused("unsigned", `${m.zip.name} is bigger than the ${m.zip.size} bytes its description says`);
                 hash.update(chunk);
-                if (!out.write(chunk)) await new Promise<void>((resolve) => out.once("drain", resolve));
+                await out.write(chunk);
                 onProgress(got / m.zip.size);
             }
         } finally {
-            await new Promise<void>((resolve) => out.end(resolve));
+            await out.close();
         }
     } catch (e) {
         if (e instanceof Refused) throw e;
@@ -278,6 +280,20 @@ function linkInside(entry: string, target: string, top: string): boolean {
     if (!target || target.startsWith("/") || target.includes("\0") || target.split("/").includes("..")) return false;
     const to = posix.normalize(posix.join(posix.dirname(entry), target));
     return to === top || to.startsWith(`${top}/`);
+}
+
+/** A path as the disk compares it: case and Unicode normalization aside. */
+const fold = (path: string) => path.normalize("NFD").toLowerCase();
+
+/** Whether a zip extra field gives the entry another name (Info-ZIP's Unicode path, 0x7075), which some extractors use. */
+function hasPathField(extra: Buffer): boolean {
+    for (let i = 0; i + 4 <= extra.length; ) {
+        const id = extra.readUInt16LE(i);
+        const len = extra.readUInt16LE(i + 2);
+        if (id === 0x7075) return true;
+        i += 4 + len;
+    }
+    return false;
 }
 
 /**
@@ -332,7 +348,15 @@ export function scanZip(file: string): string {
             const local = cd.readUInt32LE(p + 42);
             if (p + 46 + nameLen > cd.length) bad("has a broken central directory");
             const raw = cd.subarray(p + 46, p + 46 + nameLen);
+            if (p + 46 + nameLen + extraLen > cd.length) bad("has a broken central directory");
+            const extra = cd.subarray(p + 46 + nameLen, p + 46 + nameLen + extraLen);
             p += 46 + nameLen + extraLen + commentLen;
+            // The name an extractor uses has to be the one checked here: none from an extra field, the same in both headers.
+            const head = read(local, 30);
+            if (head.readUInt32LE(0) !== 0x04034b50) bad("has a broken entry");
+            const localName = read(local + 30, head.readUInt16LE(26));
+            const localExtra = read(local + 30 + head.readUInt16LE(26), head.readUInt16LE(28));
+            if (!localName.equals(raw) || hasPathField(extra) || hasPathField(localExtra)) bad("names an entry two ways");
             if (flags & 1) bad("is encrypted");
             if (method !== 0 && method !== 8) bad(`uses compression method ${method}`);
             const name = raw.toString("utf8");
@@ -341,9 +365,9 @@ export function scanZip(file: string): string {
             const path = isDirName ? name.slice(0, -1) : name;
             const parts = path.split("/");
             if (parts.some((s) => s === "" || s === "." || s === "..")) bad(`has an entry named ${JSON.stringify(name)}`);
-            if (names.has(path) || folded.has(path.normalize("NFD").toLowerCase())) bad(`has ${JSON.stringify(path)} twice`);
+            if (names.has(path) || folded.has(fold(path))) bad(`has ${JSON.stringify(path)} twice`);
             names.add(path);
-            folded.add(path.normalize("NFD").toLowerCase());
+            folded.add(fold(path));
             // Unix modes, when the zip was made on a Unix (ditto's is).
             const mode = madeBy === 3 ? attrs >>> 16 : 0;
             const type = mode & S_IFMT;
@@ -356,8 +380,6 @@ export function scanZip(file: string): string {
             if (parts.length === 1 && (!isDirName || !first.endsWith(".app") || type === S_IFLNK)) bad(`has ${first} at its top, not an app`);
             if (type === S_IFLNK) {
                 if (compressed > 4096) bad(`has a symlink too long to be one (${path})`);
-                const head = read(local, 30);
-                if (head.readUInt32LE(0) !== 0x04034b50) bad("has a broken entry");
                 const data = read(local + 30 + head.readUInt16LE(26) + head.readUInt16LE(28), compressed);
                 let target: string;
                 try {
@@ -366,7 +388,7 @@ export function scanZip(file: string): string {
                     bad(`has a broken symlink (${path})`);
                 }
                 if (!linkInside(path, target, top)) bad(`has a symlink out of the app (${path} -> ${target})`);
-                links.add(path);
+                links.add(fold(path));
             }
             entries.push(path);
         }
@@ -374,7 +396,7 @@ export function scanZip(file: string): string {
         // Nothing written through a symlink: a folder that's a link can't have entries under it.
         for (const e of entries) {
             const parts = e.split("/");
-            for (let i = 1; i < parts.length; i++) if (links.has(parts.slice(0, i).join("/"))) bad(`puts ${e} through the symlink ${parts.slice(0, i).join("/")}`);
+            for (let i = 1; i < parts.length; i++) if (links.has(fold(parts.slice(0, i).join("/")))) bad(`puts ${e} through the symlink ${parts.slice(0, i).join("/")}`);
         }
         return top;
     } finally {
@@ -435,12 +457,15 @@ export type Run = (cmd: string[], timeoutMs?: number) => Promise<{ ok: boolean; 
 
 /**
  * The designated requirement `path` is signed with (`codesign -d -r-`), or undefined when it has none to go by: not
- * signed, or signed ad hoc (whose requirement is only its own hash, commented out, so no other build can meet it).
+ * signed, or signed ad hoc (anyone can sign so, whatever requirement it carries).
  */
 export async function designatedRequirement(path: string, run: Run): Promise<string | undefined> {
-    const r = await run(["/usr/bin/codesign", "-d", "-r-", path], 30_000);
+    const r = await run(["/usr/bin/codesign", "-d", "-v", "-r-", path], 30_000);
     if (!r.ok) return undefined;
-    const line = `${r.out}\n${r.err}`.split("\n").find((l) => l.startsWith("designated => "));
+    const lines = `${r.out}\n${r.err}`.split("\n");
+    // Ad hoc, even with a requirement of its own: anyone can sign so.
+    if (lines.some((l) => l.trim() === "Signature=adhoc")) return undefined;
+    const line = lines.find((l) => l.startsWith("designated => "));
     const req = line?.slice("designated => ".length).trim();
     return req && !req.startsWith("cdhash ") ? req : undefined;
 }
@@ -497,19 +522,22 @@ export const oldCopy = (bundle: string) => join(dirname(bundle), `.${basename(bu
  *   $1 the app's pid    $2 the new app (in partialDir)   $3 the installed app   $4 where the old one is kept
  *   $5 the bundle's requirement   $6 the server's   $7 the pending record   $8 the note it leaves when it gives up
  *   $9 how to open it: "open", or "exec" (a test's app, opened with its environment)   $10 the new version
- *   $11 how long the new one has to open (seconds)
+ *   $11 how long the new one has to open (seconds)   $12 the new version's commit
  *
  * It waits for the app to quit (up to 10 minutes: a "Quit without saving?" may be open; the server stops it if
- * that's cancelled). Then: the new app checked again, the installed one renamed aside, the new one renamed in, opened.
- * The new app's server removes the pending record when it starts; if that doesn't happen in time, the new app is
- * stopped, the old one put back and opened. Each failure leaves the installed app as it was and a note saying why.
+ * that's cancelled). Then: the new app checked again (signature, release.json, quarantine), the installed one renamed
+ * aside, the new one renamed in, opened. The new version's server says it started by removing the pending record
+ * (and then removes the old copy); the helper, once the time is up, takes the record by renaming it, so only one of
+ * them acts. Taken, the new app is stopped and the old one put back and opened. Each failure leaves an app at the
+ * installed path (the old one, wherever a rename put it back from) and a note saying why.
  */
 export const RESTART_HELPER = `
-pid=$1; new=$2; dest=$3; old=$4; req=$5; sreq=$6; pending=$7; note=$8; how=$9; version=\${10}; wait=\${11}
+pid=$1; new=$2; dest=$3; old=$4; req=$5; sreq=$6; pending=$7; note=$8; how=$9; version=\${10}; wait=\${11}; commit=\${12}
 part=$(/usr/bin/dirname "$new")
 say() { printf '{"reason":"%s","version":"%s"}\\n' "$1" "$version" > "$note"; }
-launch() { if [ "$how" = exec ]; then "$1/Contents/MacOS/cavvy-desktop" >/dev/null 2>&1 & else /usr/bin/open "$1"; fi; }
+launch() { [ -d "$1" ] || return; if [ "$how" = exec ]; then "$1/Contents/MacOS/cavvy-desktop" >/dev/null 2>&1 & else /usr/bin/open "$1"; fi; }
 give_up() { /bin/rm -rf "$part"; /bin/rm -f "$pending"; say "$1"; launch "$dest"; exit 1; }
+field() { /usr/bin/plutil -extract "$1" raw -o - "$new/Contents/Resources/release.json" 2>/dev/null; }
 i=0
 while kill -0 "$pid" 2>/dev/null; do
     if [ $i -ge 3000 ]; then /bin/rm -f "$pending"; exit 0; fi
@@ -517,20 +545,28 @@ while kill -0 "$pid" 2>/dev/null; do
 done
 /usr/bin/codesign --verify --deep --strict -R="$req" "$new" >/dev/null 2>&1 || give_up unsigned
 /usr/bin/codesign --verify --strict -R="$sreq" "$new/Contents/MacOS/cavvy" >/dev/null 2>&1 || give_up unsigned
+[ "$(field version)" = "$version" ] && [ "$(field commit)" = "$commit" ] || give_up unsigned
+/usr/bin/xattr -p com.apple.quarantine "$new" >/dev/null 2>&1 && give_up unsigned
 /bin/rm -rf "$old"
 /bin/mv "$dest" "$old" 2>/dev/null || give_up management
-if ! /bin/mv "$new" "$dest" 2>/dev/null; then /bin/mv "$old" "$dest"; give_up install; fi
+if ! /bin/mv "$new" "$dest" 2>/dev/null; then
+    /bin/mv "$old" "$dest" 2>/dev/null
+    [ -d "$dest" ] || dest=$old
+    give_up install
+fi
 /bin/rm -rf "$part"
 launch "$dest"
 i=0
 while [ -f "$pending" ] && [ $i -lt "$wait" ]; do /bin/sleep 1; i=$((i+1)); done
-[ -f "$pending" ] || exit 0
+/bin/mv "$pending" "$pending.rollback" 2>/dev/null || exit 0
 pids=$(/bin/ps -axo pid=,comm= | /usr/bin/awk -v p="$dest/Contents/" '{ id=$1; sub(/^ *[0-9]+ +/, ""); if (index($0, p) == 1) print id }')
 if [ -n "$pids" ]; then kill -TERM $pids 2>/dev/null; /bin/sleep 3; kill -KILL $pids 2>/dev/null; fi
 failed="$(/usr/bin/dirname "$dest")/.$(/usr/bin/basename "$dest").failed"
 /bin/rm -rf "$failed"
-/bin/mv "$dest" "$failed" && /bin/mv "$old" "$dest" && /bin/rm -rf "$failed"
-/bin/rm -f "$pending"
-say didnt-open
+if /bin/mv "$dest" "$failed" 2>/dev/null; then
+    if /bin/mv "$old" "$dest" 2>/dev/null; then /bin/rm -rf "$failed"; say didnt-open
+    else /bin/mv "$failed" "$dest" 2>/dev/null; say install; fi
+else say install; fi
+/bin/rm -f "$pending.rollback"
 launch "$dest"
 `;

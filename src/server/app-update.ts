@@ -8,7 +8,7 @@
 // Cavvy's latest release instead, through release-update.ts's checks, in the same states and the same UI.
 
 import { spawn, type ChildProcess } from "child_process";
-import { appendFileSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
+import { appendFileSync, unlinkSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { dirname, join, resolve } from "path";
 import { appSourceDir, noPromptGit, readInstallRecord, runningUpdate, type InstallRecord } from "../config/desktop-install";
@@ -250,7 +250,7 @@ export class AppUpdates {
     /** A downloaded app: what's known of it, worked out once. */
     private rel?: Promise<ReleaseApp>;
     /** The release downloaded and checked, unpacked beside the app: restarting puts it in place. */
-    private ready?: { version: string; app: string };
+    private ready?: { version: string; commit: string; app: string };
     /** The release the last failure was about: a check finding a newer one clears it. */
     private failedFor?: string;
     private helper?: ChildProcess;
@@ -508,9 +508,14 @@ export class AppUpdates {
     private settle(r: ReleaseApp) {
         const pending = readJson<Pending>(pendingPath());
         if (pending && real(pending.app) === real(r.bundle) && pending.version === r.marker.version) {
-            // Only ever the copy beside this app: never a path a file names.
-            if (pending.old === oldCopy(r.bundle)) rmSync(oldCopy(r.bundle), { recursive: true, force: true });
-            rmSync(pendingPath(), { force: true });
+            // Removing the record says this version started; if the helper took it first (its time ran out), it's
+            // putting the old one back, and the old copy stays. Only ever the copy beside this app: never a path a file names.
+            let acked = false;
+            try {
+                unlinkSync(pendingPath());
+                acked = true;
+            } catch {}
+            if (acked) rmSync(oldCopy(r.bundle), { recursive: true, force: true });
         }
         const note = readJson<{ reason?: string; version?: string }>(notePath());
         if (note) {
@@ -601,9 +606,10 @@ export class AppUpdates {
                 void this.check({ quiet: true });
                 return;
             }
-            if (r.system && compareVersions(r.system, m.minimumSystemVersion) < 0) {
+            // Not known: not taken, rather than taken on a guess.
+            if (!r.system || compareVersions(r.system, m.minimumSystemVersion) < 0) {
                 system = m.minimumSystemVersion;
-                throw new Refused("system", `it needs macOS ${m.minimumSystemVersion}, this is ${r.system}`);
+                throw new Refused("system", `it needs macOS ${m.minimumSystemVersion}, this is ${r.system ?? "a version sw_vers didn't say"}`);
             }
             if (!canReplace(r.bundle)) throw new Refused("location", `${r.bundle} can't be replaced from here`);
             mkdirSync(cache, { recursive: true, mode: 0o700 });
@@ -626,7 +632,7 @@ export class AppUpdates {
             const app = checkTree(part, top);
             await verifyApp(app, r.req!, m, this.run);
             say(`checked: signed by Cavvy, meets this app's signature, ${top} is ${m.version}`);
-            this.ready = { version: m.version, app };
+            this.ready = { version: m.version, commit: m.commit, app };
             this.failedFor = undefined;
             rmSync(tmp, { recursive: true, force: true });
             tmp = undefined;
@@ -654,7 +660,7 @@ export class AppUpdates {
         try {
             writeFileSync(pendingPath(), JSON.stringify(pending) + "\n");
             const how = this.releases === RELEASES ? "open" : "exec";
-            const args = [String(this.o.appPid ?? process.ppid), ready.app, r.bundle, pending.old, r.req!.bundle, r.req!.server, pendingPath(), notePath(), how, ready.version, String(NEW_APP_OPENS_S)];
+            const args = [String(this.o.appPid ?? process.ppid), ready.app, r.bundle, pending.old, r.req!.bundle, r.req!.server, pendingPath(), notePath(), how, ready.version, String(NEW_APP_OPENS_S), ready.commit];
             // Its own session: the app quitting doesn't take it along.
             const helper = spawn("/bin/sh", ["-c", RESTART_HELPER, "sh", ...args], { detached: true, stdio: "ignore" });
             helper.unref();
