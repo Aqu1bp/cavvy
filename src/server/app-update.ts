@@ -93,13 +93,13 @@ export function capture(cmd: string[], cwd: string, timeoutMs: number, env: Node
         let p: ChildProcess;
         try {
             // Its own process group, so the timeout can end everything it started.
-            p = spawn(cmd[0]!, cmd.slice(1), { cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
+            p = spawn(cmd[0]!, cmd.slice(1), { cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32" });
         } catch (e) {
             return finish({ ok: false, out: "", err: (e as Error).message });
         }
         const kill = () => {
             try {
-                process.kill(-p.pid!, "SIGKILL");
+                process.kill(process.platform === "win32" ? p.pid! : -p.pid!, "SIGKILL");
             } catch {
                 p.kill("SIGKILL");
             }
@@ -270,7 +270,7 @@ export class AppUpdates {
             if (!stalled && quiet > stallMs) {
                 stalled = `The update stopped: it printed nothing for ${Math.round(stallMs / 60_000) || "under a"} minute${stallMs >= 120_000 ? "s" : ""}, after: ${lastLogLine(log) || "(nothing)"}`;
                 try {
-                    process.kill(-child.pid!, "SIGKILL");
+                    process.kill(process.platform === "win32" ? child.pid! : -child.pid!, "SIGKILL");
                 } catch {
                     child.kill("SIGKILL");
                 }

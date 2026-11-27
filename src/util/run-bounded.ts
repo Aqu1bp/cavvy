@@ -2,6 +2,8 @@
 // outlast: at the limit, or when it's stopped, it ends together with
 // whatever it started.
 
+import { DETACHED, killTreeOnExit, signalTree } from "./process-tree";
+
 /** How long what it printed is waited for once it has exited: something it left running may hold its output open. */
 const DRAIN_MS = 300;
 /** Asked to end, then made to. */
@@ -15,13 +17,7 @@ function track(pid: number) {
     if (onExit) return;
     onExit = true;
     process.once("exit", () => {
-        for (const g of live) {
-            try {
-                process.kill(-g, "SIGKILL");
-            } catch {
-                // already gone
-            }
-        }
+        for (const g of live) killTreeOnExit(g);
     });
 }
 
@@ -38,16 +34,9 @@ export interface BoundedRun {
  * output open.
  */
 export async function runBounded(argv: string[], o: { cwd: string; env: Record<string, string>; stdin?: string; timeoutMs: number; signal?: AbortSignal }): Promise<BoundedRun> {
-    const proc = Bun.spawn(argv, { cwd: o.cwd, env: o.env, stdin: o.stdin === undefined ? "ignore" : Buffer.from(o.stdin), stdout: "pipe", stderr: "pipe", detached: true });
+    const proc = Bun.spawn(argv, { cwd: o.cwd, env: o.env, stdin: o.stdin === undefined ? "ignore" : Buffer.from(o.stdin), stdout: "pipe", stderr: "pipe", detached: DETACHED });
     /** Signals the group; false when nothing of it is left. */
-    const group = (sig: NodeJS.Signals) => {
-        try {
-            process.kill(-proc.pid, sig);
-            return true;
-        } catch {
-            return false;
-        }
-    };
+    const group = (sig: NodeJS.Signals) => signalTree(proc.pid, sig);
     track(proc.pid);
     let force: ReturnType<typeof setTimeout> | undefined;
     const end = () => {

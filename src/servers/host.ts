@@ -22,8 +22,9 @@
 // (src/permissions/bash-safety.ts), and a server is somewhere you've decided
 // agents may act freely.
 
-import { createHash, randomBytes } from "crypto";
+import { createHash, randomBytes, timingSafeEqual } from "crypto";
 import { chmodSync, closeSync, existsSync, openSync, readFileSync, rmSync, statSync, unlinkSync } from "fs";
+import { connect } from "net";
 import { homedir, totalmem } from "os";
 import { join } from "path";
 import { hold, SessionInUseError } from "../agent/session";
@@ -49,6 +50,9 @@ const stateFile = () => join(hostDir(), "state.json");
 const machinesFile = () => join(hostDir(), "machines.json");
 /** A socket's path has a short limit (104 bytes on macOS), which a test's temp folder can pass. */
 const socketPath = () => process.env.CAVVY_HOST_SOCKET || join(hostDir(), "control.sock");
+/** Windows control channel: loopback HTTP with a per-run secret, avoiding AF_UNIX/ACL quirks. */
+const controlFile = () => (process.env.CAVVY_HOST_SOCKET ? `${process.env.CAVVY_HOST_SOCKET}.json` : join(hostDir(), "control.json"));
+const useLoopbackControl = () => process.platform === "win32";
 
 export interface HostVersion {
     version: string;
@@ -84,6 +88,57 @@ export interface HostStatus extends HostState {
     gui: boolean;
 }
 
+let winKernel32: {
+    symbols: {
+        OpenProcess: (access: number, inherit: number, pid: number) => number | bigint | null;
+        GetProcessTimes: (handle: number | bigint, creation: Uint8Array, exit: Uint8Array, kernel: Uint8Array, user: Uint8Array) => number;
+        CloseHandle: (handle: number | bigint) => number;
+    };
+} | null | undefined;
+
+function windowsProcessStart(pid: number): string | undefined {
+    try {
+        if (winKernel32 === undefined) {
+            const { dlopen, FFIType } = require("bun:ffi") as typeof import("bun:ffi");
+            winKernel32 = dlopen("kernel32.dll", {
+                OpenProcess: { args: [FFIType.u32, FFIType.i32, FFIType.u32], returns: FFIType.ptr },
+                GetProcessTimes: { args: [FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr], returns: FFIType.i32 },
+                CloseHandle: { args: [FFIType.ptr], returns: FFIType.i32 },
+            }) as unknown as NonNullable<typeof winKernel32>;
+        }
+        if (winKernel32) {
+            // PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            const handle = winKernel32.symbols.OpenProcess(0x1000, 0, pid);
+            if (handle) {
+                try {
+                    const creation = new Uint8Array(8);
+                    const exit = new Uint8Array(8);
+                    const kernel = new Uint8Array(8);
+                    const user = new Uint8Array(8);
+                    if (winKernel32.symbols.GetProcessTimes(handle, creation, exit, kernel, user)) {
+                        const view = new DataView(creation.buffer);
+                        const ft = view.getBigUint64(0, true);
+                        if (ft > 0n) return ft.toString();
+                    }
+                } finally {
+                    winKernel32.symbols.CloseHandle(handle);
+                }
+            }
+            return undefined;
+        }
+    } catch {
+        winKernel32 = null;
+    }
+    try {
+        const ps = Bun.which("powershell", { PATH: process.env.PATH ?? "" }) ?? "powershell.exe";
+        const r = Bun.spawnSync([ps, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToFileTimeUtc()`], { stdin: "ignore", stdout: "pipe", stderr: "ignore", env: childEnv() });
+        const out = r.exitCode === 0 ? r.stdout.toString().trim() : "";
+        return /^\d+$/.test(out) ? out : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
 /** When a process started, in whatever form the system has: only ever compared with itself. */
 export function processStart(pid: number): string | undefined {
     try {
@@ -92,6 +147,7 @@ export function processStart(pid: number): string | undefined {
             // "pid (name) state …": the name may hold spaces and brackets, so count from the last ")". Start time is field 22.
             return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19] || undefined;
         }
+        if (process.platform === "win32") return windowsProcessStart(pid);
         const r = Bun.spawnSync(["/bin/ps", "-o", "lstart=", "-p", String(pid)], { stdin: "ignore", stdout: "pipe", stderr: "ignore", env: childEnv() });
         return (r.exitCode === 0 && r.stdout.toString().trim()) || undefined;
     } catch {
@@ -232,7 +288,93 @@ const cleanLabel = (v: unknown) =>
 // ---------------------------------------------------------------------------
 // Talking to the running server from another `cavvy host` command.
 
+function readControlEndpoint(): { port: number; token: string } | undefined {
+    try {
+        const data = JSON.parse(readFileSync(controlFile(), "utf-8")) as { port?: unknown; token?: unknown };
+        if (typeof data.port === "number" && Number.isInteger(data.port) && data.port > 0 && typeof data.token === "string" && /^[0-9a-f]{64}$/.test(data.token)) {
+            return { port: data.port, token: data.token };
+        }
+    } catch {
+        // missing or invalid
+    }
+    return undefined;
+}
+
+/** Direct loopback HTTP/1.1 request, never routed through HTTP_PROXY. */
+function loopbackControl<T>(port: number, token: string, path: string, body: unknown, timeoutMs: number): Promise<T | undefined> {
+    return new Promise((resolve) => {
+        const socket = connect(port, "127.0.0.1");
+        const chunks: Buffer[] = [];
+        let size = 0;
+        let done = false;
+        const finish = (v: T | undefined) => {
+            if (done) return;
+            done = true;
+            clearTimeout(timer);
+            socket.destroy();
+            resolve(v);
+        };
+        const timer = setTimeout(() => finish(undefined), timeoutMs);
+        socket.on("connect", () => {
+            const method = body === undefined ? "GET" : "POST";
+            const payload = body === undefined ? "" : JSON.stringify(body);
+            const headers = [
+                `${method} ${path} HTTP/1.1`,
+                `Host: 127.0.0.1:${port}`,
+                `Authorization: Bearer ${token}`,
+                "Connection: close",
+                ...(body === undefined ? [] : ["Content-Type: application/json", `Content-Length: ${Buffer.byteLength(payload)}`]),
+            ].join("\r\n");
+            socket.write(`${headers}\r\n\r\n${payload}`);
+        });
+        socket.on("data", (d: Buffer) => {
+            chunks.push(d);
+            size += d.length;
+            if (size > 1_000_000) finish(undefined);
+        });
+        socket.on("error", () => finish(undefined));
+        socket.on("close", () => {
+            if (done) return;
+            const all = Buffer.concat(chunks);
+            const end = all.indexOf("\r\n\r\n");
+            if (end < 0) return finish(undefined);
+            const head = all.subarray(0, end).toString("latin1");
+            const status = Number(/^HTTP\/1\.[01] (\d{3})/.exec(head)?.[1]);
+            if (status < 200 || status >= 300) return finish(undefined);
+            let rest = all.subarray(end + 4);
+            if (/^transfer-encoding:\s*chunked/im.test(head)) {
+                const parts: Buffer[] = [];
+                for (;;) {
+                    const eol = rest.indexOf("\r\n");
+                    const n = eol < 0 ? 0 : parseInt(rest.subarray(0, eol).toString("latin1"), 16);
+                    if (!n) break;
+                    parts.push(rest.subarray(eol + 2, eol + 2 + n));
+                    rest = rest.subarray(eol + 2 + n + 2);
+                }
+                rest = Buffer.concat(parts);
+            }
+            try {
+                finish(JSON.parse(rest.toString("utf-8")) as T);
+            } catch {
+                finish(undefined);
+            }
+        });
+    });
+}
+
+function bearerMatches(header: string | null, expected: string): boolean {
+    if (!header?.startsWith("Bearer ")) return false;
+    const got = header.slice(7);
+    if (got.length !== expected.length) return false;
+    return timingSafeEqual(Buffer.from(got, "utf-8"), Buffer.from(expected, "utf-8"));
+}
+
 async function control<T>(path: string, body?: unknown, timeoutMs = 5000): Promise<T | undefined> {
+    if (useLoopbackControl()) {
+        const ep = readControlEndpoint();
+        if (!ep) return undefined;
+        return loopbackControl<T>(ep.port, ep.token, path, body, timeoutMs);
+    }
     if (!existsSync(socketPath())) return undefined;
     try {
         const r = await fetch(`http://cavvy${path}`, { unix: socketPath(), method: body === undefined ? "GET" : "POST", body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs) } as RequestInit);
@@ -374,6 +516,7 @@ export async function hostRun(args: string[], env: HostRunEnv): Promise<void> {
 
     let stopping = false;
     let controlServer: ReturnType<typeof Bun.serve> | undefined;
+    let controlToken: string | undefined;
     const shutdown = async (code = 0) => {
         if (stopping) return;
         stopping = true;
@@ -381,69 +524,78 @@ export async function hostRun(args: string[], env: HostRunEnv): Promise<void> {
         // Sessions get the time to close their CLIs and shells; systemd's own limit is longer (service.ts).
         const timer = setTimeout(() => process.exit(code), 20_000);
         controlServer?.stop(true);
+        unregisterSecret(controlToken);
         await srv.stop().catch(() => undefined);
         wake?.stop();
         clearTimeout(timer);
-        rmSync(socketPath(), { force: true });
+        if (useLoopbackControl()) rmSync(controlFile(), { force: true });
+        else rmSync(socketPath(), { force: true });
         rmSync(stateFile(), { force: true });
         process.exit(code);
     };
     process.on("SIGINT", () => void shutdown(0));
     process.on("SIGTERM", () => void shutdown(0));
-    process.on("SIGHUP", () => void shutdown(0));
+    if (process.platform !== "win32") process.on("SIGHUP", () => void shutdown(0));
     process.on("unhandledRejection", (e) => log(`internal error: ${(e as Error)?.stack ?? String(e)}`));
 
     const status = (): HostStatus => {
         const labels = machineLabels();
         return { running: true, ...base, port: srv.port, ...srv.engine.activity(), machines: [...srv.machines()].map(([id, connections]) => ({ id, label: labels[id]?.label ?? "a machine", connections })), gui: Boolean(staticDir) };
     };
-    rmSync(socketPath(), { force: true });
-    controlServer = Bun.serve({
-        unix: socketPath(),
-        async fetch(req) {
-            const path = new URL(req.url).pathname;
-            if (req.method === "GET" && path === "/status") return Response.json(status());
-            if (req.method !== "POST") return new Response("Not found", { status: 404 });
-            let body: Record<string, unknown> = {};
+    const handleControl = async (req: Request): Promise<Response> => {
+        if (controlToken && !bearerMatches(req.headers.get("authorization"), controlToken)) return new Response("Unauthorized", { status: 401 });
+        const path = new URL(req.url).pathname;
+        if (req.method === "GET" && path === "/status") return Response.json(status());
+        if (req.method !== "POST") return new Response("Not found", { status: 404 });
+        let body: Record<string, unknown> = {};
+        try {
+            const parsed: unknown = await req.json();
+            if (parsed && typeof parsed === "object") body = parsed as Record<string, unknown>;
+        } catch {
+            // no body
+        }
+        const machine = typeof body.machine === "string" && MACHINE_ID.test(body.machine) ? body.machine : undefined;
+        const client = typeof body.client === "string" && CLIENT_ID.test(body.client) ? body.client : undefined;
+        if (path === "/pair") {
+            if (!machine) return Response.json({ error: "A machine id is 32 hex digits." }, { status: 400 });
+            noteMachine(machine, cleanLabel(body.label));
+            return Response.json({ code: signIns.pair(machine, client), port: srv.port, run, gui: Boolean(staticDir), ...hostVersion() });
+        }
+        if (path === "/revoke") {
+            if (!machine) return Response.json({ error: "A machine id is 32 hex digits." }, { status: 400 });
+            signIns.revoke(machine, client);
+            // The machine itself is forgotten only when all of it is signed out.
+            if (!client) noteMachine(machine, undefined);
+            return Response.json({ closed: srv.dropMachine(machine, client) });
+        }
+        if (path === "/connect-cli") {
+            // A CLI signed in here by `host login`: turned on as the GUI's own Connect does, which checks it again.
+            const provider = typeof body.provider === "string" && agentCli(body.provider) ? body.provider : undefined;
+            if (!provider) return Response.json({ error: "Not an agent CLI." }, { status: 400 });
             try {
-                const parsed: unknown = await req.json();
-                if (parsed && typeof parsed === "object") body = parsed as Record<string, unknown>;
-            } catch {
-                // no body
+                await srv.engine.connectCli(provider);
+                return Response.json({ ok: true });
+            } catch (e) {
+                return Response.json({ ok: false, error: redact((e as Error)?.message ?? String(e)) });
             }
-            const machine = typeof body.machine === "string" && MACHINE_ID.test(body.machine) ? body.machine : undefined;
-            const client = typeof body.client === "string" && CLIENT_ID.test(body.client) ? body.client : undefined;
-            if (path === "/pair") {
-                if (!machine) return Response.json({ error: "A machine id is 32 hex digits." }, { status: 400 });
-                noteMachine(machine, cleanLabel(body.label));
-                return Response.json({ code: signIns.pair(machine, client), port: srv.port, run, gui: Boolean(staticDir), ...hostVersion() });
-            }
-            if (path === "/revoke") {
-                if (!machine) return Response.json({ error: "A machine id is 32 hex digits." }, { status: 400 });
-                signIns.revoke(machine, client);
-                // The machine itself is forgotten only when all of it is signed out.
-                if (!client) noteMachine(machine, undefined);
-                return Response.json({ closed: srv.dropMachine(machine, client) });
-            }
-            if (path === "/connect-cli") {
-                // A CLI signed in here by `host login`: turned on as the GUI's own Connect does, which checks it again.
-                const provider = typeof body.provider === "string" && agentCli(body.provider) ? body.provider : undefined;
-                if (!provider) return Response.json({ error: "Not an agent CLI." }, { status: 400 });
-                try {
-                    await srv.engine.connectCli(provider);
-                    return Response.json({ ok: true });
-                } catch (e) {
-                    return Response.json({ ok: false, error: redact((e as Error)?.message ?? String(e)) });
-                }
-            }
-            if (path === "/stop") {
-                setTimeout(() => void shutdown(0), 50);
-                return Response.json({ pid: process.pid });
-            }
-            return new Response("Not found", { status: 404 });
-        },
-    });
-    chmodSync(socketPath(), 0o600);
+        }
+        if (path === "/stop") {
+            setTimeout(() => void shutdown(0), 50);
+            return Response.json({ pid: process.pid });
+        }
+        return new Response("Not found", { status: 404 });
+    };
+    if (useLoopbackControl()) {
+        controlToken = randomBytes(32).toString("hex");
+        registerSecret(controlToken, "host-control");
+        rmSync(controlFile(), { force: true });
+        controlServer = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: handleControl });
+        writeJson(controlFile(), { port: controlServer.port, token: controlToken }, 0o600);
+    } else {
+        rmSync(socketPath(), { force: true });
+        controlServer = Bun.serve({ unix: socketPath(), fetch: handleControl });
+        chmodSync(socketPath(), 0o600);
+    }
     writeState(srv.port);
     log(`running (pid ${process.pid}, build ${base.build})`);
 }

@@ -41,14 +41,14 @@ async function runGit(cwd: string, args: string[], opts: GitOptions = {}) {
     const proc = Bun.spawn(gitArgv([...hookConfig, ...(opts.literal ? ["--literal-pathspecs"] : []), ...args]), {
         cwd,
         env,
-        detached: true,
+        detached: process.platform !== "win32",
         stdin: opts.input === undefined ? "ignore" : new TextEncoder().encode(opts.input),
         stdout: "pipe",
         stderr: "pipe",
     });
     const signalGroup = (signal: "SIGTERM" | "SIGKILL") => {
         try {
-            process.kill(-proc.pid, signal);
+            process.kill(process.platform === "win32" ? proc.pid : -proc.pid, signal);
         } catch (e) {
             if ((e as NodeJS.ErrnoException).code !== "ESRCH") throw e;
         }

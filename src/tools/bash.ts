@@ -13,6 +13,7 @@ import { childEnv } from "../util/env";
 import { blockedBySandbox, sandboxArgv, sandboxCacheEnv, sandboxHint, type Sandbox } from "../permissions/sandbox";
 import { parseHostRule, proxyEnv, refusedHint, startProxy, type CommandProxy, type HostRule } from "../permissions/proxy";
 import { finalSearch } from "../permissions/bash-safety";
+import { DETACHED, signalTree, stopTree } from "../util/process-tree";
 import { SESSION_VAR } from "../util/session-processes";
 
 export { childEnv };
@@ -235,7 +236,8 @@ class OutputPreview {
  * (`Checking... zsh:1: no matches found`). Then status 1 may be the shell's.
  */
 function shellComplaintPattern(shell = pickShell()): RegExp {
-    const name = (shell.split("/").pop() ?? "").replace(/[^\w.-]/g, "");
+    if (isPowerShell(shell)) return /is not recognized as the name of a cmdlet|ParserError|CommandNotFoundException/;
+    const name = (shell.split(/[\\/]/).pop() ?? "").replace(/\.exe$/i, "").replace(/[^\w.-]/g, "");
     return new RegExp(`${name ? `${name.replace(/\./g, "\\.")}(?::\\d+)?: |` : ""}\\(eval\\):\\d+: `);
 }
 const MAX_TIMEOUT = 600_000;
@@ -416,7 +418,7 @@ export const spareFifoCount = () => spareFifos.length;
 const SPARE_FIFOS = 4;
 let makingFifos = false;
 /** There's no mkfifo: ordinary pipes for the rest of the process. */
-let noMkfifo = false;
+let noMkfifo = process.platform === "win32";
 /** When making FIFOs last failed otherwise (no space, say, which can clear): ordinary pipes until FIFO_RETRY_MS later. */
 let fifosFailedAt = -Infinity;
 const FIFO_RETRY_MS = 30_000;
@@ -846,16 +848,66 @@ export async function commandEnv(ctx: Pick<ToolContext, "settings" | "state" | "
     return ctx.sandbox ? sandboxedEnv(env, ctx.sandbox, hosts) : { env };
 }
 
-/** The shell commands run in: the user's, if it's bash or zsh. */
-export function pickShell(): string {
-    const sh = process.env.SHELL ?? "";
+/** Whether `shell` is PowerShell (`pwsh` or `powershell.exe`). */
+export function isPowerShell(shell: string): boolean {
+    return /(^|[\\/])(pwsh|powershell)(\.exe)?$/i.test(shell);
+}
+
+/** Encode a PowerShell script as UTF-16LE base64 for `-EncodedCommand` (immune to quoting/newline mangling). */
+export function encodePowerShell(script: string): string {
+    return Buffer.from(script, "utf16le").toString("base64");
+}
+
+/** The shell commands run in: on POSIX, the user's if bash/zsh; on Windows, SHELL if set, else pwsh or powershell.exe. */
+export function pickShell(platform: NodeJS.Platform = process.platform, env: Record<string, string | undefined> = process.env): string {
+    if (platform === "win32") {
+        const sh = env.SHELL ?? "";
+        if (sh && /(^|[\\/])(pwsh|powershell|bash|zsh|sh)(\.exe)?$/i.test(sh) && existsSync(sh)) return sh;
+        const PATH = env.PATH ?? env.Path ?? "";
+        return Bun.which("pwsh", { PATH }) ?? Bun.which("powershell", { PATH }) ?? `${env.SystemRoot ?? "C:\\Windows"}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
+    }
+    const sh = env.SHELL ?? "";
     if (/\/(bash|zsh)$/.test(sh) && existsSync(sh)) return sh;
     return existsSync("/bin/bash") ? "/bin/bash" : "/bin/sh";
 }
 
-/** `shell -c script`, inside the sandbox when there is one. */
-export function shellArgv(script: string, sandbox?: Sandbox): string[] {
-    return sandbox ? sandboxArgv(sandbox, pickShell(), script) : [pickShell(), "-c", script];
+/** `shell -c script` (or PowerShell `-EncodedCommand`), inside the sandbox when there is one. */
+export function shellArgv(script: string, sandbox?: Sandbox, shell = pickShell()): string[] {
+    if (isPowerShell(shell)) {
+        const encoded = encodePowerShell(script);
+        // Windows CreateProcess caps command lines at 32,767 chars; fall back to -Command for unusually large scripts.
+        return encoded.length <= 24_000
+            ? [shell, "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded]
+            : [shell, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script];
+    }
+    return sandbox ? sandboxArgv(sandbox, shell, script) : [shell, "-c", script];
+}
+
+/** Wrap a command so its exit code is preserved and its final working directory is written to `cwdFile`. */
+export function wrapCommand(command: string, cwdFile: string, shell = pickShell(), platform: NodeJS.Platform = process.platform): string {
+    if (isPowerShell(shell)) {
+        const escaped = cwdFile.replace(/'/g, "''");
+        return [
+            "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)",
+            "$OutputEncoding = [Console]::OutputEncoding",
+            "$global:LASTEXITCODE = 0",
+            "$__cavvy_ok = $true",
+            "try {",
+            command,
+            "$__cavvy_ok = $?",
+            "} catch {",
+            "[Console]::Error.WriteLine($_)",
+            "$__cavvy_ok = $false",
+            "}",
+            "$__cavvy_ec = if ($LASTEXITCODE -is [int] -and $LASTEXITCODE -ne 0) { $LASTEXITCODE } elseif ($__cavvy_ok) { 0 } else { 1 }",
+            `try { [System.IO.File]::WriteAllText('${escaped}', (Get-Location).ProviderPath) } catch {}`,
+            "exit $__cavvy_ec",
+            "",
+        ].join("\n");
+    }
+    const pwdCmd = platform === "win32" ? "pwd -W 2>/dev/null || pwd -P" : "pwd -P";
+    const escaped = cwdFile.replace(/'/g, "'\\''");
+    return `${command}\n__cavvy_ec=$?\n(${pwdCmd}) > '${escaped}' 2>/dev/null\nexit $__cavvy_ec\n`;
 }
 
 let cwdFileCounter = 0;
@@ -894,16 +946,17 @@ export function withPwd(env: Record<string, string>, cwd: string): Record<string
 }
 
 export function runShell(opts: RunOpts): Promise<RunResult> {
+    const shell = pickShell();
     const cwdFile = join(tmpdir(), `cavvy-cwd-${process.pid}-${++cwdFileCounter}`);
-    const script = `${opts.command}\n__cavvy_ec=$?\npwd -P > '${cwdFile}' 2>/dev/null\nexit $__cavvy_ec\n`;
+    const script = wrapCommand(opts.command, cwdFile, shell);
     return new Promise((resolvePromise) => {
-        const [file, ...args] = shellArgv(script, opts.sandbox);
-        const { child, stdout, stderr, onClose } = spawnPaced(file!, args, { cwd: opts.cwd, env: withPwd(opts.env, opts.cwd), detached: true }, { paced: opts.paced, combined: true });
+        const [file, ...args] = shellArgv(script, opts.sandbox, shell);
+        const { child, stdout, stderr, onClose } = spawnPaced(file!, args, { cwd: opts.cwd, env: withPwd(opts.env, opts.cwd), detached: DETACHED }, { paced: opts.paced, combined: true });
         const preview = new OutputPreview();
         let rawLength = 0;
         let outputTruncated = false;
         let shellError = false;
-        const complaint = shellComplaintPattern();
+        const complaint = shellComplaintPattern(shell);
         const inspect = (text: string) => {
             rawLength = Math.min(MAX_KEPT, rawLength + text.length);
             if (rawLength >= MAX_KEPT) outputTruncated = true;
@@ -913,17 +966,9 @@ export function runShell(opts: RunOpts): Promise<RunResult> {
         let aborted = false;
         const killTree = () => {
             if (child.pid === undefined) return;
-            try {
-                process.kill(-child.pid, "SIGTERM");
-            } catch {
-                // already gone
-            }
+            signalTree(child.pid, "SIGTERM");
             setTimeout(() => {
-                try {
-                    if (child.pid !== undefined) process.kill(-child.pid, "SIGKILL");
-                } catch {
-                    // already gone
-                }
+                if (child.pid !== undefined) signalTree(child.pid, "SIGKILL");
             }, 2000).unref?.();
         };
         let sequence = 0;
@@ -1108,39 +1153,13 @@ export const BashTool: Tool<{ command: string; description?: string; timeout?: n
 
 export const KILL_GRACE_MS = 3000;
 
-/** Whether any process in the group is still alive. */
-function groupAlive(pid: number): boolean {
-    try {
-        process.kill(-pid, 0);
-        return true;
-    } catch (e) {
-        return (e as NodeJS.ErrnoException).code === "EPERM";
-    }
-}
-
 /**
- * SIGTERM the process group, give it `graceMs` to exit, then SIGKILL
- * whatever is left (a server stuck in its shutdown handler would otherwise
+ * SIGTERM the process group (or `taskkill /T` on Windows), give it `graceMs` to exit,
+ * then SIGKILL whatever is left (a server stuck in its shutdown handler would otherwise
  * keep running, and holding its port, after we stopped tracking it).
  */
-export async function stopGroup(pid: number | undefined, graceMs: number): Promise<"gone" | "stopped" | "killed"> {
-    if (pid === undefined || !groupAlive(pid)) return "gone";
-    try {
-        process.kill(-pid, "SIGTERM");
-    } catch {
-        return "gone";
-    }
-    for (const until = Date.now() + graceMs; Date.now() < until; ) {
-        await new Promise((r) => setTimeout(r, 50));
-        if (!groupAlive(pid)) return "stopped";
-    }
-    try {
-        process.kill(-pid, "SIGKILL");
-    } catch {
-        return "stopped";
-    }
-    for (let i = 0; i < 20 && groupAlive(pid); i++) await new Promise((r) => setTimeout(r, 50));
-    return "killed";
+export function stopGroup(pid: number | undefined, graceMs: number): Promise<"gone" | "stopped" | "killed"> {
+    return stopTree(pid, graceMs);
 }
 
 /** A background line too long to keep. */
@@ -1235,10 +1254,14 @@ export function appendOutput(shell: BackgroundShell, text: string) {
 function startBackground(command: string, ctx: ToolContext, env: Record<string, string>, proxy: CommandProxy | undefined) {
     const id = `bash_${++shellCounter}`;
     const outputFile = new OutputFile(ctx.state.shells);
-    const [file, ...args] = shellArgv(command, ctx.sandbox);
+    const shellBin = pickShell();
+    const bgScript = isPowerShell(shellBin)
+        ? `[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)\n$OutputEncoding = [Console]::OutputEncoding\n${command}`
+        : command;
+    const [file, ...args] = shellArgv(bgScript, ctx.sandbox, shellBin);
     let spawned: PacedChild;
     try {
-        spawned = spawnPaced(file!, args, { cwd: ctx.state.cwd, env: withPwd(env, ctx.state.cwd), detached: true }, { paced: ctx.settings.pacedOutput !== false, combined: true, background: true });
+        spawned = spawnPaced(file!, args, { cwd: ctx.state.cwd, env: withPwd(env, ctx.state.cwd), detached: DETACHED }, { paced: ctx.settings.pacedOutput !== false, combined: true, background: true });
     } catch (e) {
         proxy?.close();
         throw e;

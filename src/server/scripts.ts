@@ -95,7 +95,7 @@ async function git(dir: string, args: string[]): Promise<string | undefined> {
     try {
         // In English, so "not a git repository" can be told from other failures. In a
         // process group of its own, so a timeout stops whatever it started as well.
-        proc = Bun.spawn(gitArgv(args), { cwd: dir, env: { ...gitEnv(), LC_ALL: "C" }, stdin: "ignore", stdout: "pipe", stderr: "pipe", detached: true });
+        proc = Bun.spawn(gitArgv(args), { cwd: dir, env: { ...gitEnv(), LC_ALL: "C" }, stdin: "ignore", stdout: "pipe", stderr: "pipe", detached: process.platform !== "win32" });
     } catch (e) {
         if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
         throw keyError(dir, (e as Error).message);
@@ -107,7 +107,7 @@ async function git(dir: string, args: string[]): Promise<string | undefined> {
     const late = new Promise<never>((_, reject) => {
         timer = setTimeout(() => {
             try {
-                process.kill(-proc.pid, "SIGKILL");
+                process.kill(process.platform === "win32" ? proc.pid : -proc.pid, "SIGKILL");
             } catch {
                 proc.kill("SIGKILL");
             }

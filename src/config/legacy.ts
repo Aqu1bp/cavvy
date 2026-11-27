@@ -93,7 +93,7 @@ function finishMove(home: string, legacy: string): string[] {
     let done = true;
     if (!exists(legacy)) {
         try {
-            symlinkSync(home, legacy);
+            symlinkSync(home, legacy, process.platform === "win32" ? "junction" : undefined);
         } catch (e: any) {
             // Tried again next start. Something else there now (a Harness that started meanwhile) is left as it is.
             if (!exists(legacy)) {

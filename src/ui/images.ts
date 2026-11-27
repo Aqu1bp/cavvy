@@ -41,7 +41,7 @@ function track(pid: number) {
     process.once("exit", () => {
         for (const g of liveGroups) {
             try {
-                process.kill(-g, "SIGKILL");
+                process.kill(process.platform === "win32" ? g : -g, "SIGKILL");
             } catch {
                 // already gone
             }
@@ -58,7 +58,7 @@ export const runCommand: Runner = async (argv, timeoutMs = 5000, maxBytes = 1024
     let proc;
     try {
         // Its own process group, so signals reach whatever it starts too.
-        proc = Bun.spawn(argv, { stdout: "pipe", stderr: "ignore", stdin: "ignore", detached: true });
+        proc = Bun.spawn(argv, { stdout: "pipe", stderr: "ignore", stdin: "ignore", detached: process.platform !== "win32" });
     } catch {
         return undefined;
     }
@@ -67,7 +67,7 @@ export const runCommand: Runner = async (argv, timeoutMs = 5000, maxBytes = 1024
     /** Signal the group; false once nothing in it is left. */
     const group = (sig: NodeJS.Signals | 0) => {
         try {
-            process.kill(-p.pid, sig);
+            process.kill(process.platform === "win32" ? p.pid : -p.pid, sig);
             return true;
         } catch {
             return false;

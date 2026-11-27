@@ -73,7 +73,7 @@ function git(cwd: string, args: string[], timeoutMs = 3000): string | undefined 
 const liveGroups = new Set<number>();
 const killGroup = (pgid: number) => {
     try {
-        process.kill(-pgid, "SIGKILL");
+        process.kill(process.platform === "win32" ? pgid : -pgid, "SIGKILL");
     } catch {
         // the group is gone already
     }
@@ -117,7 +117,7 @@ export async function gitAsync(cwd: string, args: string[], o: { timeoutMs?: num
     let p: Bun.Subprocess<"ignore", "pipe", "ignore">;
     try {
         const { argv, env } = gitCall(args);
-        p = Bun.spawn(argv, { cwd, stdin: "ignore", stdout: "pipe", stderr: "ignore", env, detached: true });
+        p = Bun.spawn(argv, { cwd, stdin: "ignore", stdout: "pipe", stderr: "ignore", env, detached: process.platform !== "win32" });
     } catch {
         return undefined;
     }

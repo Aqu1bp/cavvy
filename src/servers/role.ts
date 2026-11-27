@@ -12,6 +12,7 @@
 import { lstatSync, realpathSync } from "fs";
 import { homedir } from "os";
 import { join, sep } from "path";
+import { CASE_INSENSITIVE_FS } from "../util/files";
 
 const real = (p: string) => {
     try {
@@ -43,6 +44,7 @@ export function inServerInstall(program: string, home: string): boolean {
         at = join(at, part);
         if (!folder(at)) return false;
     }
+    if (CASE_INSENSITIVE_FS) return p.toLowerCase().startsWith((at + sep).toLowerCase());
     return p.startsWith(at + sep);
 }
 
@@ -52,10 +54,10 @@ export function onServer(): boolean {
     if (known !== undefined) return known;
     // Run from source, the program is Bun whatever started it: the tests' pretend server says which program it
     // stands for (test/helpers/fake-ssh.ts). A compiled Cavvy, which is what everyone else runs, is asked nothing,
-    // and is a server's only on the systems a server's build is made for: Linux and macOS. A Mac's desktop app runs
-    // its own program from inside the app, never from a server's install, so it's never taken for one.
+    // and is a server's only on the systems a server's build is made for: Linux, macOS and Windows. A Mac's desktop
+    // app runs its own program from inside the app, never from a server's install, so it's never taken for one.
     const fromSource = /(^|[/\\])bun(\.exe)?$/.test(process.execPath);
-    const made = process.platform === "linux" || process.platform === "darwin";
+    const made = process.platform === "linux" || process.platform === "darwin" || process.platform === "win32";
     const program = fromSource ? process.env.CAVVY_SERVER_PROGRAM : made ? process.execPath : undefined;
     return (known = Boolean(program) && inServerInstall(program!, homedir()));
 }

@@ -57,14 +57,14 @@ async function run(cwd: string, args: string[], network = false, signal?: AbortS
     }
     let proc;
     try {
-        proc = Bun.spawn([executable, ...argv.slice(1)], { cwd: away ?? cwd, env, detached: true, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+        proc = Bun.spawn([executable, ...argv.slice(1)], { cwd: away ?? cwd, env, detached: process.platform !== "win32", stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     } catch {
         if (away) rmSync(away, { recursive: true, force: true });
         throw fail(`${args[0]} is not installed or could not be started.`, "unavailable");
     }
     let stopping: Promise<void> | undefined;
     const kill = (s: "SIGTERM" | "SIGKILL") => {
-        try { process.kill(-proc.pid, s); } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ESRCH") throw e; }
+        try { process.kill(process.platform === "win32" ? proc.pid : -proc.pid, s); } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ESRCH") throw e; }
     };
     const stop = () => {
         if (stopping) return;
