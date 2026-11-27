@@ -537,7 +537,7 @@ export function taskBranch(cwd: string, slug: string): string {
     const has = (ref: string) => runGit(cwd, ["show-ref", "--verify", "--quiet", ref]) !== undefined;
     // Each remote by its name (one may have a "/" in it).
     const remotes = (runGit(cwd, ["remote"]) ?? "").split("\n").filter(Boolean);
-    const remote = (b: string) => remotes.some((r) => has(`refs/remotes/${r}/${b}`));
+    const remote = (b: string) => remotes.some((r) => has(`refs/remotes/${r}/${b}`)) || Boolean(runGit(cwd, ["for-each-ref", "--count=1", "--format=%(refname)", `refs/remotes/*/${b}`])?.trim());
     const wanted = `${has("refs/heads/fix") ? "fix-" : "fix/"}${slug}`;
     for (let n = 1; n < 100; n++) {
         const b = n > 1 ? `${wanted}-${n}` : wanted;

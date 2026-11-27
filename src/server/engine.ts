@@ -1488,7 +1488,7 @@ export class Engine {
         }
         this.runtimes.set(rt.id, rt);
         // A start of one of its suggestions left halfway: started, if a session here took it, or waiting again.
-        rt.settleStarting((key) => this.taskStartedFor(key));
+        rt.settleStarting((key) => (this.startingTasks.has(key) ? "running" : this.taskStartedFor(key)));
         return rt;
     }
 
@@ -2037,9 +2037,11 @@ export class Engine {
             if (!next.busy) await turn;
             // A UserPromptSubmit hook that refuses it, before it's kept: the prompt goes back to its composer (Esc keeps
             // it its own way; a stop later in the turn leaves it where it was sent).
+            // (The turn's reason is its first prompt's; a message sent after it may have been kept since.)
+            const kept = () => next.session.messages.some((m) => m.role === "user" && JSON.stringify(m.content).includes(JSON.stringify(prompt.slice(0, 200)).slice(1, -1)));
             void turn
                 .then((reason) => {
-                    if (reason !== "blocked" || next.session.messageCount) return;
+                    if (reason !== "blocked" || kept()) return;
                     this.refusedTasks.add(next.id);
                     this.draft(next, prompt);
                 })

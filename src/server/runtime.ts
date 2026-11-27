@@ -4017,12 +4017,14 @@ export class Runtime {
      * Opened again: a start left halfway (a window that claimed one and was gone before it said how it went) is
      * started where a session here took it (`startedHere`), and waits for the user again where none did.
      */
-    settleStarting(startedHere: (key: string) => { sessionId: string; title: string; cwd: string } | undefined) {
+    settleStarting(startedHere: (key: string) => { sessionId: string; title: string; cwd: string } | "running" | undefined) {
         let changed = false;
         for (const r of [...this.session.suggestions.values()]) {
             // A fresh claim's start may still be under way: only one gone quiet is settled (as claim takes it over then).
             if (r.state !== "starting" || Date.now() - (r.claimedAt ?? 0) < SUGGEST_LIMITS.staleClaimMs) continue;
             const s = startedHere(`${this.id}#${r.id}`);
+            // Still being made here: how it went is said when it's done.
+            if (s === "running") continue;
             this.session.setSuggestion(s ? { ...r, state: "started", started: { ...s, at: Date.now() } } : { ...r, state: "pending" });
             changed = true;
         }
