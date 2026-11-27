@@ -25,7 +25,13 @@ bun run desktop:update     # macOS: the latest main into /Applications, restarte
 
 Once installed that way, the app updates itself: it checks `origin/main` every few hours, and when there's something new a download icon shows beside Settings. One click runs `desktop:update` in the background (its output in `~/.cavvy/logs/app-update.log`) while you keep working, and Cavvy restarts once the new build is installed; it asks first only if sessions are working. Settings → About lists what's new. `bun run gui:demo --update` walks through it with a stand-in build.
 
-Building it needs only Bun: the first build downloads Electron. It's built for macOS; Electron runs on Linux and Windows too, but their builds aren't set up yet. To distribute it on macOS, sign and notarize the app, server included.
+Building it needs only Bun: the first build downloads Electron. It's built for macOS; Electron runs on Linux and Windows too, but their builds aren't set up yet.
+
+### Downloading it
+
+Each release has the app for Macs with Apple silicon (`Cavvy-<version>-arm64.dmg`) and Intel (`Cavvy-<version>-x64.dmg`), built from the release's commit on GitHub's Macs ([releasing](releasing.md)). A downloaded app updates itself to new releases, not from `main`.
+
+It's signed with Cavvy's own certificate, not by an Apple developer account, and not notarized. So the first time you open it, macOS says "Cavvy Not Opened" and offers only **Done** and **Move to Trash** (on macOS 15 and later, Control-clicking **Open** no longer gets past it). Click **Done**, open **System Settings → Privacy & Security**, click **Open Anyway** beside the message about Cavvy, enter your password, then **Open**. macOS remembers that for this copy; updates open without asking. Because every release is signed with the same certificate, macOS treats each update as the same app, and Cavvy keeps the access to your keychain you allowed (where it keeps API keys).
 
 ## Using it
 

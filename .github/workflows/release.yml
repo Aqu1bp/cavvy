@@ -1,13 +1,19 @@
 name: Release
 
-# A tag v<version> publishes that commit's builds for servers, signed with the release key: what a Cavvy without a
-# checkout downloads to put on a server (src/servers/published.ts, docs/releasing.md).
+# A tag v<version> publishes that commit's builds, signed: Cavvy.app for Macs with Apple silicon and Intel (the .dmg
+# people download, the .zip the app's updater downloads), and the builds for servers that a Cavvy without a checkout
+# puts on a server (src/servers/published.ts). docs/releasing.md says how it's set up.
 #
-# Three jobs, so that the key and the right to publish are never where other people's code runs:
-#   build     makes the bundles. It installs and runs the GUI's build tools: no secret, read-only.
-#   sign      signs their descriptions. It installs nothing and runs one script on Node. The key is a secret of the
-#             `release` environment, which only v* tags may use and which asks a reviewer first (repository settings).
-#   publish   puts the files on the release. It has the right to, and no key.
+# Jobs split so that a key, and the right to publish, are never where other people's code runs:
+#   build        makes the servers' bundles. It installs and runs the GUI's build tools: no secret, read-only.
+#   build-mac    makes Cavvy.app, unsigned, on a Mac of each architecture. The same: no secret, read-only.
+#   codesign     signs the apps with Cavvy's code-signing certificate and makes the .dmg, the .zip and a description
+#                of both. It installs nothing and runs one script on Node, with macOS's own tools.
+#   sign         signs every description with the release key. It installs nothing and runs one script on Node.
+#   publish      puts the files on the release. It has the right to, and no key.
+# The certificate and the key are secrets of the `release` environment, which only v* tags may use and which asks a
+# reviewer first (repository settings): codesign and sign each wait for that approval. Without the certificate,
+# codesign fails, and nothing is published.
 on:
   push:
     tags: ["v*"]
@@ -42,9 +48,79 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  build-mac:
+    name: Build Cavvy.app (${{ matrix.arch }})
+    strategy:
+      matrix:
+        include:
+          # Built on a Mac of its own architecture: Electron, its native modules and the server are each that Mac's.
+          # Both on macOS 15, so the two builds come from the same tools; macos-15-intel is GitHub's last Intel image.
+          - arch: arm64
+            runner: macos-15
+          - arch: x64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile
+        working-directory: gui
+      - run: bun install --frozen-lockfile
+        working-directory: desktop-electron
+      # Unsigned (ad hoc): codesign signs it. --release writes Contents/Resources/release.json.
+      - run: bun desktop-electron/pack.ts --release
+      - name: It's this architecture's
+        run: test "$(lipo -archs desktop-electron/out/Cavvy-darwin-${{ matrix.arch }}/Cavvy.app/Contents/MacOS/cavvy-desktop)" = "${{ matrix.arch == 'x64' && 'x86_64' || 'arm64' }}"
+      # A tar keeps the app as it is (its links and modes); an artifact of the folder wouldn't.
+      - run: tar -C "desktop-electron/out/Cavvy-darwin-${{ matrix.arch }}" -cf "$RUNNER_TEMP/cavvy-desktop-darwin-${{ matrix.arch }}.tar" Cavvy.app
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: desktop-unsigned-${{ matrix.arch }}
+          path: ${{ runner.temp }}/cavvy-desktop-darwin-${{ matrix.arch }}.tar
+          if-no-files-found: error
+          retention-days: 7
+
+  codesign:
+    name: Code-sign Cavvy.app
+    needs: build-mac
+    runs-on: macos-15
+    timeout-minutes: 20
+    environment: release
+    steps:
+      # All of main's history too: the tagged commit has to be one of main's.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: The tagged commit is on main
+        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: desktop-unsigned-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/unsigned
+      # Both architectures by name: a release without one of them fails here.
+      - name: Sign, and make the .dmg, the .zip and their descriptions
+        env:
+          CAVVY_CODESIGN_P12: ${{ secrets.CAVVY_CODESIGN_P12 }}
+          CAVVY_CODESIGN_P12_PASSWORD: ${{ secrets.CAVVY_CODESIGN_P12_PASSWORD }}
+        run: node scripts/codesign-release.mjs "$RUNNER_TEMP/desktop" "$RUNNER_TEMP/unsigned/cavvy-desktop-darwin-arm64.tar" "$RUNNER_TEMP/unsigned/cavvy-desktop-darwin-x64.tar"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: desktop-builds
+          path: ${{ runner.temp }}/desktop
+          if-no-files-found: error
+          retention-days: 7
+
   sign:
     name: Sign
-    needs: build
+    needs: [build, codesign]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: release
@@ -60,13 +136,19 @@ jobs:
         with:
           name: server-builds
           path: ${{ runner.temp }}/release
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: desktop-builds
+          path: ${{ runner.temp }}/release
+      - name: Both apps are there
+        run: test -f "$RUNNER_TEMP/release/cavvy-desktop-darwin-arm64.json" && test -f "$RUNNER_TEMP/release/cavvy-desktop-darwin-x64.json"
       - name: Sign
         env:
           CAVVY_RELEASE_SIGNING_KEY: ${{ secrets.CAVVY_RELEASE_SIGNING_KEY }}
         run: node scripts/sign-release.mjs "$RUNNER_TEMP/release"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: server-builds-signed
+          name: release-signed
           path: ${{ runner.temp }}/release
           if-no-files-found: error
           retention-days: 7
@@ -82,12 +164,28 @@ jobs:
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: server-builds-signed
+          name: release-signed
           path: ${{ runner.temp }}/release
+      # A draft until every file is on it: the updater reads releases/latest/download/…, which must never find a
+      # description without its zip. Then published: as a prerelease for a version with a "-" (1.3.0-beta.1), and as
+      # Latest only when it's the highest version (a fix for an older line doesn't take over the updates).
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes "" --verify-tag
-          gh release upload "$GITHUB_REF_NAME" "$RUNNER_TEMP"/release/* --clobber
+          tag="$GITHUB_REF_NAME"
+          version="${tag#v}"
+          gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --draft --title "$tag" --notes "" --verify-tag
+          gh release upload "$tag" "$RUNNER_TEMP"/release/* --clobber
+          case "$version" in
+            *-*)
+              gh release edit "$tag" --draft=false --prerelease --latest=false
+              ;;
+            *)
+              highest=$( { gh release list --exclude-drafts --exclude-pre-releases --limit 1000 --json tagName --jq '.[].tagName'; echo "$tag"; } \
+                | sed 's/^v//' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)
+              if [ "$highest" = "$version" ]; then latest=true; else latest=false; fi
+              gh release edit "$tag" --draft=false --prerelease=false --latest="$latest"
+              ;;
+          esac
