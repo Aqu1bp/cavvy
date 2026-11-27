@@ -84,7 +84,6 @@ export default function SubscriptionGrid(p: { here: string; servers: readonly st
         for (const c of columns()) for (const a of listOn(c)?.find((pr) => pr.id === id)?.agentCli?.accounts ?? []) if (!a.invalid && a.id !== mainOf(id) && !seen.has(a.id)) seen.set(a.id, a.name);
         return [...seen].map(([id, name]) => ({ id, name }));
     };
-    const mainName = (id: string) => app.providers.find((pr) => pr.id === id)?.agentCli?.accounts?.find((a) => a.id === mainOf(id))?.name ?? "Default";
 
     const signIn = (c: Column, pr: ProviderInfo, a: AccountInfo) =>
         terminalActions.loginAccount?.(pr.id, a.id, [pr.name, a.id === "default" ? undefined : a.name, c.server].filter(Boolean).join(" · "), c.server);
@@ -152,32 +151,41 @@ export default function SubscriptionGrid(p: { here: string; servers: readonly st
 
     const [more, setMore] = createSignal(false);
     let moreBtn: HTMLButtonElement | undefined;
-    const cols = () => `minmax(0, 1fr) repeat(${columns().length}, minmax(calc(76 * var(--sp)), calc(96 * var(--sp))))`;
+    // Provider, then account, then a column per machine: every account of a provider in the same column.
+    const cols = () => `calc(150 * var(--sp)) minmax(0, 1fr) repeat(${columns().length}, minmax(calc(76 * var(--sp)), calc(96 * var(--sp))))`;
+    /** This computer's account, for its name and plan. */
+    const accountHere = (id: string, account: string) => app.providers.find((x) => x.id === id)?.agentCli?.accounts?.find((a) => a.id === account);
+    const AccountName = (q: { id: string; account: string; name?: string }) => (
+        <div class="sg-account" role="rowheader">
+            <span class="truncate">{q.name ?? accountHere(q.id, q.account)?.name ?? "Default"}</span>
+            <Show when={planLabel(accountHere(q.id, q.account)?.plan)}>{(t) => <span class="sg-muted">{t()}</span>}</Show>
+        </div>
+    );
     return (
         <div class="sg" role="table" aria-label="Subscriptions on each machine" style={{ "--sg-cols": cols() }}>
             <div class="sg-row sg-head" role="row">
+                <span role="columnheader" />
                 <span role="columnheader" />
                 <For each={columns()}>{(c) => <span class="sg-machine truncate" role="columnheader" title={c.label}>{c.label}</span>}</For>
             </div>
             <For each={providers()}>
                 {(pr) => {
                     const accounts = () => othersOf(pr.id);
-                    const plan = () => planLabel(app.providers.find((x) => x.id === pr.id)?.agentCli?.accounts?.find((a) => a.id === mainOf(pr.id))?.plan);
                     return (
                         <div class="sg-prov" role="rowgroup">
                             <div class="sg-row" role="row">
                                 <div class="sg-name" role="rowheader">
                                     <span class="prov-logo"><ProviderIcon id={pr.id} name={pr.name} size={18} /></span>
                                     <span class="truncate">{pr.name}</span>
-                                    <Show when={plan()}>{(t) => <span class="tag">{t()}</span>}</Show>
-                                    <Show when={accounts().length}><span class="sg-muted truncate">{mainName(pr.id)}</span></Show>
                                 </div>
+                                <AccountName id={pr.id} account={mainOf(pr.id)} />
                                 <For each={columns()}>{(c) => <Cell c={c} id={pr.id} account={mainOf(pr.id)} head={true} />}</For>
                             </div>
                             <For each={accounts()}>
                                 {(a) => (
                                     <div class="sg-row sg-acct" role="row">
-                                        <div class="sg-name" role="rowheader"><span class="truncate">{a.name}</span></div>
+                                        <span />
+                                        <AccountName id={pr.id} account={a.id} name={a.name} />
                                         <For each={columns()}>{(c) => <Cell c={c} id={pr.id} account={a.id} head={false} />}</For>
                                     </div>
                                 )}

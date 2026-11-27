@@ -7,7 +7,7 @@
 .sg-name { display: flex; align-items: center; gap: calc(10 * var(--sp)); min-width: 0; font-size: 0.929rem; color: var(--fg); }
 .sg-name .prov-logo { flex: none; }
 .sg-acct { min-height: calc(36 * var(--sp)); }
-.sg-acct .sg-name { padding-left: calc(40 * var(--sp)); color: var(--fg-2); }
+.sg-account { display: flex; align-items: baseline; gap: calc(8 * var(--sp)); min-width: 0; font-size: 0.929rem; color: var(--fg-2); }
 .sg-cell { display: flex; justify-content: center; align-items: center; min-width: 0; }
 .sg-muted { font-size: 0.786rem; color: var(--fg-3); white-space: nowrap; }
 .sg-none { color: var(--fg-4, var(--fg-3)); opacity: 0.6; }
