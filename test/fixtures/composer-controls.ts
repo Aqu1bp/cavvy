@@ -39,7 +39,7 @@ const renderer = {
     createElement(tag: string) {
         const node: any = { tag, props: {}, style: {}, children: [], selectionStart: 0, selectionEnd: 0, scrollHeight: 30, scrollTop: 0,
             focus() { focused = node; }, matches() { return tag === "textarea"; }, setSelectionRange(start: number, end: number) { this.selectionStart = start; this.selectionEnd = end; },
-            getBoundingClientRect: () => ({ top: 0, bottom: 100 }), closest: () => undefined,
+            getBoundingClientRect: () => ({ top: 0, bottom: 100 }), closest: () => undefined, toggleAttribute(name: string, on: boolean) { node.props[name] = on; },
         };
         nodes.push(node);
         return node;
