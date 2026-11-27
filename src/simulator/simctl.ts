@@ -58,6 +58,7 @@ export function setAvailability(a: Availability | undefined) {
 export function setRunner(r: Runner | undefined) {
     runner = r ?? run;
     availability = undefined;
+    looking = undefined;
 }
 
 async function simctl(args: string[], o?: { timeoutMs?: number; signal?: AbortSignal; input?: string; env?: Record<string, string> }): Promise<string> {
@@ -85,14 +86,33 @@ export function simctlError(text: string): string {
 export type Availability = { ok: true; developerDir: string } | { ok: false; error: string };
 
 let availability: { at: number; value: Availability } | undefined;
+/** The lookup under way: everyone who asks meanwhile gets its answer. */
+let looking: Promise<Availability> | undefined;
+/** How long a lookup is waited for: past its own limits (10 s, then 20 s), which a simctl that won't end when told to outlasts. */
+const LOOKUP_MS = 35_000;
 
-/** Whether Xcode's simulators can be used here (macOS with Xcode chosen by xcode-select), looked up at most once a minute. */
+/**
+ * Whether Xcode's simulators can be used here (macOS with Xcode chosen by xcode-select), looked up at most once a
+ * minute, and one lookup at a time: each session asked as it started, and ten starting together ran ten `simctl help`
+ * at once, each to its 20 s limit on a busy Mac.
+ */
 export async function simulatorsAvailable(): Promise<Availability> {
     if (forced) return forced;
     if (availability && Date.now() - availability.at < 60_000) return availability.value;
-    const value = await lookUp();
-    availability = { at: Date.now(), value };
-    return value;
+    if (looking) return looking;
+    // Shared, one that never ended would be every later session's answer too: none found, once it's had its time.
+    let timer: ReturnType<typeof setTimeout>;
+    const late = new Promise<Availability>((resolve) => (timer = setTimeout(resolve, LOOKUP_MS, { ok: false, error: "Simulators need Xcode." })));
+    // Its answer is kept, and it stops being the lookup under way, only if it still is one (setRunner starts over).
+    const mine: Promise<Availability> = Promise.race([lookUp(), late]).then((value) => {
+        clearTimeout(timer);
+        if (looking === mine) {
+            availability = { at: Date.now(), value };
+            looking = undefined;
+        }
+        return value;
+    });
+    return (looking = mine);
 }
 
 /**
@@ -115,11 +135,13 @@ export function knownAvailability(): Availability | undefined {
 async function lookUp(): Promise<Availability> {
     if (process.env.CAVVY_SIMULATOR === "0") return { ok: false, error: "Simulators are turned off: CAVVY_SIMULATOR is 0." };
     if (process.platform !== "darwin") return { ok: false, error: "Simulators need macOS." };
+    // The runner it started with, to the end: one replaced meanwhile (setRunner) is the next lookup's.
+    const ask = runner;
     try {
-        const dir = await runner(["xcode-select", "-p"], { timeoutMs: 10_000 });
+        const dir = await ask(["xcode-select", "-p"], { timeoutMs: 10_000 });
         const developerDir = dir.stdout.trim();
         if (dir.code !== 0 || !developerDir.endsWith("/Contents/Developer")) return { ok: false, error: "Simulators need Xcode." };
-        const help = await runner(["xcrun", "simctl", "help"], { timeoutMs: 20_000 });
+        const help = await ask(["xcrun", "simctl", "help"], { timeoutMs: 20_000 });
         if (help.code !== 0) return { ok: false, error: "Simulators need Xcode." };
         return { ok: true, developerDir };
     } catch {
