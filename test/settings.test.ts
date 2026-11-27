@@ -184,7 +184,7 @@ describe("permission rules", () => {
         settings.addPermissionRule("local", cwd, "ask", "Write");
         expect(read(paths.localSettings(cwd))).toEqual({ permissions: { ask: ["Write"] } });
         const gi = join(cwd, ".cavvy", ".gitignore");
-        expect(readFileSync(gi, "utf-8")).toBe(".gitignore\nsettings.local.json\n");
+        expect(readFileSync(gi, "utf-8")).toBe("/.gitignore\nsettings.local.json\n");
         writeFileSync(gi, "custom\n");
         settings.addPermissionRule("local", cwd, "ask", "Edit");
         expect(readFileSync(gi, "utf-8")).toBe("custom\n");

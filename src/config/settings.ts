@@ -621,7 +621,7 @@ export function updateSettings(scope: SettingsScope, cwd: string, fn: (s: Settin
 function ensureLocalGitignore(cwd: string) {
     const gi = join(dirname(paths.localSettings(cwd)), ".gitignore");
     try {
-        if (!existsSync(gi)) writeFileSync(gi, ".gitignore\nsettings.local.json\n");
+        if (!existsSync(gi)) writeFileSync(gi, "/.gitignore\nsettings.local.json\n");
     } catch {
         // best effort
     }
