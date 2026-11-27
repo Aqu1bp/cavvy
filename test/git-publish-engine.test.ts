@@ -52,6 +52,11 @@ test("engine pushes new upstream, exposes rejection and caches PR state after fa
         expect(await engine.handle(client, "session.gitPrState", { id })).toEqual(result);
         expect(await engine.handle(client, "session.gitPrState", { id })).toEqual(result);
         expect(calls(state)).toHaveLength(before);
+        // Another branch checked out: read again, not the last one's.
+        await engine.handle(client, "git.switch", { cwd, branch: "main" });
+        await engine.handle(client, "session.gitPrState", { id });
+        expect(calls(state).length).toBeGreaterThan(before);
+        await engine.handle(client, "git.switch", { cwd, branch: "feature" });
         // Existing PR must still receive new commits on another explicit confirmation.
         git(cwd, "commit", "--allow-empty", "-qm", "update existing PR");
         const next = await engine.handle(client, "session.gitPublishInfo", { id });

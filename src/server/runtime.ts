@@ -5504,12 +5504,14 @@ export class Runtime {
         return gitPublishInfo(this.ws.cwd);
     }
 
-    private prRead?: { at: number; promise: Promise<{ pr?: GitPrInfo }> };
+    /** The branch's pull request, read at most once a minute for the branch checked out then. */
+    private prRead?: { at: number; branch?: string; promise: Promise<{ pr?: GitPrInfo }> };
     gitPrState() {
         if (!this.ws.trusted || this.closed) return Promise.resolve({});
-        if (!this.prRead || Date.now() - this.prRead.at >= 60_000) {
+        if (!this.prRead || Date.now() - this.prRead.at >= 60_000 || this.prRead.branch !== this.view.state.branch) {
             this.prRead = {
                 at: Date.now(),
+                branch: this.view.state.branch,
                 promise: gitPrState(this.ws.cwd).then((pr) => {
                     // Merged or closed: with auto-settle on, the session is done with (engine.ts prEnded).
                     if ((pr?.state === "merged" || pr?.state === "closed") && !this.closed) this.engine.prEnded(this);
@@ -5529,7 +5531,7 @@ export class Runtime {
         this.commitDone = done;
         try {
             const result = await done;
-            this.prRead = { at: Date.now(), promise: Promise.resolve(result) };
+            this.prRead = { at: Date.now(), branch: this.view.state.branch, promise: Promise.resolve(result) };
             return result;
         } finally {
             this.committing = false;

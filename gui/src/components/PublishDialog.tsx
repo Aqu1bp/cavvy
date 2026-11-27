@@ -85,11 +85,10 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
             const result = await rpc.call("session.gitPublish", { id, fingerprint: info.fingerprint, action, confirmProtected: confirmed(), base: baseOr(), title: title(), body: body(), draft: draft() });
             refreshGitChanges();
             const pr = result.pr;
-            // A new pull request opens on GitHub: what comes next is looking at it.
-            if (pr && action === "pr") {
-                void openExternal(pr.url);
-                toast(`Opened PR #${pr.number}`, "success");
-            } else toast(pr ? `Pushed ${info.remote}/${info.target} · PR #${pr.number}` : `Pushed ${info.remote}/${info.target}`, "success", pr ? { label: "Open", run: () => void openExternal(pr.url) } : undefined);
+            // A new pull request opens on GitHub: what comes next is looking at it. The toast's Open stays, for a
+            // browser that blocks a tab opened this long after the click.
+            if (pr && action === "pr") void openExternal(pr.url);
+            toast(pr && action === "pr" ? `Created PR #${pr.number}` : pr ? `Pushed ${info.remote}/${info.target} · PR #${pr.number}` : `Pushed ${info.remote}/${info.target}`, "success", pr ? { label: "Open", run: () => void openExternal(pr.url) } : undefined);
             if (revision !== version) return;
             p.onPublished(result.pr);
             p.onClose();

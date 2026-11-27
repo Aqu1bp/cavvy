@@ -71,7 +71,8 @@ test("PR click uses edited title, body, base and draft without auto-publishing",
     expect(d.result()).toEqual({ number: 7, url: "https://github.com/example/project/pull/7" });
     // A new one opens on GitHub by itself.
     expect(d.opened).toEqual(["https://github.com/example/project/pull/7"]);
-    expect(d.toasts.at(-1)).toEqual(["Opened PR #7", "success"]);
+    expect(d.toasts.at(-1)!.slice(0, 2)).toEqual(["Created PR #7", "success"]);
+    expect(d.toasts.at(-1)![2].label).toBe("Open");
 
     // A push to a branch that has one: the toast offers it.
     const again = dialog(); await again.effects[0]!();
