@@ -4,7 +4,7 @@
 // unreadable-file safety, dynamic secret opt-out, digest short-circuit, and backward compatibility.
 
 import { afterAll, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
@@ -17,7 +17,8 @@ const { paths } = await import("../src/config/paths");
 const { pluginPaths, readInstalled, writeInstalled, writeKnownMarketplaces } = await import("../src/plugins/store");
 const { portableMcpEntry } = await import("../src/servers/copy");
 const { applyStateSync, isSafeRemoteUrl, localSyncState, readSyncedStateDigest, secretMcpEntry, syncAllTo, syncStateTo } = await import("../src/servers/sync-state");
-const { draftServer, getServer, saveServer, setServerSyncSecrets } = await import("../src/servers/store");
+const { draftServer, getServer, saveServer, setServerSync } = await import("../src/servers/store");
+const { installState, installing } = await import("../src/servers/sync-install");
 
 afterAll(() => iso.cleanup());
 
@@ -532,14 +533,71 @@ test("older server without sync.state returns unsupported cleanly", async () => 
     expect(r.state.unsupported).toBe(true);
 });
 
-test("ServerEntry.syncSecrets persists only when enabled", () => {
+test("a server's sync is on, off, or not asked yet; an earlier build's key switch reads as on", () => {
     const e = draftServer({ name: "sync-box", destination: "dev@sync.example" });
     saveServer(e);
-    expect(getServer("sync-box")?.syncSecrets).toBeUndefined();
-    setServerSyncSecrets("sync-box", true);
-    expect(getServer("sync-box")?.syncSecrets).toBe(true);
-    setServerSyncSecrets("sync-box", false);
-    expect(getServer("sync-box")?.syncSecrets).toBeUndefined();
+    expect(getServer("sync-box")?.sync).toBeUndefined();
+    setServerSync("sync-box", true);
+    expect(getServer("sync-box")?.sync).toBe(true);
+    setServerSync("sync-box", false);
+    expect(getServer("sync-box")?.sync).toBe(false);
+    const old = draftServer({ name: "old-box", destination: "dev@old.example", syncSecrets: true } as Parameters<typeof draftServer>[0]);
+    expect(old.sync).toBe(true);
+});
+
+test("with sync on, a CLI the server lacks is installed there by its own installer, once; a failed one is said and not tried again", async () => {
+    const serverHome = tempDir("cavvy-install-server-");
+    const userHome = tempDir("cavvy-install-home-");
+    const bin = tempDir("cavvy-install-bin-");
+    const opencode = join(userHome, "tools", "opencode");
+    const grok = join(userHome, "tools", "grok");
+    // A stand-in for curl. OpenCode's "installer" puts it where the server's Cavvy is told to look for it; Grok's
+    // site can't be reached.
+    writeFileSync(
+        join(bin, "curl"),
+        [
+            "#!/bin/sh",
+            'case "$*" in *x.ai*) echo "curl: (6) Could not resolve host: x.ai" >&2; exit 6 ;; esac',
+            `printf '%s\\n' 'mkdir -p "${join(userHome, "tools")}" && printf "#!/bin/sh\\n" > "${opencode}" && chmod +x "${opencode}" && mkdir -p "$HOME/.opencode/bin" && touch "$HOME/.opencode/bin/opencode"'`,
+            "",
+        ].join("\n"),
+        { mode: 0o755 },
+    );
+    const prev = { PATH: process.env.PATH, HOME: process.env.HOME };
+    process.env.PATH = `${bin}:/usr/bin:/bin`;
+    process.env.HOME = userHome;
+    try {
+        writeProvidersFile({ agents: { opencode: {}, grok: {} } });
+        // Where the server looks for each: not there yet (and never this test machine's own).
+        await inHome(serverHome, () => writeProvidersFile({ agents: { opencode: { path: opencode }, grok: { path: grok } } }));
+        const ask = (method: string, params: Record<string, unknown>) =>
+            inHome(serverHome, () => (method === "sync.state" ? readSyncedStateDigest() : method === "sync.applyState" ? applyStateSync(params.digest, params.payload) : {}));
+
+        // Without sync's say-so, nothing is installed.
+        const plain = await syncStateTo(ask, { includeSecrets: false });
+        expect([...(plain.missingClis ?? [])].sort()).toEqual(["grok", "opencode"]);
+        expect(installing()).toEqual([]);
+
+        const first = await syncStateTo(ask, { includeSecrets: false, installMissing: true });
+        expect(first.installing).toEqual(["grok", "opencode"]);
+        // Waited for as the server: it looks for what it installed in its own home.
+        await inHome(serverHome, async () => {
+            while (installing().length) await Bun.sleep(20);
+        });
+        expect(installState("opencode")).toEqual({});
+        expect(existsSync(opencode)).toBe(true);
+        expect(installState("grok").installError).toBe("curl: (6) Could not resolve host: x.ai");
+
+        // The next sync sees OpenCode there; Grok's installer isn't run again behind the user's back.
+        const after = await syncStateTo(ask, { includeSecrets: false, installMissing: true });
+        expect(after.unchanged).toBeUndefined();
+        expect(after.missingClis).toEqual(["grok"]);
+        expect(after.installing).toBeUndefined();
+    } finally {
+        process.env.PATH = prev.PATH;
+        if (prev.HOME === undefined) delete process.env.HOME;
+        else process.env.HOME = prev.HOME;
+    }
 });
 
 test("with key sync on, a key or a secret shaped like a JWT syncs; a CLI's own sign-in token never does", async () => {

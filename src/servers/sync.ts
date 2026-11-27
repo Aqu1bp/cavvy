@@ -61,6 +61,9 @@ function syncedSingleFiles(): SyncSingle[] {
     ];
 }
 
+/** What a server gets before its sync is turned on (ServerEntry.sync): skills and commands. */
+const BASIC_PATH = /^\.(cavvy|claude)\/skills\/|^\.cavvy\/commands\//;
+
 const SYNCED_DIR_PATH = /^(\.(cavvy|claude|codex|agents)\/skills\/|\.(cavvy|claude)\/(commands|agents)\/|\.cavvy\/(themes|agent-memory)\/|\.claude\/rules\/)/;
 const SYNCED_SINGLE_PATHS = new Set([
     ".cavvy/CAVVY.md",
@@ -370,8 +373,10 @@ export interface SyncFilesResult {
  * Brings a server level with this machine's synced files: asks it what it was given, then sends what's new or
  * changed and what's gone. `ask` is a call over the connection to it.
  */
-export async function syncTo(ask: (method: string, params: Record<string, unknown>) => Promise<unknown>): Promise<SyncFilesResult> {
-    const mine = localSyncFiles();
+export async function syncTo(ask: (method: string, params: Record<string, unknown>) => Promise<unknown>, o: { basic?: boolean } = {}): Promise<SyncFilesResult> {
+    const all = localSyncFiles();
+    // A server whose sync hasn't been turned on gets only what every server always had: skills and commands.
+    const mine = o.basic ? new Map([...all].filter(([p]) => BASIC_PATH.test(p))) : all;
     const theirs = await ask("sync.files", {});
     const given = theirs && typeof theirs === "object" ? (theirs as Record<string, unknown>) : {};
     const send = [...mine.values()].filter((f) => given[f.path] !== f.sha);

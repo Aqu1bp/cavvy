@@ -5,6 +5,7 @@
 
 import { applySync, readSynced } from "../servers/sync";
 import { applyStateSync, readSyncedStateDigest } from "../servers/sync-state";
+import { installState } from "../servers/sync-install";
 import { FAR_GRACE_MS, searchServers, withServers, trashOnServers } from "./far-search";
 import { answerPeers, homeFarPeers, peersDenied, PEERS_WAIT_MS, serverFarPeers } from "./far-peers";
 import { noteScheduleIndex, readScheduleIndex } from "../agent/schedule-host";
@@ -2263,6 +2264,8 @@ export class Engine {
                         installed: Boolean(findCli(p.id, cli)),
                         signIn: cli.signIn,
                         install: cli.install,
+                        // On a server whose sync installs it (servers/sync-install.ts).
+                        ...installState(p.id),
                         plan: def.planLabel,
                         multiAccount: Boolean(def.account),
                         planLimits: def.caps.planLimits !== "none",
@@ -3808,7 +3811,7 @@ export class Engine {
             case "servers.add": {
                 const servers = await this.servers(client, str(p.name, "name"));
                 const name = str(p.name, "name");
-                const draft = { name, destination: str(p.destination, "destination"), ...(typeof p.port === "number" ? { port: p.port } : {}), ...(typeof p.identityFile === "string" && p.identityFile ? { identityFile: p.identityFile } : {}), ...(p.syncSecrets === true ? { syncSecrets: true } : {}) };
+                const draft = { name, destination: str(p.destination, "destination"), ...(typeof p.port === "number" ? { port: p.port } : {}), ...(typeof p.identityFile === "string" && p.identityFile ? { identityFile: p.identityFile } : {}), ...(typeof p.sync === "boolean" ? { sync: p.sync } : {}) };
                 const trust = fingerprints(p.trust);
                 return await servers.add(draft, trust ? servers.trust(name, trust) : undefined);
             }
@@ -3817,7 +3820,8 @@ export class Engine {
             case "servers.sync":
                 return { results: await (await this.servers(client)).syncNow(optStr(p.name)) };
             case "servers.setSync":
-                (await this.servers(client)).setSyncSecrets(str(p.name, "name"), p.syncSecrets === true);
+                if (typeof p.on !== "boolean") throw new RpcError("Say on or off", "invalid");
+                (await this.servers(client)).setSync(str(p.name, "name"), p.on);
                 return null;
             case "servers.check":
                 return await (await this.servers(client, str(p.name, "name"))).check(str(p.name, "name"));

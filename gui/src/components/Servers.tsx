@@ -4,7 +4,7 @@
 
 import { createEffect, createResource, createSignal, createUniqueId, For, Match, Show, Switch } from "solid-js";
 import { render } from "solid-js/web";
-import { Check, ChevronDown, CircleArrowUp, KeyRound, Plus, RefreshCw, Server, Trash2 } from "lucide-solid";
+import { Check, ChevronDown, CircleArrowUp, Plus, RefreshCw, Server, Trash2 } from "lucide-solid";
 import type { AddResult, ServerCheck, ServerProblem, UnknownHost } from "@shared/protocol";
 import { homeRpc, machineIssue, setMachineIssue, switchMachine, trustMachine, userAsked } from "../lib/machines";
 import { machine, os } from "../lib/platform";
@@ -183,39 +183,27 @@ function ServerMenu(p: { anchor: () => HTMLElement | undefined }) {
                 .catch(() => []),
     );
     const close = () => setServerMenu(false);
-    const syncOne = async (name: string) => {
-        close();
-        try {
-            const r = (await servers().call("servers.sync", { name })).results[0];
-            if (!r) return;
-            if (!r.ok) toast(r.error ?? `Couldn't sync ${name}`, "error");
-            else toast(r.summary && r.summary !== "Up to date" ? `Synced ${name}` : `${name} is up to date`, "info");
-        } catch (e) {
-            reportError(e);
-        }
-    };
     // Said once the server has answered, not when the switch is saved: off takes the keys away there, and one that
     // can't be reached still has them. It can be put back, so nothing is asked first.
-    const toggleKeys = async (name: string, next: boolean) => {
+    const toggleSync = async (name: string, next: boolean) => {
         const turn = (asked.get(name) ?? 0) + 1;
         asked.set(name, turn);
         try {
-            await servers().call("servers.setSync", { name, syncSecrets: next });
+            await servers().call("servers.setSync", { name, on: next });
             void refetch();
             const r = (await servers().call("servers.sync", { name })).results[0];
             void refetch();
             // Switched again meanwhile: that one says how it stands.
             if (asked.get(name) !== turn) return;
             if (next) {
-                if (r?.ok) toast(`Syncing API keys to ${name}`, "info");
+                if (r?.ok) toast(`Syncing ${name}`, "info");
                 else toast(r?.error ?? `Couldn't sync ${name}`, "error");
             } else if (r?.keysLeft?.length) {
                 toast(r.error ?? `Couldn't remove your API keys from ${name}`, "error");
             } else if (r && (r.ok || r.warnings?.length)) {
-                // Answered, even with something else to say: the keys were dealt with.
-                toast(`${name} no longer has your API keys`, "info", { label: "Undo", run: () => toggleKeys(name, true) });
+                toast(`${name} no longer syncs`, "info", { label: "Undo", run: () => toggleSync(name, true) });
             } else {
-                toast(`Keys leave ${name} when it reconnects`, "warn");
+                toast(`Your keys leave ${name} when it reconnects`, "warn");
             }
         } catch (e) {
             if (asked.get(name) === turn) reportError(e);
@@ -253,22 +241,13 @@ function ServerMenu(p: { anchor: () => HTMLElement | undefined }) {
                         </button>
                         <button
                             role="menuitem"
-                            class={`hb${s.sync?.state === "error" ? " tone-warn" : ""}`}
-                            title={s.sync?.state === "error" ? `Sync failed: ${s.sync.error}` : `Sync ${s.name} now`}
-                            aria-label={`Sync ${s.name} now`}
-                            onClick={() => void syncOne(s.name)}
+                            class={`hb${s.syncOn ? " server-sync-on" : ""}${s.sync?.state === "error" ? " tone-warn" : ""}`}
+                            title={s.sync?.state === "error" ? `Sync failed: ${s.sync.error}` : s.syncOn ? `Stop syncing ${s.name}` : `Sync ${s.name} with ${HERE === "This Mac" ? "this Mac" : "this computer"}`}
+                            aria-label={s.syncOn ? `Stop syncing ${s.name}` : `Sync ${s.name}`}
+                            aria-pressed={s.syncOn ? "true" : "false"}
+                            onClick={() => void toggleSync(s.name, !s.syncOn)}
                         >
                             <RefreshCw size={13} />
-                        </button>
-                        <button
-                            role="menuitem"
-                            class={`hb${s.syncSecrets ? " server-keys-on" : ""}`}
-                            title={s.syncSecrets ? `Remove your API keys from ${s.name}` : `Sync API keys to ${s.name}`}
-                            aria-label={s.syncSecrets ? `Remove your API keys from ${s.name}` : `Sync API keys to ${s.name}`}
-                            aria-pressed={s.syncSecrets ? "true" : "false"}
-                            onClick={() => void toggleKeys(s.name, !s.syncSecrets)}
-                        >
-                            <KeyRound size={13} />
                         </button>
                         <Show when={s.behind}>
                             <button role="menuitem" class="hb" title={`Update Cavvy on ${s.name}`} aria-label={`Update Cavvy on ${s.name}`} onClick={() => (close(), void updateServer(s.name))}>
@@ -296,7 +275,7 @@ type AddStep =
     | { at: "form" }
     | { at: "working"; text: string; percent?: number }
     | { at: "trust"; unknown: UnknownHost }
-    | { at: "copy"; name: string; note?: string; what: string; left?: string }
+    | { at: "sync"; added: Extract<AddResult, { status: "added" }> }
     | { at: "done"; name: string; note?: string; copied?: string; left?: string; lines?: string[] }
     | { at: "failed"; problem: ServerProblem };
 
@@ -306,7 +285,6 @@ function AddServerDialog() {
     const [name, setName] = createSignal("");
     const [destination, setDestination] = createSignal("");
     const [identity, setIdentity] = createSignal("");
-    const [syncKeys, setSyncKeys] = createSignal(false);
     const [step, setStep] = createSignal<AddStep>({ at: "form" });
     const close = () => {
         // Not while it's being added: what comes next (its key to trust, what it lacks) would be asked of nobody.
@@ -316,9 +294,8 @@ function AddServerDialog() {
         setName("");
         setDestination("");
         setIdentity("");
-        setSyncKeys(false);
     };
-    const draft = () => ({ name: name().trim(), destination: destination().trim(), ...(identity().trim() ? { identityFile: identity().trim() } : {}), ...(syncKeys() ? { syncSecrets: true } : {}) });
+    const draft = () => ({ name: name().trim(), destination: destination().trim(), ...(identity().trim() ? { identityFile: identity().trim() } : {}) });
 
     // What it's doing, as this computer's Cavvy says it.
     servers().onEvent((e) => {
@@ -346,23 +323,23 @@ function AddServerDialog() {
             const r = await servers().call("servers.add", { ...draft(), ...(trust ? { trust } : {}) });
             if (r.status === "unknown-host") setStep({ at: "trust", unknown: r.unknown });
             else if (r.status === "failed") setStep({ at: "failed", problem: r.problem });
-            else if (r.copy) setStep({ at: "copy", name: r.name, note: r.note, what: r.copy.what, left: r.left });
-            else await finish(r);
+            else setStep({ at: "sync", added: r });
         } catch (e) {
             setStep({ at: "failed", problem: { message: (e as Error).message } });
         }
     };
-    const copy = async (yes: boolean) => {
+    // Kept in sync, or not: either way it's added, and the switch is in the Machines menu after.
+    const sync = async (yes: boolean) => {
         const s = step();
-        if (s.at !== "copy") return;
-        const added = { status: "added" as const, name: s.name, note: s.note, left: s.left };
-        if (!yes) return finish(added);
-        setStep({ at: "working", text: "Copying…" });
+        if (s.at !== "sync") return;
+        const added = { ...s.added, left: undefined };
+        setStep({ at: "working", text: yes ? "Syncing…" : "Finishing…" });
         try {
-            const r = await servers().call("servers.copy", { name: s.name });
-            await finish(added, r.took ? `Copied your ${r.took}.` : `${s.name} already had them.`);
+            await servers().call("servers.setSync", { name: added.name, on: yes });
+            if (!yes) return await finish(added);
+            const r = (await servers().call("servers.sync", { name: added.name })).results[0];
+            await finish(added, r && !r.ok ? r.error : undefined);
         } catch (e) {
-            // The copy is an extra: the server is added either way.
             await finish(added, (e as Error).message);
         }
     };
@@ -390,13 +367,6 @@ function AddServerDialog() {
                             <label>
                                 SSH key file
                                 <input class="input" value={identity()} onInput={(e) => setIdentity(e.currentTarget.value)} placeholder="Optional" autocapitalize="off" spellcheck={false} />
-                            </label>
-                            <label class="server-check">
-                                <input type="checkbox" checked={syncKeys()} onChange={(e) => setSyncKeys(e.currentTarget.checked)} />
-                                <span>
-                                    Sync API keys and MCP secrets
-                                    <span class="muted small"> · Sessions there run in Bypass.</span>
-                                </span>
                             </label>
                             <div class="server-actions">
                                 <button type="button" class="btn secondary" onClick={close}>
@@ -438,19 +408,19 @@ function AddServerDialog() {
                             </>
                         )}
                     </Match>
-                    <Match when={step().at === "copy" && (step() as Extract<AddStep, { at: "copy" }>)}>
+                    <Match when={step().at === "sync" && (step() as Extract<AddStep, { at: "sync" }>)}>
                         {(s) => (
                             <>
                                 <h2 id={titleId}>
-                                    Copy your {s().what} to {s().name}?
+                                    Sync {s().added.name} with {HERE === "This Mac" ? "this Mac" : "this computer"}?
                                 </h2>
-                                <p class="muted">Keys, and what reads like one, stay here.</p>
+                                <p class="muted">Settings, skills, plugins and API keys. Sign-ins stay on each machine.</p>
                                 <div class="server-actions">
-                                    <button class="btn secondary" onClick={() => void copy(false)}>
-                                        Skip
+                                    <button class="btn secondary" onClick={() => void sync(false)}>
+                                        Not now
                                     </button>
-                                    <button class="btn primary" onClick={() => void copy(true)}>
-                                        Copy
+                                    <button class="btn primary" autofocus onClick={() => void sync(true)}>
+                                        Sync
                                     </button>
                                 </div>
                             </>

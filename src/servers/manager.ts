@@ -20,9 +20,9 @@ import { ServerBusy, setUpServer, type SetupProgress } from "./install";
 import { probeServer } from "./remote";
 import { NotSetUp, remoteCheck, remoteStatus, revokeOverSsh, serviceReport, stopRemote, StoppedThere } from "./service";
 import { hostOf, offeredHostKey, printable, SshError, trustHostKey, type OfferedHostKey } from "./ssh";
-import { draftServer, getServer, listServers, removeServer, requireServer, saveServer, ServerError, setServerSyncSecrets, thisDesktop, type ServerEntry } from "./store";
-import { syncedWatchTargets } from "./sync";
-import { describeSyncRun, syncAllTo } from "./sync-state";
+import { draftServer, getServer, listServers, removeServer, requireServer, saveServer, ServerError, thisDesktop, type ServerEntry } from "./store";
+import { syncedWatchTargets, syncTo } from "./sync";
+import { describeSyncRun, syncAllTo, type SyncRunResult } from "./sync-state";
 import { MachineWatch, type LentCall, type LentResult, type MachineNotice, type SessionChange } from "./watch";
 
 /** A server's sessions as last heard (MachineWatch kept): listed while it can't be reached, from the next launch too. */
@@ -165,7 +165,7 @@ export class ServerLinks {
                 lends: this.o.lends,
                 lendMode: this.o.lendMode,
                 lend: this.o.lend && ((call, signal) => this.o.lend!(name, call, signal)),
-                sync: this.o.sync ? (ask) => syncAllTo(ask, { includeSecrets: () => getServer(name)?.syncSecrets === true }) : undefined,
+                sync: this.o.sync ? (ask) => this.syncFor(name, ask) : undefined,
                 peers: this.o.peers && ((op, params) => this.o.peers!(name, op, params)),
                 retryMs: this.o.watchRetryMs,
                 kept: { read: () => readKept(name), write: (sessions) => writeKept(name, sessions) },
@@ -262,7 +262,7 @@ export class ServerLinks {
                 ...(s.cloud?.cost ? { cost: s.cloud.cost } : {}),
                 // Removing it can delete the machine too (ServerRemove): the window asks which is meant.
                 ...(s.cloud?.teardown?.length ? { rented: true } : {}),
-                ...(s.syncSecrets ? { syncSecrets: true } : {}),
+                ...(s.sync !== undefined ? { syncOn: s.sync } : {}),
                 ...(showSync ? { sync } : {}),
             };
         });
@@ -313,7 +313,7 @@ export class ServerLinks {
      * Adds a server: connects, puts this machine's build of Cavvy there and starts it. `trusted`: the entry `trust`
      * handed back, when the host's key was just accepted.
      */
-    async add(draft: { name: string; destination: string; port?: number; identityFile?: string; knownHostsFile?: string; cloud?: ServerEntry["cloud"]; syncSecrets?: boolean }, trusted?: ServerEntry, heard?: (text: string) => void): Promise<AddResult> {
+    async add(draft: { name: string; destination: string; port?: number; identityFile?: string; knownHostsFile?: string; cloud?: ServerEntry["cloud"]; sync?: boolean }, trusted?: ServerEntry, heard?: (text: string) => void): Promise<AddResult> {
         let entry: ServerEntry;
         try {
             entry = trusted ?? draftServer(draft);
@@ -624,11 +624,22 @@ export class ServerLinks {
      * (a server that doesn't answer takes ssh ten seconds or more to say so, and its sign-ins end by themselves).
      */
     async remove(name: string): Promise<null> {
-        await this.drop(name, false);
+        // Synced with this machine and reachable now: its keys are taken off it first, by the connection there is,
+        // while the list already goes without it. One out of reach keeps them (and is told when it's put back).
+        const w = this.watches.get(name);
+        const leaving = getServer(name)?.sync === true && w?.overview().state === "connected" ? w : undefined;
+        if (leaving) {
+            this.watches.delete(name);
+            rmSync(keptFile(name), { force: true });
+            this.o.onOverview?.({ name, state: "removed", sessions: [] });
+        }
         const entry = removeServer(name);
         this.removed.set(name, entry);
         if (this.watching) this.watchAll();
-        const out = revokeOverSsh(entry, thisDesktop().id)
+        const takeBack = leaving ? Promise.race([leaving.syncNow((ask) => syncAllTo(ask, { includeSecrets: false })).catch(() => undefined), new Promise((r) => setTimeout(r, 20_000))]).finally(() => leaving.stop()) : Promise.resolve();
+        const out = takeBack
+            .then(() => this.drop(name, false))
+            .then(() => revokeOverSsh(entry, thisDesktop().id))
             .catch(() => undefined)
             .then(() => {
                 if (this.revoking.get(name) === out) this.revoking.delete(name);
@@ -674,9 +685,30 @@ export class ServerLinks {
         this.syncChanged();
     }
 
-    /** Enables or disables opt-in Cavvy API key and MCP secret sync for `name`, and resyncs if connected. */
-    setSyncSecrets(name: string, on: boolean) {
-        setServerSyncSecrets(name, on);
+    /**
+     * What a server gets (ServerEntry.sync). On: everything but sign-ins, its keys included, and the CLIs this machine
+     * uses installed there. Not asked yet: skills and commands, as every server always had. Off: nothing, but once
+     * after it was on, one last sync without keys takes the ones sync put there away.
+     */
+    private syncFor(name: string, ask: (method: string, params: Record<string, unknown>) => Promise<unknown>): Promise<SyncRunResult | undefined> {
+        const entry = getServer(name);
+        if (entry?.sync === true) return syncAllTo(ask, { includeSecrets: () => getServer(name)?.sync === true, installMissing: true });
+        if (entry?.sync === false) {
+            if (!entry.takeBack) return Promise.resolve(undefined);
+            return syncAllTo(ask, { includeSecrets: false }).then((r) => {
+                const now = getServer(name);
+                if (now?.sync === false && now.takeBack && !r.state.result?.keysLeft?.length && !r.state.unsupported) saveServer({ ...now, takeBack: undefined });
+                return r;
+            });
+        }
+        return syncTo(ask, { basic: true }).then((files) => ({ files, state: {} }));
+    }
+
+    /** Turns `name`'s sync with this machine on or off (ServerEntry.sync), and syncs it now if it's connected. */
+    setSync(name: string, on: boolean) {
+        const entry = requireServer(name);
+        // Off after on: its keys are taken away with one more sync, however long it takes to reach it.
+        saveServer({ ...entry, sync: on, takeBack: on ? undefined : entry.sync === true || entry.takeBack || undefined });
         if (this.o.sync) this.watches.get(name)?.resync();
     }
 
@@ -735,7 +767,7 @@ export class ServerLinks {
                         : `${entry.name}'s host key isn't trusted yet.`;
                     return { name: entry.name, ok: false, error: err };
                 }
-                run = await this.syncOverDirectWs(conn.url, conn.token, () => getServer(entry.name)?.syncSecrets === true);
+                run = await this.syncOverDirectWs(conn.url, conn.token, (ask) => this.syncFor(entry.name, ask));
             }
             const st = run?.state?.result;
             const summary = run ? describeSyncRun(run) : "";
@@ -774,7 +806,7 @@ export class ServerLinks {
     }
 
     /** Opens a short-lived WebSocket to run syncAllTo when no MachineWatch is already connected (e.g. CLI `cavvy servers sync`). */
-    private async syncOverDirectWs(url: string, token: string, includeSecrets: () => boolean) {
+    private async syncOverDirectWs(url: string, token: string, sync: (ask: (method: string, params: Record<string, unknown>) => Promise<unknown>) => Promise<SyncRunResult | undefined>) {
         const ws = new WebSocket(url, ["cavvy.v1", `auth.${token}`]);
         let nextId = 1;
         const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
@@ -815,7 +847,7 @@ export class ServerLinks {
                 ws.send(JSON.stringify({ id, method, params }));
             });
         try {
-            return await syncAllTo(ask, { includeSecrets });
+            return await sync(ask);
         } finally {
             for (const p of pending.values()) clearTimeout(p.timer);
             pending.clear();

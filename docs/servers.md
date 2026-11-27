@@ -21,13 +21,16 @@ A CLI that's installed there and not signed in is offered at once: `Sign in to C
 
 API keys for the server are added there too (`cavvy --server box auth add`, or Settings in its GUI) and are kept in a file only your user there can read.
 
-You're offered a one-time copy of this machine's settings, memory, skills and commands (`--copy` or `--no-copy` to answer ahead). Nothing already on the server is replaced, and Cavvy says what the server took.
-
-While the desktop app is open and connected to a server (or whenever you run `cavvy servers sync [name]`), your setup stays in sync there automatically:
+When it's added you're asked `Sync box with this Mac?` (`--sync` or `--no-sync` to answer ahead; afterwards the sync button beside it in the Machines menu, or `cavvy servers sync box --on` / `--off`). With sync on, while the desktop app is open and connected to it (or whenever you run `cavvy servers sync [name]`), the server is kept level with this machine:
 
 - **Files:** skills (`~/.cavvy/skills`, `~/.claude/skills`, `~/.codex/skills`, `~/.agents/skills`), commands (`~/.cavvy/commands`, `~/.claude/commands`), custom agents (`~/.cavvy/agents`, `~/.claude/agents`, `~/.cavvy/agent-memory`), user memory and rules (`~/.cavvy/CAVVY.md`, `~/.claude/CLAUDE.md`, `~/.claude/rules`, `~/.codex/AGENTS.md`, `~/.codex/AGENTS.override.md`), themes (`~/.cavvy/themes`), and keybindings (`~/.cavvy/keybindings.json`).
 - **Settings, plugins and providers:** portable Cavvy settings, plain permission rules and portable MCP servers, remote plugin marketplaces and user-scoped plugins, non-local custom API providers, Vertex metadata, and which agent CLIs and Cavvy-managed named accounts you use.
-- **Opt-in API keys and MCP secrets:** off by default because servers run in Bypass mode. Turn it on per server in the Machines menu (key icon), in **Add server…**, or with `cavvy servers sync <name> --keys` (or `cavvy servers add … --sync-keys`) to also sync your Cavvy API keys, search keys and remote MCP server secrets (`env`/`headers`). Turning it off (the key icon again, or `--no-keys`) takes them off the server: the keys and secrets sync put there are removed, and a key you changed on the server stays. A server that can't be reached keeps them until it next syncs. Sessions there that used one of those keys say `No API key for …` on their next request.
+- **API keys and MCP secrets:** your Cavvy API keys, search keys and remote MCP server secrets (`env`/`headers`). On the server they're in a file under `~/.cavvy` that your user there can read, and sessions there run in Bypass, so an agent there can read them too.
+- **Agent CLIs:** one you use here that the server lacks is installed there with its own installer (Claude Code, Codex, OpenCode, Grok Build), in the background. Codex installs with npm, so it needs Node.js there. A failed install isn't tried again by itself: Settings → Providers shows **Install** for it, which runs the installer in a terminal you can watch. Signing it in is still yours: **Sign in** in the same place.
+
+Turning sync off takes the keys and secrets sync put there off the server (a key you changed on the server stays) and leaves the rest as it is. A server that can't be reached keeps them until it's next reached. Removing a server takes them off first when it's reachable. Sessions there that used one of those keys say `No API key for …` on their next request.
+
+A server you haven't answered for (one added before sync could be turned on) gets your skills and commands, as servers always did, and nothing else.
 
 What a server has of its own (or a synced file or setting you changed there) is left as it is; machine-local settings (`permissions.defaultMode`, `sandbox`, `browser`, `simulator`, `editor`, `hooks`, `statusLine`, `env`) stay local to each machine. So does what couldn't work on a server: an MCP server that runs a program from this machine (`node server.js`) or sits at a local address, and a model server on this machine. A file named like a key, or with a key of a known format in it, never syncs.
 
@@ -111,7 +114,7 @@ A `LocalForward` in your SSH config for that host is opened along with Cavvy's o
 
 ### In the desktop app
 
-Under a new session's composer, the machine it will run on (**This Mac ▾**) lists your machines: this one and each server. **Add server…** asks for a name, an address (`user@host`) and, if ssh wouldn't find it by itself, a key file; it then does what `cavvy servers add` does: shows the server's key when this machine hasn't seen it, puts Cavvy there, offers the one-time copy, and says what the server lacks.
+Under a new session's composer, the machine it will run on (**This Mac ▾**) lists your machines: this one and each server. **Add server…** asks for a name, an address (`user@host`) and, if ssh wouldn't find it by itself, a key file; it then does what `cavvy servers add` does: shows the server's key when this machine hasn't seen it, puts Cavvy there, asks whether to keep it in sync with this machine, and says what the server lacks.
 
 The sidebar is one list of every machine's sessions. One on a server says which under its title (`box · my-app`); one on this machine doesn't. A click opens any of them. What a row offers (rename, pin, settle, archive, delete, and Undo) works whichever machine the session is on. Grouped by project, a folder on a server is its own project, named with the server. Archiving a session that works in a worktree from another machine's window keeps the worktree and says so; a window on its own machine asks whether to remove it.
 
@@ -183,7 +186,7 @@ Either way the daemon's file is written by root on the Mac, from a script Cavvy 
 ```bash
 cavvy servers                 # the servers you've added
 cavvy servers check [name]    # is Cavvy running there, and what's missing
-cavvy servers sync [name]     # sync skills, settings, plugins and providers (--keys / --no-keys)
+cavvy servers sync [name]     # sync now (--on / --off: keep it in sync, or stop)
 cavvy servers login <name>    # sign Claude Code or Codex in there (--account <id>)
 cavvy servers update <name>   # bring its Cavvy up to this machine's
 cavvy servers rollback <name> # put it back on the version before its last update

@@ -1307,6 +1307,9 @@ export interface ProviderInfo {
         /** The CLI's own sign-in command, for when it isn't signed in. */
         signIn: string;
         install: string;
+        /** Its install by sync is running there now, or failed with this. */
+        installing?: boolean;
+        installError?: string;
         /** What the plan is called in buttons ("Claude subscription", "ChatGPT plan"). */
         plan: string;
         /** It can have accounts besides Default (false: an ACP agent, with its own sign-in only). */
@@ -1924,8 +1927,8 @@ export interface ServerSummary {
     cost?: string;
     /** An agent created it, and Cavvy knows how to delete it at its provider. */
     rented?: boolean;
-    /** Opt-in: Cavvy API keys and MCP server secrets sync to this server. */
-    syncSecrets?: boolean;
+    /** Kept in sync with this machine (ServerEntry.sync): on, off, or left out when it hasn't been asked. */
+    syncOn?: boolean;
     /** Sync status when an error or pending sign-in needs attention. */
     sync?: ServerSyncStatus;
 }
@@ -2251,10 +2254,10 @@ export interface Methods {
      * (RELAYED_ARCHIVE_OFFER).
      */
     "servers.relay": { params: { name: string; method: string; params: Record<string, unknown> }; result: { worktree: true } | null };
-    "servers.add": { params: { name: string; destination: string; port?: number; identityFile?: string; trust?: string[]; syncSecrets?: boolean }; result: AddResult };
+    "servers.add": { params: { name: string; destination: string; port?: number; identityFile?: string; trust?: string[]; sync?: boolean }; result: AddResult };
     "servers.copy": { params: { name: string }; result: { took: string; left?: string } };
     "servers.sync": { params: { name?: string }; result: { results: ServerSyncItemResult[] } };
-    "servers.setSync": { params: { name: string; syncSecrets: boolean }; result: null };
+    "servers.setSync": { params: { name: string; on: boolean }; result: null };
     "servers.check": { params: { name: string }; result: ServerCheck };
     /**
      * `retry`: the window's connection trying again by itself. `renew`: the sign-in it was last given opened nothing.

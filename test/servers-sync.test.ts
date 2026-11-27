@@ -192,3 +192,17 @@ test("memory, agents, themes, keybindings and symlinked skills sync while links 
     expect(readFileSync(join(server, ".cavvy/themes/night.json"), "utf-8")).toBe('{"name":"night"}');
     expect(readFileSync(join(server, ".cavvy/keybindings.json"), "utf-8")).toBe('{"bindings":[]}');
 });
+
+test("a server whose sync isn't on gets skills and commands only, as servers always did", async () => {
+    put(join(iso.home, "skills", "basic-skill", "SKILL.md"), "---\nname: basic-skill\n---\nA skill.");
+    put(join(iso.home, "commands", "basic.md"), "A command.");
+    put(join(iso.home, "themes", "basic-theme.json"), '{"name":"basic-theme"}');
+    put(join(iso.home, "CAVVY.md"), "Basic memory.");
+    sent.length = 0;
+    await syncTo(ask, { basic: true });
+    const paths = sent.filter((s) => s.method === "sync.apply").flatMap((s) => (s.params.files as { path: string }[]).map((f) => f.path));
+    expect(paths).toContain(".cavvy/skills/basic-skill/SKILL.md");
+    expect(paths).toContain(".cavvy/commands/basic.md");
+    expect(paths.filter((p) => !/^\.(cavvy|claude)\/skills\/|^\.cavvy\/commands\//.test(p))).toEqual([]);
+    expect(existsSync(join(server, ".cavvy/themes/basic-theme.json"))).toBe(false);
+});

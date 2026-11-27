@@ -30,14 +30,8 @@
     color: var(--fg-2);
 }
 
-.server-dialog label.server-check {
-    flex-direction: row;
-    align-items: center;
-    gap: calc(8 * var(--sp));
-    cursor: pointer;
-}
-
-.server-keys-on {
+/* Kept in sync with this machine: the Machines menu's sync switch, on. */
+.server-sync-on {
     color: var(--accent);
 }
 
