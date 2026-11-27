@@ -56,6 +56,8 @@ export const serversFile = () => join(cavvyHome(), "servers.json");
 export const desktopIdFile = () => join(cavvyHome(), "servers-id");
 
 const NAME = /^[a-z0-9][a-z0-9-]{0,39}$/;
+/** What a server's name may be (and so how another machine is named: `mac`, `build-box`). */
+export const SERVER_NAME = NAME;
 /** `user@host` or a config Host: nothing ssh could take for an option, and nothing a shell or a URL would read into. */
 const DESTINATION = /^[A-Za-z0-9_][A-Za-z0-9_.@:%+[\]-]{0,252}$/;
 

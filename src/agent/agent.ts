@@ -8,6 +8,7 @@
 //   - every tool call gets exactly one tool result, even when interrupted
 //   - an interrupted (partial) model response is discarded, never stored
 
+import { randomUUID } from "crypto";
 import type {
     AttachedPart,
     AssistantMessage,
@@ -84,6 +85,7 @@ import { SIMULATOR_INSTRUCTIONS, SimulatorControlTool, nativeSimulatorCall, serv
 import { nativeWorktreeCall, servedWorktreeFor, WORKTREE_INSTRUCTIONS, worktreeServerTools } from "../tools/worktree-tools";
 import { onServer } from "../servers/role";
 import { nativeSessionCall, servedSessionName, servedSessionTool, SESSION_TOOL_NAMES, sessionInstructions, sessionServerTools } from "../tools/session-tools";
+import { nativeSuggestCall, SERVED_SUGGEST_NAME, servedSuggestName, servedSuggestTool, SUGGEST_INSTRUCTIONS, SUGGEST_TOOL_NAMES, suggestServerTools, SuggestTaskTool } from "../tools/suggest-tools";
 import { offered } from "../tools/index";
 import { lostNote, SessionBackground, type BackgroundTaskInfo } from "./background";
 import { SECRET_INSTRUCTIONS, secretTools, secretToolTitle } from "./secret-tools";
@@ -1770,7 +1772,9 @@ export class Agent {
         const servers = !this.oneShot && Boolean(this.state.servers && this.o.host.ui.confirm);
         // Cavvy's own window: where there's one on this machine to show a theme in.
         const theming = Boolean(this.o.host.ui.showTheme);
-        if (!delegating && !(store && ask) && !signIn && !scheduling && !watching && !browsing && !simulating && !worktrees && !peers && !servers && !theming) return undefined;
+        // Suggested tasks: where there's a card to show them on (the app's sessions; not a -p run's).
+        const suggesting = !this.oneShot && Boolean(this.state.suggest);
+        if (!delegating && !(store && ask) && !signIn && !scheduling && !watching && !browsing && !simulating && !worktrees && !peers && !servers && !theming && !suggesting) return undefined;
         const tools: ServerTool[] = [];
         const instructions: string[] = [];
         /** Tools whose calls run Cavvy's checks themselves (runServed, authorizeServedTool). */
@@ -1837,6 +1841,12 @@ export class Agent {
             const drives = Boolean(peers.send && peers.start);
             tools.push(...selfChecked(sessionServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId), drives)));
             instructions.push(sessionInstructions(drives));
+        }
+        if (suggesting) {
+            tools.push(...selfChecked(suggestServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId))));
+            // Claude Code lists the tool by name alone, and keeps only the start of a server's instructions, which the
+            // sections above fill: it gets these in its system prompt instead (suggestNote, claude-code.ts).
+            if (caller !== "claude-code") instructions.push(SUGGEST_INSTRUCTIONS);
         }
         this.serverTools = tools;
         this.serverInstructions = instructions.join("\n\n");
@@ -2983,11 +2993,13 @@ export class Agent {
             const recipe = this.sawSignedOut((e.call.input as { command?: unknown } | undefined)?.command, e.result.content, Boolean(e.result.isError));
             if (recipe) this.pointToSignIn(recipe);
         }
+        // A suggestion's row is SuggestTask from its first event: its card takes the row's place.
+        if (e.type === "tool_call_start" && e.name === SERVED_SUGGEST_NAME && this.findTool(SuggestTaskTool.name)) e = { ...e, name: SuggestTaskTool.name };
         // Cavvy's own tools it served (Monitor for Codex) show as those tools.
         if ((e.type === "tool_start" || e.type === "tool_end") && e.call.name.startsWith(`mcp__${MCP_SERVER_NAME}__`)) {
             const served = e.call.name.slice(`mcp__${MCP_SERVER_NAME}__`.length);
             const input = (e.call.input ?? {}) as Record<string, unknown>;
-            const native = nativeMonitorCall(served, input) ?? nativeBrowserCall(served, input) ?? nativeSimulatorCall(served, input) ?? nativeWorktreeCall(served, input) ?? nativeSessionCall(served, input) ?? nativeServerCall(served, input);
+            const native = nativeMonitorCall(served, input) ?? nativeBrowserCall(served, input) ?? nativeSimulatorCall(served, input) ?? nativeWorktreeCall(served, input) ?? nativeSessionCall(served, input) ?? nativeSuggestCall(served, input) ?? nativeServerCall(served, input);
             const tool = native && this.findTool(native.name);
             if (native && tool) {
                 const call = { ...e.call, ...native };
@@ -3113,11 +3125,11 @@ export class Agent {
             else this.servedRunning = this.servedRunning.filter((c) => c.id !== e.call.id);
         }
         // The session tools' calls by their arguments too: Claude Code sends no call id with them (servedSessionCaller).
-        if (servedSessionTool(MCP_SERVER_NAME, e.call.name)) {
+        if (servedSessionTool(MCP_SERVER_NAME, e.call.name) || servedSuggestTool(MCP_SERVER_NAME, e.call.name)) {
             if (e.type === "tool_start") this.sessionCalls.push({ id: e.call.id, name: e.call.name, input: (e.call.input ?? {}) as Record<string, unknown>, sub: into === this.servedSub, claimed: false });
             else this.sessionCalls = this.sessionCalls.filter((c) => c.id !== e.call.id);
         }
-        if (!e.call.name.startsWith(`mcp__${MCP_SERVER_NAME}__monitor`) && !servedSessionTool(MCP_SERVER_NAME, e.call.name)) return;
+        if (!e.call.name.startsWith(`mcp__${MCP_SERVER_NAME}__monitor`) && !servedSessionTool(MCP_SERVER_NAME, e.call.name) && !servedSuggestTool(MCP_SERVER_NAME, e.call.name)) return;
         if (e.type === "tool_start") into.add(e.call.id);
         else into.delete(e.call.id);
     }
@@ -3142,6 +3154,25 @@ export class Agent {
             await Bun.sleep(50);
         }
         return undefined;
+    }
+
+    /**
+     * A suggest_task call's id as the backend has it (the card stands in for that call), and whether a sub-agent made
+     * it. Claude Code sends no call id with it: found by its arguments, as the session tools' are. Not found: the main
+     * agent's, as far as can be told (it starts nothing either way).
+     */
+    private async servedSuggestCall(input: Record<string, unknown>, callId?: string): Promise<{ sub: boolean; id?: string }> {
+        if (callId) return { sub: await this.fromBackendSubagent(callId), id: callId };
+        const same = (a: Record<string, unknown>) => [...new Set([...Object.keys(a), ...Object.keys(input)])].every((k) => JSON.stringify(a[k]) === JSON.stringify(input[k]));
+        for (let i = 0; i < 40; i++) {
+            const c = this.sessionCalls.find((x) => !x.claimed && x.name === SERVED_SUGGEST_NAME && same(x.input));
+            if (c) {
+                c.claimed = true;
+                return { sub: c.sub, id: c.id };
+            }
+            await Bun.sleep(50);
+        }
+        return { sub: false };
     }
 
     /** A served call one of the backend's sub-agents made. Its event may come just after the call, so this waits a moment for it. */
@@ -3192,8 +3223,15 @@ export class Agent {
             if (caller === "sub") return { text: "Other sessions can't be reached from a sub-agent: only the main agent can reach them.", isError: true };
             if (caller === undefined && !isReadOnly(tool, input)) return { text: "Couldn't tell which agent made this call, so it wasn't sent. Only the main agent can send to or start sessions.", isError: true };
         }
+        // A suggestion's card is the main agent's to raise, and stands in for the backend's own call (by its id).
+        if (tool.name === SuggestTaskTool.name) {
+            const c = await this.servedSuggestCall(input, callId);
+            if (c.sub) return { text: "Tasks can't be suggested from a sub-agent. Put the problem in your report, with what you saw, and say it's unrelated: the main agent can suggest it.", isError: true };
+            // Not matched to the backend's call: an id of its own, never one an earlier card has.
+            callId = c.id ?? `suggest-${randomUUID()}`;
+        }
         // The CLI approves Cavvy's tools without asking: a rule naming the tool as served is enforced here, before the checks its own name gets.
-        const served = servedBrowserName(tool.name) ?? servedSimulatorName(tool.name) ?? servedWorktreeFor(tool.name) ?? servedSessionName(tool.name) ?? servedServerName(tool.name) ?? servedThemeName(tool.name);
+        const served = servedBrowserName(tool.name) ?? servedSimulatorName(tool.name) ?? servedWorktreeFor(tool.name) ?? servedSessionName(tool.name) ?? servedSuggestName(tool.name) ?? servedServerName(tool.name) ?? servedThemeName(tool.name);
         if (served) {
             // A rule's deny first; then a call that can't run is refused before a rule asks the user about it (prepare
             // checks it again, cheaply).
@@ -3994,7 +4032,7 @@ export class Agent {
             notes.push(...(servers?.notes ?? []));
         }
 
-        const exclude = new Set(["Task", "TaskStatus", "Monitor", "ListModels", "TodoWrite", "AskUserQuestion", "RequestSecret", "RequestSignIn", "ExitPlanMode", ...SERVER_TOOL_NAMES, ...CRON_TOOL_NAMES, ...SESSION_TOOL_NAMES, ...THEME_TOOL_NAMES]);
+        const exclude = new Set(["Task", "TaskStatus", "Monitor", "ListModels", "TodoWrite", "AskUserQuestion", "RequestSecret", "RequestSignIn", "ExitPlanMode", ...SERVER_TOOL_NAMES, ...CRON_TOOL_NAMES, ...SESSION_TOOL_NAMES, ...SUGGEST_TOOL_NAMES, ...THEME_TOOL_NAMES]);
         let tools = this.tools.filter((t) => !exclude.has(t.name));
         // Its own servers' tools (their names never match a configured server's: startAgentServers refuses those).
         if (servers?.tools.length) tools = [...tools, ...servers.tools];

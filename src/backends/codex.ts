@@ -35,6 +35,7 @@ import { MONITOR_SERVER_TOOLS } from "../tools/monitor";
 import { servedBrowserTool } from "../tools/browser-tools";
 import { servedSimulatorTool } from "../tools/simulator-tools";
 import { servedSessionTool } from "../tools/session-tools";
+import { servedSuggestTool } from "../tools/suggest-tools";
 import { servedWorktreeTool } from "../tools/worktree-tools";
 import { codexInput, codexSkills, pastedPrompt, skillFolder, type CodexSkill } from "./native-skills";
 import { accountEnv, defaultAccount } from "../providers/accounts";
@@ -2015,7 +2016,7 @@ export class CodexTurn {
     /** Cavvy's Monitor, browser, worktree and session tools run the hooks themselves, as Monitor, BashOutput, KillShell, BrowserAct, EnterWorktree or SendToSession: Codex's run would be a second one. */
     protected hooksItself(toolName: string): boolean {
         const server = this.t?.orchestrator?.name;
-        return (Boolean(server) && MONITOR_SERVER_TOOLS.some((t) => toolName === `mcp__${server}__${t}`)) || servedBrowserTool(server, toolName) || servedSimulatorTool(server, toolName) || servedWorktreeTool(server, toolName) || servedSessionTool(server, toolName);
+        return (Boolean(server) && MONITOR_SERVER_TOOLS.some((t) => toolName === `mcp__${server}__${t}`)) || servedBrowserTool(server, toolName) || servedSimulatorTool(server, toolName) || servedWorktreeTool(server, toolName) || servedSessionTool(server, toolName) || servedSuggestTool(server, toolName);
     }
 
     /** PostToolUse or PostToolUseFailure for a main-thread item that ran; what they say reaches Codex while it works. */

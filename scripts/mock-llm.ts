@@ -42,6 +42,7 @@
 //   "handoff"        finds another session of this project (ListSessions) and asks it to run the tests (SendToSession);
 //                    "handoff long" sends a 24-line message
 //   "spinoff"        starts a new session to write a README section (StartSession)
+//   "suggestbug"     comes across an unrelated bug while it works and suggests it as a task (SuggestTask), then carries on
 //   (a message)      answers a message from another session's agent
 //   "monitor"        watches a build log with Monitor; its lines wake the agent later
 //   "jsonfail"       a command that works, and one that fails after printing JSON (its last line is "}")
@@ -223,6 +224,14 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
         const message = /\blong\b/.test(p) ? Array.from({ length: 24 }, (_, i) => `${i + 1}. Run the auth tests in test/auth.test.ts and report each failure with its stack trace.`).join("\n") : "Please run the auth tests and tell me if any fail.";
         if (toolRounds === 1 && id) return { text: "Handing it over.", calls: [{ name: "SendToSession", args: { id, message } }] };
         return { text: toolRounds === 1 ? "There's no other session here to hand it to." : lastResult.split("\n")[0]! };
+    }
+    if (/\bsuggestbug\b/.test(p)) {
+        if (toolRounds === 0)
+            return {
+                text: "While reading the auth module I noticed the session timeout ignores its setting. That's unrelated, so I'll suggest it as a task.",
+                calls: [{ name: "SuggestTask", args: { title: "Session timeout ignores its setting", why: "src/auth/session.ts hard-codes 30 minutes; settings.sessionTimeout is never read.", prompt: "In src/auth/session.ts the session timeout is hard-coded to 30 minutes, so settings.sessionTimeout has no effect. Read the setting there (keeping 30 minutes as its default), and add a test in test/auth.test.ts that a 5-minute setting expires a session after 5 minutes. Done when the test passes." } }],
+            };
+        return { text: `${lastResult.split("\n")[0]!} Back to the task: the auth module's entry point is src/auth/index.ts.` };
     }
     if (/\bspinoff\b/.test(p)) {
         if (toolRounds === 0) return { text: "I'll start a session for that.", calls: [{ name: "StartSession", args: { prompt: "Write a README section about SSO sign-in.", title: "SSO README" } }] };

@@ -9,6 +9,9 @@ import { THEME_TOOLS } from "../themes/tools";
 import type { ThemeEntry } from "../themes/format";
 import type { ThemeReplaced } from "./protocol";
 import { SESSION_TOOLS } from "../tools/session-tools";
+import { SUGGEST_TOOLS } from "../tools/suggest-tools";
+import { applyAction, pendingCount, refusal, shownSuggestions, SUGGEST_LIMITS, SuggestionError, type SuggestionInput } from "../agent/suggestions";
+import type { SuggestionAction, SuggestionState } from "./protocol";
 import { appPeers } from "./session-peers";
 import type { ScheduledJob } from "../agent/schedule";
 import { GIT_TOOL_HEADINGS } from "../tools/git-tools";
@@ -764,6 +767,8 @@ export class Runtime {
         this.toolState.wakes!.onReady(() => this.wake());
         // The user's other sessions, for its agent to list, read, send to and start.
         this.toolState.peers = appPeers(engine.peerHost(), this, () => engine.farPeers());
+        // Tasks its agent comes across, as cards the user starts or dismisses.
+        this.toolState.suggest = { suggest: (s, id) => this.suggestTask(s, id) };
         this.checker = new PermissionChecker(() => this.settings(), ws.cwd);
         this.classifier = new AutoClassifier(undefined);
         this.reviewer = ws.settings.reviewModel;
@@ -1328,6 +1333,8 @@ export class Runtime {
             backgroundTasks: this.toolState.background?.shown() ?? [],
             plan: this.planRef(this.latestPlan()),
             planLinks: [...this.session.planLinks],
+            suggestions: shownSuggestions(this.session.suggestions.values()),
+            ...(this.session.meta.suggestedBy ? { suggestedBy: { ...this.session.meta.suggestedBy } } : {}),
             ...(this.session.meta.forkOf ? { forkOf: { id: this.session.meta.forkOf.id, title: this.session.meta.forkOf.title } } : {}),
             secrets: this.toolState.secrets?.names() ?? [],
             schedules: [],
@@ -2598,11 +2605,11 @@ export class Runtime {
         const native = this.nativeSearch();
         const off = this.settings().webSearch === "off";
         const skill = skillTool(this.ws.skills);
-        return [...BUILTIN_TOOLS.filter((t) => !(t.name === "WebSearch" && (native || off)) && offered(t, this.settings())), ...(skill ? [skill] : []), ...CRON_TOOLS, ...SESSION_TOOLS, ...(this.toolState.servers ? SERVER_TOOLS : []), ...(onServer() ? [] : THEME_TOOLS), ...this.ws.mcp.tools()];
+        return [...BUILTIN_TOOLS.filter((t) => !(t.name === "WebSearch" && (native || off)) && offered(t, this.settings())), ...(skill ? [skill] : []), ...CRON_TOOLS, ...SESSION_TOOLS, ...(this.toolState.suggest && this.guestOf === undefined ? SUGGEST_TOOLS : []), ...(this.toolState.servers ? SERVER_TOOLS : []), ...(onServer() ? [] : THEME_TOOLS), ...this.ws.mcp.tools()];
     }
 
     private toolMeta(call: ToolCallPart): ToolMeta {
-        const tool = BUILTIN_TOOLS.find((t) => t.name === call.name) ?? CRON_TOOLS.find((t) => t.name === call.name) ?? SESSION_TOOLS.find((t) => t.name === call.name) ?? SERVER_TOOLS.find((t) => t.name === call.name) ?? (onServer() ? undefined : THEME_TOOLS.find((t) => t.name === call.name)) ?? (call.name === "Skill" ? (skillTool(this.ws.skills) as Tool<any> | undefined) : undefined) ?? this.ws.mcp.tools().find((t) => t.name === call.name);
+        const tool = BUILTIN_TOOLS.find((t) => t.name === call.name) ?? CRON_TOOLS.find((t) => t.name === call.name) ?? SESSION_TOOLS.find((t) => t.name === call.name) ?? SUGGEST_TOOLS.find((t) => t.name === call.name) ?? SERVER_TOOLS.find((t) => t.name === call.name) ?? (onServer() ? undefined : THEME_TOOLS.find((t) => t.name === call.name)) ?? (call.name === "Skill" ? (skillTool(this.ws.skills) as Tool<any> | undefined) : undefined) ?? this.ws.mcp.tools().find((t) => t.name === call.name);
         let title = call.name;
         try {
             if (tool) title = tool.title(call.input ?? {});
@@ -3955,6 +3962,76 @@ export class Runtime {
     }
 
     // -----------------------------------------------------------------------
+    // Suggested tasks (src/agent/suggestions.ts)
+
+    /** Suggestions made since the turn started (startTurn), by id: the done notification's count. */
+    private turnSuggested: string[] = [];
+    /** SuggestTask's 3 a turn: how many in the turn shown now (a queued message the run takes up is a turn of its own). */
+    private suggestCap = { turn: undefined as string | undefined, n: 0 };
+
+    /** Pending suggestions: the sidebar's count. */
+    get suggestedCount(): number {
+        return pendingCount(this.session.suggestions.values());
+    }
+
+    private suggestTask(s: SuggestionInput, id: string): { ok: true } | { error: string } {
+        // A session that runs tools for one on another machine has no card of its own to show.
+        if (this.guestOf !== undefined) return { error: "Tasks can't be suggested from here. Mention the problem in your reply instead." };
+        // The same call again (a retry): it's there already.
+        const had = this.session.suggestions.get(id);
+        if (had && had.state !== "withdrawn") return { ok: true };
+        if (this.suggestCap.turn !== this.turnId) this.suggestCap = { turn: this.turnId, n: 0 };
+        const why = refusal(this.session.suggestions.values(), s.title, this.suggestCap.n);
+        if (why) return { error: why };
+        this.suggestCap.n++;
+        this.turnSuggested.push(id);
+        this.session.setSuggestion({ id, ...s, at: Date.now(), state: "pending", ...this.session.suggestionAt() });
+        this.suggestionsChanged();
+        return { ok: true };
+    }
+
+    private suggestionsChanged() {
+        this.setState({ suggestions: shownSuggestions(this.session.suggestions.values()) });
+        this.engine.sessionChanged(this);
+    }
+
+    /** A window's action on a suggestion's card (session.suggestion): the suggestion as it is after it. */
+    suggestionAction(suggestionId: string, a: SuggestionAction): SuggestionState {
+        const r = this.session.suggestions.get(suggestionId);
+        if (!r || r.state === "withdrawn") throw new RpcError("That suggestion is gone.", "not_found");
+        let next;
+        try {
+            next = applyAction(r, a);
+        } catch (e) {
+            if (e instanceof SuggestionError) throw new RpcError(e.message, e.code);
+            throw e;
+        }
+        if (next !== r) {
+            this.session.setSuggestion(next);
+            this.suggestionsChanged();
+        }
+        return shownSuggestions([next])[0]!;
+    }
+
+    /**
+     * Opened again: a start left halfway (a window that claimed one and was gone before it said how it went) is
+     * started where a session here took it (`startedHere`), and waits for the user again where none did.
+     */
+    settleStarting(startedHere: (key: string) => { sessionId: string; title: string; cwd: string } | "running" | undefined) {
+        let changed = false;
+        for (const r of [...this.session.suggestions.values()]) {
+            // A fresh claim's start may still be under way: only one gone quiet is settled (as claim takes it over then).
+            if (r.state !== "starting" || Date.now() - (r.claimedAt ?? 0) < SUGGEST_LIMITS.staleClaimMs) continue;
+            const s = startedHere(`${this.id}#${r.id}`);
+            // Still being made here: how it went is said when it's done.
+            if (s === "running") continue;
+            this.session.setSuggestion(s ? { ...r, state: "started", started: { ...s, at: Date.now() } } : { ...r, state: "pending" });
+            changed = true;
+        }
+        if (changed) this.suggestionsChanged();
+    }
+
+    // -----------------------------------------------------------------------
     // Prompts
 
     /** `id`: what the agent knows the steer they make by (AgentHost.unsteered). */
@@ -4328,7 +4405,7 @@ export class Runtime {
     /** `mentionsIn`: the part of `text` the user wrote, whose @mentions attach files and MCP resources (a skill's or an MCP prompt's text is sent as written). */
     /** `goal`: a turn the goal started (src/agent/goal.ts). */
     /** `adopt`: a wake turn its agent CLI started by itself (AgentHost.wake): nothing is sent, the turn takes its events. */
-    async startTurn(text: string, opts: { display?: string; kind?: "prompt" | "command" | "wake"; attachments?: AttachedPart[]; about?: string; mentionsIn?: string; wakes?: Wake[]; goal?: boolean; adopt?: BackendWake; admitted?: { context?: string }; from?: { id: string; title: string } } = {}) {
+    async startTurn(text: string, opts: { display?: string; kind?: "prompt" | "command" | "wake"; attachments?: AttachedPart[]; about?: string; mentionsIn?: string; wakes?: Wake[]; goal?: boolean; adopt?: BackendWake; admitted?: { context?: string }; from?: { id: string; title: string }; /** How this prompt's run ended, said before what's queued runs; kept: whether the prompt was stored. */ ran?: (reason: TurnEndReason, kept: boolean) => void } = {}) {
         // The user's own turn overtakes a pending goal check, and a paused goal picks up after it. A scheduled prompt
         // leaves a paused goal paused; the resume after a usage limit is the exception, as in Claude Code.
         // A watch's events don't either: they aren't the user's.
@@ -4366,6 +4443,7 @@ export class Runtime {
         this.turnDone = new Promise<void>((r) => (settled = r));
         const ac = (this.abort = new AbortController());
         this.turnStartedAt = Date.now();
+        this.turnSuggested = [];
         this.worked(this.turnStartedAt);
         const display = opts.display ?? text;
         const index = this.session.messageCount;
@@ -4421,7 +4499,9 @@ export class Runtime {
                 // Kept beside the session as it's sent: shown again (promptImages), they're read from there.
                 if (images.length) this.keepToolImages(images as ImagePart[]);
                 if (images.length) this.op({ op: "turn.patch", turnId: turn.id, patch: { prompt: { ...turn.prompt!, ...attachedPrompt(images) } } });
+                const before = this.session.messageCount;
                 reason = await agent.run(parts, { signal: ac.signal, display, kind: opts.kind, ...(opts.adopt ? { adopt: opts.adopt } : {}), admitted: opts.admitted, ...(opts.from ? { from: opts.from } : {}) });
+                opts.ran?.(reason, this.session.messageCount > before);
             }
         } catch (e) {
             const message = `Unexpected error: ${redact((e as Error).message)}`;
@@ -4455,7 +4535,10 @@ export class Runtime {
         const elapsed = Date.now() - this.turnStartedAt;
         const notify = () => {
             if (reason && reason !== "aborted" && (reason === "error" || elapsed >= notifyAfterMs(this.settings()))) {
-                this.engine.notify(this, reason === "error" ? "error" : "done", reason === "error" ? "Stopped with an error" : `Finished in ${turnDuration(elapsed)}`);
+                // What it suggested this turn and still waits for the user, said with it.
+                const suggested = this.turnSuggested.filter((id) => this.session.suggestions.get(id)?.state === "pending").length;
+                const also = suggested ? ` · suggested ${suggested} task${suggested === 1 ? "" : "s"}` : "";
+                this.engine.notify(this, reason === "error" ? "error" : "done", reason === "error" ? `Stopped with an error${also}` : `Finished in ${turnDuration(elapsed)}${also}`);
             }
         };
         // While a goal keeps going its turns don't each notify: the goal says when it stops (GoalHost.alert).
@@ -4474,6 +4557,7 @@ export class Runtime {
         this.schedules.poke();
         // Nothing followed it: from here the conversation is idle.
         if (!this.busy && !this.closed) this.idleCompact.arm();
+        return reason;
     }
 
     /**
@@ -5069,7 +5153,7 @@ export class Runtime {
             if (backends.length) this.agent?.addReminder(untrackedChangesNote(backends, restored));
             this.rebuild();
         }
-        this.setState({ filesChanged: this.filesChanged(), todos: this.toolState.todos.map((x) => ({ ...x })), contextTokens: 0 });
+        this.setState({ filesChanged: this.filesChanged(), todos: this.toolState.todos.map((x) => ({ ...x })), contextTokens: 0, suggestions: shownSuggestions(this.session.suggestions.values()) });
         this.recordState();
         this.flush();
         this.engine.sessionChanged(this);

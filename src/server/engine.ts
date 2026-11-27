@@ -16,7 +16,7 @@ import { ACCOUNT_PROVIDERS, account, accountProvider, cliAccounts, accountSharin
 import { loginCommand } from "../backends/account-login";
 import { redactedError } from "./git-handles";
 import { sessionWorktree } from "./session-worktrees";
-import { planLimitKey, type AccountInfo, type BackgroundTaskInfo } from "./protocol";
+import { planLimitKey, type AccountInfo, type BackgroundTaskInfo, type StartTaskResult, type SuggestedBy, type SuggestionAction } from "./protocol";
 import { endedText } from "../agent/background";
 import { mergeLimits, type MergeHow } from "../backends/limits";
 import { Terminals } from "./terminals";
@@ -33,7 +33,7 @@ import { LEGACY } from "../config/legacy";
 import { JsonFileError, loadedUnreadable, loadScope, loadScopeChecked, loadSettings, readJson, readJsonCached, updateSettings, writeJson, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
 import { isTrusted, projectConfigSummary, trustedByUser, trustFolder, trustForSession } from "../config/trust";
 import { fireHooks } from "../agent/hooks";
-import { findSessionAnywhere, heldSessionFolders, listAllSessions, Session, SessionInUseError, sessionFolder, sessionHolder, newSessionId, type Line } from "../agent/session";
+import { findSessionAnywhere, heldSessionFolders, listAllSessions, Session, SessionInUseError, sessionFolder, sessionHolder, sessionLabel, newSessionId, type Line } from "../agent/session";
 import { forkSessionSoon, forkTitle, readForkSource } from "../agent/fork";
 import { isFollowUp } from "../agent/queue-store";
 import { loadCustomCommands, pluginCommandFor, type CustomCommand } from "../commands/custom";
@@ -56,7 +56,7 @@ import { forgetCachedKeys, getKey, removeKey, setKey } from "../auth/credentials
 import { detectKeyProvider, validateKey } from "../auth/detect";
 import { FileIndex } from "../ui/mentions";
 import { gitRoot, gitBranch } from "../util/git";
-import { createWorktreeWithHooks, currentBase, ignoredWaiting, listWorktrees, mainCheckoutOf, managedWorktreeOf, othersPresent, planRemoval, runRemoval, suggestBranch, unpushedReason, type Removal } from "./worktrees";
+import { createWorktreeWithHooks, currentBase, ignoredWaiting, listWorktrees, mainCheckoutOf, managedWorktreeOf, othersPresent, planRemoval, runRemoval, suggestBranch, taskBranch, unpushedReason, type Removal } from "./worktrees";
 import { defaultPlanPath, implementPrompt, planTitle, slugify, writePlanFile } from "./plans";
 import { billingOf, parseRunRequest, startRun, type RunHost, type RunRecord } from "./runs";
 import { readRegular } from "./git-changes";
@@ -71,10 +71,12 @@ import { LENDABLE, setLent, type Lendable } from "../tools/lent";
 import { OWN_SIMULATOR_TOOLS, simulatorsToLend } from "../tools/simulator-tools";
 import { isReadOnly, type ToolResult } from "../tools/types";
 import type { LentCall, LentResult } from "../servers/watch";
-import { peerOps, type PeerHost } from "./session-peers";
+import { askedModel, peerOps, type PeerHost } from "./session-peers";
+import type { TurnEndReason } from "../agent/agent";
+import { SUGGEST_LIMITS, taskSlug } from "../agent/suggestions";
 import { checkMessage, narrowerMode, PeerError, type FarPeers } from "../agent/peers";
 import { findMatch } from "../permissions/rules";
-import { listServers } from "../servers/store";
+import { listServers, SERVER_NAME } from "../servers/store";
 import type { WakeMemory } from "../agent/wakes";
 import { forkUiLogSoon, readSegments, readUiLogSoon, type UiLog } from "./history";
 import { CLI_SOURCES, findCliSession, listCliSessions, readCliTranscript, validCliId, type CliSource } from "./cli-sessions";
@@ -265,7 +267,12 @@ interface GuiStore {
     settled?: string[];
     /** Sessions started together from one prompt (runs.start), newest first. */
     runs?: RunRecord[];
+    /** Sessions started from suggested tasks (tasks.start), by their origin key, newest first: a repeat start finds its session. */
+    suggestedTasks?: { key: string; session: string; at: number }[];
 }
+
+/** Started suggested tasks remembered (each one's session also says so, in its file). */
+const MAX_SUGGESTED_TASKS = 500;
 
 /** Runs remembered; an older run's sessions are listed on their own. */
 const MAX_RUNS = 50;
@@ -1168,6 +1175,7 @@ export class Engine {
             settled: lists.settled.has(rt.id),
             model: rt.session.model,
             live: true,
+            ...(rt.suggestedCount ? { suggested: rt.suggestedCount } : {}),
             run: run ? { ...run, outcome: runOutcome(rt) } : undefined,
         };
     }
@@ -1246,13 +1254,14 @@ export class Engine {
     }
 
     /** `unlisted`: its folder isn't one of the user's projects (a session that lends to one on a server: guestFor). */
-    async createSession(cwd: string, opts: { model?: string; mode?: PermissionModeId; accounts?: Record<string, string>; startedBy?: string; unlisted?: boolean } = {}): Promise<Runtime> {
+    async createSession(cwd: string, opts: { model?: string; mode?: PermissionModeId; accounts?: Record<string, string>; startedBy?: string; suggestedBy?: SuggestedBy; unlisted?: boolean } = {}): Promise<Runtime> {
         const p = resolve(expandHome(cwd));
         if (!isDir(p)) throw new RpcError(`${p} isn't a folder`);
         const ws = this.workspaceFor(p);
         const session = Session.create(p);
         // Kept in its first line, so it lasts through compaction and restarts (StartSession's bound on chains).
         if (opts.startedBy) session.meta.startedBy = opts.startedBy;
+        if (opts.suggestedBy) session.meta.suggestedBy = opts.suggestedBy;
         // Apply inherited selections before Runtime starts model setup; native threads stay fresh.
         for (const [provider, id] of Object.entries(opts.accounts ?? {})) session.setAccount(provider, id);
         const mode = opts.mode && PERMISSION_MODES.includes(opts.mode) ? opts.mode : this.defaultMode(ws);
@@ -1548,6 +1557,8 @@ export class Engine {
             throw e;
         }
         this.runtimes.set(rt.id, rt);
+        // A start of one of its suggestions left halfway: started, if a session here took it, or waiting again.
+        rt.settleStarting((key) => (this.startingTasks.has(key) ? "running" : this.taskStartedFor(key)));
         return rt;
     }
 
@@ -1939,6 +1950,182 @@ export class Engine {
         } finally {
             this.implementing.delete(rt.id);
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Suggested tasks: a session started from another's suggestion, on this machine, as the user
+
+    /** Starts under way, by origin key: a second call for the same one waits for the first's session. */
+    private startingTasks = new Map<string, Promise<StartTaskResult>>();
+    /** Sessions a suggested task made whose first prompt a UserPromptSubmit hook refused: Start again makes another. */
+    private refusedTasks = new Set<string>();
+
+    /** The session a suggested task was started as here (loaded, or saved), by its origin key. */
+    taskStartedFor(key: string): { sessionId: string; title: string; cwd: string } | undefined {
+        for (const rt of this.runtimes.values()) {
+            // One whose first prompt a hook refused doesn't count: Start again makes another.
+            if (rt.session.meta.suggestedBy?.key === key && !this.refusedTasks.has(rt.id)) return { sessionId: rt.id, title: rt.title ?? "", cwd: rt.ws.cwd };
+        }
+        const known = readStore().suggestedTasks?.find((t) => t.key === key);
+        const file = known && findSessionAnywhere(known.session);
+        if (!known || !file) return undefined;
+        const label = sessionLabel(file);
+        return { sessionId: known.session, title: label.title, cwd: label.cwd ?? "" };
+    }
+
+    /** A model this machine has, and an effort it takes: refused (model_unavailable, effort_unavailable) before anything is made. */
+    private async checkTaskModel(ref: string, effort: string | undefined): Promise<void> {
+        let asked: ReturnType<typeof askedModel>;
+        try {
+            asked = askedModel(this.peerHost(), ref);
+            await clientFor(asked.provider);
+        } catch (e) {
+            if (e instanceof PeerError || !(e instanceof RpcError)) throw new RpcError("That model isn't available here. Pick another.", "model_unavailable");
+            throw e;
+        }
+        if (effort && !(asked.efforts ?? []).includes(effort as Effort)) throw new RpcError(`That model doesn't take ${effort} effort. Pick another.`, "effort_unavailable");
+    }
+
+    /**
+     * tasks.start: a suggested task as a new session here, started by the user (the window that asks is theirs). Not a
+     * session's own start (session-peers.ts): no startedBy, no hourly bound. Never relayed, and never among what a
+     * server may ask the user's computer for (far-peers.ts). One with the same origin key started before is returned
+     * instead (`existing`). Checks first (folder, trust, model, effort), then as implementPlan does: a worktree when
+     * asked (on fix/<slug>, -2, -3 where taken), the session there, its title, and the prompt as the user's message.
+     */
+    private async startTask(client: EngineClient, p: Record<string, any>): Promise<StartTaskResult> {
+        // What the window says of the suggesting session (another machine's word, when it's on a server) goes into the
+        // new session unseen: held to the shapes it has, shown as it is.
+        const o = (p.origin && typeof p.origin === "object" ? p.origin : {}) as Record<string, unknown>;
+        const session = text(o.session, "origin.session", 200);
+        const key = text(o.key, "origin.key", 400);
+        if (!/^(?:[\w.-]{1,40}\/)?[\w.-]{1,120}$/.test(session) || !key.startsWith(`${session}#`) || !/^[\w.:-]{1,200}$/.test(key.slice(session.length + 1))) throw new RpcError("That names no suggestion to start.", "invalid");
+        const machine = typeof o.machine === "string" ? o.machine.trim() : "";
+        if (machine && !SERVER_NAME.test(machine)) throw new RpcError("That names no machine.", "invalid");
+        const origin: SuggestedBy = {
+            key,
+            session,
+            title: visible((typeof o.title === "string" ? o.title : "").replace(/\s+/g, " ").trim().slice(0, 120)).text,
+            ...(machine ? { machine } : {}),
+        };
+        const running = this.startingTasks.get(origin.key);
+        if (running) return { ...(await running), existing: true };
+        const start = this.startTaskOnce(client, p, origin).finally(() => this.startingTasks.delete(origin.key));
+        this.startingTasks.set(origin.key, start);
+        return start;
+    }
+
+    private async startTaskOnce(client: EngineClient, p: Record<string, any>, origin: SuggestedBy): Promise<StartTaskResult> {
+        const before = this.taskStartedFor(origin.key);
+        if (before) return { ...before, existing: true };
+        if (this.stopping) throw new RpcError("Cavvy server is stopping.", "stopping");
+        const title = text(p.title, "title", 200).replace(/\s+/g, " ").trim().slice(0, SUGGEST_LIMITS.title);
+        // The user may have added to the agent's prompt: more than it may write, still bounded.
+        const prompt = text(p.prompt, "prompt", 20_000).trim();
+        if (!title || !prompt) throw new RpcError("Give it a title and a prompt.", "invalid");
+        const ref = text(p.model, "model", 300);
+        const effort = optText(p.effort, "effort", 20);
+        if (effort && !EFFORT_LEVELS.includes(effort as Effort)) throw new RpcError(`${effort} isn't an effort level.`, "effort_unavailable");
+        if (!PERMISSION_MODES.includes(p.mode)) throw new RpcError("That isn't a permission mode.", "invalid_mode");
+        const cwd = resolve(expandHome(text(p.cwd, "cwd", 4096)));
+        if (!isDir(cwd)) throw new RpcError(`No folder ${cwd} here.`, "no_folder");
+        // A folder with configuration that runs commands needs the user's trust first (as opening it would).
+        let ws: Workspace;
+        try {
+            ws = this.workspaceFor(cwd);
+        } catch (e) {
+            if (e instanceof RpcError && e.code === "needs_trust") throw new RpcError(e.message, "needs_trust", e.folder ?? cwd);
+            throw e;
+        }
+        await this.checkTaskModel(ref, effort);
+        // The suggesting session's mode (as the window says, and as it is when it's here), plan counting as ask, or the
+        // folder's default (where it runs): whichever asks the user more.
+        const ask = (m: PermissionMode): PermissionMode => (m === "plan" ? "default" : m);
+        const suggester = origin.machine ? undefined : this.runtimes.get(origin.session);
+        const asked = suggester ? narrowerMode(ask(p.mode as PermissionMode), ask(suggester.mode)) : ask(p.mode as PermissionMode);
+        const resume = optText(p.resume, "resume", 4096);
+        let made: { path: string; branch: string } | undefined;
+        if (p.worktree === true || resume) {
+            const top = gitRoot(cwd);
+            if (!top) throw new RpcError("This folder isn't in a Git repository, so it can't have a worktree.", "not_git");
+            try {
+                if (resume) {
+                    const w = listWorktrees(cwd).find((x) => x.managed && x.exists && x.branch && (resolve(x.path) === resolve(resume) || realPath(x.path) === realPath(resume)));
+                    if (!w) throw new RpcError(`${resume} isn't a worktree Cavvy made in this repository.`, "worktree_failed");
+                    made = { path: w.path, branch: w.branch! };
+                } else {
+                    const r = await createWorktreeWithHooks({ path: cwd, branch: taskBranch(cwd, taskSlug(title)) }, this.o.log);
+                    made = { path: r.path, branch: r.branch };
+                }
+            } catch (e) {
+                if (e instanceof RpcError && e.code === "needs_trust") throw e;
+                throw new RpcError(`The worktree couldn't be made: ${redact((e as Error).message)}`, "worktree_failed");
+            }
+        }
+        // Where the suggester worked, relative to its repository, in the new worktree too (as implementPlan does).
+        let there = cwd;
+        if (made) {
+            const top = gitRoot(cwd)!;
+            const sub = relative(realPath(top), realPath(cwd));
+            const candidate = sub && sub !== ".." && !sub.startsWith(`..${sep}`) && !isAbsolute(sub) ? join(made.path, sub) : "";
+            there = candidate && isDir(candidate) && isInside(realPath(candidate), realPath(made.path)) ? candidate : made.path;
+        }
+        const worktree = made ? { path: made.path, branch: made.branch } : undefined;
+        const failed = (e: unknown, sessionId?: string, code?: string): StartTaskResult => {
+            const c = code ?? (e instanceof RpcError ? e.code : undefined);
+            return { sessionId, title, cwd: there, ...(worktree ? { worktree } : {}), failed: { message: redact((e as Error).message), ...(c ? { code: c } : {}), ...(c === "needs_trust" ? { folder: (e as RpcError).folder ?? there } : {}) } };
+        };
+        let next: Runtime;
+        try {
+            // On the suggesting session's Claude Code and Codex accounts, when it's on this machine.
+            const accounts = suggester ? Object.fromEntries(ACCOUNT_PROVIDERS.map((provider) => [provider, suggester.session.accountId(provider)])) : undefined;
+            const mode = narrowerMode(asked, this.defaultMode(there === cwd ? ws : this.workspaceFor(there)));
+            next = await this.createSession(there, { mode, accounts, suggestedBy: origin });
+        } catch (e) {
+            if (!made) throw e;
+            return failed(e);
+        }
+        // Failed once it's made: it goes (nothing is in it), so Start again makes it afresh; a worktree stays, to resume.
+        const abandon = async (e: unknown, code: string): Promise<StartTaskResult> => {
+            this.runtimes.get(next.id) === next && (await this.unload(next).catch(() => undefined));
+            const r = failed(e, undefined, code);
+            if (!made) throw new RpcError(r.failed!.message, code);
+            return r;
+        };
+        try {
+            if (!(await next.setModel(ref, { quiet: true }))) return await abandon(new Error("That model isn't available here. Pick another."), "model_unavailable");
+            if (effort) next.setEffort(effort as EffortLevel);
+            next.rename(title);
+            this.watch(client, next.id);
+            // The user's message as they sent it from the card; the agent is told where it came from, beside it (a
+            // reminder: nothing in it is read as the user's, its @mentions included).
+            // As this machine names that session: on another one, by that machine's name.
+            const from = origin.machine && !origin.session.includes("/") ? `${origin.machine}/${origin.session}` : origin.session;
+            next.agent?.addReminder(`This task was suggested by the agent in session ${from} (“${origin.title}”) while it worked on something else; the user started it. To ask that agent what it saw, send a message to session ${from} (SendToSession, or send_to_session among Cavvy's tools).`);
+            // A UserPromptSubmit hook that refuses it, before it's kept: the prompt goes back to its composer, and the
+            // start isn't one (Start again makes another). Esc keeps it its own way; a stop later in the turn leaves it
+            // where it was sent. Said as its own run ends, before anything queued after it runs.
+            const ran = (reason: TurnEndReason, kept: boolean) => {
+                if (reason !== "blocked" || kept) return;
+                this.refusedTasks.add(next.id);
+                updateStore((s) => {
+                    s.suggestedTasks = (s.suggestedTasks ?? []).filter((t) => t.session !== next.id);
+                });
+                this.draft(next, prompt);
+            };
+            const turn = next.startTurn(prompt, { ran });
+            // Not begun (a prompt held for the account the session needs is, its own way): what stopped it is the start's.
+            if (!next.busy) await turn;
+            void turn.catch((e) => this.o.log?.(`suggested task ${next.id}: ${redact((e as Error).message)}`));
+        } catch (e) {
+            return await abandon(e, "send_failed");
+        }
+        if (!this.refusedTasks.has(next.id)) {
+            updateStore((s) => {
+                s.suggestedTasks = [{ key: origin.key, session: next.id, at: Date.now() }, ...(s.suggestedTasks ?? []).filter((t) => t.key !== origin.key)].slice(0, MAX_SUGGESTED_TASKS);
+            });
+        }
+        return { sessionId: next.id, title, cwd: there, ...(worktree ? { worktree } : {}) };
     }
 
     // -----------------------------------------------------------------------
@@ -3611,6 +3798,25 @@ export class Engine {
                 return await this.archiveOffer(client, text(p.id, "id", 200));
             case "session.planInfo":
                 return this.planInfo(this.runtime(text(p.id, "id", 200)), optText(p.toolId, "toolId", 200));
+            case "session.suggestion": {
+                const id = str(p.id, "id");
+                const sid = text(p.suggestionId, "suggestionId", 300);
+                const live = this.runtimes.get(id);
+                if (live) return live.suggestionAction(sid, p as unknown as SuggestionAction);
+                // A terminal has it open: its file is that process's while it does.
+                const file = findSessionAnywhere(id);
+                if (file && sessionHolder(file) !== undefined) throw new RpcError("Close this session in the terminal to start it.", "held");
+                // Closed meanwhile (a start outlasting its idle close): opened to take how it went, then let go again.
+                while (this.closing.has(id)) await this.afterClosing(id);
+                const rt = this.openSession(id);
+                try {
+                    return rt.suggestionAction(sid, p as unknown as SuggestionAction);
+                } finally {
+                    this.unloadIfUnused(id);
+                }
+            }
+            case "tasks.start":
+                return await this.startTask(client, p);
             case "session.implementPlan":
                 return await this.implementPlan(client, p);
             case "session.savePlan": {
