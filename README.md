@@ -32,6 +32,8 @@ Download the `.dmg` for your Mac from the [latest release](https://github.com/Aq
 
 The first time you open it, macOS says "Cavvy Not Opened", as Cavvy isn't signed by an Apple developer account. Click **Done**, then in **System Settings → Privacy & Security** click **Open Anyway**, enter your password and click **Open**. You only do this once. [The desktop app](docs/desktop.md#downloading-it) says why.
 
+From then on, Cavvy updates itself: when a new release is out, a download icon shows beside Settings. Click it to install the update and restart. [How it checks updates](docs/app-updates.md).
+
 ### From source
 
 Cavvy needs [Bun](https://bun.sh) (it's tested on 1.4.4) and Git, and a model to talk to: an API key, a local model, or Claude Code or Codex signed in to your plan. The terminal app and the browser GUI run on macOS and Linux; the desktop app needs macOS 13 or later.

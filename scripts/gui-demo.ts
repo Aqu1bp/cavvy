@@ -6,6 +6,8 @@
 //   bun run gui:demo --port 4600 --token <16+ characters>    a link that stays the same: http://127.0.0.1:4600/#token=<token>
 //   bun run gui:demo --update        the desktop app's Update button, with main 7 changes ahead (scripts/demo-update.ts)
 //   bun run gui:demo --update fail   the same, with a build that fails
+//   bun run gui:demo --update release            a downloaded app a release behind, from a stand-in release on 127.0.0.1
+//   bun run gui:demo --update release-tampered   the same, with a zip that isn't the one signed
 //
 // Prompts with "sso" or "demo" walk through reading, editing (with approvals)
 // and running tests; "question", "plan" and "todo" show those flows; the
@@ -30,7 +32,7 @@ import { join, resolve } from "path";
 import { startMockLlm } from "./mock-llm";
 import { createDemoProject } from "./demo-project";
 import { startDemoSite } from "./demo-site";
-import { createDemoUpdate } from "./demo-update";
+import { createDemoRelease, createDemoUpdate } from "./demo-update";
 import { acmeRecipe, fakeSignInCli } from "./fake-signin-cli";
 
 const args = process.argv.slice(2);
@@ -73,7 +75,9 @@ for (const [name, text] of Object.entries(demoSkills)) {
 const repo = resolve(import.meta.dir, "..");
 const port = arg("--port") ?? "4600";
 const env: Record<string, string> = { ...(process.env as Record<string, string>), CAVVY_HOME: home, CAVVY_NO_KEYCHAIN: "1", ACME_HOME: acme.home, PATH: `${acme.bin}:${process.env.PATH}` };
-if (args.includes("--update")) Object.assign(env, createDemoUpdate(root, home, arg("--update") === "fail"));
+const demoRelease = arg("--update")?.startsWith("release") ? createDemoRelease(root, arg("--update") === "release-tampered") : undefined;
+if (demoRelease) Object.assign(env, demoRelease.env);
+else if (args.includes("--update")) Object.assign(env, createDemoUpdate(root, home, arg("--update") === "fail"));
 if (arg("--token")) env.CAVVY_GUI_TOKEN = arg("--token")!;
 const extra = arg("--dev-origin") ? ["--dev-origin", arg("--dev-origin")!] : [];
 const proc = Bun.spawn(["bun", "--no-env-file", `--config=${join(repo, "bunfig.toml")}`, join(repo, "src/index.ts"), "serve", "--port", port, ...extra], {
@@ -85,6 +89,7 @@ const proc = Bun.spawn(["bun", "--no-env-file", `--config=${join(repo, "bunfig.t
 process.stderr.write(`\n  demo project: ${project}\n  demo site:    ${site.url}  (for the Browser pane)\n  CAVVY_HOME: ${home}\n${arg("--token") ? `  fixed link:   http://127.0.0.1:${port}/#token=${arg("--token")}\n` : ""}\n`);
 const stop = () => {
     proc.kill();
+    demoRelease?.stop();
     mock.stop();
     site.stop();
     process.exit(0);
