@@ -139,19 +139,61 @@ test("the input process failing to restart: the service is said to have the inpu
     expect(calls.at(-1)).toBe("notifyutil -s com.apple.coredevice.dtuhidd.active 1 -p com.apple.coredevice.dtuhidd.active");
 });
 
-test("sessions asking at once whether there are simulators share one lookup", async () => {
-    let helps = 0;
-    setRunner(async (args) => {
-        if (args.includes("help")) helps++;
-        // Slow, as on a busy Mac: everyone asks before the first answer is in.
-        await new Promise((r) => setTimeout(r, 30));
-        return args[0] === "xcode-select" ? { code: 0, stdout: "/Applications/Xcode.app/Contents/Developer\n", stderr: "" } : { code: 0, stdout: "", stderr: "" };
-    });
-    const answers = await Promise.all(Array.from({ length: 10 }, () => simulatorsAvailable()));
-    // Simulators are looked for on macOS only.
-    expect(helps).toBe(process.platform === "darwin" ? 1 : 0);
-    expect(new Set(answers.map((a) => a.ok)).size).toBe(1);
-    // Within the minute the answer is kept: no lookup at all.
-    await simulatorsAvailable();
-    expect(helps).toBe(process.platform === "darwin" ? 1 : 0);
-});
+/** As on a Mac with simulators on, whatever runs the tests (CI is Linux, where nothing is looked up). */
+async function onAMac(body: () => Promise<void>) {
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    const off = process.env.CAVVY_SIMULATOR;
+    Object.defineProperty(process, "platform", { ...platform, value: "darwin" });
+    delete process.env.CAVVY_SIMULATOR;
+    try {
+        await body();
+    } finally {
+        Object.defineProperty(process, "platform", platform);
+        if (off !== undefined) process.env.CAVVY_SIMULATOR = off;
+    }
+}
+
+const xcode = (args: string[]) => (args[0] === "xcode-select" ? { code: 0, stdout: "/Applications/Xcode.app/Contents/Developer\n", stderr: "" } : { code: 0, stdout: "", stderr: "" });
+
+test("sessions asking at once whether there are simulators share one lookup", () =>
+    onAMac(async () => {
+        let helps = 0;
+        setRunner(async (args) => {
+            if (args.includes("help")) helps++;
+            // Slow, as on a busy Mac: everyone asks before the first answer is in.
+            await new Promise((r) => setTimeout(r, 30));
+            return xcode(args);
+        });
+        const answers = await Promise.all(Array.from({ length: 10 }, () => simulatorsAvailable()));
+        expect(helps).toBe(1);
+        expect(answers.every((a) => a.ok)).toBe(true);
+        // Within the minute the answer is kept: no lookup at all.
+        await simulatorsAvailable();
+        expect(helps).toBe(1);
+    }));
+
+test("a lookup that outlives its runner neither answers for the next one nor ends its lookup", () =>
+    onAMac(async () => {
+        const old = Promise.withResolvers<void>();
+        setRunner(async () => {
+            await old.promise;
+            return { code: 1, stdout: "", stderr: "" };
+        });
+        const stale = simulatorsAvailable();
+        const next = Promise.withResolvers<void>();
+        let helps = 0;
+        setRunner(async (args) => {
+            if (args.includes("help")) helps++;
+            await next.promise;
+            return xcode(args);
+        });
+        const first = simulatorsAvailable();
+        old.resolve();
+        expect((await stale).ok).toBe(false);
+        // The old one's answer isn't kept, and the new lookup is still the one under way: asking again joins it.
+        const second = simulatorsAvailable();
+        next.resolve();
+        expect([(await first).ok, (await second).ok]).toEqual([true, true]);
+        expect(helps).toBe(1);
+        expect((await simulatorsAvailable()).ok).toBe(true);
+    }));

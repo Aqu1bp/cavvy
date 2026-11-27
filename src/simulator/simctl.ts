@@ -97,13 +97,16 @@ let looking: Promise<Availability> | undefined;
 export async function simulatorsAvailable(): Promise<Availability> {
     if (forced) return forced;
     if (availability && Date.now() - availability.at < 60_000) return availability.value;
-    looking ??= lookUp()
-        .then((value) => {
+    if (looking) return looking;
+    // Its answer is kept, and it stops being the lookup under way, only if it still is one (setRunner starts over).
+    const mine: Promise<Availability> = lookUp().then((value) => {
+        if (looking === mine) {
             availability = { at: Date.now(), value };
-            return value;
-        })
-        .finally(() => (looking = undefined));
-    return looking;
+            looking = undefined;
+        }
+        return value;
+    });
+    return (looking = mine);
 }
 
 /**
