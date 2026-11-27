@@ -26,6 +26,14 @@ Cavvy reads, edits and runs code in your project, asks before doing anything ris
 
 ## Install
 
+### The desktop app (macOS)
+
+Download the `.dmg` for your Mac from the [latest release](https://github.com/Aqu1bp/cavvy/releases/latest): `Cavvy-<version>-arm64.dmg` for Apple silicon, `Cavvy-<version>-x64.dmg` for Intel. Open it and drag Cavvy to Applications. It needs macOS 13 or later.
+
+The first time you open it, macOS says "Cavvy Not Opened", as Cavvy isn't signed by an Apple developer account. Click **Done**, then in **System Settings → Privacy & Security** click **Open Anyway**, enter your password and click **Open**. You only do this once. [The desktop app](docs/desktop.md#downloading-it) says why.
+
+### From source
+
 Cavvy needs [Bun](https://bun.sh) (it's tested on 1.4.4) and Git, and a model to talk to: an API key, a local model, or Claude Code or Codex signed in to your plan. The terminal app and the browser GUI run on macOS and Linux; the desktop app needs macOS 13 or later.
 
 ```bash
@@ -45,7 +53,7 @@ bun install --cwd gui && bun run gui:build
 
 To try it without any keys, `bun run gui:demo` serves it with a mock model and a demo project.
 
-The desktop app builds from the same checkout. It installs into `/Applications` (or `~/Applications` if that isn't writable), and from then on updates itself from `main`, so keep the checkout:
+The desktop app builds from the same checkout too. It installs into `/Applications` (or `~/Applications` if that isn't writable), and from then on updates itself from `main`, so keep the checkout:
 
 ```bash
 bun run desktop:install

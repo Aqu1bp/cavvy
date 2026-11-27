@@ -5,6 +5,12 @@
 //
 //   bun desktop-electron/pack.ts            → desktop-electron/out/Cavvy-darwin-<arch>/Cavvy.app
 //   bun desktop-electron/pack.ts --server-builds     the same, carrying this build for Linux servers (pack below)
+//   bun desktop-electron/pack.ts --release           a release's build: says so in Contents/Resources/release.json
+//   bun desktop-electron/pack.ts --sign <identity> [--keychain <file>]
+//                                                    signed with that certificate (SHA-1 or name), not ad hoc
+//
+// A release (.github/workflows/release.yml) builds with --release alone, and signs the app in a job of its own that
+// has the certificate (scripts/codesign-release.mjs, whose signing --sign uses too).
 //
 // ELECTRON_ZIP_DIR names a folder holding electron-v<version>-darwin-<arch>.zip to build offline. The server's Bun is
 // downloaded once, unless it's the Bun doing the building.
@@ -38,10 +44,12 @@ function run(cmd: string[], cwd = repo) {
  * can put Cavvy on a server: an installed app has no checkout to make one from (src/servers/build.ts). The installer
  * asks for them; a build made to try something out goes without, and can't set a server up.
  */
-export async function pack(o: { install?: boolean; serverBuilds?: boolean } = {}): Promise<string> {
+export async function pack(o: { install?: boolean; serverBuilds?: boolean; release?: boolean; sign?: { identity: string; keychain?: string } } = {}): Promise<string> {
     if (process.platform !== "darwin") throw new Error("The desktop app is built for macOS only for now.");
     const info = appInfo();
     const arch = process.arch === "arm64" ? "arm64" : "x64";
+    // Checked before the build: a release is of a commit as it is, and of the version a Cavvy says it is.
+    const release = o.release ? releaseMarker(info.version, arch) : undefined;
     const stage = join(here, "stage");
     if (o.install) run(["bun", "install"], here);
     rmSync(stage, { recursive: true, force: true });
@@ -98,11 +106,47 @@ export async function pack(o: { install?: boolean; serverBuilds?: boolean } = {}
     copyFileSync(server, bundled);
     chmodSync(bundled, 0o755);
     if (!existsSync(join(app, "Contents", "MacOS", "cavvy-desktop"))) throw new Error(`${app} has no Contents/MacOS/cavvy-desktop`);
-    // The bundle changed after Electron signed its binaries: signed again, ad hoc, so macOS runs it on this machine.
-    run(["codesign", "--force", "--deep", "--sign", "-", app]);
+    // What makes it a downloaded app, which updates from releases (docs/releasing.md); written before it's signed.
+    if (release) writeFileSync(join(app, "Contents", "Resources", "release.json"), JSON.stringify(release) + "\n");
+    if (o.sign) {
+        const { signApp } = (await import("../scripts/codesign-release.mjs")) as { signApp: (app: string, identity: string, o?: { keychain?: string }) => string };
+        console.log(`designated => ${signApp(app, o.sign.identity, { keychain: o.sign.keychain })}`);
+    } else {
+        // The bundle changed after Electron signed its binaries: signed again, ad hoc, so macOS runs it on this machine.
+        run(["codesign", "--force", "--deep", "--sign", "-", app]);
+    }
     // All of it is in the app now: the copies here (over a hundred MB with the servers' builds) aren't kept.
     rmSync(stage, { recursive: true, force: true });
     return app;
 }
 
-if (import.meta.main) console.log(`packaged: ${await pack({ serverBuilds: process.argv.includes("--server-builds") })}`);
+/**
+ * What Contents/Resources/release.json says: this version, commit and architecture. Only a checkout with nothing
+ * changed is released, and only at the version a Cavvy built from it says it is (APP_VERSION) and its app's.
+ */
+function releaseMarker(version: string, arch: string): { version: string; commit: string; arch: string } {
+    if (process.env.CAVVY_BUILD) throw new Error("CAVVY_BUILD is set: a release is of the commit that's checked out.");
+    const status = Bun.spawnSync(["git", "status", "--porcelain", "--untracked-files=no"], { cwd: repo, stdout: "pipe" });
+    if (status.exitCode !== 0 || status.stdout.toString().trim()) throw new Error("A release is of a commit, and this checkout has changes on top of one.");
+    const commit = Bun.spawnSync(["git", "rev-parse", "--verify", "HEAD"], { cwd: repo, stdout: "pipe" }).stdout.toString().trim();
+    if (!/^[0-9a-f]{40}$/.test(commit)) throw new Error("Not a checkout: which commit is this?");
+    const app = /export const APP_VERSION = "([^"]+)"/.exec(readFileSync(join(repo, "src", "config", "paths.ts"), "utf8"))?.[1];
+    if (app !== version) throw new Error(`desktop-electron/package.json says ${version}, and APP_VERSION (src/config/paths.ts) ${app}.`);
+    return { version, commit, arch };
+}
+
+if (import.meta.main) {
+    const args = process.argv.slice(2);
+    const value = (flag: string) => {
+        const i = args.indexOf(flag);
+        if (i < 0) return undefined;
+        const v = args[i + 1];
+        if (!v || v.startsWith("--")) throw new Error(`${flag} needs a value.`);
+        return v;
+    };
+    const identity = value("--sign");
+    const keychain = value("--keychain");
+    if (keychain && !identity) throw new Error("--keychain is for --sign.");
+    const built = await pack({ serverBuilds: args.includes("--server-builds"), release: args.includes("--release"), sign: identity ? { identity, ...(keychain ? { keychain: resolve(keychain) } : {}) } : undefined });
+    console.log(`packaged: ${built}`);
+}
