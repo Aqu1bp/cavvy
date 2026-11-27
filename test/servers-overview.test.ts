@@ -186,6 +186,11 @@ test("a server's sessions are listed and kept up to date, each change told by it
     const asks = watch.call;
     watch.call = async () => ({ worktree: { path: "/srv/app/.claude/worktrees/x", branch: "x", main: "/srv/app" }, removable: true, reason: "It has changes." });
     expect(await here.call("servers.relay", { name: "box", method: "session.archiveOffer", params: { id } })).toEqual({ worktree: true });
+    // A delete there that had nothing to put in its trash says so (no Undo), and only that.
+    watch.call = async () => ({ unsaved: true, path: "/srv/app" });
+    expect(await here.call("servers.relay", { name: "box", method: "session.delete", params: { id } })).toEqual({ unsaved: true });
+    watch.call = async () => null;
+    expect(await here.call("servers.relay", { name: "box", method: "session.delete", params: { id } })).toBeNull();
     watch.call = asks;
     // And archiving passes on only the session and whether it's archived.
     expect(await here.call("servers.relay", { name: "box", method: "session.archive", params: { id, archived: true, removeWorktree: true, deleteIgnored: "x" } })).toBeNull();
