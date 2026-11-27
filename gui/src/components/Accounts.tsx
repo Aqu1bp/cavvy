@@ -80,6 +80,8 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
     });
     // A server's: the CLI's sign-in there, in a terminal here, where its link is opened.
     const login = (a: AccountInfo) => terminalActions.loginAccount?.(p.provider.id, a.id, [p.provider.name, at.server && a.id === "default" ? undefined : a.name, at.server].filter(Boolean).join(" · "), at.server);
+    // In a terminal on the machine these are on, as signing in is: a web page would install nothing there.
+    const install = () => terminalActions.installCli?.(p.provider.id, ["Install", p.provider.name, at.server].filter(Boolean).join(" · "), at.server);
     const cancelAdd = () => {
         if (busy()) return;
         setAdding(false); setName(""); setFolder(""); setError(undefined); setAdvanced(false);
@@ -142,7 +144,7 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
     };
     const signedIn = () => { const a = main(); return !!a && !a.invalid && a.signedIn === true; };
     // Under the name: what's missing, or the one account's email.
-    const sub = () => !installed() ? "Not installed" : !p.provider.configured ? "Not set up" : single()?.email;
+    const sub = () => !installed() ? (cli()?.installing ? "Installing…" : cli()?.installError ? "Couldn't install" : "Not installed") : !p.provider.configured ? "Not set up" : single()?.email;
     return <section ref={section} class="cli-prov" aria-label={p.provider.name}>
         <div class="prov-line">
             <span class="prov-logo"><ProviderIcon id={p.provider.id} name={p.provider.name} size={18} /></span>
@@ -160,8 +162,10 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
             </div>
             <span class="prov-end">
                 <Show when={refreshing()}><Spinner size={12} /></Show>
-                <Show when={!installed() && p.provider.keyUrl}>
-                    <button class="link-btn" onClick={() => void openExternal(p.provider.keyUrl!)}>Install <ExternalLink size={11} /></button>
+                <Show when={!installed() && (cli()?.installable && terminalActions.installCli ? !cli()?.installing : p.provider.keyUrl)}>
+                    <Show when={cli()?.installable && terminalActions.installCli} fallback={<button class="link-btn" onClick={() => void openExternal(p.provider.keyUrl!)}>Install <ExternalLink size={11} /></button>}>
+                        <button class="btn secondary sm" title={cli()?.installError} onClick={install}>Install</button>
+                    </Show>
                 </Show>
                 <Show when={installed() && p.provider.configured && single()?.signedIn === false && !single()?.invalid}>
                     <button class="btn secondary sm" disabled={busy()} onClick={() => login(single()!)}>Sign in</button>
