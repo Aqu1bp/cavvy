@@ -413,6 +413,11 @@ describe.skipIf(!chromePath)("the browser tools, with Chrome", () => {
         await session.command({ command: "back", tab });
         expect(session.state().tabs.find((t) => t.id === tab)!.url).toBe(`${site.url}/`);
         expect(session.state().tabs.find((t) => t.id === tab)!.canGoForward).toBe(true);
+        // Nothing there: said plainly, with no advice meant for the agent.
+        const gone = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response("") });
+        const port = gone.port;
+        gone.stop(true);
+        await expect(session.command({ command: "goto", url: `http://127.0.0.1:${port}/`, tab })).rejects.toThrow(/^Nothing is running at \S+\.$/);
         await nav({ action: "close_tab", tab });
         // a tab the person opens is theirs to begin with; the agent can still act in it
         await session.command({ command: "new_tab", url: `${site.url}/other` });

@@ -446,7 +446,7 @@ export class BrowserSession implements PoolClient {
         const refused = this.refuse(checked.url, { host: hostOf(checked.url) });
         if (refused) throw new BrowserError(`${redact(checked.url).slice(0, 100)} can't be opened: ${refused}`);
         this.touched(page);
-        await this.run(() => page.goto(checked.url));
+        await this.run(() => page.goto(checked.url, undefined, undefined, true));
     }
 
     async answerDialog(accept: boolean, promptText?: string, tab?: number) {
