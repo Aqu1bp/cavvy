@@ -352,15 +352,15 @@ describe("the zip's shape", () => {
         writeFileSync(f, makeZip(appEntries).subarray(0, 200));
         refusedBy(() => scanZip(f));
     });
-    test("the unpacked tree is checked again on disk: a symlink out of it is refused", () => {
+    test("the unpacked tree is checked again on disk: a symlink out of it is refused", async () => {
         const out = join(dir, "out");
         mkdirSync(join(out, "Cavvy.app", "Contents"), { recursive: true });
-        expect(checkTree(out, "Cavvy.app")).toBe(join(out, "Cavvy.app"));
+        expect(await checkTree(out, "Cavvy.app")).toBe(join(out, "Cavvy.app"));
         symlinkSync("/etc", join(out, "Cavvy.app", "Contents", "etc"));
-        expect(refusedBy(() => checkTree(out, "Cavvy.app"))).toContain("symlink out");
+        await expect(checkTree(out, "Cavvy.app")).rejects.toThrow(/symlink out/);
         rmSync(join(out, "Cavvy.app", "Contents", "etc"));
         mkdirSync(join(out, "Extra.app"));
-        refusedBy(() => checkTree(out, "Cavvy.app"));
+        await expect(checkTree(out, "Cavvy.app")).rejects.toMatchObject({ reason: "unsigned" });
     });
 });
 
@@ -476,6 +476,8 @@ describe.if(mac)("a downloaded app updating (macOS)", () => {
         srv = undefined;
     });
 
+    let requests = 0;
+    const updatesRequested = () => requests;
     function setup(o: { latest?: string; zipVersion?: string; tamper?: boolean; minimum?: string; keys?: string[]; running?: string } = {}) {
         const apps = join(dir, "Applications");
         const bundle = join(apps, "Cavvy.app");
@@ -484,7 +486,8 @@ describe.if(mac)("a downloaded app updating (macOS)", () => {
         makeApp(join(dir, "build", "Cavvy.app"), { version: o.zipVersion ?? version });
         const zip = dittoZip(join(dir, "build", "Cavvy.app"), join(dir, "build", "Cavvy.zip"));
         const served = o.tamper ? Buffer.concat([zip.subarray(0, zip.length - 1), Buffer.from([zip[zip.length - 1]! ^ 1])]) : zip;
-        srv = serveReleases({ tag: `v${version}`, files: publish(version, zip, k.privateKey, { servedZip: served, manifest: o.minimum ? { minimumSystemVersion: o.minimum } : {} }) });
+        requests = 0;
+        srv = serveReleases({ tag: `v${version}`, files: publish(version, zip, k.privateKey, { servedZip: served, manifest: o.minimum ? { minimumSystemVersion: o.minimum } : {} }), latest: (name) => (requests++, new Response(null, { status: 302, headers: { location: `/download/v${version}/${name}` } })) });
         const events: AppUpdateInfo[] = [];
         u = new AppUpdates({ emit: (i) => events.push(i), bundle, platform: "darwin", releases: { base: srv.base, keys: o.keys ?? [k.pub] }, firstCheckMs: 3_600_000, appPid: 999_999 });
         return { u, bundle, events };
@@ -513,11 +516,13 @@ describe.if(mac)("a downloaded app updating (macOS)", () => {
         const info = await setup({ minimum: "99.0" }).u.check();
         expect(info).toMatchObject({ available: true, needsSystem: "99.0" });
     });
-    test("no release key (as today): nothing fetched; Check now says it couldn't, the background says nothing", async () => {
+    test("no release key (as today): it doesn't update, says so in About only, and fetches nothing", async () => {
         const { u } = setup({ keys: [] });
-        expect((await u.check({ quiet: true })).error).toBeUndefined();
-        expect((await u.check()).error).toBe("Couldn't check for updates.");
-        expect(u.get().available).toBe(false);
+        u.start();
+        const info = await u.check();
+        expect(info).toMatchObject({ unavailable: "This copy of Cavvy doesn't update itself.", available: false });
+        expect(info.error).toBeUndefined();
+        expect(updatesRequested()).toBe(0);
     });
     test("offline: the background says nothing, Check now says it couldn't check", async () => {
         const { u } = setup();
@@ -664,13 +669,16 @@ describe.if(mac)("the restart helper (macOS)", () => {
         const bundle = join(apps, "Cavvy.app");
         makeApp(bundle, { version: "1.3.0" });
         mkdirSync(join(apps, ".Cavvy.app.old"));
-        writeFileSync(join(dir, "home", "app-update-pending.json"), JSON.stringify({ version: "1.3.0", previous: "1.2.0", app: bundle, old: join(apps, ".Cavvy.app.old") }));
+        // Beside the app, so the new version finds it whatever CAVVY_HOME it was opened with.
+        const pending = join(apps, ".Cavvy.app.update-pending.json");
+        writeFileSync(pending, JSON.stringify({ version: "1.3.0", previous: "1.2.0", app: bundle, old: join(apps, ".Cavvy.app.old") }));
         const u = new AppUpdates({ emit: () => undefined, bundle, platform: "darwin", releases: { base: "http://127.0.0.1:9", keys: [] }, firstCheckMs: 3_600_000 });
         u.start();
-        for (let i = 0; i < 100 && existsSync(join(dir, "home", "app-update-pending.json")); i++) await Bun.sleep(20);
+        for (let i = 0; i < 100 && existsSync(join(apps, ".Cavvy.app.old")); i++) await Bun.sleep(20);
+        expect(existsSync(pending)).toBe(false);
         expect(existsSync(join(apps, ".Cavvy.app.old"))).toBe(false);
         u.stop();
-        writeFileSync(join(dir, "home", "app-update-note.json"), JSON.stringify({ reason: "didnt-open", version: "1.4.0" }));
+        writeFileSync(join(apps, ".Cavvy.app.update-note.json"), JSON.stringify({ reason: "didnt-open", version: "1.4.0" }));
         const v = new AppUpdates({ emit: () => undefined, bundle, platform: "darwin", releases: { base: "http://127.0.0.1:9", keys: [] }, firstCheckMs: 3_600_000 });
         v.start();
         for (let i = 0; i < 100 && !v.get().failed; i++) await Bun.sleep(20);
@@ -678,11 +686,21 @@ describe.if(mac)("the restart helper (macOS)", () => {
         v.stop();
         // The helper took the record first (its time ran out): it's putting the old one back, which stays.
         mkdirSync(join(apps, ".Cavvy.app.old"));
-        writeFileSync(join(dir, "home", "app-update-pending.json.rollback"), "{}");
+        writeFileSync(join(apps, ".Cavvy.app.update-pending.json.rollback"), "{}");
         const w = new AppUpdates({ emit: () => undefined, bundle, platform: "darwin", releases: { base: "http://127.0.0.1:9", keys: [] }, firstCheckMs: 3_600_000 });
         w.start();
         await Bun.sleep(500);
         expect(existsSync(join(apps, ".Cavvy.app.old"))).toBe(true);
         w.stop();
+    });
+    test("running from the copy an update kept aside, with nothing where it was: it's put back", async () => {
+        const apps = join(dir, "Applications");
+        const hidden = join(apps, ".Cavvy.app.old");
+        makeApp(hidden, { version: "1.2.0" });
+        const u = new AppUpdates({ emit: () => undefined, bundle: hidden, platform: "darwin", releases: { base: "http://127.0.0.1:9", keys: [] }, firstCheckMs: 3_600_000 });
+        await u.check();
+        expect(existsSync(join(apps, "Cavvy.app", "Contents", "Resources", "release.json"))).toBe(true);
+        expect(existsSync(hidden)).toBe(false);
+        u.stop();
     });
 });

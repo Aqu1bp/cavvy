@@ -14,8 +14,8 @@
 // docs/app-updates.md says more.
 
 import { createHash } from "crypto";
-import { open } from "fs/promises";
-import { accessSync, constants, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, closeSync, realpathSync, statSync } from "fs";
+import { lstat, open, readdir, readlink, realpath } from "fs/promises";
+import { accessSync, constants, lstatSync, openSync, readFileSync, readSync, closeSync, statSync } from "fs";
 import { basename, dirname, join, posix } from "path";
 import { inflateRawSync } from "zlib";
 import { pieces, RELEASE_KEYS, RELEASES_URL, signedBy, small } from "../servers/published";
@@ -414,29 +414,25 @@ export function scanZip(file: string): string {
  * The unpacked `dir`, checked as it is on disk: it holds only `top`, a folder; inside, only folders, files and
  * symlinks that resolve inside it. Returns the app's path.
  */
-export function checkTree(dir: string, top: string): string {
-    const here = readdirSync(dir);
+export async function checkTree(dir: string, top: string): Promise<string> {
+    const here = await readdir(dir);
     if (here.length !== 1 || here[0] !== top) bad(`unpacked to ${JSON.stringify(here)}, not just ${top}`);
     const app = join(dir, top);
-    if (!lstatSync(app).isDirectory()) bad(`unpacked ${top} as something other than a folder`);
-    const root = realpathSync(app);
-    const walk = (d: string) => {
-        for (const name of readdirSync(d)) {
+    if (!(await lstat(app)).isDirectory()) bad(`unpacked ${top} as something other than a folder`);
+    const root = await realpath(app);
+    // Off the event loop's hands: an app is hundreds of files.
+    const walk = async (d: string): Promise<void> => {
+        for (const name of await readdir(d)) {
             const p = join(d, name);
-            const st = lstatSync(p);
+            const st = await lstat(p);
             if (st.isSymbolicLink()) {
-                let to: string;
-                try {
-                    to = realpathSync(p);
-                } catch {
-                    bad(`unpacked a symlink to nothing (${p.slice(dir.length + 1)} -> ${readlinkSync(p)})`);
-                }
+                const to = await realpath(p).catch(async () => bad(`unpacked a symlink to nothing (${p.slice(dir.length + 1)} -> ${await readlink(p)})`));
                 if (to !== root && !to.startsWith(root + "/")) bad(`unpacked a symlink out of the app (${p.slice(dir.length + 1)})`);
-            } else if (st.isDirectory()) walk(p);
+            } else if (st.isDirectory()) await walk(p);
             else if (!st.isFile() || st.mode & 0o6000) bad(`unpacked something that isn't a plain file (${p.slice(dir.length + 1)})`);
         }
     };
-    walk(app);
+    await walk(app);
     return app;
 }
 

@@ -513,23 +513,25 @@ function bridge() {
     });
 }
 
-let asking = false;
+/** The quit being asked about ("Quit without saving?" open): a second quit gets its answer. */
+let asking: Promise<boolean> | undefined;
 
 /**
  * Quits, closing the sessions first; asked first only when work would be lost: a session whose latest work couldn't
  * be saved (a full disk). Whether it's quitting.
  */
-async function confirmQuit(): Promise<boolean> {
-    if (quitting) return true;
-    if (asking) return false;
-    asking = true;
+function confirmQuit(): Promise<boolean> {
+    if (quitting) return Promise.resolve(true);
+    return (asking ??= askToQuit().finally(() => (asking = undefined)));
+}
+
+async function askToQuit(): Promise<boolean> {
     const n = await unsavedSessions();
     const w = win && !win.isDestroyed() ? win : undefined;
     if (n > 0) {
         const detail = n === 1 ? "A session's latest work couldn't be saved." : `${n} sessions' latest work couldn't be saved.`;
         const { response } = await (w ? dialog.showMessageBox(w, { type: "warning", message: "Quit without saving?", detail, buttons: ["Quit", "Cancel"], defaultId: 1, cancelId: 1 }) : dialog.showMessageBox({ type: "warning", message: "Quit without saving?", detail, buttons: ["Quit", "Cancel"], defaultId: 1, cancelId: 1 }));
         if (response === 1) {
-            asking = false;
             // Its last window closed to quit: it comes back, so the work can still be saved.
             if (!win || win.isDestroyed()) createWindow();
             return false;

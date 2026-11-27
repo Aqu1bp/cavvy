@@ -8,9 +8,10 @@
 // Cavvy's latest release instead, through release-update.ts's checks, in the same states and the same UI.
 
 import { spawn, type ChildProcess } from "child_process";
-import { appendFileSync, unlinkSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
+import { rm } from "fs/promises";
+import { appendFileSync, renameSync, unlinkSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
 import { homedir } from "os";
-import { dirname, join, resolve } from "path";
+import { basename, dirname, join, resolve } from "path";
 import { appSourceDir, noPromptGit, readInstallRecord, runningUpdate, type InstallRecord } from "../config/desktop-install";
 import { cavvyHome, paths } from "../config/paths";
 import { REPO_VARS } from "../util/git";
@@ -55,6 +56,7 @@ const RELEASE_RESTART_WAIT_MS = 11 * 60_000;
 /** How long the new version has to open before the helper puts the old one back. */
 const NEW_APP_OPENS_S = 120;
 const UNSIGNED_COPY = "This copy of Cavvy isn't signed, so it can't update itself.";
+const NO_RELEASES = "This copy of Cavvy doesn't update itself.";
 
 /** Asks the desktop app to quit, for the helper to put the update in place (cli.ts, under the desktop app). */
 let quitForUpdate: (() => void) | undefined;
@@ -77,9 +79,13 @@ interface Pending {
     app: string;
     old: string;
 }
-const pendingPath = () => join(cavvyHome(), "app-update-pending.json");
+/**
+ * Beside the app, not in CAVVY_HOME: the new version may open with another environment (macOS's `open`), and finds
+ * them from where it is.
+ */
+const pendingPath = (bundle: string) => join(dirname(bundle), `.${basename(bundle)}.update-pending.json`);
 /** What the helper says when it gave up and reopened the old app. */
-const notePath = () => join(cavvyHome(), "app-update-note.json");
+const notePath = (bundle: string) => join(dirname(bundle), `.${basename(bundle)}.update-note.json`);
 /** How long a finished update may take to restart the app before it says so. */
 const RESTART_WAIT_MS = 90_000;
 /**
@@ -253,6 +259,8 @@ export class AppUpdates {
     /** The release the last failure was about: a check finding a newer one clears it. */
     private failedFor?: string;
     private helper?: ChildProcess;
+    /** The app a restart is putting an update in place of. */
+    private restarting?: ReleaseApp;
     private restartTimer?: ReturnType<typeof setTimeout>;
     private readonly onCancelled = () => this.quitCancelled();
 
@@ -430,7 +438,21 @@ export class AppUpdates {
         const record = await readInstallRecord();
         // A release build, unless desktop:install put it here (then it's a checkout's, and updates from main).
         const marker = readMarker(bundle);
-        if (marker && !(record?.app && real(record.app) === real(bundle))) return { release: marker, bundle };
+        if (marker && !(record?.app && real(record.app) === real(bundle))) {
+            // Running from the copy an update kept aside (.Cavvy.app.old), with nothing where it was: a restart whose
+            // rollback couldn't rename it back. It goes back now.
+            const hidden = /^\.(.+\.app)\.old$/.exec(basename(bundle));
+            const was = hidden && join(dirname(bundle), hidden[1]!);
+            if (was && !existsSync(was)) {
+                try {
+                    renameSync(bundle, was);
+                    return { release: marker, bundle: was };
+                } catch {
+                    return { unavailable: `Cavvy is hidden at ${bundle}: move it to ${was} to update it.` };
+                }
+            }
+            return { release: marker, bundle };
+        }
         if (!record) return { unavailable: "Install it once with bun run desktop:install to get updates." };
         if (record.app && real(record.app) !== real(bundle)) return { unavailable: `This copy isn't the one last installed from a checkout (${record.app}).` };
         if (!isDir(record.source)) return { unavailable: `The checkout this app was built from is gone (${record.source}).` };
@@ -496,6 +518,8 @@ export class AppUpdates {
 
     private releaseUnavailable(r: ReleaseApp): string | undefined {
         if (!r.req) return UNSIGNED_COPY;
+        // No key to check a release with (none published yet): nothing would be believed, so nothing is looked for.
+        if (!this.releases.keys.length) return NO_RELEASES;
         const where = notReplaceable(r.bundle);
         if (where) return refusalText(where);
         return undefined;
@@ -506,26 +530,26 @@ export class AppUpdates {
      * update unpacked but never put in place (Cavvy quit some other way) is cleared, as it's checked again anyway.
      */
     private settle(r: ReleaseApp) {
-        const pending = readJson<Pending>(pendingPath());
+        const pending = readJson<Pending>(pendingPath(r.bundle));
         if (pending && real(pending.app) === real(r.bundle) && pending.version === r.marker.version) {
             // Removing the record says this version started; if the helper took it first (its time ran out), it's
             // putting the old one back, and the old copy stays. Only ever the copy beside this app: never a path a file names.
             let acked = false;
             try {
-                unlinkSync(pendingPath());
+                unlinkSync(pendingPath(r.bundle));
                 acked = true;
             } catch {}
-            if (acked) rmSync(oldCopy(r.bundle), { recursive: true, force: true });
+            if (acked) void rm(oldCopy(r.bundle), { recursive: true, force: true });
         }
-        const note = readJson<{ reason?: string; version?: string }>(notePath());
+        const note = readJson<{ reason?: string; version?: string }>(notePath(r.bundle));
         if (note) {
-            rmSync(notePath(), { force: true });
+            rmSync(notePath(r.bundle), { force: true });
             const reason = note.reason;
             if (reason === "didnt-open") this.info.failed = `Cavvy ${note.version} didn't open, so ${r.marker.version} was put back.`;
             else if (reason === "unsigned" || reason === "management" || reason === "install") this.info.failed = refusalText(reason);
             if (this.info.failed) this.failedFor = note.version;
         }
-        if (!existsSync(pendingPath())) rmSync(partialDir(r.bundle), { recursive: true, force: true });
+        if (!existsSync(pendingPath(r.bundle))) void rm(partialDir(r.bundle), { recursive: true, force: true });
     }
 
     private async runReleaseCheck(r: ReleaseApp, quiet: boolean): Promise<AppUpdateInfo> {
@@ -533,8 +557,6 @@ export class AppUpdates {
         if (why) return this.replace({ release: true, installed: r.marker.version, unavailable: why });
         const base = { release: true, installed: r.marker.version, unavailable: undefined };
         const src = this.releases;
-        // No key to check a release with (none published yet): nothing is believed, so nothing is fetched.
-        if (!src.keys.length) return this.patch({ ...base, checking: false, error: quiet ? undefined : "Couldn't check for updates." });
         this.patch({ ...base, checking: true });
         let m;
         try {
@@ -562,7 +584,7 @@ export class AppUpdates {
 
     private dropReady(r: ReleaseApp) {
         this.ready = undefined;
-        rmSync(partialDir(r.bundle), { recursive: true, force: true });
+        void rm(partialDir(r.bundle), { recursive: true, force: true });
     }
 
     /** Downloads, checks and unpacks the latest release beside the app, then restarts into it; or restarts at once if that's done. */
@@ -626,23 +648,23 @@ export class AppUpdates {
             const top = scanZip(zip);
             // Unpacked beside the app, under a hidden name, so putting it in place is a rename.
             const part = partialDir(r.bundle);
-            rmSync(part, { recursive: true, force: true });
+            await rm(part, { recursive: true, force: true });
             mkdirSync(part, { mode: 0o700 });
             const unzip = await this.run(["/usr/bin/ditto", "-x", "-k", "--noqtn", zip, part], 600_000);
             if (!unzip.ok) throw new Refused("install", `couldn't unpack it: ${unzip.err}`);
-            const app = checkTree(part, top);
+            const app = await checkTree(part, top);
             await verifyApp(app, r.req!, m, this.run);
             say(`checked: signed by Cavvy, meets this app's signature, ${top} is ${m.version}`);
             this.ready = { version: m.version, commit: m.commit, arch: m.arch, app };
             this.failedFor = undefined;
-            rmSync(tmp, { recursive: true, force: true });
+            await rm(tmp, { recursive: true, force: true });
             tmp = undefined;
             this.restartInto(r);
         } catch (e) {
             const refused = e instanceof Refused ? e : new Refused("install", (e as Error).message);
             say(`not updated: ${refused.message}`);
-            if (tmp) rmSync(tmp, { recursive: true, force: true });
-            if (!this.ready) rmSync(partialDir(r.bundle), { recursive: true, force: true });
+            if (tmp) await rm(tmp, { recursive: true, force: true });
+            if (!this.ready) await rm(partialDir(r.bundle), { recursive: true, force: true });
             this.failedFor = version;
             this.patch({ updating: undefined, failed: refusalText(refused.reason, { system }), log });
         }
@@ -659,17 +681,18 @@ export class AppUpdates {
         const quit = quitForUpdate;
         if (!quit) return this.patch({ updating: undefined, ready: true });
         try {
-            writeFileSync(pendingPath(), JSON.stringify(pending) + "\n");
+            writeFileSync(pendingPath(r.bundle), JSON.stringify(pending) + "\n");
             const how = this.releases === RELEASES ? "open" : "exec";
-            const args = [String(this.o.appPid ?? process.ppid), ready.app, r.bundle, pending.old, r.req!.bundle, r.req!.server, pendingPath(), notePath(), how, ready.version, String(NEW_APP_OPENS_S), ready.commit, ready.arch];
+            const args = [String(this.o.appPid ?? process.ppid), ready.app, r.bundle, pending.old, r.req!.bundle, r.req!.server, pendingPath(r.bundle), notePath(r.bundle), how, ready.version, String(NEW_APP_OPENS_S), ready.commit, ready.arch];
             // Its own session: the app quitting doesn't take it along.
             const helper = spawn("/bin/sh", ["-c", RESTART_HELPER, "sh", ...args], { detached: true, stdio: "ignore" });
             helper.unref();
             this.helper = helper;
         } catch (e) {
-            rmSync(pendingPath(), { force: true });
+            rmSync(pendingPath(r.bundle), { force: true });
             return this.patch({ updating: undefined, ready: true, failed: refusalText("install") });
         }
+        this.restarting = r;
         clearTimeout(this.restartTimer);
         // The quit never came, or a dialog sat open past the helper's wait: it's left ready, to restart again.
         this.restartTimer = setTimeout(() => this.quitCancelled(), this.o.restartWaitMs ?? RELEASE_RESTART_WAIT_MS);
@@ -691,7 +714,8 @@ export class AppUpdates {
                 helper.kill("SIGKILL");
             }
         }
-        rmSync(pendingPath(), { force: true });
+        const r = this.restarting;
+        if (r) rmSync(pendingPath(r.bundle), { force: true });
         if (this.info.updating?.restarting) this.patch({ updating: undefined, ready: this.ready ? true : undefined });
     }
 
