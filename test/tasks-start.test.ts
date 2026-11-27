@@ -239,6 +239,32 @@ describe("tasks.start", () => {
         }
     });
 
+    test("a refused first prompt still goes back when a message sent after it, quoting it, is kept; Start again makes another", async () => {
+        const folder = realpathSync(tempDir("tasks-hook2-"));
+        dirs.push(folder);
+        const settings = join(iso.home, "settings.json");
+        const was = readFileSync(settings, "utf-8");
+        // Refuses the first prompt (slowly), keeps the follow-up.
+        writeFileSync(settings, JSON.stringify({ ...JSON.parse(was), hooks: { UserPromptSubmit: [{ command: "grep -q FOLLOWUP && exit 0; sleep 1; echo 'not today' >&2; exit 2" }] } }));
+        try {
+            const drafts: any[] = [];
+            const watcher = { subs: new Set<string>(), send: (m: any) => m.type === "draft" && drafts.push(m) } as never;
+            engine.clients.add(watcher);
+            const start = { cwd: folder, title: "Fix it", prompt: "Fix the other thing.", model: "mock:mock-opus", mode: "default", origin: { key: "s0#hook2", session: "s0", title: "x" } };
+            const r = (await engine.handle(watcher, "tasks.start", start)) as StartTaskResult;
+            const n = engine.runtimes.get(r.sessionId!)!;
+            await n.send("FOLLOWUP: Fix the other thing. And more.");
+            await until(() => drafts.length > 0 && n.idle && n.session.messageCount > 0);
+            expect(drafts).toEqual([expect.objectContaining({ sessionId: r.sessionId, text: "Fix the other thing." })]);
+            const again = (await engine.handle(watcher, "tasks.start", start)) as StartTaskResult;
+            expect(again.existing).toBeUndefined();
+            expect(again.sessionId).not.toBe(r.sessionId);
+            engine.clients.delete(watcher);
+        } finally {
+            writeFileSync(settings, was);
+        }
+    });
+
     test("what the window says of the suggesting session is held to its shape: an id, a machine name, a title shown as it is", async () => {
         const rt = await suggestingSession();
         const s = rt.snapshot().state.suggestions![0]!;

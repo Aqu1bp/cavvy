@@ -4405,7 +4405,7 @@ export class Runtime {
     /** `mentionsIn`: the part of `text` the user wrote, whose @mentions attach files and MCP resources (a skill's or an MCP prompt's text is sent as written). */
     /** `goal`: a turn the goal started (src/agent/goal.ts). */
     /** `adopt`: a wake turn its agent CLI started by itself (AgentHost.wake): nothing is sent, the turn takes its events. */
-    async startTurn(text: string, opts: { display?: string; kind?: "prompt" | "command" | "wake"; attachments?: AttachedPart[]; about?: string; mentionsIn?: string; wakes?: Wake[]; goal?: boolean; adopt?: BackendWake; admitted?: { context?: string }; from?: { id: string; title: string } } = {}) {
+    async startTurn(text: string, opts: { display?: string; kind?: "prompt" | "command" | "wake"; attachments?: AttachedPart[]; about?: string; mentionsIn?: string; wakes?: Wake[]; goal?: boolean; adopt?: BackendWake; admitted?: { context?: string }; from?: { id: string; title: string }; /** How this prompt's run ended, said before what's queued runs; kept: whether the prompt was stored. */ ran?: (reason: TurnEndReason, kept: boolean) => void } = {}) {
         // The user's own turn overtakes a pending goal check, and a paused goal picks up after it. A scheduled prompt
         // leaves a paused goal paused; the resume after a usage limit is the exception, as in Claude Code.
         // A watch's events don't either: they aren't the user's.
@@ -4499,7 +4499,9 @@ export class Runtime {
                 // Kept beside the session as it's sent: shown again (promptImages), they're read from there.
                 if (images.length) this.keepToolImages(images as ImagePart[]);
                 if (images.length) this.op({ op: "turn.patch", turnId: turn.id, patch: { prompt: { ...turn.prompt!, ...attachedPrompt(images) } } });
+                const before = this.session.messageCount;
                 reason = await agent.run(parts, { signal: ac.signal, display, kind: opts.kind, ...(opts.adopt ? { adopt: opts.adopt } : {}), admitted: opts.admitted, ...(opts.from ? { from: opts.from } : {}) });
+                opts.ran?.(reason, this.session.messageCount > before);
             }
         } catch (e) {
             const message = `Unexpected error: ${redact((e as Error).message)}`;

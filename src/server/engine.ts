@@ -69,6 +69,7 @@ import { OWN_SIMULATOR_TOOLS, simulatorsToLend } from "../tools/simulator-tools"
 import { isReadOnly, type ToolResult } from "../tools/types";
 import type { LentCall, LentResult } from "../servers/watch";
 import { askedModel, peerOps, type PeerHost } from "./session-peers";
+import type { TurnEndReason } from "../agent/agent";
 import { SUGGEST_LIMITS, taskSlug } from "../agent/suggestions";
 import { checkMessage, narrowerMode, PeerError, type FarPeers } from "../agent/peers";
 import { findMatch } from "../permissions/rules";
@@ -2032,26 +2033,29 @@ export class Engine {
             // As this machine names that session: on another one, by that machine's name.
             const from = origin.machine && !origin.session.includes("/") ? `${origin.machine}/${origin.session}` : origin.session;
             next.agent?.addReminder(`This task was suggested by the agent in session ${from} (“${origin.title}”) while it worked on something else; the user started it. To ask that agent what it saw, send a message to session ${from} (SendToSession, or send_to_session among Cavvy's tools).`);
-            const turn = next.startTurn(prompt);
+            // A UserPromptSubmit hook that refuses it, before it's kept: the prompt goes back to its composer, and the
+            // start isn't one (Start again makes another). Esc keeps it its own way; a stop later in the turn leaves it
+            // where it was sent. Said as its own run ends, before anything queued after it runs.
+            const ran = (reason: TurnEndReason, kept: boolean) => {
+                if (reason !== "blocked" || kept) return;
+                this.refusedTasks.add(next.id);
+                updateStore((s) => {
+                    s.suggestedTasks = (s.suggestedTasks ?? []).filter((t) => t.session !== next.id);
+                });
+                this.draft(next, prompt);
+            };
+            const turn = next.startTurn(prompt, { ran });
             // Not begun (a prompt held for the account the session needs is, its own way): what stopped it is the start's.
             if (!next.busy) await turn;
-            // A UserPromptSubmit hook that refuses it, before it's kept: the prompt goes back to its composer (Esc keeps
-            // it its own way; a stop later in the turn leaves it where it was sent).
-            // (The turn's reason is its first prompt's; a message sent after it may have been kept since.)
-            const kept = () => next.session.messages.some((m) => m.role === "user" && JSON.stringify(m.content).includes(JSON.stringify(prompt.slice(0, 200)).slice(1, -1)));
-            void turn
-                .then((reason) => {
-                    if (reason !== "blocked" || kept()) return;
-                    this.refusedTasks.add(next.id);
-                    this.draft(next, prompt);
-                })
-                .catch((e) => this.o.log?.(`suggested task ${next.id}: ${redact((e as Error).message)}`));
+            void turn.catch((e) => this.o.log?.(`suggested task ${next.id}: ${redact((e as Error).message)}`));
         } catch (e) {
             return await abandon(e, "send_failed");
         }
-        updateStore((s) => {
-            s.suggestedTasks = [{ key: origin.key, session: next.id, at: Date.now() }, ...(s.suggestedTasks ?? []).filter((t) => t.key !== origin.key)].slice(0, MAX_SUGGESTED_TASKS);
-        });
+        if (!this.refusedTasks.has(next.id)) {
+            updateStore((s) => {
+                s.suggestedTasks = [{ key: origin.key, session: next.id, at: Date.now() }, ...(s.suggestedTasks ?? []).filter((t) => t.key !== origin.key)].slice(0, MAX_SUGGESTED_TASKS);
+            });
+        }
         return { sessionId: next.id, title, cwd: there, ...(worktree ? { worktree } : {}) };
     }
 
