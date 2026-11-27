@@ -88,6 +88,7 @@ In the terminal app, `/login` adds an API key (or `/login claude-code`, `/login 
 | [Simulator](docs/simulator.md) | iOS simulators the agent drives, and the Simulator pane |
 | [Sub-agents on other models](docs/sub-agents.md) | Delegating a task to another provider's model |
 | [Other sessions](docs/other-sessions.md) | The agent listing, reading, messaging and starting your other sessions |
+| [Suggested tasks](docs/suggested-tasks.md) | Cards an agent raises for unrelated problems it comes across, to start as new sessions |
 | [Servers](docs/servers.md) | Running Cavvy on a machine you reach with SSH, and working there from this one |
 | [Asking for secrets](docs/secrets.md) | Tokens the agent asks you for, kept out of its sight |
 | [Project files](docs/project-files.md) | `CAVVY.md` and other memory files, settings files, trust |

@@ -56,6 +56,7 @@ import type { ImagePart, PdfPart } from "../providers/types";
 import { servedBrowserTool } from "../tools/browser-tools";
 import { servedSimulatorTool } from "../tools/simulator-tools";
 import { servedSessionTool } from "../tools/session-tools";
+import { servedSuggestTool } from "../tools/suggest-tools";
 import {
     DECLINED,
     LAUNCH_END,
@@ -1996,7 +1997,7 @@ export class ClaudeConnection implements CliConnection {
             if (!cb || !handler) return reply({});
             const input: Record<string, unknown> = req.input && typeof req.input === "object" ? req.input : {};
             // Cavvy's browser, simulator and session tools run the hooks themselves, as BrowserAct and the rest: this CLI's run would be a second one.
-            if (servedBrowserTool(this.cfg.orchestrator?.name, input.tool_name) || servedSimulatorTool(this.cfg.orchestrator?.name, input.tool_name) || servedSessionTool(this.cfg.orchestrator?.name, input.tool_name)) return reply({});
+            if (servedBrowserTool(this.cfg.orchestrator?.name, input.tool_name) || servedSimulatorTool(this.cfg.orchestrator?.name, input.tool_name) || servedSessionTool(this.cfg.orchestrator?.name, input.tool_name) || servedSuggestTool(this.cfg.orchestrator?.name, input.tool_name)) return reply({});
             // The session's signal, not a turn's: a background sub-agent's hooks run between turns too.
             const r = await handler(cb.event, cb.hook, input, this.hookAbort.signal).catch(() => undefined);
             reply(r ? claudeCodeHookOutput(cb.event, r) : {});

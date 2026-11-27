@@ -15,6 +15,7 @@ import type { BrowserSession } from "../browser/session";
 import type { SimulatorSession } from "../simulator/session";
 import type { Lends } from "./lent";
 import type { SessionPeers } from "../agent/peers";
+import type { SuggestHost } from "../agent/suggestions";
 import type { ServerSetup } from "./server-tools";
 import type { SignInAnswer, SignInRequest } from "../agent/sign-ins";
 import type { ConfirmInteraction } from "../server/protocol";
@@ -114,6 +115,8 @@ export interface ToolState {
     peers?: SessionPeers;
     /** The user's servers, for ServerKey, ServerAdd and ServerRemove: on their own machine, in a session that stays open. */
     servers?: ServerSetup;
+    /** Where a suggested task goes as a card (SuggestTask): the app's sessions; not given to sub-agents, one-shot runs or the terminal. */
+    suggest?: SuggestHost;
 }
 
 /** Something a tool left running that raises wakes (a pull request watch, a monitor). */

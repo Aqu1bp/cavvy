@@ -229,7 +229,7 @@ export function peerOps(host: PeerHost, server: boolean) {
 }
 
 /** A model another machine's session asked to start one on: one a provider set up here lists. Throws PeerError, with the models there are. */
-function askedModel(host: PeerHost, ref: string): { ref: string; provider: string; efforts?: Effort[] } {
+export function askedModel(host: PeerHost, ref: string): { ref: string; provider: string; efforts?: Effort[] } {
     const listings = host.listings();
     const shown = (t: string) => `"${redact(t).slice(0, 120)}"`;
     const refuse = (why: string, provider?: string, match?: string): never => {

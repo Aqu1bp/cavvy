@@ -9,6 +9,9 @@ import { THEME_TOOLS } from "../themes/tools";
 import type { ThemeEntry } from "../themes/format";
 import type { ThemeReplaced } from "./protocol";
 import { SESSION_TOOLS } from "../tools/session-tools";
+import { SUGGEST_TOOLS } from "../tools/suggest-tools";
+import { applyAction, pendingCount, refusal, shownSuggestions, SuggestionError, type SuggestionInput } from "../agent/suggestions";
+import type { SuggestionAction, SuggestionState } from "./protocol";
 import { appPeers } from "./session-peers";
 import type { ScheduledJob } from "../agent/schedule";
 import { GIT_TOOL_HEADINGS } from "../tools/git-tools";
@@ -764,6 +767,8 @@ export class Runtime {
         this.toolState.wakes!.onReady(() => this.wake());
         // The user's other sessions, for its agent to list, read, send to and start.
         this.toolState.peers = appPeers(engine.peerHost(), this, () => engine.farPeers());
+        // Tasks its agent comes across, as cards the user starts or dismisses.
+        this.toolState.suggest = { suggest: (s, id) => this.suggestTask(s, id) };
         this.checker = new PermissionChecker(() => this.settings(), ws.cwd);
         this.classifier = new AutoClassifier(undefined);
         this.reviewer = ws.settings.reviewModel;
@@ -1328,6 +1333,8 @@ export class Runtime {
             backgroundTasks: this.toolState.background?.shown() ?? [],
             plan: this.planRef(this.latestPlan()),
             planLinks: [...this.session.planLinks],
+            suggestions: shownSuggestions(this.session.suggestions.values()),
+            ...(this.session.meta.suggestedBy ? { suggestedBy: { ...this.session.meta.suggestedBy } } : {}),
             ...(this.session.meta.forkOf ? { forkOf: { id: this.session.meta.forkOf.id, title: this.session.meta.forkOf.title } } : {}),
             secrets: this.toolState.secrets?.names() ?? [],
             schedules: [],
@@ -2598,11 +2605,11 @@ export class Runtime {
         const native = this.nativeSearch();
         const off = this.settings().webSearch === "off";
         const skill = skillTool(this.ws.skills);
-        return [...BUILTIN_TOOLS.filter((t) => !(t.name === "WebSearch" && (native || off)) && offered(t, this.settings())), ...(skill ? [skill] : []), ...CRON_TOOLS, ...SESSION_TOOLS, ...(this.toolState.servers ? SERVER_TOOLS : []), ...(onServer() ? [] : THEME_TOOLS), ...this.ws.mcp.tools()];
+        return [...BUILTIN_TOOLS.filter((t) => !(t.name === "WebSearch" && (native || off)) && offered(t, this.settings())), ...(skill ? [skill] : []), ...CRON_TOOLS, ...SESSION_TOOLS, ...(this.toolState.suggest && this.guestOf === undefined ? SUGGEST_TOOLS : []), ...(this.toolState.servers ? SERVER_TOOLS : []), ...(onServer() ? [] : THEME_TOOLS), ...this.ws.mcp.tools()];
     }
 
     private toolMeta(call: ToolCallPart): ToolMeta {
-        const tool = BUILTIN_TOOLS.find((t) => t.name === call.name) ?? CRON_TOOLS.find((t) => t.name === call.name) ?? SESSION_TOOLS.find((t) => t.name === call.name) ?? SERVER_TOOLS.find((t) => t.name === call.name) ?? (onServer() ? undefined : THEME_TOOLS.find((t) => t.name === call.name)) ?? (call.name === "Skill" ? (skillTool(this.ws.skills) as Tool<any> | undefined) : undefined) ?? this.ws.mcp.tools().find((t) => t.name === call.name);
+        const tool = BUILTIN_TOOLS.find((t) => t.name === call.name) ?? CRON_TOOLS.find((t) => t.name === call.name) ?? SESSION_TOOLS.find((t) => t.name === call.name) ?? SUGGEST_TOOLS.find((t) => t.name === call.name) ?? SERVER_TOOLS.find((t) => t.name === call.name) ?? (onServer() ? undefined : THEME_TOOLS.find((t) => t.name === call.name)) ?? (call.name === "Skill" ? (skillTool(this.ws.skills) as Tool<any> | undefined) : undefined) ?? this.ws.mcp.tools().find((t) => t.name === call.name);
         let title = call.name;
         try {
             if (tool) title = tool.title(call.input ?? {});
@@ -3955,6 +3962,69 @@ export class Runtime {
     }
 
     // -----------------------------------------------------------------------
+    // Suggested tasks (src/agent/suggestions.ts)
+
+    /** Suggestions made in the running turn, by id: SuggestTask's cap, and the done notification's count. */
+    private turnSuggested: string[] = [];
+
+    /** Pending suggestions: the sidebar's count. */
+    get suggestedCount(): number {
+        return pendingCount(this.session.suggestions.values());
+    }
+
+    private suggestTask(s: SuggestionInput, id: string): { ok: true } | { error: string } {
+        // A session that runs tools for one on another machine has no card of its own to show.
+        if (this.guestOf !== undefined) return { error: "Tasks can't be suggested from here. Mention the problem in your reply instead." };
+        // The same call again (a retry): it's there already.
+        const had = this.session.suggestions.get(id);
+        if (had && had.state !== "withdrawn") return { ok: true };
+        const why = refusal(this.session.suggestions.values(), s.title, this.turnSuggested.length);
+        if (why) return { error: why };
+        this.turnSuggested.push(id);
+        this.session.setSuggestion({ id, ...s, at: Date.now(), state: "pending", ...this.session.suggestionAt() });
+        this.suggestionsChanged();
+        return { ok: true };
+    }
+
+    private suggestionsChanged() {
+        this.setState({ suggestions: shownSuggestions(this.session.suggestions.values()) });
+        this.engine.sessionChanged(this);
+    }
+
+    /** A window's action on a suggestion's card (session.suggestion): the suggestion as it is after it. */
+    suggestionAction(suggestionId: string, a: SuggestionAction): SuggestionState {
+        const r = this.session.suggestions.get(suggestionId);
+        if (!r || r.state === "withdrawn") throw new RpcError("That suggestion is gone.", "not_found");
+        let next;
+        try {
+            next = applyAction(r, a);
+        } catch (e) {
+            if (e instanceof SuggestionError) throw new RpcError(e.message, e.code);
+            throw e;
+        }
+        if (next !== r) {
+            this.session.setSuggestion(next);
+            this.suggestionsChanged();
+        }
+        return shownSuggestions([next])[0]!;
+    }
+
+    /**
+     * Opened again: a start left halfway (a window that claimed one and was gone before it said how it went) is
+     * started where a session here took it (`startedHere`), and waits for the user again where none did.
+     */
+    settleStarting(startedHere: (key: string) => { sessionId: string; title: string; cwd: string } | undefined) {
+        let changed = false;
+        for (const r of [...this.session.suggestions.values()]) {
+            if (r.state !== "starting") continue;
+            const s = startedHere(`${this.id}#${r.id}`);
+            this.session.setSuggestion(s ? { ...r, state: "started", started: { ...s, at: Date.now() } } : { ...r, state: "pending" });
+            changed = true;
+        }
+        if (changed) this.suggestionsChanged();
+    }
+
+    // -----------------------------------------------------------------------
     // Prompts
 
     /** `id`: what the agent knows the steer they make by (AgentHost.unsteered). */
@@ -4366,6 +4436,7 @@ export class Runtime {
         this.turnDone = new Promise<void>((r) => (settled = r));
         const ac = (this.abort = new AbortController());
         this.turnStartedAt = Date.now();
+        this.turnSuggested = [];
         this.worked(this.turnStartedAt);
         const display = opts.display ?? text;
         const index = this.session.messageCount;
@@ -4455,7 +4526,10 @@ export class Runtime {
         const elapsed = Date.now() - this.turnStartedAt;
         const notify = () => {
             if (reason && reason !== "aborted" && (reason === "error" || elapsed >= notifyAfterMs(this.settings()))) {
-                this.engine.notify(this, reason === "error" ? "error" : "done", reason === "error" ? "Stopped with an error" : `Finished in ${turnDuration(elapsed)}`);
+                // What it suggested this turn and still waits for the user, said with it.
+                const suggested = this.turnSuggested.filter((id) => this.session.suggestions.get(id)?.state === "pending").length;
+                const also = suggested ? ` · suggested ${suggested} task${suggested === 1 ? "" : "s"}` : "";
+                this.engine.notify(this, reason === "error" ? "error" : "done", reason === "error" ? `Stopped with an error${also}` : `Finished in ${turnDuration(elapsed)}${also}`);
             }
         };
         // While a goal keeps going its turns don't each notify: the goal says when it stops (GoalHost.alert).
@@ -5069,7 +5143,7 @@ export class Runtime {
             if (backends.length) this.agent?.addReminder(untrackedChangesNote(backends, restored));
             this.rebuild();
         }
-        this.setState({ filesChanged: this.filesChanged(), todos: this.toolState.todos.map((x) => ({ ...x })), contextTokens: 0 });
+        this.setState({ filesChanged: this.filesChanged(), todos: this.toolState.todos.map((x) => ({ ...x })), contextTokens: 0, suggestions: shownSuggestions(this.session.suggestions.values()) });
         this.recordState();
         this.flush();
         this.engine.sessionChanged(this);

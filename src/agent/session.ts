@@ -9,7 +9,8 @@ import { randomBytes } from "crypto";
 import { ensureDir, paths, projectStateDir, APP_NAME, APP_TITLE, APP_VERSION } from "../config/paths";
 import { LEGACY } from "../config/legacy";
 import type { Message, Usage } from "../providers/types";
-import { accountNoticeText, stoppedText, type NoticeAccount, type NoticeData, type NoticeLimit, type NoticeStopped, type PlanLink, type StoppedTask } from "../server/protocol";
+import { accountNoticeText, stoppedText, type NoticeAccount, type NoticeData, type NoticeLimit, type NoticeStopped, type PlanLink, type StoppedTask, type SuggestedBy } from "../server/protocol";
+import { rewoundAway, SUGGEST_LIMITS, validRecord, type SuggestionRecord } from "./suggestions";
 import type { GoalRecord } from "./goal";
 import { noteSessionWrite, sessionWriteCount, writtenAfter } from "./session-writes";
 import type { BackgroundTaskInfo } from "../backends/live/info";
@@ -33,6 +34,8 @@ export interface SessionMeta {
     forkOf?: ForkOrigin;
     /** Started by another session's agent (src/agent/peers.ts StartSession): its id. Such a session can't start more. */
     startedBy?: string;
+    /** Started by the user from another session's suggested task (tasks.start). */
+    suggestedBy?: SuggestedBy;
 }
 
 export interface ForkOrigin {
@@ -127,6 +130,8 @@ export type Line =
     | { t: "plan"; id: string; text: string; at: number }
     /** A plan taken to a new worktree: where it came from, or where it went. Older versions skip these lines. */
     | { t: "planLink"; link: PlanLink }
+    /** A task the agent suggested, as it is now (the last line for its id wins). Older versions skip these lines. */
+    | { t: "suggestion"; s: SuggestionRecord }
     /** This session was brought in from a Claude Code or Codex session (the first messages). */
     | ({ t: "import" } & ImportRecord)
     /** A backend session or thread one of this session's sub-agents (Task, delegate) ran on. */
@@ -198,6 +203,21 @@ function findsIn(provider: string, bound: AccountPlace, place: AccountPlace | un
     if (bound.folder === place.folder) return true;
     const history = bound.history ?? historyFolder(provider, bound.folder);
     return Boolean(history && place.history && history === place.history);
+}
+
+function validSuggestedBy(v: unknown): v is SuggestedBy {
+    const x = v as Record<string, unknown> | null;
+    return Boolean(x) && typeof x === "object" && typeof x!.key === "string" && typeof x!.session === "string" && typeof x!.title === "string";
+}
+
+/** A suggestion's latest record, in place (its order stays when it was made); the oldest go past the limit (the file keeps them). */
+function keepSuggestion(map: Map<string, SuggestionRecord>, r: SuggestionRecord) {
+    map.set(r.id, r);
+    if (map.size > SUGGEST_LIMITS.kept) {
+        // Oldest resolved first: a pending one stays where it can.
+        const gone = [...map.values()].find((x) => x.state !== "pending" && x.state !== "starting") ?? map.values().next().value!;
+        map.delete(gone.id);
+    }
 }
 
 function validLink(l: unknown): l is PlanLink {
@@ -362,6 +382,8 @@ export class Session {
     /** Plans presented, oldest first (the last few). */
     plans: PresentedPlan[] = [];
     planLinks: PlanLink[] = [];
+    /** Tasks its agent suggested, by id, oldest first (src/agent/suggestions.ts). */
+    suggestions = new Map<string, SuggestionRecord>();
     /** The other worktree of its repository the agent works in now (setWorkdir), as last written; unset in the session's own folder. */
     workdir?: string;
     /** Where each native thread lives (its home, and that home's history), separate from the public resume map. */
@@ -887,6 +909,17 @@ export class Session {
         this.write({ t: "planLink", link });
     }
 
+    /** A suggestion made now: where it is in the history (a rewind past it takes it away). */
+    suggestionAt(): { seg: number; msg: number } {
+        return { seg: this.segments, msg: this.messageCount };
+    }
+
+    /** Keep a suggestion as it is now. */
+    setSuggestion(r: SuggestionRecord) {
+        keepSuggestion(this.suggestions, r);
+        this.write({ t: "suggestion", s: r });
+    }
+
     /** A sub-agent's backend session (passed up to the session that's saved). */
     recordSubagentRun(provider: string, id: string) {
         const k = `${provider}:${id}`;
@@ -926,6 +959,8 @@ export class Session {
         this.notices = noticesUpTo(this.notices, count);
         this.dropBackendsAfter(count);
         this.write({ t: "rewind", count });
+        // Suggested after what's kept: gone with the call that made it (a line each, read after the rewind's).
+        for (const r of rewoundAway(this.suggestions.values(), this.segments, count)) this.setSuggestion({ ...r, state: "withdrawn" });
     }
 
     /**
@@ -942,6 +977,7 @@ export class Session {
         if (!Number.isInteger(index) || index < 0 || index >= this.messages.length) return false;
         this.messages.splice(index, 1);
         this.notices = this.notices.map((n) => (n.index > index ? { ...n, index: n.index - 1 } : n));
+        for (const r of this.suggestions.values()) if (r.seg === this.segments && r.msg > index) r.msg--;
         for (const [p, b] of this.backends) if (b.synced > index) this.backends.set(p, { ...b, synced: b.synced - 1 });
         this.parked = this.parked.map((p) => (p.session.synced > index ? { ...p, session: { ...p.session, synced: p.session.synced - 1 } } : p));
         return true;
@@ -1016,6 +1052,7 @@ export class Session {
             goal: this.goal,
             plans: this.plans,
             planLinks: this.planLinks,
+            suggestions: [...this.suggestions.values()],
             imported: this.imported,
             cost: this.cost,
             costUnknown: this.costUnknown,
@@ -1046,6 +1083,8 @@ export class Session {
         this.goal = st.goal;
         this.plans = st.plans;
         this.planLinks = st.planLinks;
+        // Missing from checkpoints written before suggestions were kept.
+        this.suggestions = new Map((st.suggestions ?? []).map((r) => [r.id, r]));
         this.imported = st.imported;
         this.cost = st.cost;
         this.costUnknown = st.costUnknown;
@@ -1111,7 +1150,7 @@ export class Session {
             }
             try {
                 const l = JSON.parse(raw) as Line;
-                if (l.t === "meta") meta = { id: l.id, cwd: l.cwd, createdAt: l.createdAt, version: l.version, system: l.system, ...(l.forkOf ? { forkOf: l.forkOf } : {}), ...(typeof l.startedBy === "string" ? { startedBy: l.startedBy } : {}) };
+                if (l.t === "meta") meta = { id: l.id, cwd: l.cwd, createdAt: l.createdAt, version: l.version, system: l.system, ...(l.forkOf ? { forkOf: l.forkOf } : {}), ...(typeof l.startedBy === "string" ? { startedBy: l.startedBy } : {}), ...(validSuggestedBy(l.suggestedBy) ? { suggestedBy: l.suggestedBy } : {}) };
                 else lines.push(l);
             } catch {
                 // a torn final line from a crash; ignore it
@@ -1226,6 +1265,10 @@ export class Session {
             }
             else if (l.t === "plan" && typeof l.id === "string" && typeof l.text === "string") s.plans = [...s.plans.filter((p) => p.id !== l.id), { id: l.id, text: l.text, at: typeof l.at === "number" ? l.at : 0 }].slice(-PLANS_KEPT);
             else if (l.t === "planLink" && validLink(l.link)) s.planLinks = [...s.planLinks, l.link].slice(-PLANS_KEPT);
+            else if (l.t === "suggestion") {
+                const r = validRecord(l.s);
+                if (r) keepSuggestion(s.suggestions, r);
+            }
             else if (l.t === "import" && typeof l.source === "string" && typeof l.id === "string") s.imported = { source: l.source, id: l.id, startedAt: l.startedAt, importedAt: l.importedAt, messages: l.messages, omitted: l.omitted };
             else if (l.t === "usage") s.accumulate(l.model, l.usage, l.cost, l.unknown === true);
             else if (l.t === "bgtask") {
@@ -1317,6 +1360,7 @@ interface SessionState {
     goal?: GoalRecord;
     plans: PresentedPlan[];
     planLinks: PlanLink[];
+    suggestions?: SuggestionRecord[];
     imported?: ImportRecord;
     cost: number;
     costUnknown: boolean;
@@ -1864,7 +1908,7 @@ function scanHead(fd: number, from: number, head: SessionHead): number {
     let wanted: boolean | undefined;
     const decide = () => {
         const prefix = Buffer.concat(parts).subarray(0, PREFIX_BYTES).toString("latin1");
-        wanted = prefix.startsWith(MSG_PREFIX) ? !head.first : !/^\{"t":"(usage|backend|notice|import|subagent|plan|planLink)"/.test(prefix);
+        wanted = prefix.startsWith(MSG_PREFIX) ? !head.first : !/^\{"t":"(usage|backend|notice|import|subagent|plan|planLink|suggestion)"/.test(prefix);
         if (!wanted) parts = [Buffer.from(prefix, "latin1")];
     };
     for (let pos = from, n: number; (n = readSync(fd, chunk, 0, chunk.length, pos)) > 0; pos += n) {
