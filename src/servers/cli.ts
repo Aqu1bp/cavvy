@@ -578,6 +578,16 @@ async function remove(args: string[]): Promise<number> {
         err(`Usage: ${APP_NAME} servers remove <name>`);
         return 1;
     }
+    // Synced with this machine: its keys are taken off it first, as the app does when it's reachable (manager.ts).
+    if (requireServer(name).sync === true) {
+        const links = new ServerLinks({ sync: true });
+        try {
+            links.setSync(name, false);
+            await Promise.race([links.syncNow(name).catch(() => undefined), Bun.sleep(20_000)]);
+        } finally {
+            await links.stopAll();
+        }
+    }
     const e = removeServer(name);
     let signedOut = true;
     try {

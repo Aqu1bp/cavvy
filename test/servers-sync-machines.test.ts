@@ -156,7 +156,9 @@ test("the server applies both computers' settings, and tells each what it took f
         expect((await syncedStateFor("c")).digest).toBeUndefined();
         // A signed out for good: its setting goes with the next sync, B's stays.
         forgetSyncedState("a");
-        await applyStateFrom("b", "digest-b2", b);
+        // B hasn't changed anything, but what the server should have has: B's next sync applies again.
+        expect((await syncedStateFor("b")).digest).toBeUndefined();
+        await applyStateFrom("b", "digest-b", b);
         const after = JSON.parse(readFileSync(paths.userSettings(), "utf-8"));
         expect(after.notifyAfterSeconds).toBeUndefined();
         expect(after.autoCompact).toBe(false);

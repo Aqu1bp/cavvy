@@ -240,5 +240,7 @@ export function forgetSyncedState(from: string) {
     const store = readStore();
     if (!(from in store)) return;
     delete store[from];
+    // What the others sent hasn't changed, but what the server should have has: each one's next sync applies again.
+    for (const s of Object.values(store)) delete s.digest;
     writeStore(store);
 }
