@@ -188,7 +188,7 @@ export class ServerLinks {
         const w = this.watches.get(name);
         if (!w) throw new Error(`${name} isn't one of this Cavvy's servers.`);
         // Each with what it takes and nothing else (archiving never removes a worktree from here), and nothing of
-        // what the server answers is passed on: these answer nothing.
+        // what the server answers is passed on, but the two flags below.
         const sent =
             known === "session.rename" ? { id, title: typeof params.title === "string" ? params.title.slice(0, 300) : "" }
             : known === "session.pin" ? { id, pinned: params.pinned === true }

@@ -2419,7 +2419,7 @@ export interface Methods {
      * Something a session's row offers (rename, pin, settle, archive, delete, restore: RELAYED_SESSION_METHODS),
      * asked of a session on a server by a window that isn't on it. `params`: that call's own, with the session's id.
      * Nothing of the server's answer is passed on, but whether a session it's about to archive works in a worktree
-     * (RELAYED_ARCHIVE_OFFER).
+     * (RELAYED_ARCHIVE_OFFER), and whether a session it deleted was never saved (no Undo).
      */
     "servers.relay": { params: { name: string; method: string; params: Record<string, unknown> }; result: { worktree: true } | { unsaved: true } | null };
     "servers.add": { params: { name: string; destination: string; port?: number; identityFile?: string; trust?: string[] }; result: AddResult };
