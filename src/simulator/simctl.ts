@@ -129,11 +129,13 @@ export function knownAvailability(): Availability | undefined {
 async function lookUp(): Promise<Availability> {
     if (process.env.CAVVY_SIMULATOR === "0") return { ok: false, error: "Simulators are turned off: CAVVY_SIMULATOR is 0." };
     if (process.platform !== "darwin") return { ok: false, error: "Simulators need macOS." };
+    // The runner it started with, to the end: one replaced meanwhile (setRunner) is the next lookup's.
+    const ask = runner;
     try {
-        const dir = await runner(["xcode-select", "-p"], { timeoutMs: 10_000 });
+        const dir = await ask(["xcode-select", "-p"], { timeoutMs: 10_000 });
         const developerDir = dir.stdout.trim();
         if (dir.code !== 0 || !developerDir.endsWith("/Contents/Developer")) return { ok: false, error: "Simulators need Xcode." };
-        const help = await runner(["xcrun", "simctl", "help"], { timeoutMs: 20_000 });
+        const help = await ask(["xcrun", "simctl", "help"], { timeoutMs: 20_000 });
         if (help.code !== 0) return { ok: false, error: "Simulators need Xcode." };
         return { ok: true, developerDir };
     } catch {

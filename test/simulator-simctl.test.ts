@@ -175,9 +175,10 @@ test("sessions asking at once whether there are simulators share one lookup", ()
 test("a lookup that outlives its runner neither answers for the next one nor ends its lookup", () =>
     onAMac(async () => {
         const old = Promise.withResolvers<void>();
-        setRunner(async () => {
+        // Xcode is found, then its simctl fails: the second step is the old runner's too, not the next one's.
+        setRunner(async (args) => {
             await old.promise;
-            return { code: 1, stdout: "", stderr: "" };
+            return args[0] === "xcode-select" ? xcode(args) : { code: 1, stdout: "", stderr: "" };
         });
         const stale = simulatorsAvailable();
         const next = Promise.withResolvers<void>();
