@@ -48,6 +48,7 @@ function DialogInner(p: DialogProps) {
         const me = box!;
         stack.push(me);
         setDialogOpen(true);
+        document.documentElement.toggleAttribute("data-dialog", true);
         const onKey = (e: KeyboardEvent) => {
             if (stack[stack.length - 1] !== me || !box) return;
             if (e.key === "Escape") {
@@ -84,6 +85,7 @@ function DialogInner(p: DialogProps) {
             document.removeEventListener("keydown", onKey, true);
             stack.splice(stack.indexOf(me), 1);
             setDialogOpen(stack.length > 0);
+            document.documentElement.toggleAttribute("data-dialog", stack.length > 0);
             previous?.focus?.();
         });
     });

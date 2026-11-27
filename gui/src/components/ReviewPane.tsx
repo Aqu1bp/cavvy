@@ -11,13 +11,14 @@
 // near the view have their diff drawn (lib/review-stack.ts), so a 300-file view opens like one file.
 
 import { batch, createEffect, createMemo, createResource, createSignal, For, lazy, on, onCleanup, onMount, Show, untrack } from "solid-js";
-import { Check, ChevronDown, ChevronLeft, ChevronRight, Columns2, Copy, FolderGit2, FolderOpen, GitCommitHorizontal, GitPullRequestArrow, MessageSquare, RefreshCw, Space, SquareArrowOutUpRight, X } from "lucide-solid";
+import { Check, ChevronDown, ChevronLeft, ChevronRight, Columns2, Copy, FileText, FolderGit2, FolderOpen, GitCommitHorizontal, GitPullRequestArrow, MessageSquare, RefreshCw, Space, SquareArrowOutUpRight, X } from "lucide-solid";
 import type { FileDiff, GitFileDiff, GitScope, SessionWorktreeInfo } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
 import { app, reportError, revealsIn, rpc, toast } from "../state/app";
 import { prefs, setPrefs } from "../state/prefs";
 import { review, reviewSplit, setCommitRequest, setReview, setReviewDrag, setReviewSplit, shellLayout } from "../state/ui";
 import { frameDrag } from "../lib/drag";
+import { viewFile } from "../lib/file-view";
 import { changedOutside, commitUnavailable, fetchGitChanges, lastView, refreshGitChanges, sessionReadReady, useGitChanges, type ReviewScope } from "../state/changes";
 import { editorName, openInEditor } from "../state/actions";
 import { copyText, revealPath } from "../lib/platform";
@@ -480,6 +481,8 @@ function FileCard(p: {
     flash: number;
     onToggle: (all: boolean) => void;
     onOpen?: () => void;
+    /** The whole file in the file viewer, at its first change. */
+    onView?: () => void;
     onReveal?: () => void;
     /** Its path to the clipboard: as listed, or (`absolute`) in full. */
     onCopy: (absolute: boolean) => void;
@@ -635,6 +638,11 @@ function FileCard(p: {
                     )}
                 </Show>
                 <Stat added={shown().added} removed={shown().removed} />
+                <Show when={p.onView}>
+                    <button class="open rf-act" title="View file" aria-label={`View ${p.file.path}`} onClick={() => p.onView!()}>
+                        <FileText size={14} />
+                    </button>
+                </Show>
                 <button class="open rf-act" title="Copy path (⌥-click: full path)" aria-label={`Copy the path of ${p.file.path}`} onClick={(e) => p.onCopy(e.altKey)}>
                     <Copy size={13} />
                 </button>
@@ -1060,6 +1068,8 @@ function DiffReader(p: { handle: SessionHandle }) {
             onToggle={(all) => toggle(k, all)}
             // The editor opens files in the session's folders only (fs.open confines it); another worktree's file can be revealed in Finder.
             onOpen={own() && changeOf(f()) !== "deleted" && f().kind !== "repo" && f().kind !== "submodule" ? () => void openInEditor(absolute(f().path), undefined, { gitToken: f().pathToken }) : undefined}
+            // The viewer reads the session's folder as it is now: not another worktree's file, a deleted one, or a commit's.
+            onView={own() && !commitOf() && !f().pathToken && changeOf(f()) !== "deleted" && f().kind !== "repo" && f().kind !== "submodule" ? () => viewFile(f().path, f().hunks[0]?.newStart) : undefined}
             onReveal={revealsIn(id()) ? () => void (f().pathToken ? openInEditor("", undefined, { gitToken: f().pathToken, editor: "finder" }) : revealPath(absolute(f().path))).catch(reportError) : undefined}
             full={fetchFull}
             whole={shownScope() !== "cavvy" ? (x) => fetchFull(x, true) : undefined}

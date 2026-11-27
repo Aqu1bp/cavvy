@@ -269,7 +269,18 @@
 
 /* ---- Dialogs -------------------------------------------------------- */
 
-/* A light scrim with a blur; the dialog sits in the middle of the window, the palette near its top. */
+/* Under a dialog the window blurs: where you are still shows, in shapes and colours, but no text reads through it. A
+   filter on the app, not a backdrop-filter on the scrim: where the window is see-through (the sidebar, the chat) the
+   sharp page shows through a backdrop-filter's blurred copy. The dialog sits in the middle of the window, the palette
+   near its top. */
+.app {
+    transition: filter 200ms;
+}
+
+:root[data-dialog] .app {
+    filter: blur(14px);
+}
+
 .dialog-backdrop {
     position: fixed;
     inset: 0;
@@ -278,9 +289,7 @@
     align-items: center;
     justify-content: center;
     padding: calc(16 * var(--sp));
-    background: color-mix(in srgb, var(--sheet) 22%, transparent);
-    -webkit-backdrop-filter: blur(5px);
-    backdrop-filter: blur(5px);
+    background: color-mix(in srgb, var(--sheet) 34%, transparent);
     animation: ov-fade 200ms;
 }
 
@@ -295,9 +304,7 @@
     max-height: min(82vh, calc(100vh - 32 * var(--sp)));
     overflow: hidden;
     border-radius: calc(22 * var(--sp));
-    /* Opaque: --ctl-strong over the window's own colour. The scrim's backdrop-filter makes it the dialog's backdrop
-       root, so a blur here would only blur the scrim, and the page would show through a see-through --ctl-strong
-       barely softened (its text read through the dialog). */
+    /* Opaque: --ctl-strong over the window's own colour, so nothing behind reads through the dialog itself. */
     background: var(--sheen), linear-gradient(var(--ctl-strong) 0 0), var(--sheet);
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
@@ -1479,6 +1486,10 @@
 }
 
 /* A draft that couldn't be made (Generate, Suggest): a field error's line, under its button. */
+.commit-generate > .pr-draft {
+    margin-left: auto;
+}
+
 .commit-generate > .wt-error {
     flex-basis: 100%;
 }
