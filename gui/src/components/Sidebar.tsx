@@ -5,7 +5,7 @@
 // dot; sending to one brings it back. The ones waiting on you are pinned above
 // them all, under Needs you, with what they ask, until answered.
 
-import { batch, createEffect, createMemo, createSignal, For, lazy, Match, on, onCleanup, onMount, Show, Suspense, Switch, untrack, type JSX } from "solid-js";
+import { batch, createEffect, createMemo, createSignal, ErrorBoundary, For, lazy, Match, on, onCleanup, onMount, Show, Suspense, Switch, untrack, type JSX } from "solid-js";
 import { Archive, ArchiveRestore, Check, CheckCheck, ChevronsDownUp, ChevronRight, ChevronsUpDown, Folder, FolderOpen, FolderPlus, Layers, ListFilter, MoreHorizontal, PanelLeft, Pencil, Pin, PinOff, Plus, Search, Settings, SquarePen, Trash2, Undo2, X } from "lucide-solid";
 import type { SessionSummary } from "@shared/protocol";
 import { activate, app, handleFor, isUnread, refreshSessions, reportError, warmFor } from "../state/app";
@@ -972,8 +972,13 @@ export function Sidebar() {
                 <Suspense fallback={<span class="grow" />}>
                     <PlanFooter recent={recent} />
                 </Suspense>
+                {/* If its chunk can't load, only the button is missing: the rest of the window carries on. */}
                 <Show when={mayUpdate()}>
-                    <UpdateButton />
+                    <ErrorBoundary fallback={null}>
+                        <Suspense>
+                            <UpdateButton />
+                        </Suspense>
+                    </ErrorBoundary>
                 </Show>
                 <button class="hb lg" title={withShortcut("Settings", "app:settings")} aria-label="Settings" onClick={() => setSettingsTab("general")}>
                     <Settings size={16} />
