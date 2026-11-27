@@ -4,8 +4,10 @@
 // update script that prints a build's progress for half a minute, then installs
 // (or, with --update fail, fails the way a build does). Nothing is built or installed.
 
-import { mkdirSync, writeFileSync } from "fs";
+import { createHash, generateKeyPairSync, randomBytes, sign } from "crypto";
+import { mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
+import { throwawaySigner } from "./throwaway-codesign";
 
 const CHANGES = [
     "Sidebar plan usage: a ring gauge per plan in place of tinted pills",
@@ -75,4 +77,92 @@ ${fail
     writeFileSync(join(src, "scripts", "update-desktop.ts"), script);
     writeFileSync(join(src, "bunfig.toml"), "");
     return { CAVVY_APP_BUNDLE: DEMO_BUNDLE };
+}
+
+// gui:demo --update release: a downloaded app (a release build) a release behind. A stand-in Cavvy.app 1.2.0 the
+// server takes itself for, and on 127.0.0.1 a stand-in for Cavvy's releases with 1.3.0: signed with a key made here,
+// the zip of an app signed like the running one (a throwaway certificate, scripts/throwaway-codesign.ts), so every check runs for real (macOS: codesign, ditto). The zip
+// comes slowly, so the download's progress shows. --update release-tampered serves a zip that isn't the one signed.
+// Nothing outside the demo's folder is touched; with no desktop app to quit, a finished update waits as ready.
+
+/** A tiny bundle, signed (and its server under an identifier of its own) as a release is, with a throwaway certificate. */
+function demoApp(at: string, version: string, sign: string[]) {
+    const c = join(at, "Contents");
+    mkdirSync(join(c, "MacOS"), { recursive: true });
+    mkdirSync(join(c, "Resources"), { recursive: true });
+    writeFileSync(join(c, "Info.plist"), `<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>CFBundleExecutable</key><string>cavvy-desktop</string><key>CFBundleIdentifier</key><string>dev.cavvy.demo</string></dict></plist>`);
+    for (const exe of ["cavvy-desktop", "cavvy"]) writeFileSync(join(c, "MacOS", exe), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    // As large as a real app's zip would take a moment to download, without being one.
+    writeFileSync(join(c, "Resources", "payload.bin"), randomBytes(3 * 1024 * 1024));
+    writeFileSync(join(c, "Resources", "release.json"), JSON.stringify({ version, commit: "d".repeat(40), arch: demoArch() }));
+    const cs = (...a: string[]) => {
+        const r = Bun.spawnSync(["/usr/bin/codesign", ...a], { stderr: "pipe" });
+        if (r.exitCode !== 0) throw new Error(`codesign: ${r.stderr.toString()}`);
+    };
+    cs(...sign, "-i", "dev.cavvy.demo.server", join(c, "MacOS", "cavvy"));
+    cs(...sign, at);
+}
+
+function demoArch() {
+    return Bun.spawnSync(["/usr/sbin/sysctl", "-n", "hw.optional.arm64"]).stdout.toString().trim() === "1" ? "arm64" : "x64";
+}
+
+export function createDemoRelease(root: string, tampered: boolean) {
+    if (process.platform !== "darwin") throw new Error("gui:demo --update release needs macOS: it signs and checks apps with codesign.");
+    const arch = demoArch();
+    const signer = throwawaySigner(join(root, "signer"));
+    const bundle = join(root, "Applications", "Cavvy.app");
+    demoApp(bundle, "1.2.0", signer.args);
+    const build = join(root, "release-build");
+    demoApp(join(build, "Cavvy.app"), "1.3.0", signer.args);
+    signer.remove();
+    const zipFile = join(build, `Cavvy-1.3.0-${arch}.zip`);
+    const z = Bun.spawnSync(["/usr/bin/ditto", "-c", "-k", "--keepParent", join(build, "Cavvy.app"), zipFile], { stderr: "pipe" });
+    if (z.exitCode !== 0) throw new Error(`ditto: ${z.stderr.toString()}`);
+    const zip = readFileSync(zipFile);
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    const key = Buffer.from(publicKey.export({ format: "jwk" }).x!, "base64url").toString("base64");
+    const name = `cavvy-desktop-darwin-${arch}.json`;
+    const manifest =
+        JSON.stringify({
+            kind: "cavvy-desktop",
+            version: "1.3.0",
+            commit: "d".repeat(40),
+            platform: "darwin",
+            arch,
+            minimumSystemVersion: "13.0",
+            zip: { name: `Cavvy-1.3.0-${arch}.zip`, size: zip.length, sha256: createHash("sha256").update(zip).digest("hex") },
+            requirement: 'identifier "dev.cavvy.demo"',
+        }) + "\n";
+    const served = tampered ? Buffer.concat([zip.subarray(0, -1), Buffer.from([zip[zip.length - 1]! ^ 1])]) : zip;
+    const files: Record<string, string | Uint8Array> = {
+        [`/download/v1.3.0/${name}`]: manifest,
+        [`/download/v1.3.0/${name}.sig`]: sign(null, Buffer.from(manifest), privateKey).toString("base64"),
+    };
+    const server = Bun.serve({
+        port: 0,
+        hostname: "127.0.0.1",
+        fetch(req) {
+            const p = new URL(req.url).pathname;
+            if (p === `/latest/download/${name}`) return new Response(null, { status: 302, headers: { location: `/download/v1.3.0/${name}` } });
+            if (p === `/download/v1.3.0/Cavvy-1.3.0-${arch}.zip`) {
+                // In 60 pieces over about 9 seconds.
+                const step = Math.ceil(served.length / 60);
+                let at = 0;
+                return new Response(
+                    new ReadableStream({
+                        async pull(c) {
+                            if (at >= served.length) return c.close();
+                            await Bun.sleep(150);
+                            c.enqueue(served.subarray(at, (at += step)));
+                        },
+                    }),
+                    { headers: { "content-length": String(served.length) } },
+                );
+            }
+            const f = files[p];
+            return f === undefined ? new Response("Not Found", { status: 404 }) : new Response(f);
+        },
+    });
+    return { env: { CAVVY_APP_BUNDLE: bundle, CAVVY_UPDATE_TEST_URL: `http://127.0.0.1:${server.port}`, CAVVY_UPDATE_TEST_KEY: key }, stop: () => server.stop(true) };
 }

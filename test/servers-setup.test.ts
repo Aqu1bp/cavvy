@@ -428,7 +428,7 @@ describe("the terminal's commands", () => {
     });
 
     test("add: a server this machine hasn't connected to isn't added without its key being checked", async () => {
-        const r = await cavvy("servers", "add", "other", "dev@other.example", "--no-copy");
+        const r = await cavvy("servers", "add", "other", "dev@other.example", "--no-sync");
         expect(r.code).toBe(1);
         expect(r.out).toBe("");
         expect(r.err).toMatch(/^Connecting to other\.example…\nother\.example isn't a server this machine has connected to before\.\n  Its key: SHA256:\S+ \(ED25519\)\n  Run this in a terminal to check it and trust it\.\n$/);
@@ -436,7 +436,7 @@ describe("the terminal's commands", () => {
     });
 
     test("add: a server that's reachable and set up is saved, with what it's missing", async () => {
-        const r = await cavvy("servers", "add", "box", "dev@box.example", "--no-copy");
+        const r = await cavvy("servers", "add", "box", "dev@box.example", "--no-sync");
         expect(r.err).toBe("Connecting to box.example…\n");
         const lines = r.out.trim().split("\n");
         expect(lines.slice(0, 4)).toEqual(["box is ready.", "Only put credentials on it that you'd accept an agent using.", "Sessions there run without asking (Bypass).", "It won't start Cavvy again after a reboot."]);
@@ -477,14 +477,14 @@ describe("the terminal's commands", () => {
         }
     });
 
-    test("add --copy: with nothing that can go, it still says what stayed, and the server is added", async () => {
+    test("add --sync: the server is added and kept in sync, and what can't go stays here", async () => {
         // Only an MCP server that runs a file here, and a rule with a password in it.
         writeFileSync(join(iso.home, "settings.json"), JSON.stringify({ mcpServers: { local: { command: "node", args: ["server.js"] }, odd: { command: "npx", args: "-y some-mcp" } }, permissions: { allow: ["Bash(curl -u admin:hunter2 https://ci.example.com:*)"] } }));
         try {
-            const r = await cavvy("servers", "add", "box2", "dev@box.example", "--copy");
-            expect(r.err).toBe("Connecting to box.example…\nNot copied, since they could hold a key or need this machine: 2 MCP servers and 1 permission rule.\n");
+            const r = await cavvy("servers", "add", "box2", "dev@box.example", "--sync");
             expect(r.out.split("\n")[0]).toBe("box2 is ready.");
             expect(r.code).toBe(0);
+            expect(JSON.parse(readFileSync(join(iso.home, "servers.json"), "utf-8")).servers.find((s: { name: string }) => s.name === "box2").sync).toBe(true);
             expect(existsSync(join(fake.home, ".cavvy", "settings.json")) && readFileSync(join(fake.home, ".cavvy", "settings.json"), "utf-8")).not.toContain("hunter2");
         } finally {
             rmSync(join(iso.home, "settings.json"), { force: true });
@@ -799,7 +799,7 @@ esac`;
         test("add: in a terminal it's offered, and what's said afterwards is the server as that left it", async () => {
             signOut();
             turnOff();
-            const t = inTerminal(A, ["servers", "add", "box3", "dev@box.example", "--no-copy"]);
+            const t = inTerminal(A, ["servers", "add", "box3", "dev@box.example", "--no-sync"]);
             try {
                 await t.sees("Sign in to Claude Code on box3?");
                 t.type("\r");
@@ -820,7 +820,7 @@ esac`;
         test("add: said no, it's left as it is, with the command for later", async () => {
             signOut();
             turnOff();
-            const t = inTerminal(A, ["servers", "add", "box3", "dev@box.example", "--no-copy"]);
+            const t = inTerminal(A, ["servers", "add", "box3", "dev@box.example", "--no-sync"]);
             try {
                 await t.sees("Sign in to Claude Code on box3?");
                 t.type("\x1b");

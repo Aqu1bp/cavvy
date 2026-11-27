@@ -110,6 +110,9 @@ export function heardSession(v: unknown): SessionSummary | undefined {
 export type SessionChange = { session: SessionSummary } | { remove: string } | { unlisted: string };
 
 
+/** While a server installs a CLI (sync-install.ts), how often it's synced again to see it done. */
+const INSTALL_RECHECK_MS = 20_000;
+
 export class MachineWatch {
     private ws?: BoundedSocket;
     private sessions = new Map<string, SessionSummary>();
@@ -329,8 +332,20 @@ export class MachineWatch {
     /** Timeout per sync RPC: state sync may clone a plugin repository on the server. */
     private syncAsk = (method: string, params: Record<string, unknown>) => this.request(method, params, SYNC_ANSWER, method === "sync.applyState" ? 90_000 : REPLY_MS);
 
+    /** Set while the server installs a CLI: it's synced again then, to turn the CLI on once it's there. */
+    private installTimer?: ReturnType<typeof setTimeout>;
+
     private recordSyncResult(r: SyncRunResult | void) {
         const state = r && typeof r === "object" ? r.state : undefined;
+        clearTimeout(this.installTimer);
+        this.installTimer = undefined;
+        if (state?.installing?.length && !this.stopped) {
+            this.installTimer = setTimeout(() => {
+                this.installTimer = undefined;
+                this.resync();
+            }, INSTALL_RECHECK_MS);
+            (this.installTimer as { unref?: () => void }).unref?.();
+        }
         const st = state?.result;
         const missingClis = state?.missingClis ?? st?.missingClis;
         const needsSignIn = state?.needsSignIn ?? st?.needsSignIn;
@@ -372,14 +387,14 @@ export class MachineWatch {
     }
 
     /** Runs a sync now and resolves with its result (or rejects on error/disconnected). Serializes concurrent callers. */
-    async syncNow(): Promise<SyncRunResult | undefined> {
-        if (!this.o.sync) return undefined;
+    async syncNow(run?: (ask: (method: string, params: Record<string, unknown>) => Promise<unknown>) => Promise<SyncRunResult | void>): Promise<SyncRunResult | undefined> {
+        const sync = run ?? this.o.sync;
+        if (!sync) return undefined;
         if (!this.isConnected()) throw new Error(`${this.name} isn't connected.`);
         while (this.syncing) await this.syncing;
         if (!this.isConnected()) throw new Error(`${this.name} isn't connected.`);
         this.syncInfo = { ...this.syncInfo, state: "syncing", error: undefined };
-        const run = this.o.sync(this.syncAsk);
-        const tracked = run.then(
+        const tracked = sync(this.syncAsk).then(
             (r) => {
                 this.recordSyncResult(r);
                 return r ?? undefined;
@@ -409,6 +424,7 @@ export class MachineWatch {
 
     stop() {
         this.stopped = true;
+        clearTimeout(this.installTimer);
         clearTimeout(this.timer);
         clearTimeout(this.keepTimer);
         this.keepTimer = undefined;

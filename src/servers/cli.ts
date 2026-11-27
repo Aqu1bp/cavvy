@@ -10,13 +10,12 @@ import { loadScope } from "../config/settings";
 import { childEnv } from "../util/env";
 import { thisBuild, UNKNOWN_BUILD } from "./build";
 import { ServerLink, type LinkState } from "./connect";
-import { countCopied, describeCopy, describeLeft, planCopy, sendCopy } from "./copy";
 import type { HostCheck, HostStatus } from "./host";
 import { ensureBuildThere, ServerBusy, setUpServer, type SetupProgress, type SetupResult } from "./install";
 import { LOGIN, LOGIN_EXIT, NOT_SET_UP, probeServer, REMOTE_CURRENT, REMOTE_DIR, remoteBuildDir } from "./remote";
 import { applyBuild, BOOT_TAKEN, bootCommand, NotSetUp, previousBuild, remoteCheck, remoteStatus, revokeOverSsh, serviceReport, stopRemote, UpdateFailed, type ServiceReport } from "./service";
 import { hostOf, offeredHostKey, printable, remoteSh, shQuote, ssh, sshCommandArgv, SshError, trustHostKey } from "./ssh";
-import { draftServer, listServers, removeServer, requireServer, saveServer, ServerError, setServerSyncSecrets, thisDesktop, type ServerEntry } from "./store";
+import { draftServer, listServers, removeServer, requireServer, saveServer, ServerError, setServerSync, thisDesktop, type ServerEntry } from "./store";
 import { ServerLinks } from "./manager";
 import type { PermissionMode } from "../permissions/modes";
 
@@ -29,10 +28,9 @@ export const SERVERS_HELP = `Usage:
   ${APP_NAME} servers add <name> <user@host>   add one, and set Cavvy up on it
       --port <n>                             its SSH port, when it isn't 22
       --identity <file>                      the private key to use
-      --copy / --no-copy                     copy your settings there, or don't (asked otherwise)
-      --sync-keys                            also sync Cavvy API keys and MCP secrets to this server
+      --sync / --no-sync                     keep it in sync with this machine, or don't (asked otherwise)
   ${APP_NAME} servers check [name]             what a server has, and what it's missing
-  ${APP_NAME} servers sync [name]              sync skills, settings, plugins, providers (--keys / --no-keys)
+  ${APP_NAME} servers sync [name]              sync now; --on / --off keeps it in sync, or stops
   ${APP_NAME} servers login <name> [cli]       sign Claude Code or Codex in there (--account <id>)
   ${APP_NAME} servers update <name>            bring its Cavvy up to this machine's (--force: whatever it runs)
   ${APP_NAME} servers rollback <name>          put it back on the version it ran before its last update
@@ -214,8 +212,7 @@ function statusLine(e: ServerEntry, s: HostStatus | undefined): string {
 interface AddFlags {
     port?: number;
     identityFile?: string;
-    copy?: boolean;
-    syncKeys?: boolean;
+    sync?: boolean;
 }
 
 function parseAdd(args: string[]): { name?: string; destination?: string; flags: AddFlags } {
@@ -230,55 +227,14 @@ function parseAdd(args: string[]): { name?: string; destination?: string; flags:
         };
         if (a === "--port" || a === "-p") flags.port = Number(value());
         else if (a === "--identity" || a === "-i") flags.identityFile = value();
-        else if (a === "--copy") flags.copy = true;
-        else if (a === "--no-copy") flags.copy = false;
-        else if (a === "--sync-keys") flags.syncKeys = true;
+        // --copy was the one-off copy that sync took over.
+        else if (a === "--sync" || a === "--copy") flags.sync = true;
+        else if (a === "--no-sync" || a === "--no-copy") flags.sync = false;
         else if (a.startsWith("-")) throw new ServerError(`Unknown option ${a}.`);
         else rest.push(a);
     }
     return { name: rest[0], destination: rest[1], flags };
 }
-
-/** The one-time copy. It's an extra: failing, it's said and the server is still added. */
-async function offerCopy(e: ServerEntry, wanted: boolean | undefined) {
-    if (wanted === false) return;
-    let plan: ReturnType<typeof planCopy> | undefined;
-    // The copies made ready to send don't outlive this, however it ends.
-    const interrupted = () => {
-        plan?.cleanup();
-        process.exit(130);
-    };
-    process.on("SIGINT", interrupted);
-    process.on("SIGTERM", interrupted);
-    try {
-        let settings;
-        try {
-            settings = loadScope("user", process.cwd());
-        } catch {
-            settings = undefined;
-        }
-        plan = planCopy(settings);
-        const what = describeCopy(plan.counts);
-        // Not in silence: they're in the settings here, and the user would look for them there.
-        const left = describeLeft(plan.left);
-        const sayLeft = () => left && err(`Not copied, since they could hold a key or need this machine: ${left}.`);
-        if (!what) return void sayLeft();
-        if (wanted === undefined && !(await ask(`Copy your ${what} to ${e.name}?`, ["Keys, and what reads like one, stay here."], "Copy", "Skip"))) return;
-        // What the server took, which isn't always what was offered: it keeps what it has.
-        const took = describeCopy(countCopied(await sendCopy(e, plan)));
-        err(took ? `Copied your ${took}.` : `${e.name} already had them.`);
-        sayLeft();
-    } catch (x) {
-        if (x instanceof ServerError) report(x);
-        // Settings this can't read as it expects (an MCP server written some other way): nothing was copied.
-        else err(`Couldn't copy your settings: ${printable((x as Error)?.message ?? String(x))}`);
-    } finally {
-        process.off("SIGINT", interrupted);
-        process.off("SIGTERM", interrupted);
-        plan?.cleanup();
-    }
-}
-
 
 /**
  * Signs a CLI in on the server and turns it on in the Cavvy there. The CLI's own sign-in has this terminal for as
@@ -393,24 +349,22 @@ async function syncCommand(args: string[]): Promise<number> {
     let keys: boolean | undefined;
     let name: string | undefined;
     for (const a of args) {
-        if (a === "--keys") keys = true;
-        else if (a === "--no-keys") keys = false;
+        if (a === "--on") keys = true;
+        else if (a === "--off") keys = false;
         else if (a.startsWith("-")) throw new ServerError(`Unknown option ${a}.`);
         else if (!name) name = a;
         else throw new ServerError(`Unexpected argument ${a}.`);
     }
     if (keys !== undefined && !name) {
-        throw new ServerError(`Specify a server name with ${keys ? "--keys" : "--no-keys"}: ${APP_NAME} servers sync <name> ${keys ? "--keys" : "--no-keys"}`);
+        throw new ServerError(`Name the server: ${APP_NAME} servers sync <name> ${keys ? "--on" : "--off"}`);
     }
     const targets = name ? [requireServer(name)] : listServers();
     if (!targets.length) {
         out(`No servers yet. Add one: ${APP_NAME} servers add <name> <user@host>`);
         return 0;
     }
-    if (keys !== undefined && name) {
-        setServerSyncSecrets(targets[0]!.name, keys);
-    }
     const links = new ServerLinks({ sync: true });
+    if (keys !== undefined && name) links.setSync(targets[0]!.name, keys);
     let failed = 0;
     try {
         const results = await links.syncNow(name);
@@ -441,7 +395,7 @@ async function add(args: string[]): Promise<number> {
         err(`Usage: ${APP_NAME} servers add <name> <user@host> [--port n] [--identity file]`);
         return 1;
     }
-    let e = draftServer({ name, destination, port: flags.port, identityFile: flags.identityFile, ...(flags.syncKeys ? { syncSecrets: true } : {}) });
+    let e = draftServer({ name, destination, port: flags.port, identityFile: flags.identityFile });
     err(`Connecting to ${hostOf(e)}…`);
     let setup: SetupResult | undefined;
     try {
@@ -454,13 +408,11 @@ async function add(args: string[]): Promise<number> {
         return 0;
     }
     saveServer(e);
-    let syncFailed = false;
-    if (flags.syncKeys) {
-        syncFailed = (await syncCommand([e.name])) !== 0;
-    } else {
-        await offerCopy(e, flags.copy);
-    }
     out(setup.kept === "newer" ? `${e.name} is ready. It runs a newer Cavvy than this machine.` : `${e.name} is ready.`);
+    let syncFailed = false;
+    const sync = flags.sync ?? (await ask(`Keep ${e.name} in sync with this machine?`, ["Settings, skills, plugins and API keys, and the agent CLIs you use installed there. Sign-ins stay on each machine."], "Sync", "Not now"));
+    if (sync) syncFailed = (await syncCommand([e.name, "--on"])) !== 0;
+    else saveServer({ ...e, sync: false });
     out("Only put credentials on it that you'd accept an agent using.");
     let c = await check(e);
     if (c?.mode === "bypassPermissions") out("Sessions there run without asking (Bypass).");

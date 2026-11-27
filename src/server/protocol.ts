@@ -1309,6 +1309,9 @@ export interface ProviderInfo {
         install: string;
         /** Settings can install it, in a terminal (CliInfo.installCommand). */
         installable?: boolean;
+        /** Its install by sync is running there now, or failed with this. */
+        installing?: boolean;
+        installError?: string;
         /** What the plan is called in buttons ("Claude subscription", "ChatGPT plan"). */
         plan: string;
         /** It can have accounts besides Default (false: an ACP agent, with its own sign-in only). */
@@ -1491,7 +1494,7 @@ export interface AppUpdateChange {
     subject: string;
 }
 
-/** Whether the desktop app, built from a checkout (scripts/update-desktop.ts), is behind origin/main, and its update if one is running. */
+/** Whether the desktop app is behind: a checkout's build behind origin/main, or a downloaded one behind the latest release; and its update if one is running. */
 export interface AppUpdateInfo {
     /** Why this copy can't update itself (not the installed desktop app, no record of the checkout it came from); nothing else is set. */
     unavailable?: string;
@@ -1508,8 +1511,22 @@ export interface AppUpdateInfo {
     note?: string;
     checkedAt?: number;
     checking: boolean;
-    /** An update running: since when, and the last line it printed. `restarting`: built and installed, Cavvy restarts next. */
-    updating?: { startedAt: number; line: string; restarting: boolean };
+    /**
+     * An update running: since when, and the last line it printed. `restarting`: built and installed, Cavvy restarts
+     * next. `progress`: a downloaded app's download, 0–1, while it comes.
+     */
+    updating?: { startedAt: number; line: string; restarting: boolean; progress?: number };
+    /**
+     * A downloaded Cavvy (a release build): it updates to Cavvy's latest release, not from main. `installed` and
+     * `latest` are then versions, and `changes` is empty.
+     */
+    release?: boolean;
+    /** The latest release's notes, when it's newer. */
+    notes?: string;
+    /** The latest release needs a newer macOS than this Mac's: the version it needs. */
+    needsSystem?: string;
+    /** The latest release is downloaded and checked: restarting Cavvy puts it in place. */
+    ready?: boolean;
     /** The last check failed (couldn't fetch main, say): the rest is as of the fetch before. */
     error?: string;
     /** The last update failed, or installed without the app restarting: what happened. Cleared when one starts. */
@@ -1912,8 +1929,8 @@ export interface ServerSummary {
     cost?: string;
     /** An agent created it, and Cavvy knows how to delete it at its provider. */
     rented?: boolean;
-    /** Opt-in: Cavvy API keys and MCP server secrets sync to this server. */
-    syncSecrets?: boolean;
+    /** Kept in sync with this machine (ServerEntry.sync): on, off, or left out when it hasn't been asked. */
+    syncOn?: boolean;
     /** Sync status when an error or pending sign-in needs attention. */
     sync?: ServerSyncStatus;
 }
@@ -2243,10 +2260,10 @@ export interface Methods {
      * (RELAYED_ARCHIVE_OFFER).
      */
     "servers.relay": { params: { name: string; method: string; params: Record<string, unknown> }; result: { worktree: true } | null };
-    "servers.add": { params: { name: string; destination: string; port?: number; identityFile?: string; trust?: string[]; syncSecrets?: boolean }; result: AddResult };
+    "servers.add": { params: { name: string; destination: string; port?: number; identityFile?: string; trust?: string[]; sync?: boolean }; result: AddResult };
     "servers.copy": { params: { name: string }; result: { took: string; left?: string } };
     "servers.sync": { params: { name?: string }; result: { results: ServerSyncItemResult[] } };
-    "servers.setSync": { params: { name: string; syncSecrets: boolean }; result: null };
+    "servers.setSync": { params: { name: string; on: boolean }; result: null };
     "servers.check": { params: { name: string }; result: ServerCheck };
     /**
      * `retry`: the window's connection trying again by itself. `renew`: the sign-in it was last given opened nothing.

@@ -27,6 +27,9 @@ interface Far {
     problem?: string;
 }
 
+/** While a server installs a CLI, how often its providers are read again. */
+const INSTALL_RECHECK_MS = 10_000;
+
 const planLabel = (plan?: string) => (plan ? plan.charAt(0).toUpperCase() + plan.slice(1) : undefined);
 
 export default function SubscriptionGrid(p: { here: string; servers: readonly string[]; touched: () => number }) {
@@ -83,6 +86,14 @@ export default function SubscriptionGrid(p: { here: string; servers: readonly st
     createEffect(on(() => [...p.servers], (names) => names.forEach(open), { defer: true }));
     // Signed in on a server from here, or its keys changed: how its accounts stand is asked again there.
     createEffect(on(p.touched, () => p.servers.forEach((name) => void check(name)), { defer: true }));
+    // A server installing a CLI by sync (src/servers/sync-install.ts): read again until it's done. Only meanwhile.
+    createEffect(() => {
+        for (const name of p.servers) {
+            if (!far[name]?.list?.some((pr) => pr.agentCli?.installing)) continue;
+            const t = setTimeout(() => void read(name), INSTALL_RECHECK_MS);
+            onCleanup(() => clearTimeout(t));
+        }
+    });
 
     const columns = (): Column[] => [{ label: p.here }, ...p.servers.map((server) => ({ server, label: server }))];
     const listOn = (c: Column): readonly ProviderInfo[] | undefined => (c.server ? far[c.server]?.list : app.providers);
@@ -143,10 +154,15 @@ export default function SubscriptionGrid(p: { here: string; servers: readonly st
                     <Match when={!list()}>
                         <Show when={q.head}><Spinner size={11} /></Show>
                     </Match>
+                    <Match when={!cli()?.installed && cli()?.installing}>
+                        <Show when={q.head} fallback={<span />}>
+                            <span class="sg-muted sg-installing"><Spinner size={11} /> Installing</span>
+                        </Show>
+                    </Match>
                     <Match when={!cli()?.installed}>
                         <Show when={q.head} fallback={<span />}>
                             <Show when={(pr() ?? any())?.agentCli?.installable} fallback={<span class="sg-muted" title={(pr() ?? any())?.agentCli?.install}>Not installed</span>}>
-                                <button class="sg-link" aria-label={`Install ${(pr() ?? any())!.name} on ${q.c.label}`} onClick={() => install(q.c, (pr() ?? any())!)}>Install</button>
+                                <button class="sg-link" title={cli()?.installError} aria-label={`Install ${(pr() ?? any())!.name} on ${q.c.label}`} onClick={() => install(q.c, (pr() ?? any())!)}>Install</button>
                             </Show>
                         </Show>
                     </Match>

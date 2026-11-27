@@ -34,6 +34,7 @@ import { allProviders, BUILTIN_PROVIDERS, customEnvKey, readAgentConfig, readPro
 import { matchesSecretPattern } from "../util/secret-patterns";
 import { CLI_SIGN_IN_TOKEN, isProtectedCredentialPath, localHost, packageSpec, portableMcpEntry, portableRule, RUNNER_FLAGS, RUNNERS, SETTINGS_KEYS, SUBSCRIPTION_OAUTH_TOKEN } from "./copy";
 import { syncTo, type SyncFilesResult } from "./sync";
+import { installing, startInstall } from "./sync-install";
 
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 const stableJson = (v: unknown): string => {
@@ -90,6 +91,8 @@ export interface SyncStatePayload {
     /** Present ONLY when `includeSecrets` is true; contains Cavvy API/search keys only (never CLI tokens). */
     apiKeys?: Record<string, SyncedApiKey>;
     includeSecrets?: boolean;
+    /** Install the agent CLIs in `agents` this server lacks (sync-install.ts). Sent when its sync is on. */
+    installMissing?: boolean;
 }
 
 export interface SyncNeedsSignIn {
@@ -101,6 +104,8 @@ export interface SyncNeedsSignIn {
 export interface SyncRemoteStateStatus {
     digest?: string;
     missingClis: string[];
+    /** Being installed there now (sync-install.ts). */
+    installing?: string[];
     needsSignIn: SyncNeedsSignIn[];
 }
 
@@ -115,6 +120,8 @@ export interface ApplyStateResult {
     /** Plugin IDs whose installed files changed on update (so running plugin MCP servers restart). */
     restartedPlugins: string[];
     missingClis: string[];
+    /** Being installed there now (sync-install.ts). */
+    installing?: string[];
     needsSignIn: SyncNeedsSignIn[];
     warnings: string[];
     /** Providers whose synced key was to be taken off this server and is still there. */
@@ -125,6 +132,7 @@ export interface SyncStateSummary {
     unsupported?: boolean;
     unchanged?: boolean;
     missingClis?: string[];
+    installing?: string[];
     needsSignIn?: SyncNeedsSignIn[];
     result?: ApplyStateResult;
 }
@@ -590,9 +598,12 @@ export async function readSyncedStateDigest(): Promise<SyncRemoteStateStatus> {
     const trackedClis = Object.keys(r.agents);
     const missingClis = (r.missingClis ?? []).filter((id) => !installed.includes(id));
     const needsSignIn = await collectNeedsSignIn(trackedClis);
+    const now = installing();
     return {
+        // One being installed: asked for again once it's there, which a changed list of CLIs above sees to.
         ...(r.digest && sameClis ? { digest: r.digest } : {}),
         missingClis,
+        ...(now.length ? { installing: now } : {}),
         needsSignIn,
     };
 }
@@ -1013,6 +1024,7 @@ export async function applyStateSync(digest: unknown, raw: unknown): Promise<App
                 incomingIds.add(def.id);
                 if (!findCli(def.id, def.cli)) {
                     missingClis.push(def.id);
+                    if (p.installMissing === true) startInstall(def.id);
                     continue;
                 }
                 const prevRec = record.agents[def.id];
@@ -1340,6 +1352,7 @@ export async function applyStateSync(digest: unknown, raw: unknown): Promise<App
         restartedPlugins: [...restartedPlugins],
         ...(keysLeft.length ? { keysLeft } : {}),
         missingClis,
+        ...(installing().length ? { installing: installing() } : {}),
         needsSignIn,
         warnings,
     };
@@ -1348,11 +1361,11 @@ export async function applyStateSync(digest: unknown, raw: unknown): Promise<App
 /** Brings a server's structured state (settings, plugins, providers, and opt-in API keys) level with this machine. */
 export async function syncStateTo(
     ask: (method: string, params: Record<string, unknown>) => Promise<unknown>,
-    o: { includeSecrets?: boolean | (() => boolean) } = {},
+    o: { includeSecrets?: boolean | (() => boolean); installMissing?: boolean } = {},
 ): Promise<SyncStateSummary> {
     const wantSecrets = () => (typeof o.includeSecrets === "function" ? o.includeSecrets() : o.includeSecrets === true);
     const includeSecrets = wantSecrets();
-    const payload = await localSyncState({ includeSecrets });
+    const payload = { ...(await localSyncState({ includeSecrets })), ...(o.installMissing ? { installMissing: true } : {}) };
     const digest = hashVal(payload);
     let theirs: unknown;
     try {
@@ -1368,18 +1381,19 @@ export async function syncStateTo(
         return {
             unchanged: true,
             missingClis: Array.isArray(status.missingClis) ? status.missingClis : [],
+            ...(Array.isArray(status.installing) && status.installing.length ? { installing: status.installing } : {}),
             needsSignIn: Array.isArray(status.needsSignIn) ? status.needsSignIn : [],
         };
     }
     // Re-check opt-in immediately before dispatching a secret-bearing payload so a concurrent opt-out is honored.
     if (includeSecrets && !wantSecrets()) {
-        const safePayload = await localSyncState({ includeSecrets: false });
+        const safePayload = { ...(await localSyncState({ includeSecrets: false })), ...(o.installMissing ? { installMissing: true } : {}) };
         const safeDigest = hashVal(safePayload);
         const result = (await ask("sync.applyState", { digest: safeDigest, payload: safePayload })) as ApplyStateResult;
-        return { result, missingClis: result.missingClis, needsSignIn: result.needsSignIn };
+        return { result, missingClis: result.missingClis, needsSignIn: result.needsSignIn, ...(result.installing?.length ? { installing: result.installing } : {}) };
     }
     const result = (await ask("sync.applyState", { digest, payload })) as ApplyStateResult;
-    return { result, missingClis: result.missingClis, needsSignIn: result.needsSignIn };
+    return { result, missingClis: result.missingClis, needsSignIn: result.needsSignIn, ...(result.installing?.length ? { installing: result.installing } : {}) };
 }
 
 export interface SyncRunResult {
@@ -1390,7 +1404,7 @@ export interface SyncRunResult {
 /** Runs both file sync and structured state sync against one server over its connection. */
 export async function syncAllTo(
     ask: (method: string, params: Record<string, unknown>) => Promise<unknown>,
-    o: { includeSecrets?: boolean | (() => boolean) } = {},
+    o: { includeSecrets?: boolean | (() => boolean); installMissing?: boolean } = {},
 ): Promise<SyncRunResult> {
     // Each is tried though the other failed: a file the server can't take mustn't keep its settings, or keys
     // that are to leave it, as they were.

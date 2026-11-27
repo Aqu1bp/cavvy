@@ -110,15 +110,14 @@ function Group(p: { children: JSX.Element }) {
 }
 
 /** A heading (with a line under it, if it needs one), and its settings in one rounded list. */
-function Section(p: { title?: JSX.Element; caption?: JSX.Element; aside?: JSX.Element; children: JSX.Element; class?: string }) {
+function Section(p: { title?: JSX.Element; caption?: JSX.Element; children: JSX.Element; class?: string }) {
     return (
         <div class="set-sec">
             <Show when={p.title}>
-                <Show when={p.caption || p.aside} fallback={<Group>{p.title}</Group>}>
+                <Show when={p.caption} fallback={<Group>{p.title}</Group>}>
                     <div class="set-hd">
                         <Group>{p.title}</Group>
-                        <Show when={p.aside}><div class="set-aside">{p.aside}</div></Show>
-                        <Show when={p.caption}><p class="set-cap">{p.caption}</p></Show>
+                        <p class="set-cap">{p.caption}</p>
                     </div>
                 </Show>
             </Show>
@@ -505,7 +504,6 @@ function Appearance() {
  */
 const [servers, setServers] = createSignal<typeof import("./Servers")>();
 const serverList = () => servers()?.serverList() ?? [];
-const providersOn = () => servers()?.providersOn() ?? "";
 
 /** connectCli (state/actions.ts) for a server shown from here: asked of the Cavvy there, whose providers are read again. */
 async function connectThere(pr: ProviderInfo, at: ProvidersAt, failed: (e: unknown) => void): Promise<boolean> {
@@ -740,7 +738,7 @@ function ProviderRow(p: { pr: ProviderInfo }) {
 }
 
 /** One machine's providers: the rows are the same for the window's own machine and for a server shown from it. */
-function ProviderSections(p: { noSubscriptions?: boolean; picker?: JSX.Element }) {
+function ProviderSections(p: { noSubscriptions?: boolean; localOnly?: boolean; synced?: boolean }) {
     const at = useProvidersAt();
     const [key, setKey] = createSignal("");
     const [busy, setBusy] = createSignal(false);
@@ -768,7 +766,7 @@ function ProviderSections(p: { noSubscriptions?: boolean; picker?: JSX.Element }
         { title: "API keys", list: models().filter((p) => !p.agentCli && !p.local) },
         { title: LOCAL, list: models().filter((p) => !p.agentCli && p.local) },
         { title: "Web search", list: at.list().filter((p) => p.search) },
-    ].filter((g) => g.list.length);
+    ].filter((g) => g.list.length && (!p.localOnly || g.title === LOCAL));
     const keyBox = () => (
         <div class="keyin">
             <input class="input mono" type="password" aria-label="API key" placeholder="Paste a key from any provider" value={key()} onInput={(e) => setKey(e.currentTarget.value)} onKeyDown={(e) => e.key === "Enter" && void quickAdd()} />
@@ -777,32 +775,17 @@ function ProviderSections(p: { noSubscriptions?: boolean; picker?: JSX.Element }
             </button>
         </div>
     );
-    // A server's keys can be this machine's own, kept level with it: the same switch as the Machines menu's key button.
-    const synced = () => serverList().find((s) => s.name === at.server)?.syncSecrets === true;
-    const keySync = () => (
-        <Show when={at.server}>
-            {(name) => (
-                <Row class="keys-sync" title={`Sync keys from ${os === "macos" ? "this Mac" : "this computer"}`} desc="API keys and MCP secrets.">
-                    <Toggle label={`Sync API keys to ${name()}`} checked={synced()} onChange={(v) => void servers()?.setKeySync(name(), v)} />
-                </Row>
-            )}
-        </Show>
-    );
     // API keys always shows, for the box that adds one.
-    const sections = () => groups().some((g) => g.title === "API keys") ? groups() : [...groups().slice(0, 1), { title: "API keys", list: [] }, ...groups().slice(1)];
+    const sections = () => p.localOnly || groups().some((g) => g.title === "API keys") ? groups() : [...groups().slice(0, 1), { title: "API keys", list: [] }, ...groups().slice(1)];
     return (
         <For each={sections()}>
             {(g) => (
                 <Section
                     title={g.title === LOCAL && at.server ? `On ${at.server}` : g.title}
                     class="prov-group"
-                    caption={g.title === "API keys" ? <>Kept on {where()}, sent only to their provider. Custom endpoints: <code>/login custom</code> in the terminal app.</> : undefined}
-                    aside={g.title === "API keys" ? p.picker : undefined}
+                    caption={g.title === "API keys" ? <>Kept on {p.synced ? "this computer and the servers you sync" : where()}, sent only to their provider. Custom endpoints: <code>/login custom</code> in the terminal app.</> : undefined}
                 >
-                    <Show when={g.title === "API keys"}>
-                        {keySync()}
-                        {keyBox()}
-                    </Show>
+                    <Show when={g.title === "API keys"}>{keyBox()}</Show>
                     <For each={g.list}>{(pr) => <ProviderRow pr={pr} />}</For>
                 </Section>
             )}
@@ -810,40 +793,22 @@ function ProviderSections(p: { noSubscriptions?: boolean; picker?: JSX.Element }
     );
 }
 
-/** A server's providers, read over a connection of this window's own to the Cavvy there. */
-function ServerProviders(p: { name: string; picker?: JSX.Element }) {
+/** A server's own local models (a model server there), read over a connection of this window's own to the Cavvy there. Nothing while it isn't reached. */
+function ServerLocalModels(p: { name: string }) {
     const [state, setState] = createStore<{ list: ProviderInfo[] }>({ list: [] });
     const [link, setLink] = createSignal<Rpc>();
-    const [problem, setProblem] = createSignal<string>();
     const refresh = async () => {
         const l = link();
         if (l) setState("list", reconcile(await l.call("providers.list", {}), { key: "id" }));
     };
     onMount(() => {
-        void linkFor(p.name).then((l) => (setLink(l), refresh())).catch((e) => setProblem(e instanceof Error ? e.message : String(e)));
+        void linkFor(p.name).then((l) => (setLink(l), refresh())).catch(() => undefined);
     });
-    // Signed in there from here, or its keys taken or given: asked again how each account stands, then read again.
-    createEffect(on(() => servers()?.serverTouched(), () => {
-        const l = link();
-        if (!l) return;
-        void Promise.all(state.list.filter((pr) => pr.agentCli?.installed && pr.configured).map((pr) => l.call("accounts.list", { provider: pr.id, refresh: true }).catch(() => undefined))).then(refresh).catch(() => undefined);
-    }, { defer: true }));
     return (
-        <Show
-            when={link()}
-            fallback={
-                <Section title="API keys" aside={p.picker}>
-                    <div class="set-row">
-                        <Show when={problem()} fallback={<span class="muted"><Spinner size={12} /> Connecting to {p.name}…</span>}>
-                            <span class="muted selectable" role="alert">{problem()}</span>
-                        </Show>
-                    </div>
-                </Section>
-            }
-        >
+        <Show when={link()}>
             {(l) => (
                 <ProvidersAtContext.Provider value={{ server: p.name, link: l(), list: () => state.list, refresh, changed: refresh }}>
-                    <ProviderSections noSubscriptions picker={p.picker} />
+                    <ProviderSections localOnly />
                 </ProvidersAtContext.Provider>
             )}
         </Show>
@@ -851,23 +816,16 @@ function ServerProviders(p: { name: string; picker?: JSX.Element }) {
 }
 
 function Providers() {
-    // Which machine's are shown (state/servers.ts). Its servers are offered from the user's own computer, by name:
-    // the order they're kept in changes as they're changed.
+    // The user's servers (state/servers.ts), offered from their own computer, by name: the order they're kept in
+    // changes as they're changed.
     const listed = createMemo(() => [...serverList()].sort((a, b) => a.name.localeCompare(b.name)));
     onMount(() => {
         if (machine || !app.hello?.servers) return;
         void serversUi().then((m) => (setServers(() => m), m.refreshServerList())).catch(() => undefined);
     });
-    // A server that's gone from the list (removed meanwhile) isn't shown on.
-    createEffect(on(serverList, (all) => { if (providersOn() && !all.some((s) => s.name === providersOn())) servers()?.setProvidersOn(""); }, { defer: true }));
-    // Subscriptions show every machine at once; keys, local models and search are set up per machine, under this.
-    const machines = () => [{ value: "", label: (servers()?.HERE ?? "") as JSX.Element }, ...listed().map((s) => ({ value: s.name, label: s.name as JSX.Element }))];
     const withServers = () => !machine && listed().length > 0;
-    const picker = () => (
-        <Show when={withServers()}>
-            <Segmented size="sm" label="Machine" value={providersOn()} options={machines()} onChange={(v) => servers()?.setProvidersOn(v)} />
-        </Show>
-    );
+    // Subscriptions are signed in on each machine: one table across them. Keys go with sync; a server's own local
+    // models are its own.
     return (
         <>
             <Show when={withServers()}>
@@ -877,8 +835,9 @@ function Providers() {
                     </Suspense>
                 </Section>
             </Show>
-            <Show when={!machine && providersOn()} keyed fallback={<ProviderSections noSubscriptions={withServers()} picker={picker()} />}>
-                {(name) => <ServerProviders name={name} picker={picker()} />}
+            <ProviderSections noSubscriptions={withServers()} synced={listed().some((s) => s.syncOn)} />
+            <Show when={withServers()}>
+                <For each={listed()}>{(s) => <ServerLocalModels name={s.name} />}</For>
             </Show>
         </>
     );
@@ -1008,8 +967,9 @@ function Shortcuts() {
 }
 
 /**
- * The desktop app updating itself from main (src/server/app-update.ts): what's
- * new since this build, and Update & restart. The build runs while you work;
+ * The desktop app updating itself (src/server/app-update.ts): from main, what's
+ * new since this build, and Update & restart; a downloaded app, the latest
+ * release, its notes, and Update & restart. The build runs while you work;
  * Cavvy restarts once it's installed. Only the desktop app shows why it can't
  * (a browser's server never updates an app).
  */
@@ -1041,9 +1001,17 @@ function Updates() {
                             {(a) => (
                                 <>
                                     <button class="btn sm" disabled={asking()} onClick={() => void check()}>Check now</button>
+                                    <Show when={v().notes}>
+                                        {(url) => <button class="btn ghost sm" onClick={() => void openExternal(url())}>Release notes <ExternalLink size={12} /></button>}
+                                    </Show>
                                     <Show when={a() === "update"}>
                                         <button class="btn primary sm" disabled={update.pending()} onClick={update.request}>
                                             <Download size={14} /> Update &amp; restart
+                                        </button>
+                                    </Show>
+                                    <Show when={a() === "restart"}>
+                                        <button class="btn primary sm" disabled={update.pending()} onClick={update.request}>
+                                            <RotateCcw size={14} /> Restart
                                         </button>
                                     </Show>
                                 </>
@@ -1052,6 +1020,9 @@ function Updates() {
                     </Row>
                     <Show when={v().warn}>
                         <div class="upd-warn"><AlertTriangle size={13} /> {v().warn}</div>
+                    </Show>
+                    <Show when={v().problem}>
+                        <div class="upd-warn"><AlertTriangle size={13} /> {v().problem}</div>
                     </Show>
                     <Show when={!u().updating && u().changes?.length}>
                         <ul class="upd-changes" aria-label="New on main">
