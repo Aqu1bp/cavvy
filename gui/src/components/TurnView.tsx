@@ -1,6 +1,6 @@
 import { RenderBoundary } from "./ui/ErrorBoundary";
 import { createComputed, createEffect, createMemo, createResource, createSignal, For, Index, Match, on, onCleanup, Show, Switch, untrack } from "solid-js";
-import { AlertCircle, AlertTriangle, BellRing, Check, ChevronRight, Clock, CornerDownRight, FileDiff, FileText, Folder, FolderGit2, GitFork, Info, MessageSquareText, RotateCcw, Square, SquareArrowOutUpRight, SquareTerminal, X } from "lucide-solid";
+import { AlertCircle, AlertTriangle, ArrowUpRight, BellRing, Check, ChevronRight, Clock, CornerDownRight, FileDiff, FileText, Folder, FolderGit2, GitFork, Info, MessageSquareText, RotateCcw, Square, SquareArrowOutUpRight, SquareTerminal, X } from "lucide-solid";
 import type { AgentRun, Block, CompactBlock, FileDiff as Diff, ImportedBlock, NoticeBlock, PeerBlock, SessionState, ShellBlock, TextBlock, ThinkingBlock, Turn, TurnPlace } from "@shared/protocol";
 import { basename, firstChangedLine, plural, promptTime, shortPrompt, stripAnsi, tildify } from "../lib/format";
 import { cardShape, incompleteLine, PLACES_SHOWN, placeRows, placesTotal, WHO_NAMED, workers, type OwnPlace } from "../lib/turn-places";
@@ -95,7 +95,8 @@ function PromptImages(p: { sessionId?: string; turn: Turn; count: number }) {
  */
 function PeerQuote(p: { from: { id: string; title: string }; /** The session it came to. */ in?: string; text: string; find?: string; reveal?: boolean }) {
     const [open, setOpen] = createSignal(false);
-    const long = () => p.text.split("\n").length > 14 || p.text.length > 1400;
+    // Lines that show: Markdown's blank lines between paragraphs don't make a message long.
+    const long = () => p.text.split("\n").filter((l) => l.trim()).length > 10 || p.text.length > 900;
     createEffect(() => p.reveal && setOpen(true));
     // One on another machine than the session it came to is named `<machine>/<id>`; one on the same, by its id alone.
     const at = () => /^([^/]+)\/(.+)$/.exec(p.from.id);
@@ -112,12 +113,13 @@ function PeerQuote(p: { from: { id: string; title: string }; /** The session it 
     };
     return (
         <div class="peer-card">
-            <button class="peer-head" title={`From ${from()}`} aria-label={`Message from ${from()}`} onClick={show}>
+            <button class="peer-head" title={`Open ${from()}`} aria-label={`Message from ${from()}`} onClick={show}>
                 <MessageSquareText size={14} aria-hidden="true" />
-                Message from another session
+                <span class="truncate">{p.from.title}{at() ? ` · ${at()![1]}` : ""}</span>
+                <ArrowUpRight size={14} class="peer-go" aria-hidden="true" />
             </button>
             <div class={`peer-body ${long() && !open() ? "clamped" : ""}`} data-find={p.find}>
-                {p.text}
+                <Markdown text={p.text} />
             </div>
             <Show when={long()}>
                 <button class="link-btn more" aria-expanded={open()} onClick={() => setOpen(!open())}>
