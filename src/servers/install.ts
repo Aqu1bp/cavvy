@@ -52,7 +52,9 @@ $want = $cavvyArgs[1].ToLowerInvariant()
 $root = Join-Path $env:USERPROFILE ".cavvy\\server"
 $b = Join-Path $root "builds"
 New-Item -ItemType Directory -Force -Path $b | Out-Null
-Get-ChildItem -Path $b -Directory -Filter ".incoming-*" -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -lt (Get-Date).AddMinutes(-30) } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+try {
+    Get-ChildItem -Path $b -Directory -Filter ".incoming-*" -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -lt (Get-Date).AddMinutes(-30) } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+} catch {}
 $in = Join-Path $b (".incoming-" + $id + "-" + $PID)
 New-Item -ItemType Directory -Force -Path $in | Out-Null
 $archive = Join-Path $in "bundle.tar.gz"
@@ -65,7 +67,9 @@ try {
     Remove-Item -Force -Path $archive -ErrorAction SilentlyContinue
     $exe = Join-Path $in "cavvy.exe"
     if (-not (Test-Path $exe)) { [Console]::Error.WriteLine("missing cavvy.exe"); exit 41 }
-    $got = (Get-FileHash -Algorithm SHA256 -Path $exe).Hash.ToLowerInvariant()
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    $fs = [System.IO.File]::OpenRead($exe)
+    try { $got = [System.BitConverter]::ToString($sha.ComputeHash($fs)).Replace('-', '').ToLowerInvariant() } finally { $fs.Close(); $sha.Dispose() }
     if ($got -ne $want) { [Console]::Error.WriteLine("expected $want, got $got"); exit 41 }
     $out = (& $exe host version 2>&1) -join "\`n"
     if ($LASTEXITCODE -ne 0) { [Console]::Error.WriteLine($out); exit 42 }
@@ -74,6 +78,9 @@ try {
     if (Test-Path $dest) { Remove-Item -Recurse -Force -Path $dest }
     Move-Item -Path $in -Destination $dest
     $in = $null
+} catch {
+    [Console]::Error.WriteLine($_.Exception.Message)
+    exit 1
 } finally {
     if ($in -and (Test-Path $in)) { Remove-Item -Recurse -Force -Path $in -ErrorAction SilentlyContinue }
 }

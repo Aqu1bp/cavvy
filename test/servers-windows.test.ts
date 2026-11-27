@@ -38,7 +38,7 @@ describe("PowerShell SSH transport", () => {
 
     test("remotePs emits shell-neutral -EncodedCommand with UTF-8 preamble and bound arguments", () => {
         const cmd = remotePs(`Write-Output $cavvyArgs[0]`, ["a'b", "C:\\Program Files\\Cavvy"]);
-        expect(cmd).toMatch(/^powershell\.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand [A-Za-z0-9+/=]+$/);
+        expect(cmd).toMatch(/^powershell\.exe -NoLogo -NoProfile -NonInteractive -InputFormat Text -OutputFormat Text -EncodedCommand [A-Za-z0-9+/=]+$/);
         const b64 = cmd.split(" ").at(-1)!;
         const decoded = Buffer.from(b64, "base64").toString("utf16le");
         expect(decoded).toContain("UTF8Encoding");

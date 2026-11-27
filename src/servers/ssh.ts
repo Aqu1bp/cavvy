@@ -117,12 +117,13 @@ export function psQuote(s: string): string {
  */
 export function remotePs(script: string, args: string[] = []): string {
     const header = [
+        "$ProgressPreference = 'SilentlyContinue'",
         "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)",
         "$OutputEncoding = [Console]::OutputEncoding",
         `$cavvyArgs = @(${args.map(psQuote).join(", ")})`,
     ].join("\n");
     const encoded = Buffer.from(`${header}\n${script}`, "utf16le").toString("base64");
-    return `powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand ${encoded}`;
+    return `powershell.exe -NoLogo -NoProfile -NonInteractive -InputFormat Text -OutputFormat Text -EncodedCommand ${encoded}`;
 }
 
 /** argv for a command on the server. `tty`: an interactive one, on this terminal. */
