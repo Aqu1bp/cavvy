@@ -251,7 +251,8 @@ function Pending(p: { suggestion: SuggestionState; sessionId: string; key: strin
         setBusy(false);
     };
     const start = async () => {
-        if (starting() || blocked()) return;
+        // Its card's suggestion gone meanwhile (the session deleted while the trust question was up): nothing to start.
+        if (!p.suggestion || starting() || blocked()) return;
         const attempt = attempts() + 1;
         attemptsOf.set(p.key, attempt);
         setBusy(true);
