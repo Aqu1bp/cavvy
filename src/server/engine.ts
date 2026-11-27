@@ -1958,9 +1958,8 @@ export class Engine {
             throw e;
         }
         await this.checkTaskModel(ref, effort);
-        // The suggesting session's mode, plan counting as ask, or this folder's default: whichever asks the user more.
+        // The suggesting session's mode, plan counting as ask, or the folder's default (where it runs): whichever asks the user more.
         const asked = p.mode === "plan" ? "default" : (p.mode as PermissionMode);
-        const mode = narrowerMode(asked, this.defaultMode(ws));
         const resume = optText(p.resume, "resume", 4096);
         let made: { path: string; branch: string } | undefined;
         if (p.worktree === true || resume) {
@@ -1998,6 +1997,7 @@ export class Engine {
             // On the suggesting session's Claude Code and Codex accounts, when it's on this machine.
             const from = this.runtimes.get(origin.session);
             const accounts = from ? Object.fromEntries(ACCOUNT_PROVIDERS.map((provider) => [provider, from.session.accountId(provider)])) : undefined;
+            const mode = narrowerMode(asked, this.defaultMode(there === cwd ? ws : this.workspaceFor(there)));
             next = await this.createSession(there, { mode, accounts, suggestedBy: origin });
         } catch (e) {
             if (!made) throw e;
@@ -2011,9 +2011,16 @@ export class Engine {
             if (effort) next.setEffort(effort as EffortLevel);
             next.rename(title);
             this.watch(client, next.id);
-            // The user's message as they sent it from the card; the agent is told where it came from, out of sight.
-            const reminder = `<system-reminder>\nThis task was suggested by the agent in session ${origin.session}${origin.machine ? ` on ${origin.machine}` : ""} (“${origin.title}”) while it worked on something else; the user started it. To ask that agent what it saw, use send_to_session.\n</system-reminder>`;
-            void next.startTurn(`${prompt}\n\n${reminder}`, { display: prompt }).catch((e) => this.o.log?.(`suggested task ${next.id}: ${redact((e as Error).message)}`));
+            // The user's message as they sent it from the card; the agent is told where it came from, beside it (a
+            // reminder: nothing in it is read as the user's, its @mentions included).
+            next.agent?.addReminder(`This task was suggested by the agent in session ${origin.session}${origin.machine ? ` on ${origin.machine}` : ""} (“${origin.title}”) while it worked on something else; the user started it. To ask that agent what it saw, use send_to_session.`);
+            // Its first turn ending with nothing kept (a UserPromptSubmit hook blocked it): the prompt goes back to its composer.
+            void next
+                .startTurn(prompt)
+                .then(() => {
+                    if (!next.session.messageCount) this.draft(next, prompt);
+                })
+                .catch((e) => this.o.log?.(`suggested task ${next.id}: ${redact((e as Error).message)}`));
         } catch (e) {
             return failed(e, next.id, "send_failed");
         }

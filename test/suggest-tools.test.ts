@@ -56,6 +56,8 @@ describe("refusals", () => {
         expect(refusal([rec({ state: "started" }), rec({ id: "c2", state: "withdrawn" })], "Flaky auth test", 0)).toBeUndefined();
         const many = Array.from({ length: 20 }, (_, i) => rec({ id: `c${i}`, title: `T${i}` }));
         expect(refusal(many, "Another", 0)).toBe("20 suggestions are waiting for the user in this session. Mention this one in your reply.");
+        // One being started holds its place.
+        expect(refusal([...many.slice(1), rec({ id: "s", title: "S", state: "starting" })], "Another", 0)).toContain("20 suggestions are waiting");
     });
 });
 
@@ -115,6 +117,20 @@ describe("the card's states", () => {
         const claimed = applyAction(rec({ failed: "earlier" }), { action: "claim" });
         expect(claimed).toMatchObject({ state: "starting", failed: undefined });
         expect(() => applyAction(claimed, { action: "claim" })).toThrow(SuggestionError);
+        // A claim whose window never came back (no started or failed) may be taken over after a while.
+        const taken = applyAction(claimed, { action: "claim" }, claimed.claimedAt! + SUGGEST_LIMITS.staleClaimMs);
+        expect(taken).toMatchObject({ state: "starting" });
+        // The first window's late word is refused; the new claim's goes through.
+        expect(() => applyAction(taken, { action: "failed", message: "x", claimedAt: claimed.claimedAt })).toThrow("another window");
+        expect(() => applyAction(taken, { action: "started", started: { sessionId: "s9", title: "T", cwd: "/w", at: 1 } })).toThrow("another window");
+        expect(() => applyAction(taken, { action: "failed", message: "x" })).toThrow("another window");
+        const retakenFailed = applyAction(taken, { action: "failed", message: "x", claimedAt: taken.claimedAt });
+        expect(retakenFailed.state).toBe("pending");
+        // And after the newer claim failed, the older one's late success still isn't taken.
+        expect(() => applyAction(retakenFailed, { action: "started", started: { sessionId: "s9", title: "T", cwd: "/w", at: 1 }, claimedAt: claimed.claimedAt })).toThrow("another window");
+        expect(() => applyAction(retakenFailed, { action: "started", started: { sessionId: "s9", title: "T", cwd: "/w", at: 1 } })).toThrow("another window");
+        // Not taken over: a window that doesn't send claimedAt is still heard.
+        expect(applyAction(claimed, { action: "failed", message: "x" }).state).toBe("pending");
         expect(() => applyAction(claimed, { action: "dismissed" })).toThrow("It's being started.");
         const failed = applyAction(claimed, { action: "failed", message: "box didn't answer." });
         expect(failed).toMatchObject({ state: "pending", failed: "box didn't answer." });

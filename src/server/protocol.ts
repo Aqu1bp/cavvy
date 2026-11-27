@@ -759,6 +759,8 @@ export interface SuggestionState {
     started?: SuggestionStarted;
     /** The last Start that failed (it went back to pending): what to show. Cleared by the next claim. */
     failed?: string;
+    /** starting: when it was claimed, ms. A minute on with no started or failed (its window gone), claim may take it over. */
+    claimedAt?: number;
 }
 
 /** Where a suggestion went. */
@@ -824,15 +826,18 @@ export interface StartTaskResult {
 }
 
 /**
- * session.suggestion's actions. claim: pending → starting, refused (RpcError) unless pending ("not_pending"), or while
+ * session.suggestion's actions. claim: pending → starting, refused (RpcError) unless pending or a claim a minute old
+ * with no word since (claimedAt: a repeat tasks.start on the same machine finds the session it made) ("not_pending"), or while
  * another Cavvy process (a terminal) holds the session ("held": "Close this session in the terminal to start it.").
- * started / failed: after tasks.start (failed goes back to pending, with the message). dismissed: from pending.
+ * started / failed: after tasks.start (failed goes back to pending, with the message); with the claim's claimedAt (send it), refused
+ * ("superseded") when another window has taken the claim over since; once one has, only a matching claimedAt is taken. Each machine finds only its own earlier start: a
+ * start taken over onto another machine can make a second session. dismissed: from pending.
  * pending: Restore, from dismissed.
  */
 export type SuggestionAction =
     | { action: "claim" }
-    | { action: "started"; started: SuggestionStarted }
-    | { action: "failed"; message: string }
+    | { action: "started"; started: SuggestionStarted; claimedAt?: number }
+    | { action: "failed"; message: string; claimedAt?: number }
     | { action: "dismissed" }
     | { action: "pending" };
 

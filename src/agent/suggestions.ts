@@ -20,6 +20,8 @@ export const SUGGEST_LIMITS = {
     pending: 20,
     /** Resolved ones sent with their prompt; older ones are sent without it. */
     withPrompt: 20,
+    /** A claim this old whose start never said how it went (its window gone) may be claimed again: tasks.start finds the session a start made. */
+    staleClaimMs: 60_000,
     /** Kept in memory (the file keeps them all). */
     kept: 100,
 };
@@ -33,6 +35,10 @@ export interface SuggestionRecord extends Omit<SuggestionState, "state"> {
     prompt: string;
     seg: number;
     msg: number;
+    /** When it was claimed (starting), ms. */
+    claimedAt?: number;
+    /** Its claim was taken over from a window that went quiet: how a start went is taken only with the claim's claimedAt. */
+    retaken?: true;
 }
 
 /** What the agent asked for, checked and trimmed. */
@@ -83,7 +89,8 @@ export function refusal(records: Iterable<SuggestionRecord>, title: string, this
         if (r.state === "withdrawn") continue;
         if ((r.state === "pending" || r.state === "starting") && sameTitle(r.title, title)) return `“${title}” is already suggested in this session.`;
         if (r.state === "dismissed" && sameTitle(r.title, title)) return `The user dismissed “${title}” in this session. Don't suggest it again.`;
-        if (r.state === "pending") pending++;
+        // One being started holds its place: a failed start puts it back.
+        if (r.state === "pending" || r.state === "starting") pending++;
     }
     if (pending >= SUGGEST_LIMITS.pending) return `${SUGGEST_LIMITS.pending} suggestions are waiting for the user in this session. Mention this one in your reply.`;
     return undefined;
@@ -104,19 +111,23 @@ export function applyAction(r: SuggestionRecord, a: SuggestionAction, now = Date
         throw new SuggestionError(why, "not_pending");
     };
     if (r.state === "withdrawn") throw new SuggestionError("That suggestion is gone.", "not_found");
+    // How a start went, from a window whose claim another has taken over since: not this card's news any more.
+    // (Kept past the newer claim's own outcome: a late success from the older one doesn't count after the newer one failed.)
+    if ((a.action === "started" || a.action === "failed") && (a.claimedAt !== undefined ? r.claimedAt !== undefined && a.claimedAt !== r.claimedAt : r.retaken)) throw new SuggestionError("It's being started from another window.", "superseded");
     switch (a.action) {
         case "claim":
-            if (r.state === "starting") refuse("It's already being started.");
+            // A claim whose window never said how its start went may be taken over: a repeat start finds the same session.
+            if (r.state === "starting" && now - (r.claimedAt ?? 0) < SUGGEST_LIMITS.staleClaimMs) refuse("It's already being started.");
             if (r.state === "started") refuse("It's already started.");
-            if (r.state !== "pending") refuse("It was dismissed. Restore it to start it.");
-            return { ...r, state: "starting", failed: undefined };
+            if (r.state !== "pending" && r.state !== "starting") refuse("It was dismissed. Restore it to start it.");
+            return { ...r, state: "starting", failed: undefined, claimedAt: now, ...(r.state === "starting" ? { retaken: true as const } : { retaken: undefined }) };
         case "started": {
             const s = startedOf(a.started, now);
             if (!s) throw new SuggestionError("That says nothing of where it started.", "invalid");
             // Started again with the session it already has: no change. Any other while started is a second start.
             if (r.state === "started" && r.started?.sessionId !== s.sessionId) refuse("It's already started.");
             if (r.state === "dismissed") refuse("It was dismissed.");
-            return { ...r, state: "started", started: s, failed: undefined };
+            return { ...r, state: "started", started: s, failed: undefined, retaken: undefined };
         }
         case "failed":
             if (r.state === "started") refuse("It's already started.");
@@ -166,6 +177,8 @@ export function validRecord(v: unknown): SuggestionRecord | undefined {
         ...(typeof x.failed === "string" && x.failed ? { failed: x.failed } : {}),
         seg: typeof x.seg === "number" ? x.seg : 0,
         msg: typeof x.msg === "number" ? x.msg : 0,
+        ...(typeof x.claimedAt === "number" ? { claimedAt: x.claimedAt } : {}),
+        ...(x.retaken === true ? { retaken: true as const } : {}),
     };
 }
 
@@ -182,9 +195,10 @@ export function shownSuggestions(records: Iterable<SuggestionRecord>): Suggestio
     const all = [...records].filter((r) => r.state !== "withdrawn").sort((a, b) => a.at - b.at);
     const resolved = all.filter((r) => r.state === "started" || r.state === "dismissed");
     const bare = new Set(resolved.slice(0, Math.max(0, resolved.length - SUGGEST_LIMITS.withPrompt)).map((r) => r.id));
-    return all.map(({ seg: _seg, msg: _msg, ...r }) => ({
+    return all.map(({ seg: _seg, msg: _msg, claimedAt, retaken: _retaken, ...r }) => ({
         ...r,
         state: r.state as SuggestionStatus,
+        ...(r.state === "starting" && claimedAt ? { claimedAt } : {}),
         title: visible(r.title).text,
         why: visible(r.why).text,
         ...(bare.has(r.id) ? { prompt: undefined } : { prompt: visible(r.prompt, { lineBreaks: true }).text }),

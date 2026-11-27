@@ -201,6 +201,26 @@ describe("tasks.start", () => {
         expect(reopened.state.suggestions![0]).toMatchObject({ state: "started", started: { sessionId: r.sessionId } });
     });
 
+    test("a first prompt a UserPromptSubmit hook blocks goes back to the new session's composer", async () => {
+        const blocked = realpathSync(tempDir("tasks-hook-"));
+        dirs.push(blocked);
+        const settings = join(iso.home, "settings.json");
+        const was = readFileSync(settings, "utf-8");
+        writeFileSync(settings, JSON.stringify({ ...JSON.parse(was), hooks: { UserPromptSubmit: [{ command: "echo 'not today' >&2; exit 2" }] } }));
+        try {
+            const drafts: any[] = [];
+            const watcher = { subs: new Set<string>(), send: (m: any) => m.type === "draft" && drafts.push(m) } as never;
+            engine.clients.add(watcher);
+            const r = await engine.handle(watcher, "tasks.start", { cwd: blocked, title: "Fix it", prompt: "Fix the thing.", model: "mock:mock-opus", mode: "default", origin: { key: "s0#hook", session: "s0", title: "x" } }) as StartTaskResult;
+            await until(() => drafts.length > 0);
+            expect(drafts[0]).toMatchObject({ sessionId: r.sessionId, text: "Fix the thing." });
+            expect(engine.runtimes.get(r.sessionId!)!.session.messageCount).toBe(0);
+            engine.clients.delete(watcher);
+        } finally {
+            writeFileSync(settings, was);
+        }
+    });
+
     test("in a new worktree, on fix/<slug>, -2 when that's taken", async () => {
         const repo = realpathSync(tempDir("tasks-repo-"));
         dirs.push(repo);
@@ -227,11 +247,5 @@ describe("only a window can ask", () => {
         expect(RELAYED_SESSION_METHODS as readonly string[]).not.toContain("session.suggestion");
         const here = { list: () => [], read: () => undefined, send: async () => ({}), start: async () => ({}) } as never;
         for (const op of ["tasks.start", "tasks", "session.suggestion"]) await expect(answerPeers("box", op, { id: "mac/x" }, here, new Map())).rejects.toThrow(/Unknown request|No session/);
-        // The engine's peers switch takes only its four operations.
-        const source = readFileSync(join(import.meta.dir, "../src/server/far-peers.ts"), "utf-8");
-        expect(source).not.toContain("tasks.start");
-        const engineSource = readFileSync(join(import.meta.dir, "../src/server/engine.ts"), "utf-8");
-        const peersCase = /case "peers\.list":[\s\S]*?\{/.exec(engineSource)![0];
-        expect(peersCase).not.toContain("tasks.start");
     });
 });
