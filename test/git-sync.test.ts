@@ -204,7 +204,11 @@ test("create a branch at HEAD, keeping uncommitted changes; refuse a taken or in
     // Shown after "Can't create <name>:", so the name isn't said again.
     await expect(gitCreateBranch(mine, "main")).rejects.toMatchObject({ code: "branch_exists", message: "That branch already exists." });
     await expect(gitCreateBranch(mine, "bad..name")).rejects.toMatchObject({ code: "invalid", message: "Not a valid branch name." });
-    await expect(gitCreateBranch(mine, "-x")).rejects.toMatchObject({ code: "invalid" });
+    // Each refusal says why: not "without spaces" for a name that has none.
+    await expect(gitCreateBranch(mine, "-x")).rejects.toMatchObject({ code: "invalid", message: "It can't start with -." });
+    await expect(gitCreateBranch(mine, "has space")).rejects.toMatchObject({ code: "invalid", message: "Enter a branch name without spaces." });
+    await expect(gitCreateBranch(mine, "  ")).rejects.toMatchObject({ code: "invalid", message: "Enter a branch name." });
+    await expect(gitCreateBranch(mine, "b".repeat(201))).rejects.toMatchObject({ code: "invalid", message: "Use 200 characters or fewer." });
 });
 
 test("a URL rewrite on the remote is refused, as for publishing", async () => {

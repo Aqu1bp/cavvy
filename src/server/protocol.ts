@@ -2435,7 +2435,7 @@ export interface Methods {
      * Nothing of the server's answer is passed on, but whether a session it's about to archive works in a worktree
      * (RELAYED_ARCHIVE_OFFER), and whether a session it deleted was never saved (no Undo).
      */
-    "servers.relay": { params: { name: string; method: string; params: Record<string, unknown> }; result: { worktree: true } | { unsaved: true } | null };
+    "servers.relay": { params: { name: string; method: string; params: Record<string, unknown> }; result: { worktree: true } | { unsaved: true } | { title: string } | null };
     "servers.add": { params: { name: string; destination: string; port?: number; identityFile?: string; trust?: string[] }; result: AddResult };
     "servers.copy": { params: { name: string }; result: { took: string; left?: string } };
     "servers.check": { params: { name: string }; result: ServerCheck };
@@ -2652,7 +2652,7 @@ export interface Methods {
     /** Pull request `pr` (#123, 123 or its URL) checked out in a worktree of its own. */
     "git.prWorktree": { params: { cwd: string; sessionId?: string; pr: string }; result: GitPrWorktree };
     "session.gitPublishInfo": { params: { id: string }; result: GitPublishInfo };
-    "session.gitPublish": { params: { id: string } & GitPublishRequest; result: { pr?: GitPrInfo } };
+    "session.gitPublish": { params: { id: string } & GitPublishRequest; result: { pr?: GitPrInfo; created?: true } };
     "session.gitPrState": { params: { id: string }; result: { pr?: GitPrInfo } };
     /** `pathTokens`: files whose names were shown redacted (GitFileDiff.pathToken), with `paths` for the rest. */
     /** `newBranch`: commit there instead, a branch made from HEAD, which then checks it out (the old branch stays where it was). */

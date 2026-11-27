@@ -14,7 +14,7 @@ function dialog(info = defaults, read?: () => Promise<unknown>, prText?: () => P
         createSignal: (initial: unknown) => { let value = initial; return [() => value, (next: unknown) => { value = next; }]; },
         createEffect: (effect: () => unknown) => effects.push(effect),
         on: (read: () => unknown, effect: (value: unknown) => unknown) => () => effect(read()),
-        rpc: { call: async (method: string, params: unknown) => { calls.push({ method, params }); return method === "session.gitPublishInfo" ? read ? read() : info : method === "session.gitPrText" ? prText!() : method === "session.gitPublish" && publish ? publish() : { pr: { number: 7, url: "https://github.com/example/project/pull/7" } }; } },
+        rpc: { call: async (method: string, params: unknown) => { calls.push({ method, params }); return method === "session.gitPublishInfo" ? read ? read() : info : method === "session.gitPrText" ? prText!() : method === "session.gitPublish" && publish ? publish() : { pr: { number: 7, url: "https://github.com/example/project/pull/7" }, ...((params as { action?: string }).action === "pr" ? { created: true } : {}) }; } },
         toast(...args: any[]) { toasts.push(args); }, handleFor: () => ({}), commitUnavailable: () => blocked, refreshGitChanges() {}, openExternal(url: string) { opened.push(url); }, takeFocus() {},
         // The desktop app's window.open opens nothing (it returns null); a browser's gives the tab.
         window: { open: () => (browserTab.opens = (browserTab.opens ?? 0) + 1, browserTab.next ?? null) },
@@ -78,6 +78,11 @@ test("PR click uses edited title, body, base and draft without auto-publishing",
     expect(d.opened).toEqual(["https://github.com/example/project/pull/7"]);
     expect(d.toasts.at(-1)!.slice(0, 2)).toEqual(["Created PR #7", "success"]);
     expect(d.toasts.at(-1)![2].label).toBe("Open");
+    // One that turned out to be there already (opened since the dialog read the branch): not "Created".
+    const raced = dialog(defaults, undefined, undefined, async () => ({ pr: { number: 7, url: "https://github.com/example/project/pull/7" } }));
+    await raced.effects[0]!();
+    raced.button("Open pull request").props.onClick(); await tick();
+    expect(raced.toasts.at(-1)![0]).toBe("Pushed origin/feature · PR #7");
 
     // A push to a branch that has one: the toast offers it.
     const again = dialog(); await again.effects[0]!();
@@ -87,6 +92,16 @@ test("PR click uses edited title, body, base and draft without auto-publishing",
     expect([message, level, action.label]).toEqual(["Pushed origin/feature · PR #7", "success", "Open"]);
     action.run();
     expect(again.opened).toEqual(["https://github.com/example/project/pull/7"]);
+});
+
+test("a branch with an open pull request only pushes: no form for a title that wouldn't be used, no \"Created\"", async () => {
+    const d = dialog({ ...defaults, pr: { number: 3, url: "https://github.com/example/project/pull/3", title: "Old", state: "open", checks: 0 } } as typeof defaults);
+    await d.effects[0]!();
+    d.button("Open pull request").props.onClick(); await tick();
+    expect(d.calls.map((c) => c.method)).toEqual(["session.gitPublishInfo"]);
+    d.button("Push").props.onClick(); await tick();
+    expect(d.calls.at(-1)!.params).toMatchObject({ action: "push" });
+    expect(d.toasts.at(-1)![0]).toBe("Pushed origin/feature · PR #7");
 });
 
 test("in a browser the tab is opened during the click, then sent to the new PR, or closed if it fails", async () => {

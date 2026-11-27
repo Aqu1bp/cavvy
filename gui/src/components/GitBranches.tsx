@@ -193,7 +193,7 @@ function BranchDialog(p: { cwd: string; sessionId?: string; query?: string }) {
             toast(r.created ? `Switched to new branch ${r.branch}` : `Switched to ${r.branch}`, "success");
         });
     const create = (name: string) =>
-        act("switch", `Can't create ${name}`, () => rpc.call("git.createBranch", { ...where, name }), (r) => {
+        act("switch", `Can't create ${name.length > 60 ? `${name.slice(0, 57)}…` : name}`, () => rpc.call("git.createBranch", { ...where, name }), (r) => {
             setGitDialog(undefined);
             toast(`Created ${r.branch}`, "success");
         });
@@ -270,7 +270,9 @@ function BranchDialog(p: { cwd: string; sessionId?: string; query?: string }) {
         const key = before && q() === lastQ ? before[sel()]?.key : undefined;
         lastQ = q();
         const kept = key === undefined ? -1 : r.findIndex((x) => x.key === key && !x.disabled);
-        setSel(kept >= 0 ? kept : Math.max(0, r.findIndex((x) => !x.disabled)));
+        // Nothing typed: none, so a stray Enter does nothing (each row there acts: opens a page, makes a branch, or
+        // switches, which changes the files). The arrows pick one. Typed: the first that matches.
+        setSel(kept >= 0 ? kept : q().trim() ? r.findIndex((x) => !x.disabled) : -1);
     }));
     const runAt = (i: number) => {
         const r = rows()[i];
@@ -282,9 +284,11 @@ function BranchDialog(p: { cwd: string; sessionId?: string; query?: string }) {
             e.preventDefault();
             if (!n) return;
             const step = e.key === "ArrowDown" ? 1 : -1;
-            setSel((s) => {
+            setSel((at) => {
+                // Nothing picked yet: down from before the first row, up from after the last.
+                const s = at < 0 ? (step > 0 ? -1 : n) : at;
                 for (let i = 1; i <= n; i++) if (!rows()[(s + step * i + n * i) % n]!.disabled) return (s + step * i + n * i) % n;
-                return s;
+                return at;
             });
             requestAnimationFrame(() => listEl?.querySelector(".pal-row.sel")?.scrollIntoView({ block: "nearest" }));
         } else if (e.key === "Enter") {

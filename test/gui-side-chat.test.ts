@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { lastAnswer } from "../gui/src/lib/side-chat";
 import { clientAction } from "../gui/src/lib/commands";
-import { app, rpc, setApp, setToasts, toasts } from "../gui/src/state/app";
+import { app, homeHere, homeOnLink, rpc, setApp, setToasts, toasts } from "../gui/src/state/app";
 import { send } from "../gui/src/state/actions";
 import { inspectorPane, setInspectorPane } from "../gui/src/state/ui";
 
@@ -79,6 +79,21 @@ describe("/btw on Home, with no session yet", () => {
             expect(app.activeId).toBeUndefined();
             expect(toasts.map((t) => t.message)).toEqual(["Disconnected"]);
         } finally {
+            call.mockRestore();
+        }
+    });
+
+    test("on another machine, it isn't asked there unseen: the box keeps it and a note says why", async () => {
+        const there = { call: async () => ({}) } as never;
+        const call = spyOn(rpc, "call");
+        try {
+            homeOnLink("box", "/work/app", there);
+            expect(await send("/btw what's in here?")).toBe(false);
+            expect(call).not.toHaveBeenCalled();
+            expect(toasts.map((t) => t.message)).toEqual(["Side chats aren't available on box."]);
+            expect(inspectorPane()).toBeUndefined();
+        } finally {
+            homeHere();
             call.mockRestore();
         }
     });

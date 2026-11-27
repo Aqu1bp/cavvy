@@ -27,6 +27,7 @@ afterAll(() => {
 });
 
 const { gitPrWorktree, gitPullRequests, parsePrRef } = await import("../src/server/git-pr");
+const { isTrusted, trustFolder, trustedByUser } = await import("../src/config/trust");
 
 function git(cwd: string, ...args: string[]) {
     const r = Bun.spawnSync([realGit, ...args], { cwd, stdout: "pipe", stderr: "pipe" });
@@ -106,6 +107,56 @@ test("a fork's pull request: its head from refs/pull/N/head on pr-N, without an 
     expect(made.branch).toBe("pr-9");
     expect(git(made.path, "rev-parse", "HEAD")).toBe(forked);
     expect(() => git(made.path, "rev-parse", "--abbrev-ref", "@{upstream}")).toThrow();
+});
+
+test("a fork's pull request isn't trusted for being inside a trusted repository; the same repository's is", async () => {
+    const { cwd } = setup();
+    trustFolder(cwd);
+    const fork = await gitPrWorktree(cwd, "9");
+    const same = await gitPrWorktree(cwd, "7");
+    expect([trustedByUser(fork.path), isTrusted(join(fork.path, "src"))]).toEqual([false, false]);
+    expect(trustedByUser(same.path)).toBe(true);
+    // Opened again, still its own; trusted when the user trusts it, and the repository stays trusted.
+    await gitPrWorktree(cwd, "9");
+    expect(trustedByUser(fork.path)).toBe(false);
+    // With nothing of Cavvy's in it, its session still asks first: the repository's Git hooks can run its files.
+    const { Engine } = await import("../src/server/engine");
+    const engine = new Engine({ listModels: async () => [] });
+    const c = { subs: new Set<string>(), send: () => {} } as never;
+    engine.clients.add(c);
+    expect(engine.inspectProject(fork.path).needsTrust).toEqual(["Git hooks"]);
+    await expect(engine.handle(c, "session.create", { cwd: fork.path })).rejects.toMatchObject({ code: "needs_trust" });
+    expect(engine.inspectProject(same.path).needsTrust).toEqual([]);
+    // A worktree made from it (Implement a plan there, say) holds the fork's code too: asked about the same way.
+    const { createWorktreeWithHooks } = await import("../src/server/worktrees");
+    const derived = await createWorktreeWithHooks({ path: fork.path, branch: "plan-x", base: "pr-9" });
+    expect(engine.inspectProject(derived.path).needsTrust).toEqual(["Git hooks"]);
+    trustFolder(fork.path);
+    expect([trustedByUser(fork.path), trustedByUser(cwd)]).toEqual([true, true]);
+    expect(engine.inspectProject(fork.path).needsTrust).toEqual([]);
+    await engine.stop();
+});
+
+test("a fork's pull request stays its own under any spelling of its path, and its trust goes with its folder", async () => {
+    const { symlinkSync, rmSync } = await import("fs");
+    const { forgetTrustInside, othersCode } = await import("../src/config/trust");
+    const { cwd } = setup();
+    // The repository trusted by a link's spelling; the worktree is recorded by Git's.
+    const link = join(iso.home, `link-${Date.now()}`);
+    symlinkSync(cwd, link);
+    trustFolder(link);
+    const fork = await gitPrWorktree(cwd, "9");
+    const viaLink = join(link, ".claude", "worktrees", "pr-9");
+    expect([trustedByUser(viaLink), othersCode(viaLink), trustedByUser(fork.path)]).toEqual([false, true, false]);
+    // Trusted, then removed: a new checkout there isn't trusted for it.
+    trustFolder(fork.path);
+    expect(trustedByUser(viaLink)).toBe(false);
+    expect(trustedByUser(fork.path)).toBe(true);
+    git(cwd, "worktree", "remove", "--force", fork.path);
+    forgetTrustInside(fork.path);
+    rmSync(fork.path, { recursive: true, force: true });
+    const again = await gitPrWorktree(cwd, "9");
+    expect([trustedByUser(again.path), othersCode(again.path)]).toEqual([false, true]);
 });
 
 test("without gh signed in, a sign-in is asked for; another repository's URL or a missing PR is refused", async () => {

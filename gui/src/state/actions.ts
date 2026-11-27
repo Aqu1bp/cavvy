@@ -325,6 +325,13 @@ export async function send(text: string, attachments: Attachment[] = [], opts: {
     let created = false;
     // Still on that Home (the same folder on the same machine): the session made from it is shown.
     const stillHome = () => app.activeId === undefined && app.homeCwd === cwd && homeOn() === at?.there?.on;
+    // A side chat is shown only for this window's own sessions (SideChatPane): another machine's would work there
+    // unseen. The message stays in the box.
+    const away = awayMachine(id);
+    if (!opts.literal && away !== undefined && clientAction(text)?.action === "sidechat") {
+        toast(`Side chats aren't available on ${away || "this computer"}.`, "warn");
+        return false;
+    }
     if (!opts.literal && text.startsWith("/") && clientCommand(id, text)) return "command";
     const unknown = (name: string) => {
         const to = { id, cwd, at };

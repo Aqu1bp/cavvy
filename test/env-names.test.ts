@@ -10,6 +10,8 @@ test("a variable named like a credential starts secret; reserved names are refus
     expect(envNameProblem("CLAUDE_CONFIG_DIR")).toBe("Set by the account: add an account instead.");
     expect(envNameProblem("CLAUDE_CONFIG_DIR", { named: true })).toBe("CLAUDE_CONFIG_DIR is set by the account: add an account instead.");
     expect(envNameProblem("CAVVY_SESSION")).toBe("Reserved by Cavvy.");
+    // Any CAVVY… name, in any case.
+    expect(["cavvy_home", "CAVVYX", "Cavvy_Token"].map((n) => envNameProblem(n))).toEqual(["Reserved by Cavvy.", "Reserved by Cavvy.", "Reserved by Cavvy."]);
     // Under its field, the name isn't said again; elsewhere it is.
     expect(envNameProblem("MY-VAR")).toBe("Letters, digits and _ only, not starting with a digit.");
     expect(envNameProblem("1BAD", { named: true })).toBe(`"1BAD" isn't a variable name. Letters, digits and _ only, not starting with a digit.`);

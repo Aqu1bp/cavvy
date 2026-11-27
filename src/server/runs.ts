@@ -7,7 +7,7 @@ import { randomBytes } from "crypto";
 import { lstatSync, realpathSync, statSync } from "fs";
 import { isAbsolute, join, relative, resolve, sep } from "path";
 import { getKey } from "../auth/credentials";
-import { projectConfigSummary, trustedByUser } from "../config/trust";
+import { othersCode, projectConfigSummary, trustedByUser } from "../config/trust";
 import { committedExternalImports, MAX_FILES, type TreeFile } from "../agent/memory";
 import { PERMISSION_MODES } from "../permissions/modes";
 import { clientFor, type ProviderListing } from "../providers/models";
@@ -356,6 +356,11 @@ export function treeReader(main: string, commit: string, top: string): ((path: s
  * configuration, the user decides first (one question, nothing created yet).
  */
 async function configTrust(host: RunHost, home: string, main: string, committed: () => Promise<string[]>): Promise<"trusted" | "declined" | "none"> {
+    // Started from someone else's code (a fork's pull request) the user hasn't trusted: the new worktrees hold it too.
+    if (othersCode(home)) {
+        if (host.declined(home)) return "declined";
+        throw new RpcError(`The new worktrees will have a fork's code, which can run commands on your machine (Git hooks). Trust ${home}, or open them without its configuration.`, "needs_project_trust", home);
+    }
     // The folder they all go in (or one above it): trusting one sibling worktree says nothing about new ones.
     if (trustedByUser(join(main, WORKTREES_DIR))) return "trusted";
     if (host.declined(home) || host.declined(main)) return "declined";

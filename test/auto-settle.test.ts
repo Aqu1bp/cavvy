@@ -162,7 +162,28 @@ describe("settling idle sessions", () => {
         expect(pending()).toEqual([HOUR]);
         advance(HOUR);
         expect(row(id)?.settled).toBe(true);
-        expect(pending()).toEqual([]);
+        // Nothing else due yet: checked again within hours, for sessions idle from now on.
+        expect(pending()).toEqual([6 * HOUR]);
+        await engine.stop();
+    });
+
+    test("the timer stays set for settling: with nothing to settle at start, and after a snooze ends", async () => {
+        const { engine, call, saved, sweep, pending, row, advance } = setup();
+        sweep();
+        expect(pending()).toEqual([6 * HOUR]);
+        // Idle a week from now: settled, though nothing was due when the timer was set.
+        const later = saved(0);
+        advance(7 * DAY + 6 * HOUR);
+        expect(row(later)?.settled).toBe(true);
+        // A snooze ended by hand (or by sending to it) leaves the settle check set, not only the snooze's.
+        const other = saved(2 * DAY);
+        const snoozed = saved(0);
+        sweep();
+        await call("session.snooze", { id: snoozed, until: Date.now() + 30 * DAY });
+        await call("session.snooze", { id: snoozed, until: null });
+        expect(pending().length).toBe(1);
+        advance(6 * DAY);
+        expect(row(other)?.settled).toBe(true);
         await engine.stop();
     });
 

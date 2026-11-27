@@ -14,7 +14,7 @@ import { createEffect, createResource, createSignal, on, onCleanup, onMount, Sho
 import { lastAnswer } from "../lib/side-chat";
 import { columnSteps, PANE_NARROW } from "../lib/layout";
 import { sideChatText, type Attachment } from "../lib/attachments";
-import { awayMachine, openSession, reportError, rpcFor, toast, type SessionHandle } from "../state/app";
+import { awayMachine, dismissToast, openSession, reportError, rpcFor, toast, toasts, type SessionHandle } from "../state/app";
 import { send } from "../state/actions";
 import { askSideChat, setAskSideChat, setComposerAdd } from "../state/ui";
 import { asideFocused, PaneContext, setAsideFocused, showAside } from "../state/split";
@@ -34,9 +34,20 @@ export interface ChatViews {
 /** The keyboard and the composer's menus are the side chat's while a press or the focus is in it (state/split.ts asideFocused). */
 const pane = { aside: true, focused: asideFocused, parked: () => false, split: () => false, rightmost: () => false, share: () => 1, wasFocused: asideFocused };
 
+/** Each session's "Side chat closed" Undo, while its toast may be up. */
+const closedUndo = new Map<string, () => unknown>();
+
 export default function SideChatPane(p: { handle: SessionHandle; views: ChatViews }) {
     const { Composer } = p.views;
     let root: HTMLDivElement | undefined;
+    // A side chat there again (a new one, or that one brought back): the closed one's Undo has nothing left to undo.
+    createEffect(on(() => p.handle.view.state.sideChat?.id, (id) => {
+        const run = id ? closedUndo.get(p.handle.id) : undefined;
+        if (!run) return;
+        closedUndo.delete(p.handle.id);
+        const t = toasts.find((x) => x.action?.run === run);
+        if (t) dismissToast(t.id);
+    }));
     // Its own widths' steps, as a split's pane has (shell.css data-narrow): request cards and the composer's bar give way.
     const [narrow, setNarrow] = createSignal<string>();
     onMount(() => {
@@ -163,10 +174,11 @@ function Chat(p: { parent: SessionHandle; id: string; views: ChatViews }) {
     const close = () => {
         const rpc = rpcFor(p.parent.id);
         const id = p.parent.id;
-        void rpc.call("session.closeSideChat", { id }).then(
-            () => toast("Side chat closed", "info", { label: "Undo", run: () => rpc.call("session.reopenSideChat", { id }).then(() => undefined, reportError) }),
-            reportError,
-        );
+        void rpc.call("session.closeSideChat", { id }).then(() => {
+            const run = () => rpc.call("session.reopenSideChat", { id }).then(() => undefined, reportError);
+            closedUndo.set(id, run);
+            toast("Side chat closed", "info", { label: "Undo", run });
+        }, reportError);
     };
     const answer = () => lastAnswer(h()?.view.turns ?? []);
     /** What's selected in its conversation, else its last answer, attached to the session's message. */

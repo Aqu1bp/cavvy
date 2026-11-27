@@ -25,7 +25,7 @@ import { plural, since } from "../lib/format";
 import { incompleteLine } from "../lib/turn-places";
 import { CHANGE_WORD, dirOf, nameOf, REVIEW_DEFAULT, REVIEW_STEP, reviewDragWidth, reviewWidthRange } from "../lib/inspector";
 import { Counts, DiffView, type DiffComments } from "./blocks/DiffView";
-import { expand, shapeOf } from "../lib/diff-expand";
+import { expand, gaps, shapeOf } from "../lib/diff-expand";
 import { buildComment } from "../lib/review-comments";
 import { findPick, pickGone, pickHeld, pickKey, pickParams, type ReviewPick } from "../lib/review-pick";
 import { anchorShift, cardAt, foldsSmoothly, oneSided, stackRows, viewLabel, viewMenu, type TurnItem, type ViewItem } from "../lib/review-stack";
@@ -572,7 +572,12 @@ function FileCard(p: {
             setWhole((all = r.file));
         }
         const next = new Set(opened()).add(at);
-        if (expand(shown(), all, next).stale.includes(at)) return void toast("The file changed. Refresh to see it.", "warn");
+        if (expand(shown(), all, next).stale.includes(at)) {
+            // The whole file was cut short before this gap's end: it's too long, not changed.
+            const g = gaps(shown()).find((x) => x.at === at);
+            const reached = Math.max(0, ...all.hunks.flatMap((h) => h.lines.map((l) => l.b ?? 0)));
+            return void toast(all.truncated && g && g.newFrom + g.count - 1 > reached ? "Too long to show here." : "The file changed. Refresh to see it.", "warn");
+        }
         setOpened(next);
     };
     /** A hunk header's button for the lines hidden before hunk `h` (the number of hunks: after the last). */

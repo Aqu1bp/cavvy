@@ -2335,12 +2335,12 @@ export class Agent {
             // Written after the backend sync cursor: a resumed CLI must see this
             // on its next prompt, including after reopening or switching models.
             if (this.backendStopReminders.length) {
-                this.session.push({ role: "user", content: [reminder(this.backendStopReminders.splice(0).join("\n"))], meta: { kind: "reminder" } });
+                this.session.push({ role: "user", content: [reminder(this.backendStopReminders.splice(0).join("\n"))], meta: { kind: "reminder", ended: true } });
             }
             // Messages its turn ended before taking: a note of their own, which says what it sends again.
             if (this.undeliveredNotes.length) {
                 const notes = this.undeliveredNotes.splice(0);
-                this.session.push({ role: "user", content: [reminder(notes.map((n) => n.text).join("\n")), ...notes.flatMap((n) => [...n.images, ...n.documents])], meta: { kind: "reminder", resends: notes.flatMap((n) => n.resends) } });
+                this.session.push({ role: "user", content: [reminder(notes.map((n) => n.text).join("\n")), ...notes.flatMap((n) => [...n.images, ...n.documents])], meta: { kind: "reminder", resends: notes.flatMap((n) => n.resends), ended: true } });
             }
         }
     }

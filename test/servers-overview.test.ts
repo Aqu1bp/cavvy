@@ -175,7 +175,8 @@ test("a server's sessions are listed and kept up to date, each change told by it
     await here.call("servers.relay", { name: "box", method: "session.snooze", params: { id, until: null } });
     await until("it to be told awake", () => here.machine("box")?.sessions.find((s) => s.id === id)?.snoozedUntil === undefined);
     // Named again there, by the server's model; the new title is told back.
-    expect(await here.call("servers.relay", { name: "box", method: "session.regenerateTitle", params: { id } })).toBeNull();
+    // The new title comes back, for the row's toast and its Undo.
+    expect(await here.call("servers.relay", { name: "box", method: "session.regenerateTitle", params: { id } })).toEqual({ title: "Say hi" });
     await until("the new title to be told", () => here.machine("box")?.sessions.find((s) => s.id === id)?.title === "Say hi");
     // Only what a row offers, only for a session, only on one of this Cavvy's servers; and why not, in the server's words.
     await expect(here.call("servers.relay", { name: "box", method: "session.send", params: { id, text: "hi" } })).rejects.toThrow("Open the session to do that.");

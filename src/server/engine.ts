@@ -30,7 +30,7 @@ import { homedir, hostname, userInfo } from "os";
 import { APP_TITLE, APP_VERSION, cavvyHome, paths } from "../config/paths";
 import { LEGACY } from "../config/legacy";
 import { JsonFileError, loadedUnreadable, loadScope, loadScopeChecked, loadSettings, readJson, readJsonCached, updateSettings, worktreeSettings, writeJson, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
-import { isTrusted, projectConfigSummary, trustedByUser, trustFolder, trustForSession } from "../config/trust";
+import { forgetTrustInside, isTrusted, projectConfigSummary, trustedByUser, trustFolder, trustForSession } from "../config/trust";
 import { fireHooks } from "../agent/hooks";
 import { findSessionAnywhere, heldSessionFolders, listAllSessions, Session, SessionInUseError, sessionFolder, sessionHolder, newSessionId, type Line } from "../agent/session";
 import { forkSessionSoon, forkTitle, readForkSource } from "../agent/fork";
@@ -781,7 +781,9 @@ export class Engine {
     }
 
     sessionShown(sessionId: string): boolean {
-        for (const c of this.clients) if (c.subs.has(sessionId) && (c.shown === undefined || c.shown === sessionId)) return true;
+        // A side chat is shown beside its session (in the side panel): on screen with it.
+        const of = this.runtimes.get(sessionId)?.side?.of;
+        for (const c of this.clients) if (c.subs.has(sessionId) && (c.shown === undefined || c.shown === sessionId || (of !== undefined && c.shown === of))) return true;
         return false;
     }
 
@@ -1120,6 +1122,12 @@ export class Engine {
             this.removing.delete(reserved);
         }
         if (!result.removed) return result;
+        // A new checkout at the same path may hold anything: trust given to this one doesn't carry over.
+        try {
+            forgetTrustInside(plan.path);
+        } catch {
+            // not saved: the folder is gone either way
+        }
         for (const [cwd, ws] of idle) {
             if (this.workspaces.get(cwd) !== ws || [...this.runtimes.values()].some((rt) => rt.ws === ws)) continue;
             this.workspaces.delete(cwd);
@@ -1508,12 +1516,12 @@ export class Engine {
     }
 
     /** The side chat closed a moment ago, discarded now. */
-    private dropClosedSideChat(parentId: string) {
+    private dropClosedSideChat(parentId: string): Promise<void> | undefined {
         const closed = this.closedSideChats.get(parentId);
         if (!closed) return;
         clearTimeout(closed.timer);
         this.closedSideChats.delete(parentId);
-        void this.discardSideChat(closed.rt);
+        return this.discardSideChat(closed.rt);
     }
 
     /** A side chat closed: its turn stopped, its runtime let go of, its files removed. Its parent's tab goes. */
@@ -1696,10 +1704,10 @@ export class Engine {
     private unload(rt: Runtime): Promise<void> {
         const id = rt.id;
         if (rt.guest) this.guestGone(rt);
-        // Its side chat goes with it, and one closed a moment ago.
+        // Its side chat goes with it, and one closed a moment ago: closed once they are too (a worktree's removal waits
+        // for that: their agent CLIs work in its folder).
         const side = rt.sideChat ? this.runtimes.get(rt.sideChat) : undefined;
-        if (side) void this.discardSideChat(side);
-        this.dropClosedSideChat(id);
+        const sides = [side ? this.discardSideChat(side) : undefined, this.dropClosedSideChat(id)].map((p) => p?.catch(() => undefined));
         const timer = this.unloadTimers.get(id);
         if (timer) clearTimeout(timer);
         this.unloadTimers.delete(id);
@@ -1710,9 +1718,8 @@ export class Engine {
         // Nothing of it was ever saved (only a ! command ran in it, say): there's no file to open it from again,
         // so the windows that list it are told it's gone, not left with a row that opens nothing.
         if (!existsSync(rt.session.path)) this.broadcast({ type: "sessions.remove", id });
-        const done: Promise<void> = rt
-            .close()
-            .catch(() => undefined)
+        const done: Promise<void> = Promise.all([rt.close().catch(() => undefined), ...sides])
+            .then(() => undefined)
             .finally(() => {
                 if (this.closing.get(id) === done) {
                     this.closing.delete(id);
@@ -2003,7 +2010,7 @@ export class Engine {
             s.snoozed = { ...s.snoozed, [id]: { until: at, ...(rt?.busy ? { turn: true as const } : {}) } };
         });
         this.upsertRow(id);
-        this.alarm.arm(nextWake(readStore()));
+        this.armAlarm();
     }
 
     /**
@@ -2018,7 +2025,7 @@ export class Engine {
             notePlay(s, id, this.now());
         });
         this.upsertRow(id);
-        this.alarm.arm(nextWake(readStore()));
+        this.armAlarm();
     }
 
     /** It needs you (`why`), or the turn it was snoozed in ended: a snoozed session wakes early. */
@@ -2031,10 +2038,22 @@ export class Engine {
     private sweep() {
         if (this.stopping) return;
         for (const id of dueWakes(readStore(), this.now())) this.wake(id, true);
-        const settle = this.autoSettle();
+        this.settleAt = this.autoSettle();
+        this.armAlarm();
+    }
+
+    /** When the last sweep found the next session due to settle (undefined: none, or auto-settle off). */
+    private settleAt: number | undefined;
+
+    /**
+     * The one timer, for whichever comes first: the next snooze's wake or the next settle. With auto-settle on it's
+     * always set, since sessions idle from now on come due too: settling is by the day, so with nothing snoozed it
+     * can wait hours.
+     */
+    private armAlarm() {
         const wake = nextWake(readStore());
+        const settle = this.settleAt ?? (this.autoSettleDays() ? this.now() + SETTLE_CHECK_MS : undefined);
         const next = wake === undefined ? settle : settle === undefined ? wake : Math.min(wake, settle);
-        // Settling is by the day: with nothing snoozed, the timer can wait hours.
         this.alarm.arm(next, wake === undefined ? SETTLE_CHECK_MS : undefined);
     }
 
@@ -2310,7 +2329,8 @@ export class Engine {
         const inside = within(wt.path);
         const other = this.listSessions(Infinity).find((s) => s.id !== id && inside(s.cwd));
         if (other) return { reason: `“${other.title}” also works in this worktree, so it stays.`, code: "shared" };
-        if ([...this.runtimes.values()].some((r) => r.id !== id && inside(r.ws.cwd))) return { reason: "Another open session works in this worktree, so it stays.", code: "shared" };
+        // Its own side chat (open, or closed and kept for Undo) goes with it: not another session.
+        if ([...this.runtimes.values()].some((r) => r.id !== id && r.side?.of !== id && inside(r.ws.cwd))) return { reason: "Another open session works in this worktree, so it stays.", code: "shared" };
         if (wt.locked !== undefined) return { reason: `The worktree is locked${wt.locked ? ` (${wt.locked})` : ""}.`, code: "locked" };
         try {
             const why = await unpushedReason({ path: cwd, worktree: wt.path });
@@ -2358,7 +2378,7 @@ export class Engine {
             if (keep) return done(false, keep.reason, keep.code);
             const rt = this.runtimes.get(id);
             // As removal will see it, but with this session not counting yet: it's still open, and only closed once nothing needs asking.
-            const others = [...[...this.runtimes.values()].filter((r) => r !== rt).flatMap((r) => r.folders), ...[...this.closingIn.values()].flat(), ...heldSessionFolders()];
+            const others = [...[...this.runtimes.values()].filter((r) => r !== rt && r.side?.of !== id).flatMap((r) => r.folders), ...[...this.closingIn.values()].flat(), ...heldSessionFolders()];
             let plan: Removal;
             try {
                 plan = planRemoval({ path: cwd, worktree: wt, inUse: (dir) => others.some(within(dir)) });
@@ -3842,7 +3862,7 @@ export class Engine {
                         s.settled = (s.settled ?? []).filter((x) => x !== rt.id);
                         forget(s, rt.id);
                     });
-                    if (store.snoozed?.[rt.id]) this.alarm.arm(nextWake(readStore()));
+                    if (store.snoozed?.[rt.id]) this.armAlarm();
                     this.sessionChanged(rt);
                 }
                 if (p.mode !== undefined && !isFollowUp(p.mode)) throw new RpcError("mode must be steer or queue", "invalid");
@@ -4111,7 +4131,7 @@ export class Engine {
                     // Brought back: not settled by itself straight away for having been idle.
                     notePlay(s, id, this.now());
                 });
-                if (flags.snoozedUntil !== undefined) this.alarm.arm(nextWake(readStore()));
+                if (flags.snoozedUntil !== undefined) this.armAlarm();
                 // In whichever list it's in: without its flags saved, it's back as an active one.
                 const summary = this.listSessions(1000).find((s) => s.id === id) ?? this.listSessions(1000, true).find((s) => s.id === id);
                 if (summary) this.broadcast({ type: "sessions.upsert", session: summary });
@@ -4502,7 +4522,8 @@ export class Engine {
                 return await this.gitAction(p.cwd, true, (cwd) => gitSwitch(cwd, { branch, remote: p.remote === true }));
             }
             case "git.createBranch": {
-                const name = text(p.name, "name", 200);
+                // Longer than a branch name may be, and gitCreateBranch says so in its own words.
+                const name = text(p.name, "name", 1000);
                 return await this.gitAction(p.cwd, true, (cwd) => gitCreateBranch(cwd, name));
             }
             case "git.pullRequests":

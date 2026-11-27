@@ -54,7 +54,7 @@ With authenticated GitHub CLI (`gh auth status`) and a github.com destination, t
 
 ## Branches: fetch, pull and switch
 
-A session's title bar shows its folder's branch, with how many commits it is ahead of (↑) and behind (↓) its upstream. The counts come from the remote-tracking branch as it was last fetched, so reading them never touches the network: they're read again when a turn starts or ends, as files change, when you come back to the window, and after a Git action from the app. Nothing fetches in the background; fetching is yours to ask for.
+A session's title bar shows its folder's branch, with how many commits it is ahead of (↑) and behind (↓) its upstream. The counts come from the remote-tracking branch as it was last fetched, so reading them never touches the network: they're read again when a turn ends, when you come back to the window, when you open the branch dialog, and after a Git action from the app. A branch switched in a terminal shows once one of those happens. Nothing fetches in the background; fetching is yours to ask for.
 
 Click the branch (or press Ctrl+Shift+B, ⌘⇧B on a Mac, or **Switch branch…** in the command palette; on Home it acts on Home's folder) to open the branch dialog:
 
@@ -77,6 +77,8 @@ The terminal app has no command for these; use `git` there.
 - fetches it from the remote, as **Fetch** does (the same trust and URL rules): a pull request from this repository by its branch, one from a fork by `refs/pull/<n>/head`;
 - checks it out in a new worktree in `.claude/worktrees`, as **New worktree…** does (the same trust checks and `WorktreeCreate` hooks): one from this repository on its own branch, tracking the remote's, so ahead/behind, **Pull** and **Push…** work; one from a fork on `pr-<n>`, at its head, with no upstream (pushing to a fork is for a terminal);
 - opens a new session there, with `Pull request #123: <title>` and its URL in the message box, for you to say what to do with it.
+
+A fork's pull request is someone else's code, so trusting the repository doesn't trust its worktree: if it has project configuration of its own (`.cavvy/settings.json`, `.mcp.json`, an agent CLI's), its session asks you to trust it first, or to open it without that configuration. Worktrees made from that folder ask the same. A branch you start from the fork's branch in your own repository (**New worktree…** with it as the base, or `git switch` in a terminal) is trusted as the rest of your repository is: choosing to build on someone else's code there is choosing to trust it.
 
 If a worktree is already on that branch, it's opened as it is, without fetching. A local branch of that name that isn't checked out gets a worktree as it is too: update it with **Pull**.
 

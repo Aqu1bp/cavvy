@@ -6,7 +6,7 @@
 
 import type { DiffHunk, DiffLine } from "@shared/protocol";
 
-type Diff = { hunks: DiffHunk[]; lines?: number };
+type Diff = { hunks: DiffHunk[]; lines?: number; truncated?: boolean };
 
 /** One hidden run, by the hunk it comes before (`at` = the number of hunks: after the last). Lines numbered in each side, inclusive. */
 export interface Gap {
@@ -31,7 +31,8 @@ export function gaps(d: Diff): Gap[] {
         const next = d.hunks[at];
         const newFrom = prev ? afterOf(prev.newStart, prev.newLines) : 1;
         const oldFrom = prev ? afterOf(prev.oldStart, prev.oldLines) : 1;
-        const newTo = next ? firstOf(next.newStart, next.newLines) - 1 : d.lines;
+        // After the last hunk of a diff cut short: hunks were left out there, not unchanged lines.
+        const newTo = next ? firstOf(next.newStart, next.newLines) - 1 : d.truncated ? undefined : d.lines;
         if (newTo === undefined || newTo < newFrom) continue;
         out.push({ at, newFrom, oldFrom, count: newTo - newFrom + 1 });
     }
