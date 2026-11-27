@@ -2,7 +2,7 @@
 // ones only while keys sync, and what the server set or changed itself stays (src/servers/sync-state.ts).
 
 import { afterAll, expect, test } from "bun:test";
-import { writeFileSync } from "fs";
+import { readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
@@ -196,18 +196,28 @@ test("a copy whose CLI the server lacks asks for that CLI", async () => {
     await removeInstance(copy);
 });
 
-test("with the server's providers unreadable, keys off still takes back what sync stored, and only that", async () => {
+test("with the server's providers unreadable, keys off waits and says so; read again, it takes back only sync's", async () => {
     writeProvidersFile({ agents: { "claude-code": {} } });
-    await saveAgentEnv("claude-code", [{ name: "S", value: "sync", secret: true }, { name: "T", value: "sync", secret: true }]);
+    await saveAgentEnv("claude-code", [{ name: "S", value: "sync", secret: true }, { name: "T", value: "sync", secret: true }, { name: "P", value: `ghp_${"b".repeat(36)}` }]);
     const server = tempDir("cavvy-sync-env-server-");
     await inHome(server, () => writeProvidersFile({ agents: {} }));
     await sync(server, true);
+    const good = await inHome(server, () => readFileSync(paths.providers(), "utf-8"));
     await inHome(server, async () => {
         // T set again on the server, then its providers file broken.
         await setKey(secretEnvId("claude-code", "T"), "server");
         writeFileSync(paths.providers(), "{ not json");
     });
-    await inHome(server, () => applyStateSync(undefined, {}));
+    const waiting = await inHome(server, () => applyStateSync(undefined, {}));
+    expect(waiting.keysLeft).toEqual(expect.arrayContaining([secretEnvId("claude-code", "S"), secretEnvId("claude-code", "T")]));
+    expect(await stored(server, "claude-code", "S")).toBe("sync");
+    // Read again: sync's secret and key-shaped value go; the one set on the server stays.
+    await inHome(server, () => writeFileSync(paths.providers(), good));
+    const done = await inHome(server, () => applyStateSync(undefined, {}));
+    expect(done.keysLeft).toBeUndefined();
     expect(await stored(server, "claude-code", "S")).toBeUndefined();
     expect(await stored(server, "claude-code", "T")).toBe("server");
+    const a = (await agents(server))["claude-code"];
+    expect(a?.secretEnv).toEqual(["T"]);
+    expect(a?.env).toBeUndefined();
 });

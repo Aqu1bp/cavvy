@@ -801,13 +801,9 @@ async function takeBackAgentSecrets(recs: Record<string, { env?: Record<string, 
         const cfg = readAgentConfig(id);
         if (!r.env) continue;
         if (!cfg) {
-            // Its setup unreadable here (or gone, with its secrets): a stored value still as sync wrote it goes all the same.
-            for (const [name, before] of Object.entries(r.env)) {
-                const k = await getKey(secretEnvId(id, name)).catch(() => undefined);
-                if (k && varHash({ value: k.value, secret: true }) !== before) delete r.env[name];
-                else if (await secretGone(id, name)) delete r.env[name];
-                else stuck(out, id, name);
-            }
+            // Its setup unreadable here (or gone, with its secrets): nothing can be told apart, so nothing's touched and
+            // all stays on record. A value still stored is said, so the sync isn't done and tries again once it reads.
+            for (const name of Object.keys(r.env)) if (await getKey(secretEnvId(id, name)).catch(() => undefined)) stuck(out, id, name);
             continue;
         }
         const listed = new Set(cfg?.secretEnv ?? []);
