@@ -187,6 +187,11 @@ export function mergeSent(store: Store, from: string, raw: unknown, now: number)
     }
     store[from] = { since: prev?.since ?? now, groups, ...(p.includeSecrets === true ? { keys: true } : {}) };
 
+    return { ...mergeAll(store), ...(p.installMissing === true ? { installMissing: true } : {}) };
+}
+
+/** What the server should have from the computers that sync it: of each item, the most recent change. */
+function mergeAll(store: Store): Partial<SyncStatePayload> {
     // For each item, the most recent change; of equal ones (two that had it as it is when they started), the one
     // syncing longest: a computer that starts syncing doesn't replace what another sent.
     const order = Object.values(store).sort((a, b) => a.since - b.since);
@@ -204,9 +209,9 @@ export function mergeSent(store: Store, from: string, raw: unknown, now: number)
             }
         }
     }
-    const keysOn = Object.values(store).some((s) => s.keys === true);
-    return { ...join_(merged, keysOn), ...(p.installMissing === true ? { installMissing: true } : {}) };
+    return join_(merged, Object.values(store).some((s) => s.keys === true));
 }
+
 
 /** What computer `from` should send next: its digest, while what it last sent was taken whole. */
 export async function syncedStateFor(from = "", signIns = false): Promise<SyncRemoteStateStatus> {
@@ -235,12 +240,17 @@ export async function applyStateFrom(from: string, digest: unknown, raw: unknown
     return result;
 }
 
-/** A computer signed out of this server for good: what it sent no longer keeps anything here. */
-export function forgetSyncedState(from: string) {
+/**
+ * A computer signed out of this server for good (host.ts): what it sent no longer keeps anything here, and what the
+ * others send is applied again now; with none left, that takes back the keys sync put here. Undefined: it sent nothing.
+ */
+export async function forgetSyncedState(from: string): Promise<ApplyStateResult | undefined> {
     const store = readStore();
-    if (!(from in store)) return;
+    if (!(from in store)) return undefined;
     delete store[from];
     // What the others sent hasn't changed, but what the server should have has: each one's next sync applies again.
     for (const s of Object.values(store)) delete s.digest;
     writeStore(store);
+    const merged = mergeAll(store);
+    return applyStateSync(hashVal(merged), merged, { signIns: false });
 }

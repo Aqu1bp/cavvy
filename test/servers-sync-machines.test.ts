@@ -12,7 +12,8 @@ const iso = isolate();
 const { applySync, forgetSyncedFiles, syncedFor } = await import("../src/servers/sync");
 const { applyStateFrom, forgetSyncedState, mergeSent, syncedStateFor } = await import("../src/servers/sync-merge");
 const { paths } = await import("../src/config/paths");
-const { forgetCachedKeys } = await import("../src/auth/credentials");
+const { forgetCachedKeys, getKey, setKey } = await import("../src/auth/credentials");
+const { localSyncState } = await import("../src/servers/sync-state");
 
 afterAll(() => iso.cleanup());
 
@@ -81,6 +82,17 @@ test("a file goes from the server only once no computer has it, and one with its
         sync(home, "b", {});
         expect(existsSync(join(home, SKILL))).toBe(false);
         expect(existsSync(join(home, ".cavvy/commands/fix.md"))).toBe(false);
+    }));
+
+test("a file one computer deletes goes once the other, which had its own version, deletes it too", () =>
+    onServer((home) => {
+        sync(home, "a", { [SKILL]: "A's" });
+        sync(home, "b", { [SKILL]: "B's" });
+        sync(home, "a", {});
+        expect(read(home, SKILL)).toBe("A's");
+        // B deleted it before it next synced: its removal still goes.
+        sync(home, "b", {});
+        expect(existsSync(join(home, SKILL))).toBe(false);
     }));
 
 test("a record from before says nobody's: a computer added then takes nothing off, and one that had it all claims it", () =>
@@ -154,12 +166,23 @@ test("the server applies both computers' settings, and tells each what it took f
         expect((await syncedStateFor("a")).digest).toBe("digest-a");
         expect((await syncedStateFor("b")).digest).toBe("digest-b");
         expect((await syncedStateFor("c")).digest).toBeUndefined();
-        // A signed out for good: its setting goes with the next sync, B's stays.
-        forgetSyncedState("a");
-        // B hasn't changed anything, but what the server should have has: B's next sync applies again.
-        expect((await syncedStateFor("b")).digest).toBeUndefined();
-        await applyStateFrom("b", "digest-b", b);
+        // A signed out for good: its setting goes at once, B's stays, and B's next sync applies again.
+        await forgetSyncedState("a");
         const after = JSON.parse(readFileSync(paths.userSettings(), "utf-8"));
         expect(after.notifyAfterSeconds).toBeUndefined();
         expect(after.autoCompact).toBe(false);
+        expect((await syncedStateFor("b")).digest).toBeUndefined();
     }));
+
+test("the last computer signed out for good takes the keys it synced with it", async () => {
+    await setKey("openai", "sk-proj-cavvytestONLY000000000000000000000000000000");
+    const payload = await localSyncState({ includeSecrets: true });
+    expect(payload.apiKeys?.openai).toBeDefined();
+    await onServer(async () => {
+        await applyStateFrom("a", "digest-a", payload);
+        expect((await getKey("openai"))?.value).toBe("sk-proj-cavvytestONLY000000000000000000000000000000");
+        await forgetSyncedState("a");
+        forgetCachedKeys();
+        expect(await getKey("openai")).toBeUndefined();
+    });
+});

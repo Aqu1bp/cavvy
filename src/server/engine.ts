@@ -3,8 +3,9 @@
 // once, in different projects; each project gets its own settings, trust
 // decision, MCP servers and file index, shared by its sessions.
 
-import { applySync, syncedFor } from "../servers/sync";
-import { applyStateFrom, syncedStateFor } from "../servers/sync-merge";
+import { applySync, forgetSyncedFiles, syncedFor } from "../servers/sync";
+import { applyStateFrom, forgetSyncedState, syncedStateFor } from "../servers/sync-merge";
+import type { ApplyStateResult } from "../servers/sync-state";
 import { installState } from "../servers/sync-install";
 import { FAR_GRACE_MS, searchServers, withServers, trashOnServers } from "./far-search";
 import { answerPeers, homeFarPeers, peersDenied, PEERS_WAIT_MS, serverFarPeers } from "./far-peers";
@@ -817,6 +818,62 @@ export class Engine {
     private pluginQueue: Promise<unknown> = Promise.resolve();
     /** Incoming sync applies run one at a time so concurrent RPCs cannot race ownership records or plugin installs. */
     private syncQueue: Promise<unknown> = Promise.resolve();
+
+    /**
+     * Applies synced state (sync-merge.ts) after what's applied before it, and reloads what it changed: settings and
+     * MCP servers, plugins' commands, providers' clients and keys. Undefined from `apply`: nothing was.
+     */
+    private takeState(apply: () => Promise<ApplyStateResult | undefined>): Promise<ApplyStateResult | undefined> {
+        return this.enqueueSync(async () => {
+            const run = this.pluginQueue.then(apply, apply);
+            this.pluginQueue = run.catch(() => undefined);
+            let r: ApplyStateResult | undefined;
+            let nothing = false;
+            try {
+                r = await run;
+                nothing = r === undefined;
+                return r;
+            } finally {
+                // Reload even if applyStateSync threw after writing settings/providers so open sessions never stay stale.
+                // Nothing to apply (a computer forgotten that had sent nothing): nothing to reload.
+                if (!nothing && (!r || r.settingsChanged || r.pluginsChanged)) {
+                    const restart = r?.restartedPlugins?.length ? pluginServerMatch(r.restartedPlugins) : undefined;
+                    this.reloadSettings();
+                    await Promise.all(
+                        [...this.workspaces.values()].map((ws) =>
+                            ws.mcp
+                                .sync()
+                                .then(() => restart && ws.mcp.restartWhere(restart))
+                                .catch(() => undefined),
+                        ),
+                    );
+                    for (const [key, names] of this.cliCommandNames) {
+                        const ws = this.workspaces.get(key.slice(key.indexOf(":") + 1));
+                        if (ws) this.cliCommandNames.set(key, withPluginCommands(names, ws.commands));
+                    }
+                }
+                if (!nothing && (!r || r.providersChanged || r.keysChanged || r.accountsAdded)) {
+                    forgetCachedKeys();
+                    const ids = r ? r.changedProviders : allProviders().map((pr) => pr.id);
+                    for (const id of ids) forgetClient(id);
+                    for (const rt of this.runtimes.values()) rt.classifier.clearCache();
+                    await this.refreshListings(true);
+                    for (const id of ids) {
+                        await Promise.all([...this.runtimes.values()].map((rt) => rt.keyChanged(id).catch(() => undefined)));
+                    }
+                    this.broadcast({ type: "models.changed" });
+                }
+            }
+        });
+    }
+
+    /** A computer signed out of this server for good (host.ts): what only it synced is let go, and the others' applied again. */
+    async forgetSyncedMachine(id: string): Promise<void> {
+        await this.takeState(async () => {
+            forgetSyncedFiles(id);
+            return forgetSyncedState(id);
+        });
+    }
 
     private enqueueSync<T>(fn: () => Promise<T>): Promise<T> {
         const next = this.syncQueue.then(fn, fn);
@@ -2987,11 +3044,15 @@ export class Engine {
                         const onExit = () => void this.refreshListings(true).then(() => this.broadcast({ type: "models.changed" })).catch(() => undefined);
                         return this.terminals.open(client, str(p.id, "id"), homedir(), p.cols, p.rows, { command: { argv: ["/bin/sh", "-c", installCommand], env: childEnv() }, login: { provider, accountId, name, install }, onExit });
                     }
-                    // Seen by removals in other Cavvy processes too, until the login process exits.
-                    const release = holdLogin(provider, accountId);
+                    // Seen by removals in other Cavvy processes too, until the login process exits. A CLI without
+                    // accounts (OpenCode, Grok, Antigravity) signs in its one, which nothing removes.
+                    const managed = (ACCOUNT_PROVIDERS as readonly string[]).includes(provider);
+                    if (!managed && (!agentCli(provider) || accountId !== "default")) throw new RpcError("Invalid login selector", "invalid");
+                    const release = managed ? holdLogin(provider, accountId) : () => {};
                     try {
                         const command = loginCommand(provider, accountId, { away: this.o.away });
-                        return this.terminals.open(client, str(p.id, "id"), homedir(), p.cols, p.rows, { command, login: { provider, accountId, name: account(provider, accountId).name }, onExit: () => {
+                        const name = managed ? account(provider, accountId).name : agentCli(provider)!.name;
+                        return this.terminals.open(client, str(p.id, "id"), homedir(), p.cols, p.rows, { command, login: { provider, accountId, name }, onExit: () => {
                                 release();
                                 // Signed in to a CLI that isn't turned on (Settings' "Add a subscription"): it is now, as a server's sign-in does.
                                 void this.accountsList(provider, true)
@@ -3703,47 +3764,7 @@ export class Engine {
             }
             case "sync.applyState": {
                 if (!this.o.away) throw new RpcError("Only a server takes another machine's state.", "unsupported");
-                return await this.enqueueSync(async () => {
-                    const run = this.pluginQueue.then(
-                        () => applyStateFrom(client.signedInAs ?? "", p.digest, p.payload, p.signIns === true),
-                        () => applyStateFrom(client.signedInAs ?? "", p.digest, p.payload, p.signIns === true),
-                    );
-                    this.pluginQueue = run.catch(() => undefined);
-                    let r: Awaited<typeof run> | undefined;
-                    try {
-                        r = await run;
-                        return r;
-                    } finally {
-                        // Reload even if applyStateSync threw after writing settings/providers so open sessions never stay stale.
-                        if (!r || r.settingsChanged || r.pluginsChanged) {
-                            const restart = r?.restartedPlugins?.length ? pluginServerMatch(r.restartedPlugins) : undefined;
-                            this.reloadSettings();
-                            await Promise.all(
-                                [...this.workspaces.values()].map((ws) =>
-                                    ws.mcp
-                                        .sync()
-                                        .then(() => restart && ws.mcp.restartWhere(restart))
-                                        .catch(() => undefined),
-                                ),
-                            );
-                            for (const [key, names] of this.cliCommandNames) {
-                                const ws = this.workspaces.get(key.slice(key.indexOf(":") + 1));
-                                if (ws) this.cliCommandNames.set(key, withPluginCommands(names, ws.commands));
-                            }
-                        }
-                        if (!r || r.providersChanged || r.keysChanged || r.accountsAdded) {
-                            forgetCachedKeys();
-                            const ids = r ? r.changedProviders : allProviders().map((pr) => pr.id);
-                            for (const id of ids) forgetClient(id);
-                            for (const rt of this.runtimes.values()) rt.classifier.clearCache();
-                            await this.refreshListings(true);
-                            for (const id of ids) {
-                                await Promise.all([...this.runtimes.values()].map((rt) => rt.keyChanged(id).catch(() => undefined)));
-                            }
-                            this.broadcast({ type: "models.changed" });
-                        }
-                    }
-                });
+                return await this.takeState(() => applyStateFrom(client.signedInAs ?? "", p.digest, p.payload, p.signIns === true));
             }
             case "offers.session": {
                 // Asked by this machine's own windows: a server's Cavvy lends nothing.

@@ -423,12 +423,12 @@ export async function hostRun(args: string[], env: HostRunEnv): Promise<void> {
                 if (!machine) return Response.json({ error: "A machine id is 32 hex digits." }, { status: 400 });
                 signIns.revoke(machine, client);
                 // The machine itself is forgotten only when all of it is signed out, and what it synced here with it:
-                // what only it sent no longer stays for it (sync.ts, sync-merge.ts).
-                if (!client) {
-                    noteMachine(machine, undefined);
-                    await Promise.all([import("./sync").then((m) => m.forgetSyncedFiles(machine)), import("./sync-merge").then((m) => m.forgetSyncedState(machine))]).catch(() => undefined);
-                }
-                return Response.json({ closed: srv.dropMachine(machine, client) });
+                // what only it sent no longer stays for it (sync.ts, sync-merge.ts). Its connections go first, so
+                // nothing it sends comes after.
+                if (!client) noteMachine(machine, undefined);
+                const closed = srv.dropMachine(machine, client);
+                if (!client) await srv.engine.forgetSyncedMachine(machine).catch(() => undefined);
+                return Response.json({ closed });
             }
             if (path === "/connect-cli") {
                 // A CLI signed in here by `host login`: turned on as the GUI's own Connect does, which checks it again.

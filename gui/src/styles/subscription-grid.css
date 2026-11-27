@@ -16,3 +16,9 @@
 .sg-more { padding: calc(10 * var(--sp)) calc(14 * var(--sp)) calc(6 * var(--sp)); border-top: 0.5px solid var(--line); }
 .sg-installing { display: inline-flex; align-items: center; gap: calc(5 * var(--sp)); }
 .sg-failed { color: var(--warn); }
+
+/* This computer's own card for the provider (accounts, turning it off), over the grid. */
+.sg-manage {
+    margin-left: auto;
+    flex: none;
+}

@@ -227,8 +227,9 @@ function parseAdd(args: string[]): { name?: string; destination?: string; flags:
         };
         if (a === "--port" || a === "-p") flags.port = Number(value());
         else if (a === "--identity" || a === "-i") flags.identityFile = value();
-        // --copy was the one-off copy that sync took over.
-        else if (a === "--sync" || a === "--copy") flags.sync = true;
+        else if (a === "--sync") flags.sync = true;
+        // --copy was a one-off copy without keys: sync sends them, so it's asked for by name.
+        else if (a === "--copy") throw new ServerError("--copy is now --sync, which keeps the server in sync and sends your API keys too.");
         else if (a === "--no-sync" || a === "--no-copy") flags.sync = false;
         else if (a.startsWith("-")) throw new ServerError(`Unknown option ${a}.`);
         else rest.push(a);
@@ -403,7 +404,7 @@ async function add(args: string[]): Promise<number> {
     } catch (x) {
         // It's there and working, on its own version: added, and updated another time.
         if (!(x instanceof ServerBusy)) throw x;
-        saveServer(e);
+        saveServer(flags.sync === undefined ? e : { ...e, sync: flags.sync });
         out(`${e.name} is added. It's working, so Cavvy there wasn't updated: ${APP_NAME} servers update ${e.name}`);
         return 0;
     }

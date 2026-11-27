@@ -831,7 +831,7 @@ function Providers() {
             <Show when={withServers()}>
                 <Section title="Subscriptions" class="prov-group">
                     <Suspense fallback={<div class="set-row"><Spinner size={12} /></div>}>
-                        <SubscriptionGrid here={servers()?.HERE ?? ""} servers={listed().map((s) => s.name)} touched={() => servers()?.serverTouched() ?? 0} />
+                        <SubscriptionGrid here={servers()?.HERE ?? ""} servers={listed().map((s) => s.name)} touched={() => servers()?.serverTouched() ?? 0} manage={(pr) => <ProviderRow pr={pr} />} />
                     </Suspense>
                 </Section>
             </Show>

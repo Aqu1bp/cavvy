@@ -238,6 +238,8 @@ export function syncedWatchTargets(): { recursive: string[]; shallow: { dir: str
  * what the server has as it does, so nothing is taken off for a computer that never had it.
  */
 const SYNCED_FILE = () => join(cavvyHome(), "synced-files.json");
+/** Recorded as what a computer sent when it's to send its own again: no file's hash. */
+const RESEND = "0".repeat(64);
 
 interface SyncedFiles {
     given: Record<string, string>;
@@ -383,11 +385,12 @@ export function applySync(files: unknown, remove: unknown, home?: string, from =
         for (const path of Array.isArray(remove) ? remove : []) {
             if (!syncablePath(path)) continue;
             delete mine[path];
-            // Another computer still has it: it stays. One that has it otherwise than the server does sends its own next.
+            // Another computer still has it: it stays. One that has it otherwise than the server does sends its own
+            // next (what it sent is marked as nothing it has), or, gone there too, its removal.
             if (!(path in given)) continue;
             const still = others().filter((r) => path in r);
             if (still.length) {
-                for (const r of still) if (r[path] !== given[path]) delete r[path];
+                for (const r of still) if (r[path] !== given[path]) r[path] = RESEND;
                 continue;
             }
             const now = current(path, home);

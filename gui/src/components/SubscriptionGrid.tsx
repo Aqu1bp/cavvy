@@ -8,10 +8,12 @@ import { createStore, reconcile } from "solid-js/store";
 import type { AccountInfo, ProviderInfo } from "@shared/protocol";
 import { app, linkFor, refreshProviders, reportError, rpc } from "../state/app";
 import { connectCli } from "../state/actions";
-import { terminalActions } from "../state/ui";
+import { addAccountFor, terminalActions } from "../state/ui";
 import type { Rpc } from "../lib/rpc";
 import { ProviderIcon } from "./ui/ProviderIcon";
 import { Menu } from "./ui/Menu";
+import { Dialog } from "./ui/Dialog";
+import { MoreHorizontal } from "lucide-solid";
 import { Spinner } from "./ui/bits";
 import "../styles/subscription-grid.css";
 
@@ -34,7 +36,8 @@ const SYNC_SETTLE_MS = 4_000;
 
 const planLabel = (plan?: string) => (plan ? plan.charAt(0).toUpperCase() + plan.slice(1) : undefined);
 
-export default function SubscriptionGrid(p: { here: string; servers: readonly string[]; touched: () => number }) {
+/** `manage`: this computer's own card for a provider (its accounts, turning it off), shown over the grid. */
+export default function SubscriptionGrid(p: { here: string; servers: readonly string[]; touched: () => number; manage: (pr: ProviderInfo) => JSX.Element }) {
     const [far, setFar] = createStore<Record<string, Far>>({});
     const read = async (name: string) => {
         const link = far[name]?.link;
@@ -129,21 +132,21 @@ export default function SubscriptionGrid(p: { here: string; servers: readonly st
     const signIn = (c: Column, pr: ProviderInfo, a: AccountInfo) =>
         terminalActions.loginAccount?.(pr.id, a.id, [pr.name, a.id === "default" ? undefined : a.name, c.server].filter(Boolean).join(" · "), c.server);
     const turnOn = async (c: Column, pr: ProviderInfo) => {
-        // Here: signed in first when it isn't (the sign-in turns it on), installed first when it isn't there.
-        if (!c.server)
-            return void (await connectCli(pr, (e) => {
-                const code = (e as { code?: string }).code;
-                if (code === "not_signed_in") signIn(c, pr, { id: "default", name: "Default", folder: "", managed: false });
-                else if (code === "not_installed" && pr.agentCli?.installable) install(c, pr);
-                else reportError(e);
-            }));
+        // Signed in first when it isn't (the sign-in turns it on), installed first when it isn't there.
+        const refused = (e: unknown) => {
+            const code = (e as { code?: string }).code;
+            if (code === "not_signed_in") signIn(c, pr, { id: "default", name: "Default", folder: "", managed: false });
+            else if (code === "not_installed" && pr.agentCli?.installable) install(c, pr);
+            else reportError(e);
+        };
+        if (!c.server) return void (await connectCli(pr, refused));
         const link = far[c.server]?.link;
         if (!link) return;
         try {
             await link.call("providers.connectCli", { provider: pr.id });
             await read(c.server);
         } catch (e) {
-            reportError(e);
+            refused(e);
         }
     };
     /** Its installer, run on that machine in a terminal here. */
@@ -211,6 +214,14 @@ export default function SubscriptionGrid(p: { here: string; servers: readonly st
 
     const [more, setMore] = createSignal(false);
     let moreBtn: HTMLButtonElement | undefined;
+    /** The provider whose card for this computer is open over the grid. */
+    const [managing, setManaging] = createSignal<string>();
+    const managed = () => app.providers.find((x) => x.id === managing() && x.agentCli);
+    // "Add account…" in the model picker: the card opens, and its form with it (Accounts.tsx).
+    createEffect(() => {
+        const id = addAccountFor();
+        if (id && app.providers.some((x) => x.id === id && x.agentCli)) setManaging(id);
+    });
     // Provider, then account, then a column per machine: every account of a provider in the same column.
     const cols = () => `calc(150 * var(--sp)) minmax(0, 1fr) repeat(${columns().length}, minmax(calc(76 * var(--sp)), calc(96 * var(--sp))))`;
     /** This computer's account, for its name and plan. */
@@ -237,6 +248,9 @@ export default function SubscriptionGrid(p: { here: string; servers: readonly st
                                 <div class="sg-name" role="rowheader">
                                     <span class="prov-logo"><ProviderIcon id={pr.id} name={pr.name} size={18} /></span>
                                     <span class="truncate">{pr.name}</span>
+                                    <Show when={app.providers.some((x) => x.id === pr.id && x.agentCli)}>
+                                        <button class="hb sm sg-manage" aria-label={`${pr.name} on ${p.here}`} title={`${pr.name} on ${p.here}`} onClick={() => setManaging(pr.id)}><MoreHorizontal size={14} /></button>
+                                    </Show>
                                 </div>
                                 <AccountName id={pr.id} account={mainOf(pr.id)} />
                                 <For each={columns()}>{(c) => <Cell c={c} id={pr.id} account={mainOf(pr.id)} head={true} />}</For>
@@ -268,6 +282,9 @@ export default function SubscriptionGrid(p: { here: string; servers: readonly st
                     </Menu>
                 </div>
             </Show>
+            <Dialog open={Boolean(managed())} onClose={() => setManaging()} title={`${managed()?.name ?? ""} on ${p.here}`} width={560}>
+                <Show when={managed()}>{(pr) => p.manage(pr())}</Show>
+            </Dialog>
         </div>
     );
 }
