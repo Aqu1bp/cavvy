@@ -1,7 +1,7 @@
 import { createEffect, createMemo, createSignal, createUniqueId, For, on, Show } from "solid-js";
 import { Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Layers, Plus, RefreshCw, Search, Settings2, Star, Zap } from "lucide-solid";
 import { planLimitKey, type AccountInfo, type EffortLevel, type ModelSummary, type ProviderModels } from "@shared/protocol";
-import { app, awayMachine, handleFor, limitsFor, modelsFor, noModel, providersFor, refreshModels, refreshModelsFor, servedFor, toast } from "../state/app";
+import { app, awayMachine, handleFor, limitsOn, modelsLoadingOn, modelsOn, noModel, providersOn, refreshModelsFor, refreshModelsOn, servedOn, toast } from "../state/app";
 import { setEffort, setModel, setFastMode, setAccount } from "../state/actions";
 import { prefs, setPrefs } from "../state/prefs";
 import { comparePicks, setAddAccountFor, setComparePicks, setSettingsTab } from "../state/ui";
@@ -80,6 +80,17 @@ export interface CompareOption {
     why?: string;
 }
 
+/**
+ * A model picked for something that isn't a session or Home (a suggested task's card): from machine `machine`'s models
+ * (awayMachine's names; undefined: the window's own), asked for over a connection to it when the picker first opens.
+ * What's picked goes to `model` and `effort`, not to any session. Its default account; no fast mode.
+ */
+export interface PickTarget {
+    machine: string | undefined;
+    model: (ref: string) => void;
+    effort: (level: EffortLevel) => void;
+}
+
 const MAX_COMPARE = 4;
 const COMPARE_ON = "Each model gets a new worktree. Uncommitted changes aren't carried over.";
 const COMPARE_OFF = "Send one prompt to 2–4 models, each in a worktree of its own";
@@ -94,7 +105,7 @@ const FAST_BUSY = "Change speed after this response finishes";
  * account. A model with neither effort nor fast mode opens straight on the models. `effort`, `fast`: the session's,
  * or the next one's. `busy`: a reply is under way, when speed can't change.
  */
-export function ModelPicker(p: ComposerMenu & { /** The session it's for: its machine's models are offered. */ sessionId?: string; current?: ModelSummary; currentRef?: string; compare?: CompareOption; effort?: EffortLevel; fast?: boolean; busy?: boolean }) {
+export function ModelPicker(p: ComposerMenu & { /** The session it's for: its machine's models are offered. */ sessionId?: string; /** Not a session's: picked for this. */ target?: PickTarget; current?: ModelSummary; currentRef?: string; compare?: CompareOption; effort?: EffortLevel; fast?: boolean; busy?: boolean }) {
     let anchor: HTMLButtonElement | undefined;
     let sliderEl: HTMLDivElement | undefined;
     let modelRow: HTMLButtonElement | undefined;
@@ -115,25 +126,27 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
     const [acctOpen, setAcctOpen] = createSignal(false);
     // The saved model, when nothing is connected, is no model: the chip doesn't name what can't run.
     // Nothing connected on this computer says nothing of another machine's (Home or a session there).
-    const currentRef = () => p.current?.ref ?? (noModel() && awayMachine(p.sessionId) === undefined ? undefined : p.currentRef);
+    /** The machine whose models are offered: the target's, or the session's (Home's). */
+    const machineOn = () => (p.target ? p.target.machine : awayMachine(p.sessionId));
+    const currentRef = () => p.current?.ref ?? (noModel() && machineOn() === undefined ? undefined : p.currentRef);
     const isCurrent = (ref: string) => ref === currentRef();
     // The machine's that the session is on (one of another machine's, opened in this window, has its own).
-    const models = () => modelsFor(p.sessionId);
+    const models = () => modelsOn(machineOn());
     const currentModel = createMemo(() => resolve(p.current, currentRef(), models()));
     const currentProvider = () => currentModel()?.provider ?? currentRef()?.split(":")[0];
+    const away = () => machineOn() !== undefined;
 
     // The accounts of the machine the session is on: another machine's session opened here has that machine's.
-    const away = () => awayMachine(p.sessionId) !== undefined;
-    const accountInfo = (provider = currentProvider()) => providersFor(p.sessionId).find((p) => p.id === provider)?.agentCli;
+    const accountInfo = (provider = currentProvider()) => providersOn(machineOn()).find((p) => p.id === provider)?.agentCli;
     const selectedAccount = (provider = currentProvider()) => p.sessionId ? handleFor(p.sessionId)?.view.state.accounts?.[provider ?? ""] ?? "default" : accountInfo(provider)?.defaultAccount ?? "default";
     const accountChoices = (provider = currentProvider()) => accountInfo(provider)?.accounts ?? [{ id: "default", name: "Default" }];
     const missingAccount = (provider = currentProvider()) => !accountChoices(provider).some((a) => a.id === selectedAccount(provider));
-    const showAccounts = (provider = currentProvider()) => !!accountInfo(provider) && (accountChoices(provider).length > 1 || missingAccount(provider));
+    const showAccounts = (provider = currentProvider()) => !p.target && !!accountInfo(provider) && (accountChoices(provider).length > 1 || missingAccount(provider));
     const accountName = (provider = currentProvider()) => accountChoices(provider).find((a) => a.id === selectedAccount(provider))?.name ?? "Removed account";
 
     // ---- Effort and speed, of the model in use ----
     const reasoning = () => takesEffort(currentModel());
-    const fastOk = () => Boolean(currentModel()?.supportsFastMode);
+    const fastOk = () => !p.target && Boolean(currentModel()?.supportsFastMode);
     const fastOn = () => fastOk() && Boolean(p.fast);
     const levels = () => effortLevels(currentModel());
     // Shown at once while the server takes it, so stepping through the levels doesn't lag behind the keys.
@@ -143,6 +156,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
     const pickEffort = (id: EffortLevel) => {
         if (id === effort()) return;
         setShownEffort(() => id);
+        if (p.target) return p.target.effort(id);
         const n = ++effortPicks;
         // Refused (disconnected, say): back to the level in force, so picking it again sends again.
         void setEffort(id).then((ok) => {
@@ -227,10 +241,10 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
     const toggleCompare = () => setComparePicks(multi() ? undefined : currentRef() ? [currentRef()!] : []);
 
     // The provider whose heading has its accounts: a CLI provider, in its own list.
-    const acctProvider = () => (!q() && filter() !== FAVORITES && accountInfo(filter()) && accountInfo(filter())!.multiAccount !== false ? filter() : undefined);
+    const acctProvider = () => (!p.target && !q() && filter() !== FAVORITES && accountInfo(filter()) && accountInfo(filter())!.multiAccount !== false ? filter() : undefined);
     /** A plan nearing or at its limit: its fullest window's percentage, from 80%; 100 once reached. */
     // The limits of the session's machine's accounts: another machine's "Default" isn't this computer's.
-    const limitOf = (provider: string, id: string) => limitsFor(p.sessionId)[planLimitKey(provider, id)];
+    const limitOf = (provider: string, id: string) => limitsOn(machineOn())[planLimitKey(provider, id)];
     const accountLimit = (provider: string, id: string) => {
         return nearLimit(meterOf(limitOf(provider, id), now()));
     };
@@ -238,7 +252,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
         const m = meterOf(limitOf(provider, a.id), now());
         const limits = m?.reached ? `Limit reached${m.resets ? `, resets ${m.resets}` : ""}` : m?.windows.map(windowShort).filter(Boolean).join(", ");
         // Named as every surface names a plan (planTitle), then its email and whether it can be used.
-        const title = planTitle(providersFor(p.sessionId).find((x) => x.id === provider), a.id).title;
+        const title = planTitle(providersOn(machineOn()).find((x) => x.id === provider), a.id).title;
         return [[title, accountDetail({ ...a, plan: undefined })].filter(Boolean).join(" · "), limits].filter(Boolean).join(". ") || undefined;
     };
     const pickAccount = (provider: string, a: { id: string }) => {
@@ -283,7 +297,8 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                 setFilter(provider && groups().some((g) => g.provider === provider) ? provider : favorites().length || !groups().length ? FAVORITES : groups()[0]!.provider);
                 setSel(Math.max(0, rows().findIndex((r) => r.m.ref === currentRef())));
                 // None yet (their first asking failed, say): asked for again, from the session's machine.
-                if (!models().length) void refreshModelsFor(p.sessionId);
+                // A target on another machine: its models are asked for now, the first time they're wanted.
+                if (!models().length) void refresh();
                 requestAnimationFrame(() => {
                     if (!p.open) return;
                     list?.querySelector(".mr.sel")?.scrollIntoView({ block: "nearest" });
@@ -308,8 +323,16 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
     const choose = (m: ModelSummary) => {
         if (multi()) return togglePick(m.ref);
         p.setOpen(false);
-        void setModel(m.ref);
+        if (p.target) p.target.model(m.ref);
+        else void setModel(m.ref);
     };
+    /** The chip's tooltip: the model, account, effort and speed; the composer's shortcut opens a session's (Home's). */
+    const chipTitle = () => {
+        const text = [chipName(), showAccounts() ? accountName() : undefined, reasoning() && effortOf(effort()) ? `${effortOf(effort())!.label} effort` : undefined, fastOn() ? "fast mode" : undefined].filter(Boolean).join(" · ");
+        return p.target ? text : withShortcut(text, "chat:modelPicker");
+    };
+    const refresh = (again = false) => (p.target ? refreshModelsOn(machineOn(), again) : refreshModelsFor(p.sessionId, again));
+    const loading = () => modelsLoadingOn(machineOn());
     const onKey = (e: KeyboardEvent) => {
         if (isMod(e) && /^[1-9]$/.test(e.key)) {
             const r = rows()[Number(e.key) - 1];
@@ -387,11 +410,11 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
     /** What the list says when it has nothing to show, and the one thing to do about it. */
     const empty = (): { text: string; icon?: "loading" | "error" | "star" | "search"; action?: { label: string; run: () => void } } => {
         const providers = { label: "Set up providers", run: () => (p.setOpen(false), setSettingsTab("providers")) };
-        if (app.modelsLoading && !app.models.length) return { text: "Loading models…", icon: "loading" };
+        if (loading() && !models().length) return { text: "Loading models…", icon: "loading" };
         if (q()) return { text: `No models match “${q()}”.`, icon: "search" };
         if (!groups().length) return { text: "No providers yet.", action: providers };
         if (filter() === FAVORITES) return { text: "Star a model to keep it here.", icon: "star" };
-        if (group()?.status === "error") return { text: group()?.error ?? "Couldn't list this provider's models.", icon: "error", action: { label: "Try again", run: () => void refreshModelsFor(p.sessionId, true) } };
+        if (group()?.status === "error") return { text: group()?.error ?? "Couldn't list this provider's models.", icon: "error", action: { label: "Try again", run: () => void refresh(true) } };
         return { text: "No models." };
     };
 
@@ -404,7 +427,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
         if (!accountInfo(m.provider)) return undefined;
         const meter = meterOf(limitOf(m.provider, selectedAccount(m.provider)), now());
         const account = selectedAccount(m.provider);
-        const served = (p.sessionId && isCurrent(m.ref) ? handleFor(p.sessionId)?.view.state.servedModel : undefined) ?? resolvedOn(m, account, servedFor(p.sessionId));
+        const served = (p.sessionId && isCurrent(m.ref) ? handleFor(p.sessionId)?.view.state.servedModel : undefined) ?? resolvedOn(m, account, servedOn(machineOn()));
         const model = { id: m.id, resolved: served };
         const stop = limitFor(meter, model);
         if (!stop || (!stop.window?.scope && acctProvider() === m.provider)) return undefined;
@@ -550,7 +573,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
     return (
         <>
             {/* Keep the trigger mounted when Compare changes so Menu can restore focus. */}
-            <button ref={anchor} class={`pick model ${multi() ? "on" : ""} ${p.open ? "open" : ""}`} aria-haspopup="dialog" aria-expanded={p.open} onClick={() => p.setOpen(!p.open)} title={multi() ? picks().map((r) => resolve(undefined, r, models())?.name ?? r).join(", ") || "Pick 2 to 4 models" : withShortcut([chipName(), showAccounts() ? accountName() : undefined, reasoning() && effortOf(effort()) ? `${effortOf(effort())!.label} effort` : undefined, fastOn() ? "fast mode" : undefined].filter(Boolean).join(" · "), "chat:modelPicker")}>
+            <button ref={anchor} class={`pick model ${multi() ? "on" : ""} ${p.open ? "open" : ""}`} aria-haspopup="dialog" aria-expanded={p.open} onClick={() => p.setOpen(!p.open)} title={multi() ? picks().map((r) => resolve(undefined, r, models())?.name ?? r).join(", ") || "Pick 2 to 4 models" : chipTitle()}>
                 <Show when={multi()} fallback={
                     <>
                         {/* Fast mode: its bolt first, ahead of the provider's mark and the name. */}
@@ -635,8 +658,8 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                             </button>
                         </Show>
                         <input ref={input} role="combobox" aria-expanded="true" aria-controls={listId} aria-autocomplete="list" aria-activedescendant={rows()[sel()] ? `${listId}-${sel()}` : undefined} value={q()} onInput={(e) => (setQ(e.currentTarget.value), setSel(0))} placeholder="Search models…" aria-label="Search models" spellcheck={false} />
-                        <button class="hb sm" title="Refresh model lists" aria-label="Refresh model lists" onClick={() => void refreshModelsFor(p.sessionId, true)} disabled={app.modelsLoading}>
-                            <Show when={app.modelsLoading} fallback={<RefreshCw size={13} />}>
+                        <button class="hb sm" title="Refresh model lists" aria-label="Refresh model lists" onClick={() => void refresh(true)} disabled={loading()}>
+                            <Show when={loading()} fallback={<RefreshCw size={13} />}>
                                 <Spinner size={13} />
                             </Show>
                         </button>

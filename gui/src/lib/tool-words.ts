@@ -204,6 +204,7 @@ const CAVVY: Record<string, [verb: string, running: string, arg?: string]> = {
     ReadSession: ["Read session", "Reading session"],
     SendToSession: ["Message session", "Messaging session"],
     StartSession: ["Start session", "Starting session", "prompt"],
+    SuggestTask: ["Suggest task", "Suggesting a task", "title"],
     Delegate: ["Delegate", "Delegating", "description"],
 };
 

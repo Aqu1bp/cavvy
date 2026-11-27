@@ -4,7 +4,7 @@ import { RenderBoundary } from "../ui/ErrorBoundary";
 // suite"), which opens into a card with a row per call, which opens into the
 // call's details.
 
-import { createContext, createEffect, createMemo, createResource, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, useContext, type JSX, type Signal } from "solid-js";
+import { createContext, createEffect, createMemo, createResource, createSignal, For, lazy, Match, on, onCleanup, onMount, Show, Suspense, Switch, useContext, type JSX, type Signal } from "solid-js";
 import {
     AlertTriangle,
     Bot,
@@ -56,6 +56,9 @@ import { Markdown } from "./Markdown";
 import { PlanCard } from "./PlanCard";
 import { motionMs } from "../LiveLine";
 import { cardOf, EDIT_TOOLS, type Card } from "../../lib/cards";
+
+/** A task the agent suggested, as a card: loaded with the first one (its styles too). */
+const SuggestCard = lazy(() => import("./SuggestCard"));
 
 export type Item =
     | { kind: "block"; block: Block }
@@ -267,8 +270,16 @@ type GroupProps = {
 
 export function ActivityGroup(p: GroupProps) {
     const folds = useContext(CardFoldsContext);
+    // A suggested task's card, once the session has the suggestion: a call without one (a fork's copy, an older
+    // Cavvy's) is a plain row, with nothing to start.
+    const suggestion = () => {
+        const t = p.card === "suggest" ? p.tools[0] : undefined;
+        return t && folds.sessionId ? handleFor(folds.sessionId)?.view.state.suggestions?.find((s) => s.id === t.id) : undefined;
+    };
+    const plain = () => (p.flat ? <StepRows {...p} card={undefined} /> : <ActivityGroupContent {...p} card={undefined} />);
     return (
         <RenderBoundary raw={() => p.steps}>
+            <Show when={p.card !== "suggest"} fallback={<Show when={suggestion()?.id} keyed fallback={plain()}>{(_id: string) => <Suspense><SuggestCard suggestion={suggestion()!} sessionId={folds.sessionId!} /></Suspense>}</Show>}>
             <Show when={p.card && p.tools[0]} fallback={p.flat ? <StepRows {...p} /> : <ActivityGroupContent {...p} />}>
                 {(t) => (
                     <Show
@@ -281,6 +292,7 @@ export function ActivityGroup(p: GroupProps) {
                         </Show>
                     </Show>
                 )}
+            </Show>
             </Show>
         </RenderBoundary>
     );

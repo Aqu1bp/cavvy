@@ -9,6 +9,7 @@ import type { Block, Interaction, ThinkingBlock, ToolBlock, Turn } from "@shared
 import { sleepSeconds, turnDuration } from "./format";
 import { firstStep, liveCommand } from "./command-row";
 import { commandDescription, isLive, runningVerb, toolLabel } from "./tool-words";
+import { staysInTurn } from "./cards";
 
 export type LiveKind = "think" | "tool" | "wait" | "bg" | "special" | "work";
 
@@ -226,8 +227,8 @@ const spoken = new WeakSet<object>();
  * /compact of its own), stays where it happened.
  */
 export function workSegments<R extends Row>(items: R[]): Seg<R>[] {
-    // A plan's card isn't work: it stays in its turn when the work folds away.
-    const isWork = (it: Row) => (it.kind === "activity" ? it.card !== "plan" : it.block.t === "thinking");
+    // A plan's card isn't work, nor a suggested task's: they stay in their turn when the work folds away.
+    const isWork = (it: Row) => (it.kind === "activity" ? !staysInTurn(it.card) : it.block.t === "thinking");
     const isText = (it: Row) => it.kind === "block" && it.block.t === "text";
     const duringWork = (it: Row) => it.kind === "block" && (it.block.t === "compact" || (it.block.t === "notice" && (it.block.compacted === true || it.block.wake === true)));
     // Something said: a blank block (a CLI's stray newlines) isn't a reply. Text only grows, so once a block has said

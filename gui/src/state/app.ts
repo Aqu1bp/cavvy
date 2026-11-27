@@ -190,6 +190,12 @@ export function updateHomeSettings(patch: Partial<GuiSettings>): Promise<GuiSett
 export function awayMachine(sessionId: string | undefined): string | undefined {
     return sessionId !== undefined ? awayOn.get(sessionId) : homeOn();
 }
+/** The machine `id` is on, if the window knows (opened here from it, or its row listed); null if it doesn't. */
+export function knownMachineOf(id: string): string | undefined | null {
+    if (awayOn.has(id)) return awayOn.get(id) || undefined;
+    const at = [...app.sessions, ...app.archived].find((s) => s.id === id);
+    return at ? at.machine : null;
+}
 /** A new session from `sessionId` (its project, New session while it's shown) goes on its machine: this is it, when that isn't the window's. */
 export function machineFor(sessionId: string | undefined): { machine?: string } | undefined {
     const on = awayMachine(sessionId);
@@ -240,8 +246,38 @@ export function rpcFor(sessionId: string | undefined): Rpc {
 const [machineModels, setMachineModels] = createStore<Record<string, ProviderModels[]>>({});
 /** The models to offer in `sessionId`: its machine's. */
 export function modelsFor(sessionId: string | undefined): ProviderModels[] {
-    const on = awayMachine(sessionId);
+    return modelsOn(awayMachine(sessionId));
+}
+/** Machine `on`'s models (awayMachine's names; undefined: the window's own). Another's are there once asked for (loadMachine). */
+export function modelsOn(on: string | undefined): ProviderModels[] {
     return on === undefined ? app.models : (machineModels[on] ?? []);
+}
+/** Machine `on`'s settings: the model and effort a session made there starts with. Another's once asked for (loadMachine). */
+export function settingsOn(on: string | undefined): GuiSettings | undefined {
+    return on === undefined ? app.settings : machineSettings[on];
+}
+/** The machines whose models are being asked for by loadMachine. */
+const [machinesLoading, setMachinesLoading] = createStore<Record<string, boolean>>({});
+/** Machine `on`'s models have been listed here (none may be what it has). */
+export const modelsKnownOn = (on: string | undefined) => (on === undefined ? app.modelsLoaded : on in machineModels);
+/** Machine `on`'s models are being asked for. */
+export const modelsLoadingOn = (on: string | undefined) => (on === undefined ? app.modelsLoading : Boolean(machinesLoading[on]));
+/**
+ * Machine `on`'s models, accounts and settings, for something made there from this window that isn't Home (a suggested
+ * task's card): asked for over a connection to it, made if it isn't. Once: kept up to date from then on (linkMade).
+ * Fails as linkFor does when it can't be reached.
+ */
+export async function loadMachine(on: string): Promise<void> {
+    if (on in machineModels && on in machineSettings) return;
+    setMachinesLoading(on, true);
+    try {
+        const link = await linkFor(on || undefined);
+        await machineReady(on, link);
+        // Its answer didn't come (machineModelsAgain lets that go): said, so what waits for the list isn't left waiting.
+        if (!(on in machineModels)) throw new Error(`Couldn't list the models of ${on || "this computer"}`);
+    } finally {
+        setMachinesLoading(on, false);
+    }
 }
 /** That machine's models asked for again (`refresh`: from its providers, as Refresh asks). */
 function machineModelsAgain(on: string, link: Rpc, refresh = false): Promise<unknown> {
@@ -251,7 +287,10 @@ function machineModelsAgain(on: string, link: Rpc, refresh = false): Promise<unk
 const [machineProviders, setMachineProviders] = createStore<Record<string, ProviderInfo[]>>({});
 /** The providers of `sessionId`'s machine: whose accounts its model menu offers. */
 export function providersFor(sessionId: string | undefined): ProviderInfo[] {
-    const on = awayMachine(sessionId);
+    return providersOn(awayMachine(sessionId));
+}
+/** Machine `on`'s providers (awayMachine's names). */
+export function providersOn(on: string | undefined): ProviderInfo[] {
     return on === undefined ? app.providers : (machineProviders[on] ?? []);
 }
 function machineProvidersAgain(on: string, link: Rpc): Promise<unknown> {
@@ -263,11 +302,14 @@ function machineProvidersAgain(on: string, link: Rpc): Promise<unknown> {
 const [machineLimits, setMachineLimits] = createStore<Record<string, Record<string, PlanLimits>>>({});
 /** The aliases' served models of `sessionId`'s machine's accounts: this computer's only (another machine's aren't known here). */
 export function servedFor(sessionId: string | undefined): Record<string, string> {
-    return awayMachine(sessionId) === undefined ? app.served : {};
+    return servedOn(awayMachine(sessionId));
 }
+export const servedOn = (on: string | undefined): Record<string, string> => (on === undefined ? app.served : {});
 /** The plan limits of `sessionId`'s machine's accounts. */
 export function limitsFor(sessionId: string | undefined): Record<string, PlanLimits> {
-    const on = awayMachine(sessionId);
+    return limitsOn(awayMachine(sessionId));
+}
+export function limitsOn(on: string | undefined): Record<string, PlanLimits> {
     return on === undefined ? app.limits : (machineLimits[on] ?? {});
 }
 /** Refresh in the model menu of `sessionId`: its machine's list, or this computer's. */
@@ -276,6 +318,12 @@ export function refreshModelsFor(sessionId: string | undefined, refresh = false)
     if (on === undefined) return refreshModels(refresh);
     machineModelsAgain(on, rpcFor(sessionId), refresh);
     return Promise.resolve();
+}
+/** Refresh in a model menu for machine `on` (awayMachine's names): asked for over a connection to it, made if it isn't. */
+export async function refreshModelsOn(on: string | undefined, refresh = false): Promise<void> {
+    if (on === undefined) return refreshModels(refresh);
+    if (!(on in machineModels)) return loadMachine(on).catch(() => undefined);
+    await machineModelsAgain(on, await linkFor(on || undefined), refresh).catch(() => undefined);
 }
 /** Each other machine's connection, as it is now: for its sessions opened here (connFor). */
 const [linkStates, setLinkStates] = createStore<Record<string, ConnectionState>>({});
@@ -789,9 +837,29 @@ function adopt(snap: SessionSnapshot): SessionHandle {
         return { id, ready, setReady, view, set, seq: snap.seq, epoch: snap.epoch, queue: [] as SessionOp[], scheduled: false, draft, setDraft, addDraft, lastUsed: Date.now() };
     });
     handles.set(id, h);
+    for (const d of draftsFor.get(id) ?? []) h.addDraft(d);
+    draftsFor.delete(id);
     trim(id);
     setHandleVersion((v) => v + 1);
     return h;
+}
+
+/**
+ * What came back to the input box of a session this window hasn't opened (a suggested task started from here whose
+ * first message a hook stopped): it's there when the session is opened. The latest few sessions'.
+ */
+const draftsFor = new Map<string, Draft[]>();
+function keepDraft(id: string, d: Draft) {
+    draftsFor.set(id, [...(draftsFor.get(id) ?? []), d]);
+    if (draftsFor.size > 20) draftsFor.delete(draftsFor.keys().next().value!);
+}
+
+/**
+ * Session `id`, just made on machine `on` (machineOf's names) over `link` from this window (a suggested task
+ * started there): opened from that machine from now on, and what it says for this window (its draft) heard.
+ */
+export function madeOn(id: string, on: string | undefined, link: Rpc) {
+    if (on !== machine && !away.has(id)) linked(id, on, link);
 }
 
 /** A session this window had open, asked for again after its connection was back: what it missed, or a snapshot. */
@@ -1852,9 +1920,13 @@ function onEvent(ev: ServerEvent) {
             // A delete that failed closed it: a fresh snapshot into the same handle, so the view and draft stay.
             if (handles.has(ev.sessionId)) void openFresh(ev.sessionId).then(adopt, (e) => reopenFailed(ev.sessionId, e));
             return;
-        case "draft":
-            handles.get(ev.sessionId)?.addDraft({ text: ev.text, images: ev.images, files: ev.files, after: ev.after });
+        case "draft": {
+            const d = { text: ev.text, images: ev.images, files: ev.files, after: ev.after };
+            const h = handles.get(ev.sessionId);
+            if (h) h.addDraft(d);
+            else keepDraft(ev.sessionId, d);
             return;
+        }
         case "toast":
             toast(ev.message, ev.level);
             return;
