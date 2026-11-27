@@ -15,6 +15,7 @@ import { themeTraits } from "../state/theme-traits";
 
 /** Settings → Appearance → Theme: loaded when Appearance first opens. */
 const ThemeGallery = lazy(() => import("./ThemeGallery").then((m) => ({ default: m.ThemeGallery })));
+const SubscriptionGrid = lazy(() => import("./SubscriptionGrid"));
 import { setSettingsTab, settingsTab, type SettingsTab } from "../state/ui";
 import { loadSimulatorState } from "../state/simulator";
 import { canReveal, copyText, isDesktop, machine, mod, openExternal, os, revealPath } from "../lib/platform";
@@ -23,7 +24,6 @@ import { ACTIONS, CONTEXTS, KEYBINDINGS_DOCS, formatKeys } from "../../../src/ke
 import { ConfirmDialog } from "./ui/ConfirmDialog";
 import { ProviderIcon } from "./ui/ProviderIcon";
 import { Accounts } from "./Accounts";
-import { serverNeeds } from "../lib/server-needs";
 import { ProvidersAtContext, useProvidersAt, type ProvidersAt } from "../state/providers-at";
 import type { Rpc } from "../lib/rpc";
 import { createUpdateAction } from "./UpdateAction";
@@ -110,14 +110,15 @@ function Group(p: { children: JSX.Element }) {
 }
 
 /** A heading (with a line under it, if it needs one), and its settings in one rounded list. */
-function Section(p: { title?: JSX.Element; caption?: JSX.Element; children: JSX.Element; class?: string }) {
+function Section(p: { title?: JSX.Element; caption?: JSX.Element; aside?: JSX.Element; children: JSX.Element; class?: string }) {
     return (
         <div class="set-sec">
             <Show when={p.title}>
-                <Show when={p.caption} fallback={<Group>{p.title}</Group>}>
+                <Show when={p.caption || p.aside} fallback={<Group>{p.title}</Group>}>
                     <div class="set-hd">
                         <Group>{p.title}</Group>
-                        <p class="set-cap">{p.caption}</p>
+                        <Show when={p.aside}><div class="set-aside">{p.aside}</div></Show>
+                        <Show when={p.caption}><p class="set-cap">{p.caption}</p></Show>
                     </div>
                 </Show>
             </Show>
@@ -739,7 +740,7 @@ function ProviderRow(p: { pr: ProviderInfo }) {
 }
 
 /** One machine's providers: the rows are the same for the window's own machine and for a server shown from it. */
-function ProviderSections() {
+function ProviderSections(p: { noSubscriptions?: boolean; picker?: JSX.Element }) {
     const at = useProvidersAt();
     const [key, setKey] = createSignal("");
     const [busy, setBusy] = createSignal(false);
@@ -762,7 +763,8 @@ function ProviderSections() {
     // Grouped as the mockup has them: subscriptions (the CLIs), API keys, models on that machine, then web search.
     const models = () => at.list().filter((p) => !p.search);
     const groups = () => [
-        { title: "Subscriptions", list: models().filter((p) => p.agentCli) },
+        // With servers, subscriptions are one table across machines above these (SubscriptionGrid.tsx).
+        { title: "Subscriptions", list: p.noSubscriptions ? [] : models().filter((p) => p.agentCli) },
         { title: "API keys", list: models().filter((p) => !p.agentCli && !p.local) },
         { title: LOCAL, list: models().filter((p) => !p.agentCli && p.local) },
         { title: "Web search", list: at.list().filter((p) => p.search) },
@@ -795,6 +797,7 @@ function ProviderSections() {
                     title={g.title === LOCAL && at.server ? `On ${at.server}` : g.title}
                     class="prov-group"
                     caption={g.title === "API keys" ? <>Kept on {where()}, sent only to their provider. Custom endpoints: <code>/login custom</code> in the terminal app.</> : undefined}
+                    aside={g.title === "API keys" ? p.picker : undefined}
                 >
                     <Show when={g.title === "API keys"}>
                         {keySync()}
@@ -808,7 +811,7 @@ function ProviderSections() {
 }
 
 /** A server's providers, read over a connection of this window's own to the Cavvy there. */
-function ServerProviders(p: { name: string }) {
+function ServerProviders(p: { name: string; picker?: JSX.Element }) {
     const [state, setState] = createStore<{ list: ProviderInfo[] }>({ list: [] });
     const [link, setLink] = createSignal<Rpc>();
     const [problem, setProblem] = createSignal<string>();
@@ -829,7 +832,7 @@ function ServerProviders(p: { name: string }) {
         <Show
             when={link()}
             fallback={
-                <Section title={p.name}>
+                <Section title="API keys" aside={p.picker}>
                     <div class="set-row">
                         <Show when={problem()} fallback={<span class="muted"><Spinner size={12} /> Connecting to {p.name}…</span>}>
                             <span class="muted selectable" role="alert">{problem()}</span>
@@ -840,7 +843,7 @@ function ServerProviders(p: { name: string }) {
         >
             {(l) => (
                 <ProvidersAtContext.Provider value={{ server: p.name, link: l(), list: () => state.list, refresh, changed: refresh }}>
-                    <ProviderSections />
+                    <ProviderSections noSubscriptions picker={p.picker} />
                 </ProvidersAtContext.Provider>
             )}
         </Show>
@@ -857,27 +860,25 @@ function Providers() {
     });
     // A server that's gone from the list (removed meanwhile) isn't shown on.
     createEffect(on(serverList, (all) => { if (providersOn() && !all.some((s) => s.name === providersOn())) servers()?.setProvidersOn(""); }, { defer: true }));
-    const machines = () => [
-        { value: "", label: (servers()?.HERE ?? "") as JSX.Element },
-        ...listed().map((s) => ({
-            value: s.name,
-            label: (
-                <>
-                    {s.name}
-                    <Show when={serverNeeds(s)}><span class="seg-mark" role="img" aria-label="Needs setting up" title="Something isn't set up there" /></Show>
-                </>
-            ) as JSX.Element,
-        })),
-    ];
+    // Subscriptions show every machine at once; keys, local models and search are set up per machine, under this.
+    const machines = () => [{ value: "", label: (servers()?.HERE ?? "") as JSX.Element }, ...listed().map((s) => ({ value: s.name, label: s.name as JSX.Element }))];
+    const withServers = () => !machine && listed().length > 0;
+    const picker = () => (
+        <Show when={withServers()}>
+            <Segmented size="sm" label="Machine" value={providersOn()} options={machines()} onChange={(v) => servers()?.setProvidersOn(v)} />
+        </Show>
+    );
     return (
         <>
-            <Show when={!machine && listed().length}>
-                <div class="prov-machines">
-                    <Segmented label="Machine" value={providersOn()} options={machines()} onChange={(v) => servers()?.setProvidersOn(v)} />
-                </div>
+            <Show when={withServers()}>
+                <Section title="Subscriptions" class="prov-group">
+                    <Suspense fallback={<div class="set-row"><Spinner size={12} /></div>}>
+                        <SubscriptionGrid here={servers()?.HERE ?? ""} servers={listed().map((s) => s.name)} touched={() => servers()?.serverTouched() ?? 0} />
+                    </Suspense>
+                </Section>
             </Show>
-            <Show when={!machine && providersOn()} keyed fallback={<ProviderSections />}>
-                {(name) => <ServerProviders name={name} />}
+            <Show when={!machine && providersOn()} keyed fallback={<ProviderSections noSubscriptions={withServers()} picker={picker()} />}>
+                {(name) => <ServerProviders name={name} picker={picker()} />}
             </Show>
         </>
     );

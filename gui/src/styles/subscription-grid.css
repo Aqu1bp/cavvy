@@ -1,0 +1,16 @@
+/* Settings → Providers with servers: subscriptions down the side, machines across (SubscriptionGrid.tsx). */
+.sg { display: grid; padding: calc(4 * var(--sp)) 0; }
+.sg-row { display: grid; grid-template-columns: var(--sg-cols); align-items: center; column-gap: calc(8 * var(--sp)); min-height: calc(44 * var(--sp)); padding: 0 calc(14 * var(--sp)); }
+.sg-prov + .sg-prov > .sg-row:first-child { border-top: 0.5px solid var(--line); }
+.sg-head { min-height: calc(30 * var(--sp)); }
+.sg-machine { justify-self: center; max-width: 100%; font-size: 0.786rem; font-weight: 600; color: var(--fg-3); }
+.sg-name { display: flex; align-items: center; gap: calc(10 * var(--sp)); min-width: 0; font-size: 0.929rem; color: var(--fg); }
+.sg-name .prov-logo { flex: none; }
+.sg-acct { min-height: calc(36 * var(--sp)); }
+.sg-acct .sg-name { padding-left: calc(40 * var(--sp)); color: var(--fg-2); }
+.sg-cell { display: flex; justify-content: center; align-items: center; min-width: 0; }
+.sg-muted { font-size: 0.786rem; color: var(--fg-3); white-space: nowrap; }
+.sg-none { color: var(--fg-4, var(--fg-3)); opacity: 0.6; }
+.sg-link { padding: 0; border: 0; background: none; font: inherit; font-size: 0.857rem; color: var(--accent); cursor: default; }
+.sg-link:hover { text-decoration: underline; }
+.sg-more { padding: calc(10 * var(--sp)) calc(14 * var(--sp)) calc(6 * var(--sp)); border-top: 0.5px solid var(--line); }

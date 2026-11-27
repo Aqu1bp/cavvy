@@ -1122,3 +1122,11 @@
     font: inherit;
     font-size: 0.929rem;
 }
+
+/* Beside a section's name, over its caption: Providers' machine picker for keys and local models. */
+.set-aside {
+    display: flex;
+    max-width: 100%;
+    margin: 0 calc(4 * var(--sp)) calc(8 * var(--sp));
+    overflow-x: auto;
+}
