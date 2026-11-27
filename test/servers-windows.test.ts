@@ -2,7 +2,8 @@
 // target selection, build naming, store persistence, and service reporting.
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, rmSync, writeFileSync } from "fs";
+import { createHash } from "crypto";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
@@ -10,7 +11,9 @@ const iso = isolate();
 const { psQuote, remotePs } = await import("../src/servers/ssh");
 const { isWindowsServer, parseFacts, probeServer, targetFor } = await import("../src/servers/remote");
 const { binaryName, targetName } = await import("../src/servers/build");
-const { serviceReport, setUpService } = await import("../src/servers/service");
+const { applyBuild, pairOverSsh, remoteCheck, remoteStatus, serviceReport, setUpService, stopRemote } = await import("../src/servers/service");
+const { sendBuild } = await import("../src/servers/install");
+const { sendCopy } = await import("../src/servers/copy");
 const { draftServer, getServer, saveServer } = await import("../src/servers/store");
 const { parseServerSpec } = await import("../src/servers/cli");
 import type { ServerEntry } from "../src/servers/store";
@@ -100,14 +103,15 @@ describe("Windows server facts, target, store, and build helpers", () => {
     });
 });
 
-describe("Windows SSH probe fallback and service setup (mocked SSH)", () => {
-    test("probeServer falls back to PowerShell when POSIX sh fails on a Windows OpenSSH server", async () => {
-        const fakeSshBin = join(scratch, "fake-win-ssh");
-        mkdirSync(scratch, { recursive: true });
-        // Simulates Windows OpenSSH: rejects `sh -c ...`, accepts `powershell.exe ... -EncodedCommand ...`.
-        writeFileSync(
-            fakeSshBin,
-            `#!/bin/sh
+if (process.platform !== "win32") {
+    describe("Windows SSH probe fallback and service setup (mocked SSH)", () => {
+        test("probeServer falls back to PowerShell when POSIX sh fails on a Windows OpenSSH server", async () => {
+            const fakeSshBin = join(scratch, "fake-win-ssh");
+            mkdirSync(scratch, { recursive: true });
+            // Simulates Windows OpenSSH: rejects `sh -c ...`, accepts `powershell.exe ... -EncodedCommand ...`.
+            writeFileSync(
+                fakeSshBin,
+                `#!/bin/sh
 cmd=""
 for arg in "$@"; do cmd="$arg"; done
 case "$cmd" in
@@ -124,24 +128,24 @@ case "$cmd" in
         ;;
 esac
 `,
-        );
-        chmodSync(fakeSshBin, 0o755);
-        process.env.CAVVY_SSH = fakeSshBin;
+            );
+            chmodSync(fakeSshBin, 0o755);
+            process.env.CAVVY_SSH = fakeSshBin;
 
-        // First probe without platform set yet (like `cavvy servers add`).
-        const unknownPlatform: ServerEntry = { name: "winbox", destination: "dev@winbox.example", addedAt: "2026-01-01T00:00:00.000Z" };
-        const facts = await probeServer(unknownPlatform);
-        expect(facts.os).toBe("Windows");
-        expect(facts.arch).toBe("AMD64");
-        expect(facts.home).toBe("C:\\Users\\me");
-        expect(targetFor(facts, unknownPlatform)).toBe("windows-x64");
-    });
+            // First probe without platform set yet (like `cavvy servers add`).
+            const unknownPlatform: ServerEntry = { name: "winbox", destination: "dev@winbox.example", addedAt: "2026-01-01T00:00:00.000Z" };
+            const facts = await probeServer(unknownPlatform);
+            expect(facts.os).toBe("Windows");
+            expect(facts.arch).toBe("AMD64");
+            expect(facts.home).toBe("C:\\Users\\me");
+            expect(targetFor(facts, unknownPlatform)).toBe("windows-x64");
+        });
 
-    test("setUpService dispatches to PowerShell and parses windows=1 / wintask=0", async () => {
-        const fakeSshBin = join(scratch, "fake-win-setup-ssh");
-        writeFileSync(
-            fakeSshBin,
-            `#!/bin/sh
+        test("setUpService dispatches to PowerShell and parses windows=1 / wintask=0", async () => {
+            const fakeSshBin = join(scratch, "fake-win-setup-ssh");
+            writeFileSync(
+                fakeSshBin,
+                `#!/bin/sh
 cmd=""
 for arg in "$@"; do cmd="$arg"; done
 case "$cmd" in
@@ -155,12 +159,120 @@ case "$cmd" in
         ;;
 esac
 `,
-        );
-        chmodSync(fakeSshBin, 0o755);
-        process.env.CAVVY_SSH = fakeSshBin;
+            );
+            chmodSync(fakeSshBin, 0o755);
+            process.env.CAVVY_SSH = fakeSshBin;
 
-        const rep = await setUpService(winEntry);
-        expect(rep.service).toBe(false);
-        expect(rep.bootFix).toContain("Register-ScheduledTask");
+            const rep = await setUpService(winEntry);
+            expect(rep.service).toBe(false);
+            expect(rep.bootFix).toContain("Register-ScheduledTask");
+        });
     });
+}
+
+if (process.platform === "win32") {
+    describe("Real Windows PowerShell remote scripts end-to-end", () => {
+        test("probe, sendCopy, sendBuild, applyBuild, pairOverSsh, remoteCheck, and stopRemote execute on real PowerShell", async () => {
+            // Isolated fake remote USERPROFILE so we don't touch the runner's real home.
+            const remoteHome = join(scratch, "win-remote-home");
+            mkdirSync(remoteHome, { recursive: true });
+
+            // Local SSH shim (.cmd) that runs the remote command directly in cmd.exe (just like Windows OpenSSH DefaultShell)
+            // with USERPROFILE pointed at our isolated remoteHome!
+            const shimScript = join(scratch, "local-win-ssh.ts");
+            writeFileSync(
+                shimScript,
+                `
+const args = process.argv.slice(2);
+const sep = args.indexOf("--");
+const cmd = sep >= 0 ? args[sep + 2] : args[args.length - 1];
+if (!cmd) process.exit(2);
+const env = { ...process.env, USERPROFILE: ${JSON.stringify(remoteHome)}, CAVVY_HOME: ${JSON.stringify(join(remoteHome, ".cavvy"))}, CAVVY_NO_KEYCHAIN: "1" };
+// Execute through cmd.exe /d /c exactly as default Windows OpenSSH does.
+const proc = Bun.spawn(["cmd.exe", "/d", "/c", cmd], {
+    env,
+    stdin: "inherit",
+    stdout: "inherit",
+    stderr: "inherit",
 });
+process.exit(await proc.exited);
+`,
+            );
+            const shimCmd = join(scratch, "local-win-ssh.cmd");
+            writeFileSync(shimCmd, `@echo off\r\n"${process.execPath}" "${shimScript}" %*\r\n`);
+            process.env.CAVVY_SSH = shimCmd;
+
+            // 1. Auto-detect Windows via probeServer (sh -c fails under cmd.exe -> falls back to remotePs PROBE_PS).
+            const unknown: ServerEntry = { name: "winlocal", destination: "dev@127.0.0.1", addedAt: "2026-01-01T00:00:00.000Z" };
+            const facts = await probeServer(unknown);
+            expect(facts.os).toBe("Windows");
+            expect(facts.home.toLowerCase()).toBe(remoteHome.toLowerCase());
+            expect(targetFor(facts, unknown)).toBe("windows-x64");
+
+            const localWin: ServerEntry = { ...unknown, platform: "windows" };
+
+            // 2. sendCopy streams a real .tar.gz into PowerShell RECEIVE_PS and unpacks with tar.exe.
+            const copyStage = join(scratch, "copy-stage");
+            mkdirSync(join(copyStage, ".cavvy"), { recursive: true });
+            writeFileSync(join(copyStage, ".cavvy", "CAVVY.md"), "# win-copy-ok\n");
+            const copied = await sendCopy(localWin, {
+                stage: copyStage,
+                counts: { settings: false, memory: 1, skills: 0, commands: 0 },
+                left: { servers: [], rules: 0 },
+                files: 1,
+                cleanup: () => {},
+            });
+            expect(copied).toEqual([".cavvy/CAVVY.md"]);
+            expect(readFileSync(join(remoteHome, ".cavvy", "CAVVY.md"), "utf-8")).toContain("win-copy-ok");
+
+            // 3. If a compiled cavvy.exe was provided by CI, test the full sendBuild -> applyBuild -> pair -> check -> stop flow!
+            const exePath = process.env.CAVVY_WIN_TEST_EXE;
+            if (exePath && existsSync(exePath)) {
+                const buildId = "0123456789ab";
+                const stageDir = join(scratch, "build-stage");
+                mkdirSync(stageDir, { recursive: true });
+                copyFileSync(exePath, join(stageDir, "cavvy.exe"));
+                const bundlePath = join(scratch, "bundle.tar.gz");
+                const tar = Bun.spawnSync(["tar.exe", "-czf", bundlePath, "-C", stageDir, "cavvy.exe"]);
+                expect(tar.exitCode).toBe(0);
+                const sha256 = createHash("sha256").update(readFileSync(exePath)).digest("hex");
+
+                await sendBuild(
+                    localWin,
+                    { id: buildId, target: "windows-x64", bundle: bundlePath, bundleBytes: statSync(bundlePath).size, sha256, gui: false },
+                    facts,
+                );
+                expect(existsSync(join(remoteHome, ".cavvy", "server", "builds", buildId, "cavvy.exe"))).toBe(true);
+
+                // Re-probe should see the installed build!
+                const afterSend = await probeServer(localWin);
+                expect(afterSend.builds).toContain(buildId);
+
+                try {
+                    const status = await applyBuild(localWin, buildId);
+                    expect(status.running).toBe(true);
+                    expect(status.build).toBe(buildId);
+                    expect(status.port).toBeGreaterThan(0);
+
+                    const liveStatus = await remoteStatus(localWin);
+                    expect(liveStatus?.running).toBe(true);
+                    expect(liveStatus?.pid).toBe(status.pid);
+
+                    const paired = await pairOverSsh(localWin, { id: "0123456789abcdef0123456789abcdef", label: "ci-win" });
+                    expect(paired.port).toBe(status.port);
+                    expect(paired.build).toBe(buildId);
+                    expect(paired.code.length).toBeGreaterThanOrEqual(16);
+
+                    const check = await remoteCheck(localWin);
+                    expect(check.memMb).toBeGreaterThan(0);
+
+                    await stopRemote(localWin);
+                    expect(await remoteStatus(localWin)).toBeUndefined();
+                    expect(existsSync(join(remoteHome, ".cavvy", "server", "stopped"))).toBe(true);
+                } finally {
+                    await stopRemote(localWin).catch(() => undefined);
+                }
+            }
+        }, 90_000);
+    });
+}

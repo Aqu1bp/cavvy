@@ -115,13 +115,36 @@ jobs:
           path: junit-${{ matrix.shard }}.xml
           retention-days: 14
 
+  windows:
+    name: Windows
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+      - name: Compile cavvy.exe for Windows x64
+        shell: pwsh
+        run: |
+          bun build --compile --minify --sourcemap=none --bytecode --target=bun-windows-x64-v${{ env.BUN_VERSION }} --define 'CAVVY_BUILD_ID="0123456789ab"' --no-compile-autoload-dotenv --no-compile-autoload-bunfig --outfile "$env:RUNNER_TEMP\cavvy.exe" src/index.ts src/agent/stat-worker.ts src/ui/mention-worker.ts
+          $ver = & "$env:RUNNER_TEMP\cavvy.exe" host version
+          Write-Host "version: $ver"
+          if ($LASTEXITCODE -ne 0 -or $ver -notmatch '"build":"0123456789ab"') { exit 1 }
+      - name: Run Windows core and server tests
+        env:
+          CAVVY_WIN_TEST_EXE: ${{ runner.temp }}\cavvy.exe
+        run: bun test ./test/windows-core.test.ts ./test/servers-windows.test.ts
+
   # The one check to require before merging: it passes only when every job
   # above passed, however the matrix changes.
   ci:
     name: ci
     # Skipped with the rest for a draft (which can't be merged anyway).
     if: always() && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
-    needs: [checks, test]
+    needs: [checks, test, windows]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

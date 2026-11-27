@@ -476,7 +476,9 @@ function Write-RunScript {
     New-Item -ItemType Directory -Force -Path $d | Out-Null
     $script = @'
 $ErrorActionPreference = 'SilentlyContinue'
-$d = Join-Path $env:USERPROFILE ".cavvy\\server"
+$d = $PSScriptRoot
+if (-not $d) { $d = Join-Path $env:USERPROFILE ".cavvy\\server" }
+$env:CAVVY_HOME = Split-Path -Parent $d
 if (Test-Path (Join-Path $d "stopped")) { exit 0 }
 $curFile = Join-Path $d "current.txt"
 if (-not (Test-Path $curFile)) { exit 0 }
