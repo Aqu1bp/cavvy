@@ -10,7 +10,7 @@ process.env.GIT_CONFIG_NOSYSTEM = "1";
 process.env.GIT_CONFIG_GLOBAL = "/dev/null";
 const { TurnSnapshots } = await import("../src/agent/turn-snapshots");
 const { FileHistory } = await import("../src/agent/checkpoints");
-const { planFileRestore, restoreFiles, undoRestore, canUndoRestore, changedBy, lastUndo } = await import("../src/agent/rewind-files");
+const { planFileRestore, restoreFiles, undoRestore, canUndoRestore, changedBy, dropUndo, lastUndo } = await import("../src/agent/rewind-files");
 const { gitArgv, gitEnv } = await import("../src/util/git");
 afterAll(() => {
     for (const key of Object.keys(process.env)) if (key.startsWith("GIT_CONFIG")) delete process.env[key];
@@ -196,6 +196,16 @@ describe("restoring files on rewind", () => {
         expect(lastUndo(third)).toBeUndefined();
         expect(lastUndo(new TurnSnapshots(s.dir, cwd))).toBeUndefined();
         await third.stop();
+
+        // A restore made without the snapshots (an untrusted folder, from Cavvy's own copies) drops the record by the folder.
+        write(cwd, "src/b.txt", "b, by hand once more\n");
+        const fourth = new TurnSnapshots(s.dir, cwd);
+        const last = await restoreFiles(await planFileRestore({ snapshots: fourth, history: s.history, checkpoint: cp }));
+        expect(lastUndo(fourth)).toBe(last.undo!);
+        dropUndo(s.dir);
+        expect(lastUndo(fourth)).toBeUndefined();
+        expect(lastUndo(new TurnSnapshots(s.dir, cwd))).toBeUndefined();
+        await fourth.stop();
     });
 
     test("files that didn't change since are left alone, and a later prompt restores only what came after it", async () => {

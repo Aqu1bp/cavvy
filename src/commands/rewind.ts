@@ -211,7 +211,7 @@ export async function rewindCommand(app: App, args = "") {
         if (done.length) app.print(["", `${theme.success("✔")} Restored ${plural(done.length, "file")} to how ${done.length === 1 ? "it was" : "they were"} before that prompt`, ...listed(done.map((p) => theme.muted(`  ${rel(p)}`)))]);
         for (const f of failed) app.notice(`Couldn't restore ${rel(f.path)}: ${f.error}`, "error");
         if (r.undo) app.notice("Undo it with /rewind undo");
-        else if (done.length) dropUndo(snapshotsOf(app));
+        else if (done.length) dropUndo(FileHistory.for(app.session)?.dir);
         // Kept, so the prompt stays in /rewind to try again.
         if (conversation && failed.length) {
             rewindConversation = false;

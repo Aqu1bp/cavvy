@@ -5235,7 +5235,7 @@ export class Runtime {
             restored = r.done.map(rel);
             failed = r.failed.map((f) => ({ path: rel(f.path), error: f.error }));
             undo = r.undo;
-            if (!undo && r.done.length) dropUndo(this.rewindSnapshots());
+            if (!undo && r.done.length) dropUndo(FileHistory.for(this.session)?.dir);
             this.forgetReads(r.done);
             if (conversation && failed.length) rewindConversation = false;
             if (!rewindConversation && r.done.length) this.agent?.addReminder(`The user restored these files to how they were before an earlier prompt (/rewind), undoing the changes made to them since. Read them again before editing them:\n${restored.map((p) => `- ${p}`).join("\n")}`);
