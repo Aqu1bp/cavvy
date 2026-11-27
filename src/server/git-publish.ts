@@ -357,7 +357,7 @@ async function pushTo(cwd: string, info: { remote: string; target: string; url: 
     }
 }
 
-export async function gitPublish(cwd: string, request: GitPublishRequest, signal?: AbortSignal): Promise<{ pr?: GitPrInfo }> {
+export async function gitPublish(cwd: string, request: GitPublishRequest, signal?: AbortSignal): Promise<{ pr?: GitPrInfo; created?: true }> {
     const info = await local(cwd, signal);
     if (info.fingerprint !== request.fingerprint) throw fail("The branch, commit or destination changed. Reopen the dialog.", "stale");
     const base = await defaultBranch(cwd, info.url, signal);
@@ -401,5 +401,6 @@ export async function gitPublish(cwd: string, request: GitPublishRequest, signal
         if (existing?.state === "open" || existing?.state === "draft") return { pr: existing };
         throw fail(`Pushed, but couldn't open the pull request.\n${created.err}${created.out}`, "pr_failed");
     }
-    return { pr: await prView(cwd, repo!, info.target, signal) };
+    // Made now: the others above were there already (opened since the dialog read the branch, say).
+    return { pr: await prView(cwd, repo!, info.target, signal), created: true };
 }

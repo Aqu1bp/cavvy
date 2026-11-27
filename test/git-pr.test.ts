@@ -137,6 +137,28 @@ test("a fork's pull request isn't trusted for being inside a trusted repository;
     await engine.stop();
 });
 
+test("a fork's pull request stays its own under any spelling of its path, and its trust goes with its folder", async () => {
+    const { symlinkSync, rmSync } = await import("fs");
+    const { forgetTrustInside, othersCode } = await import("../src/config/trust");
+    const { cwd } = setup();
+    // The repository trusted by a link's spelling; the worktree is recorded by Git's.
+    const link = join(iso.home, `link-${Date.now()}`);
+    symlinkSync(cwd, link);
+    trustFolder(link);
+    const fork = await gitPrWorktree(cwd, "9");
+    const viaLink = join(link, ".claude", "worktrees", "pr-9");
+    expect([trustedByUser(viaLink), othersCode(viaLink), trustedByUser(fork.path)]).toEqual([false, true, false]);
+    // Trusted, then removed: a new checkout there isn't trusted for it.
+    trustFolder(fork.path);
+    expect(trustedByUser(viaLink)).toBe(false);
+    expect(trustedByUser(fork.path)).toBe(true);
+    git(cwd, "worktree", "remove", "--force", fork.path);
+    forgetTrustInside(fork.path);
+    rmSync(fork.path, { recursive: true, force: true });
+    const again = await gitPrWorktree(cwd, "9");
+    expect([trustedByUser(again.path), othersCode(again.path)]).toEqual([false, true]);
+});
+
 test("without gh signed in, a sign-in is asked for; another repository's URL or a missing PR is refused", async () => {
     const { cwd } = setup();
     process.env.FAKE_PR_GH = "signed-out";

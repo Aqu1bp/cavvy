@@ -206,7 +206,11 @@ describe("a side chat", () => {
             const made = (await engine.handle(c, "projects.createWorktree", { path: main, branch: `side-${closed}` })) as { path: string };
             const id = ((await engine.handle(c, "session.create", { cwd: made.path })) as SessionSnapshot).state.id;
             engine.runtimes.get(id)!.session.push({ role: "user", content: [{ type: "text", text: "hello" }] });
-            await engine.handle(c, "session.sideChat", { id });
+            const { id: sideId } = (await engine.handle(c, "session.sideChat", { id })) as { id: string };
+            // Its agent CLI takes a while to end (a real one does): the removal waits for it.
+            const side = engine.runtimes.get(sideId)!;
+            const close = side.close.bind(side);
+            side.close = async () => (await Bun.sleep(300), close());
             if (closed) await engine.handle(c, "session.closeSideChat", { id });
             const r = (await engine.handle(c, "session.archive", { id, archived: true, removeWorktree: true })) as { removed?: boolean; kept?: string };
             expect(r.kept).toBeUndefined();

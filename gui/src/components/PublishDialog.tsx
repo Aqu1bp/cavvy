@@ -95,7 +95,7 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
                     tab.location.href = pr.url;
                 } else if (!tab) void openExternal(pr.url);
             } else tab?.close();
-            toast(pr && action === "pr" ? `Created PR #${pr.number}` : pr ? `Pushed ${info.remote}/${info.target} · PR #${pr.number}` : `Pushed ${info.remote}/${info.target}`, "success", pr ? { label: "Open", run: () => void openExternal(pr.url) } : undefined);
+            toast(pr && result.created ? `Created PR #${pr.number}` : pr ? `Pushed ${info.remote}/${info.target} · PR #${pr.number}` : `Pushed ${info.remote}/${info.target}`, "success", pr ? { label: "Open", run: () => void openExternal(pr.url) } : undefined);
             if (revision !== version) return;
             p.onPublished(result.pr);
             p.onClose();

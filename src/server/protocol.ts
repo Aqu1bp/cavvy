@@ -2652,7 +2652,7 @@ export interface Methods {
     /** Pull request `pr` (#123, 123 or its URL) checked out in a worktree of its own. */
     "git.prWorktree": { params: { cwd: string; sessionId?: string; pr: string }; result: GitPrWorktree };
     "session.gitPublishInfo": { params: { id: string }; result: GitPublishInfo };
-    "session.gitPublish": { params: { id: string } & GitPublishRequest; result: { pr?: GitPrInfo } };
+    "session.gitPublish": { params: { id: string } & GitPublishRequest; result: { pr?: GitPrInfo; created?: true } };
     "session.gitPrState": { params: { id: string }; result: { pr?: GitPrInfo } };
     /** `pathTokens`: files whose names were shown redacted (GitFileDiff.pathToken), with `paths` for the rest. */
     /** `newBranch`: commit there instead, a branch made from HEAD, which then checks it out (the old branch stays where it was). */

@@ -9,9 +9,9 @@
 // read more of it than Cavvy checks at startup, and `claude -p` shows
 // no trust prompt of its own.
 
-import { existsSync } from "fs";
+import { existsSync, realpathSync } from "fs";
 import { homedir } from "os";
-import { join, resolve } from "path";
+import { basename, dirname, join, resolve } from "path";
 import { readJsonCached, readJsonForUpdate, writeJson } from "./settings";
 import { cavvyHome, paths } from "./paths";
 import { LEGACY } from "./legacy";
@@ -40,6 +40,20 @@ interface TrustFile {
 const saved = () => readJsonCached<TrustFile>(file())?.dirs ?? [];
 const ownOnly = () => readJsonCached<TrustFile>(file())?.own ?? [];
 
+/**
+ * The folder as the disk has it: links followed, its letters as stored (a disk that ignores case takes any spelling).
+ * One that doesn't exist (removed, or not made yet), by its parent's. For folders whose trust is their own: another
+ * spelling of one mustn't escape it.
+ */
+function onDisk(p: string): string {
+    try {
+        return realpathSync.native(p);
+    } catch {
+        const up = dirname(p);
+        return up === p ? p : join(onDisk(up), basename(p));
+    }
+}
+
 export function isTrusted(dir: string): boolean {
     const d = resolve(dir);
     return emptyTrusted.has(d) || trustedByUser(d);
@@ -48,9 +62,10 @@ export function isTrusted(dir: string): boolean {
 /** The user said they trust this folder (now or before); a folder trusted only for having nothing to protect doesn't count. */
 export function trustedByUser(dir: string): boolean {
     const d = resolve(dir);
-    // Inside a folder whose trust is its own, trust from around it doesn't reach in.
-    const own = ownOnly().filter((o) => isInside(d, o));
-    const counts = (t: string) => isInside(d, t) && own.every((o) => isInside(t, o));
+    // Inside a folder whose trust is its own, trust from around it doesn't reach in, however either is spelled.
+    const all = ownOnly();
+    const own = all.length ? all.filter((o) => isInside(onDisk(d), o)) : all;
+    const counts = (t: string) => isInside(d, t) && own.every((o) => isInside(onDisk(t), o));
     if ([...userTrusted].some(counts)) return true;
     return saved().some(counts);
 }
@@ -58,7 +73,8 @@ export function trustedByUser(dir: string): boolean {
 /** Inside a folder whose trust is its own (trustOwnOnly) that the user hasn't trusted: someone else's code. */
 export function othersCode(dir: string): boolean {
     const d = resolve(dir);
-    return ownOnly().some((o) => isInside(d, o)) && !trustedByUser(d);
+    const all = ownOnly();
+    return all.length > 0 && all.some((o) => isInside(onDisk(d), o)) && !trustedByUser(d);
 }
 
 /**
@@ -67,7 +83,7 @@ export function othersCode(dir: string): boolean {
  * request in a worktree under it. Saved, so it holds after a restart; forgotten with the folder (forgetTrustInside).
  */
 export function trustOwnOnly(dir: string) {
-    const d = resolve(dir);
+    const d = onDisk(resolve(dir));
     const cur = readJsonForUpdate<TrustFile>(file()) ?? {};
     if ((cur.own ?? []).includes(d)) return;
     writeJson(file(), { ...cur, own: [...(cur.own ?? []), d].sort() }, 0o600);
@@ -101,9 +117,10 @@ export function trustFolder(dir: string) {
 export function forgetTrustInside(dir: string) {
     const d = resolve(dir);
     for (const t of [...userTrusted]) if (isInside(t, d)) userTrusted.delete(t);
+    for (const t of [...emptyTrusted]) if (isInside(t, d)) emptyTrusted.delete(t);
     const cur = readJsonForUpdate<TrustFile>(file()) ?? {};
     const dirs = (cur.dirs ?? []).filter((t) => !isInside(resolve(t), d));
-    const own = (cur.own ?? []).filter((t) => !isInside(resolve(t), d));
+    const own = (cur.own ?? []).filter((t) => !isInside(t, onDisk(d)));
     if (dirs.length !== (cur.dirs ?? []).length || own.length !== (cur.own ?? []).length) writeJson(file(), { ...cur, dirs, ...(cur.own ? { own } : {}) }, 0o600);
 }
 

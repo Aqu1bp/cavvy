@@ -193,7 +193,7 @@ function BranchDialog(p: { cwd: string; sessionId?: string; query?: string }) {
             toast(r.created ? `Switched to new branch ${r.branch}` : `Switched to ${r.branch}`, "success");
         });
     const create = (name: string) =>
-        act("switch", `Can't create ${name}`, () => rpc.call("git.createBranch", { ...where, name }), (r) => {
+        act("switch", `Can't create ${name.length > 60 ? `${name.slice(0, 57)}…` : name}`, () => rpc.call("git.createBranch", { ...where, name }), (r) => {
             setGitDialog(undefined);
             toast(`Created ${r.branch}`, "success");
         });
@@ -270,9 +270,9 @@ function BranchDialog(p: { cwd: string; sessionId?: string; query?: string }) {
         const key = before && q() === lastQ ? before[sel()]?.key : undefined;
         lastQ = q();
         const kept = key === undefined ? -1 : r.findIndex((x) => x.key === key && !x.disabled);
-        // Not the pull request's page or the suggested new branch, offered only while nothing is typed: Enter right
-        // away mustn't open one or make the other. None at all when nothing else can be picked.
-        setSel(kept >= 0 ? kept : r.findIndex((x) => !x.disabled && x.key !== "openpr" && x.key !== "suggest"));
+        // Nothing typed: none, so a stray Enter does nothing (each row there acts: opens a page, makes a branch, or
+        // switches, which changes the files). The arrows pick one. Typed: the first that matches.
+        setSel(kept >= 0 ? kept : q().trim() ? r.findIndex((x) => !x.disabled) : -1);
     }));
     const runAt = (i: number) => {
         const r = rows()[i];

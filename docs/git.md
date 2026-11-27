@@ -54,7 +54,7 @@ With authenticated GitHub CLI (`gh auth status`) and a github.com destination, t
 
 ## Branches: fetch, pull and switch
 
-A session's title bar shows its folder's branch, with how many commits it is ahead of (↑) and behind (↓) its upstream. The counts come from the remote-tracking branch as it was last fetched, so reading them never touches the network: they're read again when a turn starts or ends, as files change, when you come back to the window, and after a Git action from the app. Nothing fetches in the background; fetching is yours to ask for.
+A session's title bar shows its folder's branch, with how many commits it is ahead of (↑) and behind (↓) its upstream. The counts come from the remote-tracking branch as it was last fetched, so reading them never touches the network: they're read again when a turn ends, when you come back to the window, when you open the branch dialog, and after a Git action from the app. A branch switched in a terminal shows once one of those happens. Nothing fetches in the background; fetching is yours to ask for.
 
 Click the branch (or press Ctrl+Shift+B, ⌘⇧B on a Mac, or **Switch branch…** in the command palette; on Home it acts on Home's folder) to open the branch dialog:
 
