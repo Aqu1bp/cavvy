@@ -3,6 +3,8 @@
 // wouldn't find your tools. The desktop app's server asks your login shell
 // for its PATH once at startup and adds what's missing.
 
+import { execFile } from "child_process";
+import { readFileSync, writeFileSync } from "fs";
 import { delimiter } from "path";
 import { settlePathAfter } from "../util/env";
 
@@ -26,17 +28,13 @@ export function parseRegPath(output: string): string | undefined {
 
 /** Machine and user PATH as recorded in the Windows Registry, so a long-running service sees tools installed since boot. */
 async function windowsRegistryPath(timeoutMs = 4000): Promise<string | undefined> {
-    const query = async (key: string): Promise<string | undefined> => {
-        try {
-            const proc = Bun.spawn(["reg", "query", key, "/v", "Path"], { stdin: "ignore", stdout: "pipe", stderr: "ignore" });
-            const timer = setTimeout(() => proc.kill(), timeoutMs);
-            const [out, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
-            clearTimeout(timer);
-            return code === 0 ? parseRegPath(out) : undefined;
-        } catch {
-            return undefined;
-        }
-    };
+    const regExe = `${process.env.SystemRoot ?? "C:\\Windows"}\\System32\\reg.exe`;
+    const query = (key: string): Promise<string | undefined> =>
+        new Promise((resolve) => {
+            execFile(regExe, ["query", key, "/v", "Path"], { timeout: timeoutMs, windowsHide: true, encoding: "utf8" }, (err, stdout) => {
+                resolve(err ? undefined : parseRegPath(stdout));
+            });
+        });
     const [machine, user] = await Promise.all([
         query("HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment"),
         query("HKCU\\Environment"),
@@ -88,11 +86,22 @@ export function mergePath(current: string | undefined, login: string | undefined
  */
 export async function adoptLoginPath(file: string) {
     const started = process.env.PATH;
-    const remembered = await Bun.file(file).text().catch(() => undefined);
-    const answered = loginShellPath().then(async (login) => {
+    let remembered: string | undefined;
+    try {
+        remembered = readFileSync(file, "utf8");
+    } catch {
+        remembered = undefined;
+    }
+    const answered = loginShellPath().then((login) => {
         if (!login) return;
         process.env.PATH = mergePath(started, login);
-        if (login !== remembered) await Bun.write(file, login).catch(() => undefined);
+        if (login !== remembered) {
+            try {
+                writeFileSync(file, login, "utf8");
+            } catch {
+                // best effort
+            }
+        }
     });
     settlePathAfter(answered);
     if (remembered) process.env.PATH = mergePath(started, remembered);

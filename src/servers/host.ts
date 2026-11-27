@@ -38,6 +38,7 @@ import { sandboxEnabled, sandboxKind } from "../permissions/sandbox";
 import { defaultMode, type PermissionMode } from "../permissions/modes";
 import { readAgentConfig, saveAgentConfig } from "../providers/registry";
 import { PROTOCOL_VERSION } from "../server/protocol";
+import { adoptLoginPath } from "../server/login-env";
 import type { SignIns } from "../server/server";
 import { childEnv } from "../util/env";
 import { redact, registerSecret, unregisterSecret } from "../util/redact";
@@ -498,7 +499,6 @@ export async function hostRun(args: string[], env: HostRunEnv): Promise<void> {
     const trace = process.env.CAVVY_HOST_DEBUG ? log : () => {};
     trace("state-0");
     if (loginEnv) {
-        const { adoptLoginPath } = await import("../server/login-env");
         await adoptLoginPath(paths.loginPath());
         trace("login-env");
     }
