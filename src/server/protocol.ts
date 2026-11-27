@@ -1307,6 +1307,8 @@ export interface ProviderInfo {
         /** The CLI's own sign-in command, for when it isn't signed in. */
         signIn: string;
         install: string;
+        /** Settings can install it, in a terminal (CliInfo.installCommand). */
+        installable?: boolean;
         /** What the plan is called in buttons ("Claude subscription", "ChatGPT plan"). */
         plan: string;
         /** It can have accounts besides Default (false: an ACP agent, with its own sign-in only). */
@@ -2098,6 +2100,8 @@ export interface TerminalLogin {
     name: string;
     /** One of the user's servers: the sign-in is the CLI's there, reached from this machine (not asked of a server). */
     server?: string;
+    /** Installs the CLI there instead (its installCommand), in this terminal. */
+    install?: boolean;
 }
 
 /** One of the window's terminals. `exitCode`: its shell has exited (it's kept, with its output, until closed). */

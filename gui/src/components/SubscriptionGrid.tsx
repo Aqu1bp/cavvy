@@ -6,7 +6,7 @@
 import { createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, type JSX } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
 import type { AccountInfo, ProviderInfo } from "@shared/protocol";
-import { app, linkFor, refreshProviders, reportError, rpc, toast } from "../state/app";
+import { app, linkFor, refreshProviders, reportError, rpc } from "../state/app";
 import { connectCli } from "../state/actions";
 import { terminalActions } from "../state/ui";
 import type { Rpc } from "../lib/rpc";
@@ -119,16 +119,15 @@ export default function SubscriptionGrid(p: { here: string; servers: readonly st
             reportError(e);
         }
     };
-    const installHint = (c: Column, pr: ProviderInfo) => {
-        const cmd = pr.agentCli?.install;
-        if (!cmd) return;
-        void navigator.clipboard?.writeText(cmd).then(() => toast(`Copied: run it on ${c.server ?? "this computer"}`, "info"), () => undefined);
-    };
+    /** Its installer, run on that machine in a terminal here. */
+    const install = (c: Column, pr: ProviderInfo) => terminalActions.installCli?.(pr.id, ["Install", pr.name, c.server].filter(Boolean).join(" · "), c.server);
 
     /** How one account (or a provider with only Default) stands on one machine. */
     const Cell = (q: { c: Column; id: string; account: string; head: boolean }): JSX.Element => {
         const list = () => listOn(q.c);
         const pr = () => list()?.find((x) => x.id === q.id);
+        /** As another machine has it, for one this machine doesn't list. */
+        const any = () => all().find((x) => x.id === q.id);
         const cli = () => pr()?.agentCli;
         const account = () => {
             const all = cli()?.accounts ?? [];
@@ -146,7 +145,9 @@ export default function SubscriptionGrid(p: { here: string; servers: readonly st
                     </Match>
                     <Match when={!cli()?.installed}>
                         <Show when={q.head} fallback={<span />}>
-                            <button class="sg-link" title={cli()?.install ?? all().find((x) => x.id === q.id)?.agentCli?.install} onClick={() => installHint(q.c, pr() ?? all().find((x) => x.id === q.id)!)}>Install</button>
+                            <Show when={(pr() ?? any())?.agentCli?.installable} fallback={<span class="sg-muted" title={(pr() ?? any())?.agentCli?.install}>Not installed</span>}>
+                                <button class="sg-link" aria-label={`Install ${(pr() ?? any())!.name} on ${q.c.label}`} onClick={() => install(q.c, (pr() ?? any())!)}>Install</button>
+                            </Show>
                         </Show>
                     </Match>
                     <Match when={!pr()?.configured}>

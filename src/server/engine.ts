@@ -2263,6 +2263,7 @@ export class Engine {
                         installed: Boolean(findCli(p.id, cli)),
                         signIn: cli.signIn,
                         install: cli.install,
+                        ...(cli.installCommand ? { installable: true } : {}),
                         plan: def.planLabel,
                         multiAccount: Boolean(def.account),
                         planLimits: def.caps.planLimits !== "none",
@@ -2961,15 +2962,25 @@ export class Engine {
                     const provider = str(p.login.provider, "provider");
                     const accountId = str(p.login.accountId, "accountId");
                     // On one of the user's servers: the CLI's sign-in there has this terminal, over SSH, as `cavvy servers login` gives it.
+                    // Its install, as the CLI's own installer has it (never a command the window sends).
+                    const install = p.login.install === true;
+                    const installCommand = install ? agentCli(provider)?.cli.installCommand : undefined;
+                    if (install && !installCommand) throw new RpcError("That can't be installed from here.", "unsupported");
                     if (p.login.server !== undefined) {
                         if (this.o.away) throw new RpcError("A server's sign-in is started from your own machine.", "unsupported");
                         const def = agentCli(provider);
                         if (!def || !validAccountId(accountId)) throw new RpcError("Invalid login selector", "invalid");
                         const [{ requireServer }, { remoteSh, sshCommandArgv }, { LOGIN }] = await Promise.all([import("../servers/store"), import("../servers/ssh"), import("../servers/remote")]);
                         const entry = requireServer(str(p.login.server, "server"));
-                        const argv = sshCommandArgv(entry, remoteSh(LOGIN, [def.id, accountId === "default" ? "" : accountId]), { tty: true });
+                        const script = installCommand ? remoteSh(installCommand) : remoteSh(LOGIN, [def.id, accountId === "default" ? "" : accountId]);
+                        const argv = sshCommandArgv(entry, script, { tty: true });
                         const name = typeof p.login.name === "string" ? cleanTitle(p.login.name) || def.name : def.name;
-                        return this.terminals.open(client, str(p.id, "id"), homedir(), p.cols, p.rows, { command: { argv, env: childEnv() }, login: { provider, accountId, name, server: entry.name } });
+                        return this.terminals.open(client, str(p.id, "id"), homedir(), p.cols, p.rows, { command: { argv, env: childEnv() }, login: { provider, accountId, name, server: entry.name, ...(install ? { install } : {}) } });
+                    }
+                    if (installCommand) {
+                        const name = typeof p.login.name === "string" ? cleanTitle(p.login.name) || provider : provider;
+                        const onExit = () => void this.refreshListings(true).then(() => this.broadcast({ type: "models.changed" })).catch(() => undefined);
+                        return this.terminals.open(client, str(p.id, "id"), homedir(), p.cols, p.rows, { command: { argv: ["/bin/sh", "-c", installCommand], env: childEnv() }, login: { provider, accountId, name, install }, onExit });
                     }
                     // Seen by removals in other Cavvy processes too, until the login process exits.
                     const release = holdLogin(provider, accountId);

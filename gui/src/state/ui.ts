@@ -103,6 +103,8 @@ export const terminalActions: {
     serverSignedIn?: (server: string) => void;
     /** `server`: the sign-in is that CLI's on one of the user's servers, in a terminal here. */
     loginAccount?: (provider: string, accountId: string, name: string, server?: string) => void;
+    /** Installs an agent CLI on this machine or a server, in a terminal tab (CliInfo.installCommand). */
+    installCli?: (provider: string, name: string, server?: string) => void;
     runScript?: (cwd: string, script: { id: string; name: string }, setup?: SetupRun) => void;
     /** A new tab with a sign-in card's command typed in, for the user to run. False when no tab could open. */
     signIn?: (sessionId: string, interactionId: string) => boolean;

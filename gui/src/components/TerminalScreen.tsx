@@ -75,7 +75,7 @@ export default function TerminalScreen(p: { tab: Tab; visible: boolean; onClose:
     const exited = (code: number) => {
         opened = false;
         attach = true;
-        setEnded(`${p.tab.login ? "Login" : "Shell"} exited (${code})`);
+        setEnded(`${p.tab.login?.install ? "Install" : p.tab.login ? "Login" : "Shell"} exited (${code})`);
         // A server's sign-in: the server is asked how it stands now. This machine's own: its account is.
         if (p.tab.login?.server) terminalActions.serverSignedIn?.(p.tab.login.server);
         else if (p.tab.login) void link.call("accounts.list", { provider: p.tab.login.provider, refresh: true }).then(refreshProviders).catch(reportError);
@@ -313,7 +313,7 @@ export default function TerminalScreen(p: { tab: Tab; visible: boolean; onClose:
         </div></Show>
         <Show when={away() || ended()}><div class="terminal-message">
             <span>{away() ? "Disconnected. The process stays on the server and reconnects here." : ended()}</span>
-            <Show when={!away()}><button class="btn secondary sm" disabled={conn() !== "open" || restarting()} onClick={restart}><RotateCw size={12} /> {p.tab.login ? "Restart login" : "Restart shell"}</button></Show>
+            <Show when={!away()}><button class="btn secondary sm" disabled={conn() !== "open" || restarting()} onClick={restart}><RotateCw size={12} /> {p.tab.login?.install ? "Run again" : p.tab.login ? "Restart login" : "Restart shell"}</button></Show>
         </div></Show>
     </div>;
 }
