@@ -11,7 +11,8 @@ Cavvy updates itself in one of two ways, depending on how it was installed.
 ## A downloaded app
 
 It checks for a newer release a few seconds after it starts, then every 6 hours. When it finds one, the download
-icon shows beside Settings, and Settings → About offers the update and links to the release notes.
+icon shows beside Settings, and Settings → About offers the update and links to the release notes. A copy without
+Cavvy's release key or certificate (a build of your own) never checks: About says it doesn't update itself.
 
 When you choose Update, Cavvy downloads the new version in the background and checks it. It replaces the app only
 if every check passes:

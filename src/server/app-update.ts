@@ -9,7 +9,7 @@
 
 import { spawn, type ChildProcess } from "child_process";
 import { rm } from "fs/promises";
-import { appendFileSync, renameSync, unlinkSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
+import { appendFileSync, unlinkSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { basename, dirname, join, resolve } from "path";
 import { appSourceDir, noPromptGit, readInstallRecord, runningUpdate, type InstallRecord } from "../config/desktop-install";
@@ -104,7 +104,8 @@ function findBun(): string | undefined {
 
 /** The .app bundle a program runs from (…/Cavvy.app/Contents/MacOS/cavvy), if it does. */
 export function bundleOf(execPath: string): string | undefined {
-    return /^(.+\.app)\/Contents\/MacOS\/[^/]+$/.exec(execPath)?.[1];
+    // .app.old too: the copy a downloaded app's update keeps aside, opened when putting it back failed.
+    return /^(.+\.app(?:\.old)?)\/Contents\/MacOS\/[^/]+$/.exec(execPath)?.[1];
 }
 
 export interface AppUpdatesOptions {
@@ -294,7 +295,7 @@ export class AppUpdates {
                 return;
             }
             // Said when asked (app.update.get), not sent: most servers are never the installed app.
-            if ("unavailable" in w) return void (this.info = { ...this.info, unavailable: w.unavailable });
+            if ("unavailable" in w) return void (this.info = { ...this.info, unavailable: w.unavailable, ...("releaseCopy" in w ? { release: true } : {}) });
             this.every(setTimeout(() => void this.check(), this.o.firstCheckMs ?? FIRST_CHECK_MS));
             this.every(setInterval(() => void this.check(), this.o.everyMs ?? CHECK_EVERY_MS));
         });
@@ -431,7 +432,7 @@ export class AppUpdates {
     }
 
     /** This install's record, and the checkout to ask about main; or why this copy can't update itself. */
-    private async where(): Promise<{ record: InstallRecord } | { unavailable: string } | { release: ReleaseMarker; bundle: string }> {
+    private async where(): Promise<{ record: InstallRecord } | { unavailable: string; releaseCopy?: true } | { release: ReleaseMarker; bundle: string }> {
         if ((this.o.platform ?? process.platform) !== "darwin") return { unavailable: "Updating from main is for the macOS desktop app." };
         const bundle = this.o.bundle ?? (process.env.CAVVY_APP_BUNDLE || bundleOf(process.execPath));
         if (!bundle) return { unavailable: "Only the installed desktop app updates itself." };
@@ -439,18 +440,10 @@ export class AppUpdates {
         // A release build, unless desktop:install put it here (then it's a checkout's, and updates from main).
         const marker = readMarker(bundle);
         if (marker && !(record?.app && real(record.app) === real(bundle))) {
-            // Running from the copy an update kept aside (.Cavvy.app.old), with nothing where it was: a restart whose
-            // rollback couldn't rename it back. It goes back now.
+            // Running from the copy an update kept aside (.Cavvy.app.old): a restart whose rollback couldn't rename it
+            // back. Not renamed from here, while it runs: it says where it belongs.
             const hidden = /^\.(.+\.app)\.old$/.exec(basename(bundle));
-            const was = hidden && join(dirname(bundle), hidden[1]!);
-            if (was && !existsSync(was)) {
-                try {
-                    renameSync(bundle, was);
-                    return { release: marker, bundle: was };
-                } catch {
-                    return { unavailable: `Cavvy is hidden at ${bundle}: move it to ${was} to update it.` };
-                }
-            }
+            if (hidden) return { releaseCopy: true, unavailable: `Cavvy is hidden at ${bundle}: quit it, move it to ${join(dirname(bundle), hidden[1]!)}, and open it again.` };
             return { release: marker, bundle };
         }
         if (!record) return { unavailable: "Install it once with bun run desktop:install to get updates." };
@@ -462,7 +455,7 @@ export class AppUpdates {
     private async runCheck(quiet: boolean): Promise<AppUpdateInfo> {
         const w = await this.where();
         if ("release" in w) return this.runReleaseCheck(await this.releaseApp(w), quiet);
-        if ("unavailable" in w) return this.replace({ unavailable: w.unavailable });
+        if ("unavailable" in w) return this.replace({ unavailable: w.unavailable, ...("releaseCopy" in w ? { release: true } : {}) });
         const { record } = w;
         const repo = record.source;
         this.patch({ checking: true, unavailable: undefined });
@@ -539,7 +532,7 @@ export class AppUpdates {
                 unlinkSync(pendingPath(r.bundle));
                 acked = true;
             } catch {}
-            if (acked) void rm(oldCopy(r.bundle), { recursive: true, force: true });
+            if (acked) this.remove(oldCopy(r.bundle));
         }
         const note = readJson<{ reason?: string; version?: string }>(notePath(r.bundle));
         if (note) {
@@ -549,7 +542,7 @@ export class AppUpdates {
             else if (reason === "unsigned" || reason === "management" || reason === "install") this.info.failed = refusalText(reason);
             if (this.info.failed) this.failedFor = note.version;
         }
-        if (!existsSync(pendingPath(r.bundle))) void rm(partialDir(r.bundle), { recursive: true, force: true });
+        if (!existsSync(pendingPath(r.bundle))) this.remove(partialDir(r.bundle));
     }
 
     private async runReleaseCheck(r: ReleaseApp, quiet: boolean): Promise<AppUpdateInfo> {
@@ -582,9 +575,19 @@ export class AppUpdates {
         });
     }
 
+    /**
+     * Removes a folder off the event loop, one removal after another, never failing: an update reusing the folder
+     * waits for it, and a removal that fails doesn't stop an update's failure from being said.
+     */
+    private remove(path: string): Promise<void> {
+        this.removing = this.removing.then(() => rm(path, { recursive: true, force: true })).catch(() => undefined);
+        return this.removing;
+    }
+    private removing: Promise<void> = Promise.resolve();
+
     private dropReady(r: ReleaseApp) {
         this.ready = undefined;
-        void rm(partialDir(r.bundle), { recursive: true, force: true });
+        this.remove(partialDir(r.bundle));
     }
 
     /** Downloads, checks and unpacks the latest release beside the app, then restarts into it; or restarts at once if that's done. */
@@ -648,7 +651,8 @@ export class AppUpdates {
             const top = scanZip(zip);
             // Unpacked beside the app, under a hidden name, so putting it in place is a rename.
             const part = partialDir(r.bundle);
-            await rm(part, { recursive: true, force: true });
+            // After any removal still going (one from start, or a dropped update): it's this same folder.
+            await this.remove(part);
             mkdirSync(part, { mode: 0o700 });
             const unzip = await this.run(["/usr/bin/ditto", "-x", "-k", "--noqtn", zip, part], 600_000);
             if (!unzip.ok) throw new Refused("install", `couldn't unpack it: ${unzip.err}`);
@@ -657,14 +661,14 @@ export class AppUpdates {
             say(`checked: signed by Cavvy, meets this app's signature, ${top} is ${m.version}`);
             this.ready = { version: m.version, commit: m.commit, arch: m.arch, app };
             this.failedFor = undefined;
-            await rm(tmp, { recursive: true, force: true });
+            await this.remove(tmp);
             tmp = undefined;
             this.restartInto(r);
         } catch (e) {
             const refused = e instanceof Refused ? e : new Refused("install", (e as Error).message);
             say(`not updated: ${refused.message}`);
-            if (tmp) await rm(tmp, { recursive: true, force: true });
-            if (!this.ready) await rm(partialDir(r.bundle), { recursive: true, force: true });
+            if (tmp) await this.remove(tmp);
+            if (!this.ready) await this.remove(partialDir(r.bundle));
             this.failedFor = version;
             this.patch({ updating: undefined, failed: refusalText(refused.reason, { system }), log });
         }

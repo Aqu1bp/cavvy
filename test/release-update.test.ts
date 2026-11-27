@@ -31,7 +31,7 @@ import {
     type DesktopManifest,
     type Run,
 } from "../src/server/release-update";
-import { AppUpdates, capture } from "../src/server/app-update";
+import { AppUpdates, bundleOf, capture } from "../src/server/app-update";
 import { installRecordPath } from "../src/config/desktop-install";
 import type { AppUpdateInfo } from "../src/server/protocol";
 import { throwawaySigner, type ThrowawaySigner } from "../scripts/throwaway-codesign";
@@ -693,14 +693,15 @@ describe.if(mac)("the restart helper (macOS)", () => {
         expect(existsSync(join(apps, ".Cavvy.app.old"))).toBe(true);
         w.stop();
     });
-    test("running from the copy an update kept aside, with nothing where it was: it's put back", async () => {
+    test("running from the copy an update kept aside (putting it back failed): found from its own program's path, and says where it belongs", async () => {
         const apps = join(dir, "Applications");
         const hidden = join(apps, ".Cavvy.app.old");
         makeApp(hidden, { version: "1.2.0" });
-        const u = new AppUpdates({ emit: () => undefined, bundle: hidden, platform: "darwin", releases: { base: "http://127.0.0.1:9", keys: [] }, firstCheckMs: 3_600_000 });
-        await u.check();
-        expect(existsSync(join(apps, "Cavvy.app", "Contents", "Resources", "release.json"))).toBe(true);
-        expect(existsSync(hidden)).toBe(false);
+        expect(bundleOf(join(hidden, "Contents", "MacOS", "cavvy"))).toBe(hidden);
+        const u = new AppUpdates({ emit: () => undefined, bundle: bundleOf(join(hidden, "Contents", "MacOS", "cavvy")), platform: "darwin", releases: { base: "http://127.0.0.1:9", keys: [] }, firstCheckMs: 3_600_000 });
+        expect((await u.check()).release).toBe(true);
+        expect((await u.check()).unavailable).toBe(`Cavvy is hidden at ${hidden}: quit it, move it to ${join(apps, "Cavvy.app")}, and open it again.`);
+        expect(existsSync(hidden)).toBe(true);
         u.stop();
     });
 });
