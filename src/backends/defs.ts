@@ -126,6 +126,7 @@ const CLAUDE_CODE: AgentCliDef = {
         command: "claude",
         product: "Claude Code",
         install: "Install Claude Code (https://code.claude.com/docs/en/setup)",
+        installCommand: "curl -fsSL https://claude.ai/install.sh | bash",
         signIn: "claude auth login",
         signOut: "claude auth logout",
     },
@@ -188,6 +189,7 @@ const CODEX: AgentCliDef = {
         command: "codex",
         product: "Codex",
         install: "Install the Codex CLI (npm install -g @openai/codex)",
+        installCommand: 'command -v npm >/dev/null 2>&1 || { echo "Codex installs with npm: install Node.js first."; exit 1; }; npm install -g --prefix "$HOME/.local" @openai/codex',
         signIn: "codex login",
         // `codex login` waits for the browser on a port of its own machine, and says to use this where there's none.
         signInAway: "codex login --device-auth",
@@ -285,6 +287,8 @@ const OPENCODE: AgentCliDef = {
         command: "opencode",
         product: "OpenCode",
         install: "Install OpenCode (https://opencode.ai/docs)",
+        // Its installer always puts it in ~/.opencode/bin.
+        installCommand: 'curl -fsSL https://opencode.ai/install | bash && mkdir -p "$HOME/.local/bin" && ln -sf "$HOME/.opencode/bin/opencode" "$HOME/.local/bin/opencode"',
         signIn: "opencode auth login",
         signOut: "opencode auth logout",
     },
@@ -309,6 +313,7 @@ const GROK: AgentCliDef = {
         command: "grok",
         product: "Grok Build",
         install: "Install Grok Build (curl -fsSL https://x.ai/cli/install.sh | bash)",
+        installCommand: 'curl -fsSL https://x.ai/cli/install.sh | GROK_BIN_DIR="$HOME/.local/bin" bash',
         signIn: "grok login",
         signOut: "grok logout",
     },

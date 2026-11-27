@@ -37,7 +37,7 @@ const dialogSource = readFileSync(new URL("../gui/src/components/ui/ConfirmDialo
 const settingsSource = readFileSync(new URL("../gui/src/components/Settings.tsx", import.meta.url), "utf8");
 
 // Include module state as well as the component so remounts share real guards.
-const providerSource = settingsSource.slice(settingsSource.lastIndexOf("\n}\n", settingsSource.indexOf("function ProviderRow")) + 3, settingsSource.indexOf("function Providers"));
+const providerSource = settingsSource.slice(settingsSource.lastIndexOf("\n}\n", settingsSource.indexOf("function ProviderRow")) + 3, settingsSource.indexOf("function ProviderSections"));
 const generalSource = settingsSource.slice(settingsSource.indexOf("async function update"), settingsSource.indexOf("function ModelSelect"))
     + settingsSource.slice(settingsSource.indexOf("const [enablingBypass"), settingsSource.indexOf("\n}\n", settingsSource.indexOf("function General")) + 3);
 
@@ -129,8 +129,8 @@ for (const outcome of ["success", "error", "refresh error"] as const) {
         const c = component(providerSource, "ProviderRow", {
             ConfirmDialog: (p: any) => { confirmProps = p; return {}; },
             ProviderIcon: () => ({}), X: () => ({}), Spinner: () => ({}), ExternalLink: () => ({}),
-            rpc: { call: (...args: unknown[]) => { calls.push(args); return request.promise; } },
-            refreshProviders: () => Promise.resolve(), refreshModels: () => refresh.promise,
+            // The machine the row is on (state/providers-at.ts): where it calls, and what's read again after a change.
+            useProvidersAt: () => ({ link: { call: (...args: unknown[]) => { calls.push(args); return request.promise; } }, changed: () => refresh.promise }),
             toast: (message: string) => messages.push(message), reportError: (e: unknown) => errors.push(e),
         });
         let dispose!: () => void;
@@ -201,8 +201,7 @@ for (const outcome of ["success", "error", "refresh error"] as const) {
         const c = component(providerSource, "ProviderRow", {
             ConfirmDialog: (p: any) => { confirmProps = p; return {}; },
             ProviderIcon: () => ({}), X: () => ({}), Spinner: () => ({}), ExternalLink: () => ({}),
-            rpc: { call: (_method: string, p: { provider: string }) => { calls.push(p.provider); return request.promise; } },
-            refreshProviders: () => Promise.resolve(), refreshModels: () => refresh.promise,
+            useProvidersAt: () => ({ link: { call: (_method: string, p: { provider: string }) => { calls.push(p.provider); return request.promise; } }, changed: () => refresh.promise }),
             toast() {}, reportError() {},
         });
         const mount = (id: string) => {

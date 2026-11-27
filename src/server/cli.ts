@@ -14,6 +14,7 @@ import { redact } from "../util/redact";
 import { startServer } from "./server";
 import { onConfigWarning } from "../config/settings";
 import { adoptLoginPath } from "./login-env";
+import { setQuitForUpdate, updateQuitCancelled } from "./app-update";
 
 export interface ServeCliEnv {
     fallbackModel?: string;
@@ -114,11 +115,29 @@ export async function serveCommand(sub: "gui" | "serve", args: string[], env: Se
 
     if (handshake) {
         process.stdout.write(JSON.stringify({ type: "ready", port: srv.port, token: srv.token, version: APP_VERSION }) + "\n");
+        // A downloaded app's update asks the desktop app to quit (one line, {"type":"quit-for-update"}): if the quit
+        // is cancelled, it says so with a line "restart-cancelled" (app-update.ts).
+        setQuitForUpdate(() => process.stdout.write(JSON.stringify({ type: "quit-for-update" }) + "\n"));
         // The desktop app holds our stdin: it writes a line when it quits (and
         // waits for us to close the sessions), and if it's gone, so are we.
         void (async () => {
+            const reader = Bun.stdin.stream().getReader();
+            let pending = "";
             try {
-                await Bun.stdin.stream().getReader().read();
+                for (;;) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    pending += new TextDecoder().decode(value);
+                    let i: number;
+                    let quit = false;
+                    while ((i = pending.indexOf("\n")) >= 0) {
+                        const line = pending.slice(0, i).trim();
+                        pending = pending.slice(i + 1);
+                        if (line === "restart-cancelled") updateQuitCancelled();
+                        else quit = true;
+                    }
+                    if (quit) break;
+                }
             } catch {
                 // closed
             }

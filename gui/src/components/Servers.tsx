@@ -4,13 +4,14 @@
 
 import { createEffect, createResource, createSignal, createUniqueId, For, Match, Show, Switch } from "solid-js";
 import { render } from "solid-js/web";
-import { Check, ChevronDown, CircleArrowUp, Plus, Server, Trash2 } from "lucide-solid";
+import { Check, ChevronDown, CircleArrowUp, Plus, RefreshCw, Server, Trash2 } from "lucide-solid";
 import type { AddResult, ServerCheck, ServerProblem, UnknownHost } from "@shared/protocol";
 import { homeRpc, machineIssue, setMachineIssue, switchMachine, trustMachine, userAsked } from "../lib/machines";
 import { machine, os } from "../lib/platform";
 import { updateServer } from "../lib/server-update";
 import { app, homeOn, reportError, rpc, setApp, toast, warmLink } from "../state/app";
 import { goHomeOn, goingTo } from "../state/go-home";
+import { HERE, refreshServerList, serverList, serverTouched, setServerSync } from "../state/servers";
 import { Dialog } from "./ui/Dialog";
 import { Menu } from "./ui/Menu";
 import { Logo, Spinner } from "./ui/bits";
@@ -127,7 +128,9 @@ if (machine) {
 }
 
 /** What this computer is called in the list of machines. */
-export const HERE = os === "macos" ? "This Mac" : "This computer";
+// The servers' state, for what else shows them (Settings → Providers, which asks for this module when it opens:
+// state/app.ts serversUi): through here, so it comes with this code and nothing that starts with the window carries it.
+export { HERE, refreshServerList, serverList, serverTouched, setServerSync };
 
 const servers = () => homeRpc(rpc);
 
@@ -154,8 +157,8 @@ export function checkLines(name: string, c: ServerCheck): string[] {
     const lines: string[] = [];
     const have = c.clis.filter((x) => x.installed);
     for (const cli of have) {
-        if (cli.signedIn === false) lines.push(`${cli.product} isn't signed in. Open ${name}, then Settings → Providers.`);
-        else if (cli.signedIn === true && cli.on === false) lines.push(`${cli.product} is off. Open ${name}, then Settings → Providers.`);
+        if (cli.signedIn === false) lines.push(`${cli.product} isn't signed in there. Sign it in from Settings → Providers.`);
+        else if (cli.signedIn === true && cli.on === false) lines.push(`${cli.product} is off there. Turn it on from Settings → Providers.`);
     }
     if (!have.length) lines.push("No agent CLI there (Claude Code, Codex). API keys work without one.");
     if (!c.git) lines.push("No git there.");
@@ -171,7 +174,7 @@ export function checkLines(name: string, c: ServerCheck): string[] {
 
 /** The sidebar's list of machines. */
 function ServerMenu(p: { anchor: () => HTMLElement | undefined }) {
-    const [list] = createResource(
+    const [list, { refetch }] = createResource(
         () => serverMenu(),
         () =>
             servers()
@@ -180,6 +183,7 @@ function ServerMenu(p: { anchor: () => HTMLElement | undefined }) {
                 .catch(() => []),
     );
     const close = () => setServerMenu(false);
+    const toggleSync = (name: string, next: boolean) => setServerSync(name, next, () => void refetch());
     // It can be put back, so nothing is asked first. (A rented machine stays rented: deleting it is asked of an agent.)
     const remove = async (name: string, rented?: boolean) => {
         close();
@@ -191,7 +195,7 @@ function ServerMenu(p: { anchor: () => HTMLElement | undefined }) {
         }
     };
     return (
-        <Menu label="Machines" open={serverMenu()} anchor={p.anchor} onClose={close} align={menuAlign()} width={240}>
+        <Menu label="Machines" open={serverMenu()} anchor={p.anchor} onClose={close} align={menuAlign()} width={270}>
             <button role="menuitemradio" aria-checked={!runsOn()} class="menu-item compact" onClick={() => (close(), goTo(undefined))}>
                 <span class="grow">{HERE}</span>
                 <Show when={!runsOn()}>
@@ -209,6 +213,16 @@ function ServerMenu(p: { anchor: () => HTMLElement | undefined }) {
                             <Show when={runsOn() === s.name}>
                                 <Check size={14} />
                             </Show>
+                        </button>
+                        <button
+                            role="menuitem"
+                            class={`hb${s.syncOn ? " server-sync-on" : ""}${s.sync?.state === "error" ? " tone-warn" : ""}`}
+                            title={s.sync?.state === "error" ? `Sync failed: ${s.sync.error}` : s.syncOn ? `Stop syncing ${s.name}` : `Sync ${s.name} with ${HERE === "This Mac" ? "this Mac" : "this computer"}`}
+                            aria-label={s.syncOn ? `Stop syncing ${s.name}` : `Sync ${s.name}`}
+                            aria-pressed={s.syncOn ? "true" : "false"}
+                            onClick={() => void toggleSync(s.name, !s.syncOn)}
+                        >
+                            <RefreshCw size={13} />
                         </button>
                         <Show when={s.behind}>
                             <button role="menuitem" class="hb" title={`Update Cavvy on ${s.name}`} aria-label={`Update Cavvy on ${s.name}`} onClick={() => (close(), void updateServer(s.name))}>
@@ -236,7 +250,7 @@ type AddStep =
     | { at: "form" }
     | { at: "working"; text: string; percent?: number }
     | { at: "trust"; unknown: UnknownHost }
-    | { at: "copy"; name: string; note?: string; what: string; left?: string }
+    | { at: "sync"; added: Extract<AddResult, { status: "added" }> }
     | { at: "done"; name: string; note?: string; copied?: string; left?: string; lines?: string[] }
     | { at: "failed"; problem: ServerProblem };
 
@@ -284,23 +298,23 @@ function AddServerDialog() {
             const r = await servers().call("servers.add", { ...draft(), ...(trust ? { trust } : {}) });
             if (r.status === "unknown-host") setStep({ at: "trust", unknown: r.unknown });
             else if (r.status === "failed") setStep({ at: "failed", problem: r.problem });
-            else if (r.copy) setStep({ at: "copy", name: r.name, note: r.note, what: r.copy.what, left: r.left });
-            else await finish(r);
+            else setStep({ at: "sync", added: r });
         } catch (e) {
             setStep({ at: "failed", problem: { message: (e as Error).message } });
         }
     };
-    const copy = async (yes: boolean) => {
+    // Kept in sync, or not: either way it's added, and the switch is in the Machines menu after.
+    const sync = async (yes: boolean) => {
         const s = step();
-        if (s.at !== "copy") return;
-        const added = { status: "added" as const, name: s.name, note: s.note, left: s.left };
-        if (!yes) return finish(added);
-        setStep({ at: "working", text: "Copying…" });
+        if (s.at !== "sync") return;
+        const added = { ...s.added, left: undefined };
+        setStep({ at: "working", text: yes ? "Syncing…" : "Finishing…" });
         try {
-            const r = await servers().call("servers.copy", { name: s.name });
-            await finish(added, r.took ? `Copied your ${r.took}.` : `${s.name} already had them.`);
+            await servers().call("servers.setSync", { name: added.name, on: yes });
+            if (!yes) return await finish(added);
+            const r = (await servers().call("servers.sync", { name: added.name })).results[0];
+            await finish(added, r && !r.ok ? r.error : undefined);
         } catch (e) {
-            // The copy is an extra: the server is added either way.
             await finish(added, (e as Error).message);
         }
     };
@@ -369,19 +383,19 @@ function AddServerDialog() {
                             </>
                         )}
                     </Match>
-                    <Match when={step().at === "copy" && (step() as Extract<AddStep, { at: "copy" }>)}>
+                    <Match when={step().at === "sync" && (step() as Extract<AddStep, { at: "sync" }>)}>
                         {(s) => (
                             <>
                                 <h2 id={titleId}>
-                                    Copy your {s().what} to {s().name}?
+                                    Sync {s().added.name} with {HERE === "This Mac" ? "this Mac" : "this computer"}?
                                 </h2>
-                                <p class="muted">Keys, and what reads like one, stay here.</p>
+                                <p class="muted">Settings, skills, plugins and API keys. Sign-ins stay on each machine.</p>
                                 <div class="server-actions">
-                                    <button class="btn secondary" onClick={() => void copy(false)}>
-                                        Skip
+                                    <button class="btn secondary" onClick={() => void sync(false)}>
+                                        Not now
                                     </button>
-                                    <button class="btn primary" onClick={() => void copy(true)}>
-                                        Copy
+                                    <button class="btn primary" autofocus onClick={() => void sync(true)}>
+                                        Sync
                                     </button>
                                 </div>
                             </>

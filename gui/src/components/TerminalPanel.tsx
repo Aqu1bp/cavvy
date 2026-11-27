@@ -128,11 +128,11 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean; on?: string; 
         setSelected(tab.id);
         setTerminalOpen(true);
     };
-    const loginAccount = (provider: string, accountId: string, name: string) => {
+    const loginAccount = (provider: string, accountId: string, name: string, server?: string, install?: boolean) => {
         if (!restored()) return toast("Terminal tabs are reconnecting. Try again in a moment.");
-        if (conn() !== "open" || full()) return toast("Connect and close a terminal before signing in", "warn");
+        if (conn() !== "open" || full()) return toast(install ? "Close a terminal, then try again" : "Connect and close a terminal before signing in", "warn");
         const id = crypto.randomUUID();
-        const tab: Tab = { id, terminal: id, cwd: app.hello?.homeDir ?? "/", number: next++, login: { provider, accountId, name } };
+        const tab: Tab = { id, terminal: id, cwd: app.hello?.homeDir ?? "/", number: next++, login: { provider, accountId, name, server, ...(install ? { install } : {}) } };
         terminalAsked();
         // Shown though a session of another machine is in view: the sign-in is this one's (App.tsx).
         setTerminalLogin(true);
@@ -166,7 +166,12 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean; on?: string; 
     });
     if (p.on === undefined) {
         terminalActions.loginAccount = loginAccount;
-        onCleanup(() => { if (terminalActions.loginAccount === loginAccount) delete terminalActions.loginAccount; });
+        const installCli = (provider: string, name: string, server?: string) => loginAccount(provider, "default", name, server, true);
+        terminalActions.installCli = installCli;
+        onCleanup(() => {
+            if (terminalActions.loginAccount === loginAccount) delete terminalActions.loginAccount;
+            if (terminalActions.installCli === installCli) delete terminalActions.installCli;
+        });
     }
     // Opening the panel starts a shell where there's none; going to another project with it open doesn't.
     // (Not when it's shown again after a reload, with the tabs it had.)
@@ -234,7 +239,7 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean; on?: string; 
             <div class="terminal-toolbar">
                 <div class="terminal-tabs" role="tablist" aria-label="Terminals">
                     <For each={currentTabs()}>{(tab) => <div class={`terminal-tab ${active()?.id === tab.id ? "on" : ""}`}>
-                        <button role="tab" aria-selected={active()?.id === tab.id} onClick={() => { terminalAsked(); setSelected(tab.id); }} title={tab.script?.setup ? `Setup script “${tab.script.name}” in ${tab.cwd}: ${tab.script.setup.command}` : tab.script ? `Script “${tab.script.name}” in ${tab.cwd}` : tab.cwd}>{tab.script ? <Play size={11} class="terminal-tab-icon" /> : <TerminalIcon size={13} class="terminal-tab-icon" />}{tab.login ? `Sign in · ${tab.login.name}` : tab.script ? (tab.script.setup?.label ?? tab.script.name) : `${basename(tab.cwd)} ${tab.number}`}</button>
+                        <button role="tab" aria-selected={active()?.id === tab.id} onClick={() => { terminalAsked(); setSelected(tab.id); }} title={tab.script?.setup ? `Setup script “${tab.script.name}” in ${tab.cwd}: ${tab.script.setup.command}` : tab.script ? `Script “${tab.script.name}” in ${tab.cwd}` : tab.cwd}>{tab.script ? <Play size={11} class="terminal-tab-icon" /> : <TerminalIcon size={13} class="terminal-tab-icon" />}{tab.login ? (tab.login.install ? tab.login.name : `Sign in · ${tab.login.name}`) : tab.script ? (tab.script.setup?.label ?? tab.script.name) : `${basename(tab.cwd)} ${tab.number}`}</button>
                         <button class="hb sm terminal-tab-x" title="Close terminal and stop its shell" aria-label={tab.script ? `Close terminal ${tab.script.setup?.label ?? tab.script.name}` : `Close terminal ${tab.number}`} onClick={() => close(tab)}><X size={12} /></button>
                     </div>}</For>
                 </div>

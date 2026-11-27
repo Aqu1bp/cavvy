@@ -20,6 +20,16 @@ export const REMOTE_CURRENT = `${REMOTE_DIR}/current/cavvy`;
 /** `cavvy host login`'s exit codes: what the machine that ran it over SSH says for each (src/servers/cli.ts). */
 export const LOGIN_EXIT = { notInstalled: 4, notSignedIn: 5, unknown: 6, problem: 7, stopped: 130 } as const;
 
+/** `sh` exits with this where Cavvy isn't set up. */
+export const NOT_SET_UP = 46;
+/** Not set up there (exit ${NOT_SET_UP}), or `cavvy host login` for CLI $1 (optional account $2) with this terminal. */
+export const LOGIN = `
+b="${REMOTE_CURRENT}"
+[ -x "$b" ] || exit ${NOT_SET_UP}
+if [ -n "$2" ]; then exec "$b" host login "$1" --account "$2"; fi
+exec "$b" host login "$1"
+`;
+
 /** A build's name on disk: nothing a shell or a path would read into. */
 export const BUILD_ID = /^[0-9a-z][0-9a-z.-]{5,60}$/;
 

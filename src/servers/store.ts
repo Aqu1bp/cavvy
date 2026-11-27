@@ -22,6 +22,15 @@ export interface ServerEntry {
     knownHostsFile?: string;
     /** A machine rented for this (an agent created it): what it is, what it costs, and how it's given back. */
     cloud?: ServerCloud;
+    /** Opt-in: sync this machine's Cavvy API keys and MCP server secrets to this server. Never syncs CLI subscription credentials. */
+    /**
+     * Kept level with this machine: settings, skills, plugins, providers, API keys and MCP secrets, and the agent
+     * CLIs it uses installed there (sign-ins never). False: nothing is. Left out: not asked yet, so it gets what
+     * every server always had, skills and commands.
+     */
+    sync?: boolean;
+    /** Sync was turned off: the keys it put there are still to be taken away. */
+    takeBack?: boolean;
     addedAt: string;
 }
 
@@ -97,6 +106,10 @@ function checked(e: Partial<ServerEntry>): ServerEntry {
         out.knownHostsFile = f;
     }
     if (e.cloud !== undefined) out.cloud = checkedCloud(e.cloud);
+    if (typeof e.sync === "boolean") out.sync = e.sync;
+    if (e.takeBack === true) out.takeBack = true;
+    // Saved by an earlier build of this branch: key sync was the only switch.
+    else if ((e as { syncSecrets?: unknown }).syncSecrets === true) out.sync = true;
     return out;
 }
 
@@ -138,10 +151,15 @@ export function requireServer(name: string): ServerEntry {
 }
 
 /** What `add` would save, checked, without saving it (the connection is tried first). */
-export function draftServer(e: { name: string; destination: string; port?: number; identityFile?: string; knownHostsFile?: string; cloud?: ServerCloud }): ServerEntry {
+export function draftServer(e: { name: string; destination: string; port?: number; identityFile?: string; knownHostsFile?: string; cloud?: ServerCloud; sync?: boolean }): ServerEntry {
     const entry = checked(e);
     if (getServer(entry.name)) throw new ServerError(`There's already a server named ${entry.name}.`);
     return entry;
+}
+
+/** Turns `name`'s sync with this machine on or off (ServerEntry.sync). */
+export function setServerSync(name: string, on: boolean): ServerEntry {
+    return saveServer({ ...requireServer(name), sync: on });
 }
 
 /** Saves it. An entry of that name is replaced (putting a removed one back is the same call). */

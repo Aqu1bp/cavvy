@@ -5,8 +5,8 @@
 import { createEffect, createMemo, createSignal, For, lazy, Match, on, onMount, Show, Suspense, Switch, type JSX } from "solid-js";
 import { AlertTriangle, ArrowLeft, ChartColumn, ChevronDown, CircleAlert, Copy, Download, ExternalLink, FolderOpen, Info, Keyboard, Minus, Palette, Plug, Plus, Puzzle, RotateCcw, SlidersHorizontal, X } from "lucide-solid";
 import { MODE_LABELS, type FollowUpMode, type GuiSettings, type PermissionModeId, type ProviderInfo } from "@shared/protocol";
-import { app, refreshModels, refreshProviders, refreshSettings, reportError, rpc, setApp, toast } from "../state/app";
-import { reconcile } from "solid-js/store";
+import { app, linkFor, refreshModels, refreshProviders, refreshSettings, reportError, rpc, serversUi, setApp, toast } from "../state/app";
+import { createStore, reconcile } from "solid-js/store";
 import { now } from "../lib/clock";
 import { updateView } from "../lib/app-update";
 import { connectCli, editors, refreshEditors } from "../state/actions";
@@ -15,14 +15,17 @@ import { themeTraits } from "../state/theme-traits";
 
 /** Settings → Appearance → Theme: loaded when Appearance first opens. */
 const ThemeGallery = lazy(() => import("./ThemeGallery").then((m) => ({ default: m.ThemeGallery })));
+const SubscriptionGrid = lazy(() => import("./SubscriptionGrid"));
 import { setSettingsTab, settingsTab, type SettingsTab } from "../state/ui";
 import { loadSimulatorState } from "../state/simulator";
-import { canReveal, copyText, isDesktop, mod, openExternal, os, revealPath } from "../lib/platform";
+import { canReveal, copyText, isDesktop, machine, mod, openExternal, os, revealPath } from "../lib/platform";
 import { keybindingsFile, keymap, keyText, withShortcut } from "../state/keybindings";
 import { ACTIONS, CONTEXTS, KEYBINDINGS_DOCS, formatKeys } from "../../../src/keybindings/core";
 import { ConfirmDialog } from "./ui/ConfirmDialog";
 import { ProviderIcon } from "./ui/ProviderIcon";
 import { Accounts } from "./Accounts";
+import { ProvidersAtContext, useProvidersAt, type ProvidersAt } from "../state/providers-at";
+import type { Rpc } from "../lib/rpc";
 import { createUpdateAction } from "./UpdateAction";
 import { MessageText } from "./ErrorCards";
 import { commandIn } from "../lib/error-text";
@@ -495,9 +498,31 @@ function Appearance() {
     );
 }
 
+/**
+ * The servers' state and what's done to them (state/servers.ts), which comes with their own code: asked for when
+ * Providers opens on a computer that has servers, so a window doesn't start with it. Until then there are none to show.
+ */
+const [servers, setServers] = createSignal<typeof import("./Servers")>();
+const serverList = () => servers()?.serverList() ?? [];
+
+/** connectCli (state/actions.ts) for a server shown from here: asked of the Cavvy there, whose providers are read again. */
+async function connectThere(pr: ProviderInfo, at: ProvidersAt, failed: (e: unknown) => void): Promise<boolean> {
+    try {
+        const r = await at.link.call("providers.connectCli", { provider: pr.id });
+        toast(`Using your ${pr.agentCli?.plan ?? pr.name} on ${at.server} (${r.description})`, "success");
+        if (r.warning) toast(r.warning, "warn");
+    } catch (e) {
+        failed(e);
+        return false;
+    }
+    await at.changed().catch(reportError);
+    return true;
+}
+
 const [removingProviders, setRemovingProviders] = createSignal<ReadonlySet<string>>(new Set());
 
 function ProviderRow(p: { pr: ProviderInfo }) {
+    const at = useProvidersAt();
     const [confirmRemove, setConfirmRemove] = createSignal(false);
     const [adding, setAdding] = createSignal(false);
     const [key, setKey] = createSignal("");
@@ -521,14 +546,14 @@ function ProviderRow(p: { pr: ProviderInfo }) {
     const save = async () => {
         setBusy(true);
         try {
-            const r = await rpc.call("providers.setKey", { provider: p.pr.id, key: key() }).catch((e: unknown) => void failed(e, "Key not saved"));
+            const r = await at.link.call("providers.setKey", { provider: p.pr.id, key: key() }).catch((e: unknown) => void failed(e, "Key not saved"));
             if (!r) return;
             setFailure(undefined);
             toast(`Saved the ${p.pr.name} key ${r.masked}`, "success");
             if (r.warning) toast(r.warning, "warn");
             setAdding(false);
             setKey("");
-            await Promise.all([refreshProviders(), refreshModels(), refreshSettings()]);
+            await at.changed();
         } catch (e) {
             reportError(e);
         } finally {
@@ -536,12 +561,14 @@ function ProviderRow(p: { pr: ProviderInfo }) {
         }
     };
     const remove = async () => {
-        const { id, name, agentCli } = p.pr;
+        const { name, agentCli } = p.pr;
+        // One machine's removal doesn't hold the same provider's row on another.
+        const id = `${at.server ?? ""}:${p.pr.id}`;
         if (removingProviders().has(id)) return;
         setRemovingProviders((ids) => new Set(ids).add(id));
         try {
-            await rpc.call("providers.removeKey", { provider: id });
-            await Promise.all([refreshProviders(), refreshModels()]);
+            await at.link.call("providers.removeKey", { provider: p.pr.id });
+            await at.changed();
             toast(agentCli ? `Turned off ${name}; it stays signed in` : `Removed the ${name} key`);
         } catch (e) {
             reportError(e);
@@ -559,10 +586,11 @@ function ProviderRow(p: { pr: ProviderInfo }) {
         setBusy(true);
         try {
             // A failure shows on this row, not as an error card.
-            const ok = await connectCli(p.pr, (e) => {
+            const refused = (e: unknown) => {
                 const code = (e as { code?: string }).code;
                 failed(e, code === "not_signed_in" ? "Not signed in" : code === "not_installed" ? "Not installed" : "Couldn't connect");
-            });
+            };
+            const ok = at.server ? await connectThere(p.pr, at, refused) : await connectCli(p.pr, refused);
             if (ok) setFailure(undefined);
         } finally {
             setBusy(false);
@@ -608,7 +636,7 @@ function ProviderRow(p: { pr: ProviderInfo }) {
                 onClose={() => setConfirmRemove(false)}
                 title={p.pr.agentCli ? `Turn off ${p.pr.name}?` : `Remove the ${p.pr.name} key?`}
                 confirmLabel={p.pr.agentCli ? "Turn off" : "Remove key"}
-                busy={removingProviders().has(p.pr.id)}
+                busy={removingProviders().has(`${at.server ?? ""}:${p.pr.id}`)}
                 onConfirm={remove}
             >
                 {p.pr.agentCli ? `${p.pr.name} stays signed in.` : `You'll need to add it again to use ${p.pr.name}.`}
@@ -709,31 +737,36 @@ function ProviderRow(p: { pr: ProviderInfo }) {
     );
 }
 
-function Providers() {
+/** One machine's providers: the rows are the same for the window's own machine and for a server shown from it. */
+function ProviderSections(p: { noSubscriptions?: boolean; localOnly?: boolean; synced?: boolean }) {
+    const at = useProvidersAt();
     const [key, setKey] = createSignal("");
     const [busy, setBusy] = createSignal(false);
     const quickAdd = async () => {
         setBusy(true);
         try {
-            const r = await rpc.call("providers.setKey", { key: key() });
+            const r = await at.link.call("providers.setKey", { key: key() });
             toast(`Saved a ${r.provider} key ${r.masked}`, "success");
             if (r.warning) toast(r.warning, "warn");
             setKey("");
-            await Promise.all([refreshProviders(), refreshModels(), refreshSettings()]);
+            await at.changed();
         } catch (e) {
             reportError(e);
         } finally {
             setBusy(false);
         }
     };
-    // Grouped as the mockup has them: subscriptions (the CLIs), API keys, models on this computer, then web search.
-    const models = () => app.providers.filter((p) => !p.search);
+    const where = () => at.server ?? "this computer";
+    const LOCAL = "On this computer";
+    // Grouped as the mockup has them: subscriptions (the CLIs), API keys, models on that machine, then web search.
+    const models = () => at.list().filter((p) => !p.search);
     const groups = () => [
-        { title: "Subscriptions", list: models().filter((p) => p.agentCli) },
+        // With servers, subscriptions are one table across machines above these (SubscriptionGrid.tsx).
+        { title: "Subscriptions", list: p.noSubscriptions ? [] : models().filter((p) => p.agentCli) },
         { title: "API keys", list: models().filter((p) => !p.agentCli && !p.local) },
-        { title: "On this computer", list: models().filter((p) => !p.agentCli && p.local) },
-        { title: "Web search", list: app.providers.filter((p) => p.search) },
-    ].filter((g) => g.list.length);
+        { title: LOCAL, list: models().filter((p) => !p.agentCli && p.local) },
+        { title: "Web search", list: at.list().filter((p) => p.search) },
+    ].filter((g) => g.list.length && (!p.localOnly || g.title === LOCAL));
     const keyBox = () => (
         <div class="keyin">
             <input class="input mono" type="password" aria-label="API key" placeholder="Paste a key from any provider" value={key()} onInput={(e) => setKey(e.currentTarget.value)} onKeyDown={(e) => e.key === "Enter" && void quickAdd()} />
@@ -743,20 +776,70 @@ function Providers() {
         </div>
     );
     // API keys always shows, for the box that adds one.
-    const sections = () => groups().some((g) => g.title === "API keys") ? groups() : [...groups().slice(0, 1), { title: "API keys", list: [] }, ...groups().slice(1)];
+    const sections = () => p.localOnly || groups().some((g) => g.title === "API keys") ? groups() : [...groups().slice(0, 1), { title: "API keys", list: [] }, ...groups().slice(1)];
     return (
         <For each={sections()}>
             {(g) => (
                 <Section
-                    title={g.title}
+                    title={g.title === LOCAL && at.server ? `On ${at.server}` : g.title}
                     class="prov-group"
-                    caption={g.title === "API keys" ? <>Kept on this computer, sent only to their provider. Custom endpoints: <code>/login custom</code> in the terminal app.</> : undefined}
+                    caption={g.title === "API keys" ? <>Kept on {p.synced ? "this computer and the servers you sync" : where()}, sent only to their provider. Custom endpoints: <code>/login custom</code> in the terminal app.</> : undefined}
                 >
                     <Show when={g.title === "API keys"}>{keyBox()}</Show>
                     <For each={g.list}>{(pr) => <ProviderRow pr={pr} />}</For>
                 </Section>
             )}
         </For>
+    );
+}
+
+/** A server's own local models (a model server there), read over a connection of this window's own to the Cavvy there. Nothing while it isn't reached. */
+function ServerLocalModels(p: { name: string }) {
+    const [state, setState] = createStore<{ list: ProviderInfo[] }>({ list: [] });
+    const [link, setLink] = createSignal<Rpc>();
+    const refresh = async () => {
+        const l = link();
+        if (l) setState("list", reconcile(await l.call("providers.list", {}), { key: "id" }));
+    };
+    onMount(() => {
+        void linkFor(p.name).then((l) => (setLink(l), refresh())).catch(() => undefined);
+    });
+    return (
+        <Show when={link()}>
+            {(l) => (
+                <ProvidersAtContext.Provider value={{ server: p.name, link: l(), list: () => state.list, refresh, changed: refresh }}>
+                    <ProviderSections localOnly />
+                </ProvidersAtContext.Provider>
+            )}
+        </Show>
+    );
+}
+
+function Providers() {
+    // The user's servers (state/servers.ts), offered from their own computer, by name: the order they're kept in
+    // changes as they're changed.
+    const listed = createMemo(() => [...serverList()].sort((a, b) => a.name.localeCompare(b.name)));
+    onMount(() => {
+        if (machine || !app.hello?.servers) return;
+        void serversUi().then((m) => (setServers(() => m), m.refreshServerList())).catch(() => undefined);
+    });
+    const withServers = () => !machine && listed().length > 0;
+    // Subscriptions are signed in on each machine: one table across them. Keys go with sync; a server's own local
+    // models are its own.
+    return (
+        <>
+            <Show when={withServers()}>
+                <Section title="Subscriptions" class="prov-group">
+                    <Suspense fallback={<div class="set-row"><Spinner size={12} /></div>}>
+                        <SubscriptionGrid here={servers()?.HERE ?? ""} servers={listed().map((s) => s.name)} touched={() => servers()?.serverTouched() ?? 0} manage={(pr) => <ProviderRow pr={pr} />} />
+                    </Suspense>
+                </Section>
+            </Show>
+            <ProviderSections noSubscriptions={withServers()} synced={listed().some((s) => s.syncOn)} />
+            <Show when={withServers()}>
+                <For each={listed()}>{(s) => <ServerLocalModels name={s.name} />}</For>
+            </Show>
+        </>
     );
 }
 
@@ -884,8 +967,9 @@ function Shortcuts() {
 }
 
 /**
- * The desktop app updating itself from main (src/server/app-update.ts): what's
- * new since this build, and Update & restart. The build runs while you work;
+ * The desktop app updating itself (src/server/app-update.ts): from main, what's
+ * new since this build, and Update & restart; a downloaded app, the latest
+ * release, its notes, and Update & restart. The build runs while you work;
  * Cavvy restarts once it's installed. Only the desktop app shows why it can't
  * (a browser's server never updates an app).
  */
@@ -917,9 +1001,17 @@ function Updates() {
                             {(a) => (
                                 <>
                                     <button class="btn sm" disabled={asking()} onClick={() => void check()}>Check now</button>
+                                    <Show when={v().notes}>
+                                        {(url) => <button class="btn ghost sm" onClick={() => void openExternal(url())}>Release notes <ExternalLink size={12} /></button>}
+                                    </Show>
                                     <Show when={a() === "update"}>
                                         <button class="btn primary sm" disabled={update.pending()} onClick={update.request}>
                                             <Download size={14} /> Update &amp; restart
+                                        </button>
+                                    </Show>
+                                    <Show when={a() === "restart"}>
+                                        <button class="btn primary sm" disabled={update.pending()} onClick={update.request}>
+                                            <RotateCcw size={14} /> Restart
                                         </button>
                                     </Show>
                                 </>
@@ -928,6 +1020,9 @@ function Updates() {
                     </Row>
                     <Show when={v().warn}>
                         <div class="upd-warn"><AlertTriangle size={13} /> {v().warn}</div>
+                    </Show>
+                    <Show when={v().problem}>
+                        <div class="upd-warn"><AlertTriangle size={13} /> {v().problem}</div>
                     </Show>
                     <Show when={!u().updating && u().changes?.length}>
                         <ul class="upd-changes" aria-label="New on main">

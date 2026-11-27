@@ -7,8 +7,8 @@
 //   CAVVY_CODESIGN_P12=<the .p12, base64> CAVVY_CODESIGN_P12_PASSWORD=<its password> GITHUB_SHA=<commit> \
 //     node scripts/codesign-release.mjs <folder to write to> <Cavvy.app, or a .tar holding one>...
 //
-// The certificate goes into a keychain of its own, made for this run and deleted at the end; no other keychain is
-// touched. Before signing it checks each app is this release's: its release.json names this commit, its version is
+// The certificate goes into a keychain of its own, made for this run and deleted at the end. It's on the user's
+// keychain search list while it's used, as codesign needs, and taken off again; no other keychain is touched. Before signing it checks each app is this release's: its release.json names this commit, its version is
 // its Info.plist's, and its program is built for the architecture it says. It stops rather than leave anything
 // unsigned: no certificate, an app that doesn't check, or a signature that doesn't verify after it's made.
 //
@@ -17,7 +17,7 @@
 
 import { execFileSync } from "node:child_process";
 import { randomBytes, createHash } from "node:crypto";
-import { createReadStream, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readSync, closeSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { createReadStream, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readSync, closeSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -221,6 +221,10 @@ function temporaryKeychain(p12Base64, password, tmp) {
         // So codesign can use the key without a prompt nobody is there to answer.
         run("security", ["set-key-partition-list", "-S", "apple-tool:,apple:,codesign:", "-s", "-k", secret, keychain], { quiet: true });
         rmSync(p12, { force: true });
+        // On the search list while it's used: codesign on macOS 15 (GitHub's runners) doesn't find the identity in a
+        // keychain that isn't, even one named with --keychain. deleteKeychain takes it off.
+        const list = searchList(run("security", ["list-keychains", "-d", "user"]));
+        run("security", ["list-keychains", "-d", "user", "-s", keychain, ...withoutKeychain(list, keychain)]);
         // Not -v: a self-signed certificate isn't trusted by this machine, and is listed as such.
         const ids = [...run("security", ["find-identity", "-p", "codesigning", keychain]).matchAll(/^\s*\d+\)\s+([0-9A-F]{40})\s+"([^"]+)"/gm)];
         const hashes = [...new Set(ids.map((m) => m[1]))];
@@ -233,9 +237,33 @@ function temporaryKeychain(p12Base64, password, tmp) {
 }
 
 function deleteKeychain(keychain) {
+    // Off the search list first, the rest left as it is now (whatever changed it meanwhile).
+    try {
+        const list = searchList(execFileSync("security", ["list-keychains", "-d", "user"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], env: cleanEnv }));
+        const rest = withoutKeychain(list, keychain);
+        if (rest.length !== list.length) execFileSync("security", ["list-keychains", "-d", "user", "-s", ...rest], { stdio: "ignore", env: cleanEnv });
+    } catch {}
     try {
         execFileSync("security", ["delete-keychain", keychain], { stdio: "ignore", env: cleanEnv });
     } catch {}
+}
+
+/** The keychains `security list-keychains` prints, one quoted path a line. */
+export function searchList(printed) {
+    return [...printed.matchAll(/^\s*"(.+)"\s*$/gm)].map((m) => m[1]);
+}
+
+/** `list` without `keychain`, however each spells its path (/var is /private/var). */
+export function withoutKeychain(list, keychain) {
+    const real = (p) => {
+        try {
+            return realpathSync(p);
+        } catch {
+            return resolve(p);
+        }
+    };
+    const it = real(keychain);
+    return list.filter((k) => real(k) !== it);
 }
 
 /** Signs each app, packs it, checks what was packed, and describes it in `out`. Returns the manifests written. */

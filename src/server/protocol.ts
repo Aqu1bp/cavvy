@@ -1307,6 +1307,11 @@ export interface ProviderInfo {
         /** The CLI's own sign-in command, for when it isn't signed in. */
         signIn: string;
         install: string;
+        /** Settings can install it, in a terminal (CliInfo.installCommand). */
+        installable?: boolean;
+        /** Its install by sync is running there now, or failed with this. */
+        installing?: boolean;
+        installError?: string;
         /** What the plan is called in buttons ("Claude subscription", "ChatGPT plan"). */
         plan: string;
         /** It can have accounts besides Default (false: an ACP agent, with its own sign-in only). */
@@ -1489,7 +1494,7 @@ export interface AppUpdateChange {
     subject: string;
 }
 
-/** Whether the desktop app, built from a checkout (scripts/update-desktop.ts), is behind origin/main, and its update if one is running. */
+/** Whether the desktop app is behind: a checkout's build behind origin/main, or a downloaded one behind the latest release; and its update if one is running. */
 export interface AppUpdateInfo {
     /** Why this copy can't update itself (not the installed desktop app, no record of the checkout it came from); nothing else is set. */
     unavailable?: string;
@@ -1506,8 +1511,22 @@ export interface AppUpdateInfo {
     note?: string;
     checkedAt?: number;
     checking: boolean;
-    /** An update running: since when, and the last line it printed. `restarting`: built and installed, Cavvy restarts next. */
-    updating?: { startedAt: number; line: string; restarting: boolean };
+    /**
+     * An update running: since when, and the last line it printed. `restarting`: built and installed, Cavvy restarts
+     * next. `progress`: a downloaded app's download, 0–1, while it comes.
+     */
+    updating?: { startedAt: number; line: string; restarting: boolean; progress?: number };
+    /**
+     * A downloaded Cavvy (a release build): it updates to Cavvy's latest release, not from main. `installed` and
+     * `latest` are then versions, and `changes` is empty.
+     */
+    release?: boolean;
+    /** The latest release's notes, when it's newer. */
+    notes?: string;
+    /** The latest release needs a newer macOS than this Mac's: the version it needs. */
+    needsSystem?: string;
+    /** The latest release is downloaded and checked: restarting Cavvy puts it in place. */
+    ready?: boolean;
     /** The last check failed (couldn't fetch main, say): the rest is as of the fetch before. */
     error?: string;
     /** The last update failed, or installed without the app restarting: what happened. Cleared when one starts. */
@@ -1877,6 +1896,27 @@ export const RELAYED_SESSION_METHODS = ["session.rename", "session.pin", "sessio
  */
 export const RELAYED_ARCHIVE_OFFER = "session.archiveOffer";
 
+/** Latest sync status from this machine to a server (src/servers/watch.ts). */
+export interface ServerSyncStatus {
+    state: "idle" | "syncing" | "synced" | "error";
+    at?: number;
+    error?: string;
+    missingClis?: string[];
+    needsSignIn?: { provider: string; accountId: string; name: string }[];
+}
+
+export interface ServerSyncItemResult {
+    name: string;
+    ok: boolean;
+    summary?: string;
+    error?: string;
+    missingClis?: string[];
+    needsSignIn?: { provider: string; accountId: string; name: string }[];
+    warnings?: string[];
+    /** Providers whose synced key was to leave the server and is still there. */
+    keysLeft?: string[];
+}
+
 /** A server as a window lists it. */
 export interface ServerSummary {
     name: string;
@@ -1889,6 +1929,10 @@ export interface ServerSummary {
     cost?: string;
     /** An agent created it, and Cavvy knows how to delete it at its provider. */
     rented?: boolean;
+    /** Kept in sync with this machine (ServerEntry.sync): on, off, or left out when it hasn't been asked. */
+    syncOn?: boolean;
+    /** Sync status when an error or pending sign-in needs attention. */
+    sync?: ServerSyncStatus;
 }
 
 /**
@@ -2071,6 +2115,10 @@ export interface TerminalLogin {
     provider: string;
     accountId: string;
     name: string;
+    /** One of the user's servers: the sign-in is the CLI's there, reached from this machine (not asked of a server). */
+    server?: string;
+    /** Installs the CLI there instead (its installCommand), in this terminal. */
+    install?: boolean;
 }
 
 /** One of the window's terminals. `exitCode`: its shell has exited (it's kept, with its output, until closed). */
@@ -2179,11 +2227,15 @@ export interface Methods {
     /** The same machine, to the same windows: the sessions on that server it asks its user something for right now. */
     "offers.asking": { params: { name: string }; result: { sessionId: string; lent: LentSession }[] };
     /**
-     * Only a server takes these, from the user's own machine (src/servers/sync.ts): what that machine gave it of its
-     * skills and commands (path under the home: sha256 of what it held), and more of them, or some gone.
+     * Only a server takes these, from the user's own machine (src/servers/sync.ts, sync-state.ts): files
+     * (skills, commands, agents, memory, themes, keybindings) and structured state (settings, remote plugins,
+     * provider topology, and opt-in Cavvy API keys / MCP secrets).
      */
     "sync.files": { params: Record<string, never>; result: Record<string, string> };
     "sync.apply": { params: { files: { path: string; data: string; sha: string; exec?: boolean }[]; remove: string[] }; result: { written: number; removed: number } };
+    /** `signIns`: also which CLIs there need signing in (needsSignIn), which takes starting each. */
+    "sync.state": { params: { signIns?: boolean }; result: { digest?: string; missingClis: string[]; needsSignIn: { provider: string; accountId: string; name: string }[] } };
+    "sync.applyState": { params: { digest: string; payload: unknown; signIns?: boolean }; result: unknown };
     /**
      * Sessions on the user's other machines (src/server/far-peers.ts). `peers.hub`: the user's own computer, connected
      * to this server, answers for every other machine (`peers.call` events), with `peers.result`. `peers.list`,
@@ -2209,8 +2261,10 @@ export interface Methods {
      * (RELAYED_ARCHIVE_OFFER).
      */
     "servers.relay": { params: { name: string; method: string; params: Record<string, unknown> }; result: { worktree: true } | null };
-    "servers.add": { params: { name: string; destination: string; port?: number; identityFile?: string; trust?: string[] }; result: AddResult };
+    "servers.add": { params: { name: string; destination: string; port?: number; identityFile?: string; trust?: string[]; sync?: boolean }; result: AddResult };
     "servers.copy": { params: { name: string }; result: { took: string; left?: string } };
+    "servers.sync": { params: { name?: string }; result: { results: ServerSyncItemResult[] } };
+    "servers.setSync": { params: { name: string; on: boolean }; result: null };
     "servers.check": { params: { name: string }; result: ServerCheck };
     /**
      * `retry`: the window's connection trying again by itself. `renew`: the sign-in it was last given opened nothing.
@@ -2236,7 +2290,7 @@ export interface Methods {
     "servers.mcpCallback": { params: { name: string; url: string }; result: null };
     /** What the page of an MCP sign-in under way here ended with, brought by the machine with the browser: how it was taken (an HTTP status; 404 when no sign-in waits for it). */
     "mcp.callback": { params: { query: string }; result: { status: number } };
-    "terminal.open": { params: { id: string; cwd: string; cols: number; rows: number; login?: { provider: string; accountId: string }; /** A sign-in card's command, typed into the new shell for the user to run. */ signIn?: { session: string; interaction: string } }; result: { id: string; cwd: string } };
+    "terminal.open": { params: { id: string; cwd: string; cols: number; rows: number; login?: { provider: string; accountId: string; /** One of the user's servers: that CLI's sign-in there, in this terminal. */ server?: string; name?: string }; /** A sign-in card's command, typed into the new shell for the user to run. */ signIn?: { session: string; interaction: string } }; result: { id: string; cwd: string } };
     "terminal.write": { params: { id: string; data: string }; result: null };
     /** The window has drawn this many characters of the terminal's output (flow control). */
     "terminal.ack": { params: { id: string; chars: number }; result: null };

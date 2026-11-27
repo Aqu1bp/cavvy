@@ -6,8 +6,9 @@
 // It never starts or sets up anything there: a server that's stopped, or that needs the user's word, is left as it
 // is and said to be so.
 
-import type { ConnectResult, MachineOverview, RELAYED_ARCHIVE_OFFER, RELAYED_SESSION_METHODS, ServerEvent, SessionSummary } from "../server/protocol";
+import type { ConnectResult, MachineOverview, RELAYED_ARCHIVE_OFFER, RELAYED_SESSION_METHODS, ServerEvent, ServerSyncStatus, SessionSummary } from "../server/protocol";
 import { openBoundedSocket, type BoundedSocket } from "./bounded-socket";
+import type { SyncRunResult } from "./sync-state";
 
 /** A call of a tool this machine lends, as the server sent it. */
 export interface LentCall {
@@ -109,6 +110,9 @@ export function heardSession(v: unknown): SessionSummary | undefined {
 export type SessionChange = { session: SessionSummary } | { remove: string } | { unlisted: string };
 
 
+/** While a server installs a CLI (sync-install.ts), how often it's synced again to see it done. */
+const INSTALL_RECHECK_MS = 20_000;
+
 export class MachineWatch {
     private ws?: BoundedSocket;
     private sessions = new Map<string, SessionSummary>();
@@ -134,8 +138,8 @@ export class MachineWatch {
             lends?: () => string[];
             /** This machine's own default permission mode: what its lent tools are held to there (tools/lent.ts lentMode). */
             lendMode?: () => string;
-            /** Brings the server level with this machine's skills and commands, asking it over this connection (sync.ts). */
-            sync?: (ask: (method: string, params: Record<string, unknown>) => Promise<unknown>) => Promise<void>;
+            /** Brings the server level with this machine's files and state (sync.ts, sync-state.ts). */
+            sync?: (ask: (method: string, params: Record<string, unknown>) => Promise<unknown>) => Promise<SyncRunResult | void>;
             /**
              * Answers what a session on the server asks about the user's other machines' sessions (far-peers.ts
              * answerPeers): this one says so on connecting.
@@ -186,6 +190,38 @@ export class MachineWatch {
         if (this.stopped || this.ws) return;
         this.tries = 0;
         void this.attempt(false);
+    }
+
+    private isConnected(): boolean {
+        return this.state === "connected";
+    }
+
+    /** Ensures the watch's WebSocket is connected (triggering a fresh attempt if needed) before returning. */
+    async connectNow(timeoutMs = 15_000): Promise<boolean> {
+        const deadline = Date.now() + timeoutMs;
+        const left = () => Math.max(0, deadline - Date.now());
+        if (this.isConnected()) return true;
+        if (this.stopped) return false;
+        // Up to two passes: initial connect + optional one-time token renew on early close.
+        for (let pass = 0; pass < 2 && left() > 0; pass++) {
+            if (this.isConnected()) return true;
+            if (this.stopped) return false;
+            if (!this.ws) {
+                if (!this.trying) {
+                    this.tries = 0;
+                    clearTimeout(this.timer);
+                    void this.attempt(false);
+                }
+                if (this.attemptDone) await Promise.race([this.attemptDone, Bun.sleep(left())]);
+            }
+            if (this.isConnected()) return true;
+            if (this.ws && this.wsReady && left() > 0) {
+                await Promise.race([this.wsReady, Bun.sleep(left())]);
+            }
+            if (this.isConnected()) return true;
+            if (!this.trying && !this.ws) break;
+        }
+        return this.isConnected();
     }
 
     /** Its sessions as last heard, archived ones among them, the most recent first. */
@@ -284,19 +320,63 @@ export class MachineWatch {
     }
 
     /** A sync under way, and whether another was asked for meanwhile (it runs once this one ends). */
-    private syncing?: Promise<void>;
+    private syncing?: Promise<SyncRunResult | undefined>;
     private syncAgain = false;
+    private syncInfo: ServerSyncStatus = { state: "idle" };
+
+    /** Latest sync status for this server. */
+    syncStatus(): ServerSyncStatus {
+        return this.syncInfo;
+    }
+
+    /** Timeout per sync RPC: state sync may clone a plugin repository on the server. */
+    private syncAsk = (method: string, params: Record<string, unknown>) => this.request(method, params, SYNC_ANSWER, method === "sync.applyState" ? 90_000 : REPLY_MS);
+
+    /** Set while the server installs a CLI: it's synced again then, to turn the CLI on once it's there. */
+    private installTimer?: ReturnType<typeof setTimeout>;
+
+    private recordSyncResult(r: SyncRunResult | void) {
+        const state = r && typeof r === "object" ? r.state : undefined;
+        clearTimeout(this.installTimer);
+        this.installTimer = undefined;
+        if (state?.installing?.length && !this.stopped) {
+            this.installTimer = setTimeout(() => {
+                this.installTimer = undefined;
+                this.resync();
+            }, INSTALL_RECHECK_MS);
+            (this.installTimer as { unref?: () => void }).unref?.();
+        }
+        const st = state?.result;
+        const missingClis = state?.missingClis ?? st?.missingClis;
+        const needsSignIn = state?.needsSignIn ?? st?.needsSignIn;
+        const warn = state?.unsupported ? `${this.name} runs an older Cavvy; update it to sync settings and providers.` : st?.warnings?.[0];
+        this.syncInfo = {
+            state: warn ? "error" : "synced",
+            at: Date.now(),
+            ...(warn ? { error: cut(warn, 200) } : {}),
+            ...(missingClis?.length ? { missingClis } : {}),
+            ...(needsSignIn?.length ? { needsSignIn } : {}),
+        };
+    }
 
     /**
-     * Brings the server's skills and commands level with this machine's (src/servers/sync.ts): when the connection
-     * opens, and when they change here. One at a time; asked for meanwhile, it runs once more after.
+     * Brings the server level with this machine (sync.ts, sync-state.ts): when the connection opens,
+     * and when local files/settings/providers change. One at a time; asked for meanwhile, runs once more after.
      */
     resync() {
         if (!this.o.sync || this.state !== "connected") return;
         if (this.syncing) return void (this.syncAgain = true);
+        this.syncInfo = { ...this.syncInfo, state: "syncing", error: undefined };
         this.syncing = this.o
-            .sync((method, params) => this.request(method, params, SYNC_ANSWER))
-            .catch(() => undefined)
+            .sync(this.syncAsk)
+            .then((r) => {
+                this.recordSyncResult(r);
+                return r ?? undefined;
+            })
+            .catch((e) => {
+                this.syncInfo = { state: "error", at: Date.now(), error: cut((e as Error)?.message ?? String(e), 200) };
+                return undefined;
+            })
             .finally(() => {
                 this.syncing = undefined;
                 if (this.syncAgain) {
@@ -304,6 +384,36 @@ export class MachineWatch {
                     this.resync();
                 }
             });
+    }
+
+    /** Runs a sync now and resolves with its result (or rejects on error/disconnected). Serializes concurrent callers. */
+    async syncNow(run?: (ask: (method: string, params: Record<string, unknown>) => Promise<unknown>) => Promise<SyncRunResult | void>): Promise<SyncRunResult | undefined> {
+        const sync = run ?? this.o.sync;
+        if (!sync) return undefined;
+        if (!this.isConnected()) throw new Error(`${this.name} isn't connected.`);
+        while (this.syncing) await this.syncing;
+        if (!this.isConnected()) throw new Error(`${this.name} isn't connected.`);
+        this.syncInfo = { ...this.syncInfo, state: "syncing", error: undefined };
+        const tracked = sync(this.syncAsk).then(
+            (r) => {
+                this.recordSyncResult(r);
+                return r ?? undefined;
+            },
+            (e) => {
+                this.syncInfo = { state: "error", at: Date.now(), error: cut((e as Error)?.message ?? String(e), 200) };
+                throw e;
+            },
+        );
+        this.syncing = tracked.catch(() => undefined);
+        try {
+            return await tracked;
+        } finally {
+            this.syncing = undefined;
+            if (this.syncAgain) {
+                this.syncAgain = false;
+                this.resync();
+            }
+        }
     }
 
     /** What this machine lends changed: said to the server on the connection there is, if any. */
@@ -314,9 +424,12 @@ export class MachineWatch {
 
     stop() {
         this.stopped = true;
+        clearTimeout(this.installTimer);
         clearTimeout(this.timer);
         clearTimeout(this.keepTimer);
         this.keepTimer = undefined;
+        this.settleWs?.(false);
+        this.settleWs = undefined;
         this.ws?.close();
     }
 
@@ -325,6 +438,10 @@ export class MachineWatch {
         this.state = state;
         this.o.changed();
     }
+
+    private attemptDone?: Promise<void>;
+    private wsReady?: Promise<boolean>;
+    private settleWs?: (ok: boolean) => void;
 
     private later(ms?: number) {
         if (this.stopped) return;
@@ -335,26 +452,30 @@ export class MachineWatch {
         if (ms === undefined) this.tries++;
     }
 
-    private async attempt(renew: boolean): Promise<void> {
-        if (this.stopped || this.trying) return;
+    private attempt(renew: boolean): Promise<void> {
+        if (this.stopped || this.trying) return this.attemptDone ?? Promise.resolve();
         this.trying = true;
         clearTimeout(this.timer);
-        try {
-            const at = await this.o.reach(renew).catch((): ConnectResult => ({ status: "failed", problem: { message: "" } }));
-            if (this.stopped) return;
-            // Until the user opens it again, which pokes this.
-            if (at.status === "disconnected") return this.set("disconnected");
-            if (at.status !== "connected") {
-                // Stopped on purpose, or waiting for the user's word (its key, its version): theirs to change, from a
-                // window. Until then it's asked about again only now and then, in case it changed some other way.
-                this.set(at.status === "stopped" ? "stopped" : at.status === "failed" ? "unreachable" : "needs-you");
-                this.later(at.status === "failed" ? undefined : (this.o.idleRetryMs ?? IDLE_RETRY_MS));
-                return;
+        const run = (async () => {
+            try {
+                const at = await this.o.reach(renew).catch((): ConnectResult => ({ status: "failed", problem: { message: "" } }));
+                if (this.stopped) return;
+                // Until the user opens it again, which pokes this.
+                if (at.status === "disconnected") return this.set("disconnected");
+                if (at.status !== "connected") {
+                    // Stopped on purpose, or waiting for the user's word (its key, its version): theirs to change, from a
+                    // window. Until then it's asked about again only now and then, in case it changed some other way.
+                    this.set(at.status === "stopped" ? "stopped" : at.status === "failed" ? "unreachable" : "needs-you");
+                    this.later(at.status === "failed" ? undefined : (this.o.idleRetryMs ?? IDLE_RETRY_MS));
+                    return;
+                }
+                this.listen(at.url, at.token, renew);
+            } finally {
+                this.trying = false;
             }
-            this.listen(at.url, at.token, renew);
-        } finally {
-            this.trying = false;
-        }
+        })();
+        this.attemptDone = run;
+        return run;
     }
 
     /** When the last few notices of each sort were passed on (DONE_PER_MINUTE, ASKS_PER_MINUTE). */
@@ -375,6 +496,10 @@ export class MachineWatch {
         // One connection at a time: an earlier one that's still there is let go, and isn't listened to any more.
         const before = this.ws;
         this.ws = undefined;
+        this.settleWs?.(false);
+        this.wsReady = new Promise<boolean>((r) => {
+            this.settleWs = r;
+        });
         before?.close();
         let listed = false;
         /** Calls of tools this machine lends that are running here, by the server's id for each. */
@@ -430,6 +555,8 @@ export class MachineWatch {
                 this.sessions.clear();
                 list(msg.result, false);
                 this.state = "connected";
+                this.settleWs?.(true);
+                this.settleWs = undefined;
                 // Told once the archived are in too (they come at once), so a window's archived rows aren't dropped and put back.
                 told = setTimeout(() => this.ws === ws && this.o.changed(), ARCHIVED_MS);
                 (told as { unref?: () => void }).unref?.();
@@ -582,6 +709,8 @@ export class MachineWatch {
                     call.gone();
                 }
                 this.ws = undefined;
+                this.settleWs?.(false);
+                this.settleWs = undefined;
                 if (this.stopped) return;
                 // More than a list of sessions ever is: not read, and this server isn't listened to for a while.
                 this.set(why === "too-much" ? "unreachable" : "connecting");
