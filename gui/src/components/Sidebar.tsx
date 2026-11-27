@@ -5,11 +5,10 @@
 // dot; sending to one brings it back. The ones waiting on you are pinned above
 // them all, under Needs you, with what they ask, until answered.
 
-import { batch, createEffect, createMemo, createSignal, For, lazy, Match, on, onCleanup, onMount, Show, Suspense, Switch, untrack, type JSX } from "solid-js";
-import { Archive, ArchiveRestore, Check, CheckCheck, ChevronsDownUp, ChevronRight, ChevronsUpDown, Download, Folder, FolderOpen, FolderPlus, Layers, ListFilter, MoreHorizontal, PanelLeft, Pencil, Pin, PinOff, Plus, Search, Settings, SquarePen, Trash2, Undo2, X } from "lucide-solid";
+import { batch, createEffect, createMemo, createSignal, ErrorBoundary, For, lazy, Match, on, onCleanup, onMount, Show, Suspense, Switch, untrack, type JSX } from "solid-js";
+import { Archive, ArchiveRestore, Check, CheckCheck, ChevronsDownUp, ChevronRight, ChevronsUpDown, Folder, FolderOpen, FolderPlus, Layers, ListFilter, MoreHorizontal, PanelLeft, Pencil, Pin, PinOff, Plus, Search, Settings, SquarePen, Trash2, Undo2, X } from "lucide-solid";
 import type { SessionSummary } from "@shared/protocol";
 import { activate, app, handleFor, isUnread, refreshSessions, reportError, warmFor } from "../state/app";
-import { createUpdateAction } from "./UpdateAction";
 import { archive, archiveSessions, chooseProject, deleteSessions, newSession, openProject, openWaiting, pin, rename, settle, settleSessions, toggleSidebar } from "../state/actions";
 import { prefs, setPrefs } from "../state/prefs";
 import { agentFocus, railFree, requestComposerFocus, setDeletedOpen, setPaletteOpen, setRailDrag, setSettingsTab, settingsTab } from "../state/ui";
@@ -25,8 +24,7 @@ import { isDesktop, machine, os } from "../lib/platform";
 import { Menu } from "./ui/Menu";
 import { rowMenuKey } from "../lib/menu";
 import { ProviderIcon } from "./ui/ProviderIcon";
-import { Logo, Spinner } from "./ui/bits";
-import { updateView } from "../lib/app-update";
+import { Logo } from "./ui/bits";
 import { actionOf, keyText, shortcut, withShortcut } from "../state/keybindings";
 import { besideInFront, inSplit, setDraggedSession, SESSION_DRAG } from "../state/split";
 
@@ -237,26 +235,15 @@ function RowEnd(p: { s: SessionSummary; unread: boolean }) {
 const PlanFooter = lazy(() => import("./PlanFooter").then((m) => ({ default: m.PlanFooter })));
 
 /**
- * Beside Settings while the desktop app has an update from main, or one is running: one click updates it, and Cavvy
- * restarts once the new build is installed. Its look says how it stands (the accent: ready; a spinner: building or
- * restarting; red: the last one failed, click to try again), its tooltip the rest. Settings → About has the detail.
+ * Beside Settings while there's an update or one is running (UpdateButton.tsx): loaded only then, so a window with
+ * nothing to update doesn't carry it.
  */
-function UpdateButton() {
-    const rail = () => updateView(app.update, 0)?.rail;
-    const update = createUpdateAction();
-    return (
-        <>
-            <Show when={rail()}>
-                {(r) => (
-                    <button class={`hb lg upd-btn ${r().state}`} title={r().label} aria-label={r().label} aria-disabled={r().state === "busy" || update.pending() || undefined} onClick={update.request}>
-                        {r().state === "busy" ? <Spinner size={15} /> : <Download size={16} />}
-                    </button>
-                )}
-            </Show>
-            <update.Confirm />
-        </>
-    );
-}
+const UpdateButton = lazy(() => import("./UpdateButton").then((m) => ({ default: m.UpdateButton })));
+/** Whether the rail may show the update button: a superset of when it does (updateView's `rail`). */
+const mayUpdate = () => {
+    const u = app.update;
+    return Boolean(u && (u.available || u.updating || u.failed || u.ready));
+};
 
 /**
  * A session waiting on you, pinned under Needs you, its one row in the rail
@@ -985,7 +972,14 @@ export function Sidebar() {
                 <Suspense fallback={<span class="grow" />}>
                     <PlanFooter recent={recent} />
                 </Suspense>
-                <UpdateButton />
+                {/* If its chunk can't load, only the button is missing: the rest of the window carries on. */}
+                <Show when={mayUpdate()}>
+                    <ErrorBoundary fallback={null}>
+                        <Suspense>
+                            <UpdateButton />
+                        </Suspense>
+                    </ErrorBoundary>
+                </Show>
                 <button class="hb lg" title={withShortcut("Settings", "app:settings")} aria-label="Settings" onClick={() => setSettingsTab("general")}>
                     <Settings size={16} />
                 </button>

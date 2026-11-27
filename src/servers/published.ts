@@ -90,7 +90,7 @@ const cacheDir = () => join(cavvyHome(), "cache", "server-builds");
 const STALL_MS = 60_000;
 
 /** The body in pieces, given up when none comes for STALL_MS (or `signal` says stop). */
-async function* pieces(r: Response, signal: AbortSignal | undefined): AsyncGenerator<Uint8Array> {
+export async function* pieces(r: Response, signal: AbortSignal | undefined): AsyncGenerator<Uint8Array> {
     const reader = r.body!.getReader();
     try {
         for (;;) {
@@ -112,7 +112,7 @@ async function* pieces(r: Response, signal: AbortSignal | undefined): AsyncGener
     }
 }
 
-async function small(url: string, signal: AbortSignal | undefined, what: string): Promise<string | undefined> {
+export async function small(url: string, signal: AbortSignal | undefined, what: string): Promise<string | undefined> {
     const r = await fetch(url, { redirect: "follow", signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000) });
     if (r.status === 404) return undefined;
     if (!r.ok || !r.body) throw new ServerError(`Couldn't download ${what} (HTTP ${r.status}).`);
