@@ -1827,7 +1827,8 @@ export class Agent {
             tools.push(...selfChecked(serverServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId))));
             instructions.push(SERVER_INSTRUCTIONS);
         }
-        else if (!this.oneShot && onServer()) instructions.push(SERVERS_ELSEWHERE_INSTRUCTIONS);
+        // First, where it's sure to be read by an agent that keeps only the start of a server's instructions.
+        else if (!this.oneShot && onServer()) instructions.unshift(SERVERS_ELSEWHERE_INSTRUCTIONS);
         if (theming) {
             tools.push(...selfChecked(themeServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId))));
             instructions.push(THEME_INSTRUCTIONS);
