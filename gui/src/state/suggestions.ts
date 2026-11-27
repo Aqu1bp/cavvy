@@ -23,6 +23,8 @@ export const boxName = (on: string | undefined) => on ?? HERE;
 const SERVER_NAME = /^[a-z0-9][a-z0-9-]{0,39}$/;
 /** Machine `on` as a suggestion's record names it: this computer by its name for the user, which no server can have (an empty one isn't kept). */
 const recordName = (on: string | undefined) => on ?? HERE;
+/** Machine `on` as the machine a task starts on calls it (src/server/far-peers.ts HOME_NAME: the user's computer is "mac" on its servers). */
+const peerName = (on: string | undefined) => on ?? (os === "macos" ? "mac" : "desktop");
 /** Back from a record's name: a server's, or this computer. */
 const fromRecord = (name: string) => (SERVER_NAME.test(name) ? name : undefined);
 
@@ -302,7 +304,8 @@ export async function startSuggestion(pick: StartPick, calls: StartCalls = windo
             key: `${sessionId}#${suggestion.id}`,
             session: sessionId,
             title: pick.from.title,
-            ...(pick.on !== suggesterOn ? { machine: recordName(suggesterOn) } : {}),
+            // As the target names the suggesting session's machine: the new session's agent is told to message it there.
+            ...(pick.on !== suggesterOn ? { machine: peerName(suggesterOn) } : {}),
         },
     };
     let result: StartTaskResult;

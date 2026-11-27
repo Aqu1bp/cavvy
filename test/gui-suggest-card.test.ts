@@ -129,8 +129,8 @@ test("on a server: started there, and both sides say which machine", async () =>
     const [, on, params] = log[1] as [string, string, any];
     expect(on).toBe("box");
     expect(params.worktree).toBeUndefined();
-    // The suggester is this computer's, named as the user knows it (no server can be called that).
-    expect(params.origin.machine).toMatch(/^This (Mac|computer)$/);
+    // The suggester is this computer, named as its servers name it.
+    expect(params.origin.machine).toMatch(/^(mac|desktop)$/);
     expect((log[2] as [string, any])[1].started.machine).toBe("box");
 });
 

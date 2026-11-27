@@ -224,6 +224,22 @@ describe("a suggested task in a GUI session", () => {
         a.close();
     });
 
+    test("this computer's suggestion started on a server: the server takes it, and its agent is told where to ask", async () => {
+        const a = await client();
+        const id = await suggested(a);
+        const v = a.view(id);
+        const s = suggestions(v)[0]!;
+        // This server stands in for server "box"; the suggesting session is this computer's.
+        const out = await startSuggestion(pick(id, s, v, { on: "box", worktree: false }), calls(a));
+        expect(out.kind).toBe("started");
+        const made = (out as { started: { sessionId: string } }).started.sessionId;
+        const rt = srv.engine.runtimes.get(made)!;
+        for (let i = 0; i < 200 && !rt.session.messages.length; i++) await Bun.sleep(20);
+        // Named as the server names the user's computer, so send_to_session reaches it from there.
+        expect(JSON.stringify(rt.session.messages[0]?.content)).toMatch(new RegExp(`session (mac|desktop)/${id} `));
+        a.close();
+    });
+
     test("a folder that isn't there: not started, back to pending, and the card says why", async () => {
         const a = await client();
         const id = await suggested(a);

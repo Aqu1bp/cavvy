@@ -6,13 +6,25 @@ import { readFileSync } from "fs";
 import { transformSync } from "../gui/node_modules/@babel/core/lib/index.js";
 import solidPreset from "../gui/node_modules/babel-preset-solid/index.js";
 import * as solid from "../gui/node_modules/solid-js/dist/solid.js";
-import * as store from "../gui/node_modules/solid-js/store/dist/store.js";
 
 const source = readFileSync(new URL("../gui/src/components/blocks/SuggestCard.tsx", import.meta.url), "utf8")
     .replace(/^import [^;]*;\n/gm, "")
     .replace("export default function SuggestCard", "function SuggestCard");
 
 type Node = { tag: string; props: Record<string, any> };
+
+/**
+ * A keyed store on the same signals the compiled card uses (solid-js/store resolves to another build of Solid here,
+ * whose changes the card's effects wouldn't see): what the card does with one, reading a key and setting a key.
+ */
+function createStore<T extends Record<string, any>>(init: T) {
+    const sigs = new Map<string, [() => any, (v: any) => void]>();
+    const at = (k: string) => {
+        if (!sigs.has(k)) sigs.set(k, solid.createSignal(init[k]));
+        return sigs.get(k)!;
+    };
+    return [new Proxy({}, { get: (_t, k) => at(String(k))[0]() }), (k: string, v: any) => at(k)[1](() => v)] as const;
+}
 
 function card(o: { machine?: string; cwd?: string; start?: (pick: any) => Promise<any> } = {}) {
     const nodes: Node[] = [];
@@ -31,7 +43,12 @@ function card(o: { machine?: string; cwd?: string; start?: (pick: any) => Promis
         setProp: (node: Node, key: string, value: any) => {
             node.props[key] = value;
         },
-        insert: (_node: any, value: any) => solid.createRenderEffect(() => resolve(value)),
+        // What's put in an element, as its text when it's text (a button's label).
+        insert: (node: any, value: any) =>
+            solid.createRenderEffect(() => {
+                const v = resolve(value);
+                if (typeof v === "string") node.text = v;
+            }),
     };
     const compiled = transformSync(source, {
         filename: "SuggestCard.tsx",
@@ -49,7 +66,7 @@ function card(o: { machine?: string; cwd?: string; start?: (pick: any) => Promis
     const deps = {
         renderer,
         ...solid,
-        createStore: store.createStore,
+        createStore,
         app: { hello: { servers: 1, homeDir: "/home/me" } },
         connOn: () => "open",
         handleFor: () => ({ view: { state: { cwd: o.cwd ?? "/home/me/repo", title: "Fix the docs", mode: "default", branch: "main", model: { ref: "mock:a" } } } }),
@@ -154,6 +171,22 @@ test("picking another model, or turning New worktree off, clears the last Start'
         expect(c.problem()).toBeDefined();
         c.toggle.props.onChange(false);
         expect(c.problem()).toBeUndefined();
+    } finally {
+        c.dispose();
+    }
+});
+
+test("after a Start that can be tried again, the button says Try again, and Start whenever it can't be pressed", async () => {
+    const c = card({ start: async () => ({ kind: "failed", message: "box didn't answer.", retry: true }) });
+    try {
+        const button = () => c.nodes.find((n) => n.tag === "button" && n.props.class === "pbtn primary")!;
+        button().props.onClick();
+        for (let i = 0; i < 50 && (button() as any).text !== "Try again"; i++) await Bun.sleep(1);
+        expect((button() as any).text).toBe("Try again");
+        // Nothing to start with (no title): disabled, and not "Try again".
+        c.byClass("sg-title")!.props.onInput({ currentTarget: { value: "" } });
+        expect(button().props.disabled).toBe(true);
+        expect((button() as any).text).toBe("Start");
     } finally {
         c.dispose();
     }

@@ -359,7 +359,7 @@ function Pending(p: { suggestion: SuggestionState; sessionId: string; key: strin
                     Dismiss
                 </button>
                 <button class="pbtn primary" disabled={starting() || Boolean(blocked())} onClick={() => void start()}>
-                    {problem()?.retry ? "Try again" : "Start"}
+                    {problem()?.retry && !starting() && !blocked() ? "Try again" : "Start"}
                 </button>
             </div>
         </>
