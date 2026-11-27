@@ -174,6 +174,11 @@ describe("the card's states", () => {
         expect(branchSlug("Login button misaligned!")).toBe("fix/login-button-misaligned");
         expect(branchSlug("Ünïcode & émoji 🎉")).toBe("fix/unicode-emoji");
         expect(branchSlug("!!!")).toBe("fix/task");
+        // A leading "fix" isn't said twice.
+        expect(branchSlug("Fix subtract() in math.ts returning a + b")).toBe("fix/subtract-in-math-ts-returning-a-b");
+        expect(branchSlug("Fixes: login")).toBe("fix/login");
+        expect(branchSlug("fixed")).toBe("fix/task");
+        expect(branchSlug("Fixture loader flaky")).toBe("fix/fixture-loader-flaky");
         expect(branchSlug("a ".repeat(60)).length).toBeLessThanOrEqual(44);
     });
 });

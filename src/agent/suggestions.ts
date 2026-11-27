@@ -212,7 +212,7 @@ export function pendingCount(records: Iterable<SuggestionRecord>): number {
     return n;
 }
 
-/** "fix/<slug>" for a title: lower case, words joined by "-", at most 40 characters of them. */
+/** "fix/<slug>" for a title: lower case, words joined by "-", at most 40 characters of them, a leading "fix" left out. */
 export function branchSlug(title: string): string {
     const words = title
         .normalize("NFKD")
@@ -222,6 +222,8 @@ export function branchSlug(title: string): string {
         .trim()
         .split(" ")
         .filter(Boolean);
+    // "Fix the login button": the prefix says it already.
+    if (/^fix(es|ed)?$/.test(words[0] ?? "")) words.shift();
     let slug = "";
     for (const w of words) {
         const next = slug ? `${slug}-${w}` : w;
