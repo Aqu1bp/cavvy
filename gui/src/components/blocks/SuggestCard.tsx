@@ -6,12 +6,12 @@ import { createEffect, createMemo, createSignal, For, Match, onCleanup, Show, Sw
 import { Check, ChevronDown, CircleAlert, Folder, GitBranchPlus, Lightbulb, Server, SquareArrowOutUpRight } from "lucide-solid";
 import { createStore } from "solid-js/store";
 import type { EffortLevel, SuggestionStarted, SuggestionState } from "@shared/protocol";
-import { app, connOn, handleFor, loadMachine, machineOf, modelsKnownOn } from "../../state/app";
+import { app, connOn, handleFor, machineOf } from "../../state/app";
 import { chooseFolder } from "../../state/actions";
 import { setFolderPickerOpen } from "../../state/ui";
 import { tildify } from "../../lib/format";
 import { machine as windowMachine } from "../../lib/platform";
-import { awayKey, boxName, chooseEffort, chooseModel, defaultsOf, HERE, linkOn, listServers, modelsOf, openStarted, setSuggestion, startedOn, startSuggestion, visible, whyLine, windowCalls, type MachineChoice } from "../../state/suggestions";
+import { awayKey, boxName, chooseEffort, chooseModel, defaultsOf, HERE, linkOn, listServers, listsOn, loadMachine, modelsKnownOn, modelsOf, openStarted, setSuggestion, startedOn, startSuggestion, visible, whyLine, windowCalls, type MachineChoice } from "../../state/suggestions";
 import { ModelPicker } from "../ModelPicker";
 import { Menu } from "../ui/Menu";
 import { Spinner, Toggle } from "../ui/bits";
@@ -33,6 +33,13 @@ const drafts = new Map<string, Draft>();
 const attemptsOf = new Map<string, number>();
 /** Cards with a Start of this window's under way. */
 const [busyOf, setBusyOf] = createStore<Record<string, boolean>>({});
+/** What the last Start from this window came to, and whether where it starts has been changed since: by suggestion. */
+const [problemOf, setProblemOf] = createStore<Record<string, { message: string; retry?: boolean } | undefined>>({});
+const [changedOf, setChangedOf] = createStore<Record<string, boolean>>({});
+/** The card's Start as it's drawn now: what the trust question runs once answered (a card drawn again has its own). */
+const startOf = new Map<string, () => void>();
+/** When this window first saw each claim: its age is timed by this window's clock, not the claiming machine's. */
+const claimSeen = new Map<string, { claimedAt: number; at: number }>();
 /** Started from this window: shown so even if the suggesting session couldn't be told. */
 const [startedHere, setStartedHere] = createStore<Record<string, SuggestionStarted>>({});
 /** Suggestions this window has drawn: only one it hasn't, just made, comes in with an entrance. */
@@ -60,7 +67,7 @@ export default function SuggestCard(p: { suggestion: SuggestionState; sessionId:
                             </Show>
                             <span class="truncate">
                                 <Show when={started().problem} fallback={<>Started “{visible(started().title)}”{onBox(p.sessionId, startedOn(p.sessionId, started()))}</>}>
-                                    Started, but stopped: {started().problem}
+                                    Started, but the prompt wasn't sent: {started().problem}
                                 </Show>
                             </span>
                             <span class="grow" />
@@ -141,10 +148,18 @@ function Pending(p: { suggestion: SuggestionState; sessionId: string; key: strin
     // Claimed more than a minute ago with no word since (the window that claimed it closed mid-start, say): Start
     // is offered again, and takes the claim over. A one-off timer says when that minute is up.
     const [tick, setTick] = createSignal(0);
-    const stale = () => (tick(), s().state === "starting" && Date.now() - (s().claimedAt ?? 0) > STALE_CLAIM_MS);
+    const seenAt = () => {
+        const c = s().claimedAt ?? 0;
+        const had = claimSeen.get(p.key);
+        if (had?.claimedAt === c) return had.at;
+        const at = Date.now();
+        claimSeen.set(p.key, { claimedAt: c, at });
+        return at;
+    };
+    const stale = () => (tick(), s().state === "starting" && Date.now() - seenAt() > STALE_CLAIM_MS);
     createEffect(() => {
         if (s().state !== "starting") return;
-        const left = STALE_CLAIM_MS - (Date.now() - (s().claimedAt ?? 0));
+        const left = STALE_CLAIM_MS - (Date.now() - seenAt());
         if (left <= 0) return;
         const t = setTimeout(() => setTick((n) => n + 1), left + 50);
         onCleanup(() => clearTimeout(t));
@@ -152,9 +167,16 @@ function Pending(p: { suggestion: SuggestionState; sessionId: string; key: strin
     // This window's own Start too: one that hasn't answered in that minute is let go of, and Start offered again.
     const starting = () => (busy() || s().state === "starting") && !stale();
     /** What the last Start here came to, else what the suggestion says the last one did (any window's). */
-    const [problem, setProblem] = createSignal<{ message: string; retry?: boolean }>();
-    // The last failed Start's reason stays until the machine, folder or model is changed here.
-    const [changed, setChanged] = createSignal(false);
+    const problem = () => problemOf[p.key];
+    const setProblem = (v: { message: string; retry?: boolean } | undefined) => setProblemOf(p.key, v);
+    // The last failed Start's reason stays until what it starts with is changed here.
+    const changed = () => Boolean(changedOf[p.key]);
+    const setChanged = (v: boolean) => setChangedOf(p.key, v);
+    /** Something it starts with changed here: the last Start's news no longer applies. */
+    const edited = () => {
+        setProblem(undefined);
+        setChanged(true);
+    };
     const message = () => (offline() ? undefined : problem()?.message || (changed() ? undefined : s().failed));
 
     // The machines to pick from: asked for the first time the menu opens.
@@ -240,7 +262,7 @@ function Pending(p: { suggestion: SuggestionState; sessionId: string; key: strin
             const outcome = await startSuggestion(
                 { sessionId: p.sessionId, from: { title: view()?.state.title ?? "", mode: view()?.state.mode ?? "default", on: suggesterOn() }, suggestion: s(), on: on(), cwd: cwd(), title: title().trim(), prompt: prompt(), model: model()!, effort: effort(), worktree: inWorktree(), resume: draft.resume },
                 // Once the folder is trusted, Start again: unless where it starts has changed since.
-                { ...windowCalls(() => attempt === attempts() && void start()), alive: () => attempt === attempts(), claimed: () => clearTimeout(deadline) },
+                { ...windowCalls(() => attempt === attempts() && startOf.get(p.key)?.()), alive: () => attempt === attempts(), claimed: () => clearTimeout(deadline) },
             );
             if (attempt !== attempts()) return;
             if ((outcome.kind === "failed" || outcome.kind === "trust") && outcome.resume) keep({ resume: outcome.resume });
@@ -255,6 +277,9 @@ function Pending(p: { suggestion: SuggestionState; sessionId: string; key: strin
             if (attempt === attempts()) setBusy(false);
         }
     };
+    const run = () => void start();
+    startOf.set(p.key, run);
+    onCleanup(() => startOf.get(p.key) === run && startOf.delete(p.key));
 
     return (
         <>
@@ -272,7 +297,7 @@ function Pending(p: { suggestion: SuggestionState; sessionId: string; key: strin
                     // Enter doesn't start it: Start is pressed.
                     onKeyDown={(e) => (e.key === "Enter" ? e.preventDefault() : leave(e))}
                 />
-                <Show when={why()}>{(w) => <div class="sg-why truncate" title={w()}>{w()}</div>}</Show>
+                <Show when={why()}>{(w) => <div class="sg-why">{w()}</div>}</Show>
                 <textarea class="sg-prompt" aria-label="Prompt" rows={6} value={prompt()} spellcheck={false} onKeyDown={leave} onInput={(e) => (setPrompt(e.currentTarget.value), keep({ prompt: e.currentTarget.value }))} />
                 <div class="sg-ctl">
                     <ModelPicker
@@ -282,9 +307,10 @@ function Pending(p: { suggestion: SuggestionState; sessionId: string; key: strin
                         currentRef={model()}
                         effort={effort()}
                         target={{
+                            ...listsOn(awayKey(on())),
                             machine: awayKey(on()),
-                            model: (ref) => (setPickedModel(ref), setChanged(true), keep({ model: ref })),
-                            effort: (level) => (setPickedEffort(() => level), keep({ effort: level })),
+                            model: (ref) => (setPickedModel(ref), edited(), keep({ model: ref })),
+                            effort: (level) => (setPickedEffort(() => level), edited(), keep({ effort: level })),
                         }}
                     />
                     <Show when={hasServers()}>
@@ -319,7 +345,7 @@ function Pending(p: { suggestion: SuggestionState; sessionId: string; key: strin
                     <label class="sg-wt" title="Work on a new branch in a worktree of its own">
                         <GitBranchPlus size={14} aria-hidden="true" />
                         <span>New worktree</span>
-                        <Toggle checked={inWorktree()} onChange={(v) => (setWorktree(v), forget(), keep({ worktree: v, resume: undefined }))} label="New worktree" />
+                        <Toggle checked={inWorktree()} onChange={(v) => (setWorktree(v), forget(), edited(), keep({ worktree: v, resume: undefined }))} label="New worktree" />
                     </label>
                 </div>
             </fieldset>

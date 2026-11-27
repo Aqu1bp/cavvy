@@ -85,6 +85,7 @@ function calls(o: { claim?: Error; start?: (params: any) => unknown; link?: Erro
     const log: unknown[] = [];
     const trusts: string[] = [];
     const made: unknown[] = [];
+    let again = 0;
     const c: StartCalls = {
         suggestion: async (params) => {
             log.push(["session.suggestion", params]);
@@ -98,12 +99,13 @@ function calls(o: { claim?: Error; start?: (params: any) => unknown; link?: Erro
         },
         trust: (folder, then) => {
             trusts.push(folder);
-            void then;
+            // Answered at once: Start runs again.
+            then();
         },
-        again: () => undefined,
+        again: () => void again++,
         made: (id, _link, on) => void made.push([id, on]),
     };
-    return { c, log, trusts, made };
+    return { c, log, trusts, made, again: () => again };
 }
 
 test("Start claims, starts on the target, then says it started: in that order", async () => {
@@ -158,9 +160,10 @@ test("a check that fails before anything is made: back to pending with its words
 });
 
 test("an untrusted folder brings up the trust question; Start runs again once it's answered", async () => {
-    const { c, trusts, log } = calls({ start: () => { throw new RpcError("trust", "needs_trust", "/repo"); } });
+    const { c, trusts, log, again } = calls({ start: () => { throw new RpcError("trust", "needs_trust", "/repo"); } });
     expect(await startSuggestion(pick(), c)).toEqual({ kind: "trust" });
     expect(trusts).toEqual(["/repo"]);
+    expect(again()).toBe(1);
     // Released meanwhile, so the card isn't left Starting… if the question is dismissed.
     expect((log.at(-1) as [string, any])[1].action).toBe("failed");
 });
@@ -194,14 +197,29 @@ test("another window took the start over: no failure is shown, the card shows ho
 });
 
 test("the worktree made, its folder to be trusted: the trust question, then Start again in that worktree", async () => {
-    const { c, trusts, log } = calls({ start: () => ({ title: "t", cwd: "/repo", worktree: { path: "/repo/.wt/fix", branch: "fix/t" }, failed: { message: "trust it", code: "needs_trust", folder: "/repo/.wt/fix" } }) });
+    const { c, trusts, log, again } = calls({ start: () => ({ title: "t", cwd: "/repo", worktree: { path: "/repo/.wt/fix", branch: "fix/t" }, failed: { message: "trust it", code: "needs_trust", folder: "/repo/.wt/fix" } }) });
     expect(await startSuggestion(pick(), c)).toEqual({ kind: "trust", resume: "/repo/.wt/fix" });
     expect(trusts).toEqual(["/repo/.wt/fix"]);
+    expect(again()).toBe(1);
     expect((log.at(-1) as [string, any])[1]).toMatchObject({ action: "failed" });
 });
 
-test("a Start let go of while its claim was answered makes nothing", async () => {
+test("a Start let go of while its claim was answered makes nothing, and gives the claim back", async () => {
     const { c, log } = calls();
     expect(await startSuggestion(pick(), { ...c, alive: () => false })).toEqual({ kind: "superseded" });
-    expect(log.map((l) => (l as [string])[0])).toEqual(["session.suggestion"]);
+    expect(log.map((l) => (l as [string, any])[1].action)).toEqual(["claim", "failed"]);
+    expect((log[1] as [string, any])[1]).toMatchObject({ claimedAt: 1234 });
+});
+
+test("only a session new to this window is taken as the one the target made", async () => {
+    // The target answers with a session this window already has elsewhere: not linked, not recorded as started.
+    const known = calls();
+    const out = await startSuggestion(pick({ on: "box" }), { ...known.c, fresh: () => false });
+    expect(out).toEqual({ kind: "failed", message: "Couldn't start it.", retry: true });
+    expect(known.made).toEqual([]);
+    expect((known.log.at(-1) as [string, any])[1].action).toBe("failed");
+    // Nor the suggesting session's own id.
+    const self = calls({ start: () => ({ sessionId: "s1", title: "t", cwd: "/repo" }) });
+    expect((await startSuggestion(pick({ on: "box" }), { ...self.c, fresh: () => true })).kind).toBe("failed");
+    expect(self.made).toEqual([]);
 });

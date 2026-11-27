@@ -247,7 +247,8 @@ describe("a suggested task in a GUI session", () => {
         await a.until(id, (v) => suggestions(v)[1]?.state === "dismissed", "dismissed");
         // Unloaded (no window has it open), then opened again from its file.
         a.close();
-        await Bun.sleep(800);
+        for (let i = 0; i < 200 && srv.engine.runtimes.has(id); i++) await Bun.sleep(20);
+        expect(srv.engine.runtimes.has(id)).toBe(false);
         const b = await client();
         const v = await b.open(id);
         expect(suggestions(v).map((s) => [s.title, s.state])).toEqual([

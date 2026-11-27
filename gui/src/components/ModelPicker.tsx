@@ -1,7 +1,7 @@
 import { createEffect, createMemo, createSignal, createUniqueId, For, on, Show } from "solid-js";
 import { Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Layers, Plus, RefreshCw, Search, Settings2, Star, Zap } from "lucide-solid";
-import { planLimitKey, type AccountInfo, type EffortLevel, type ModelSummary, type ProviderModels } from "@shared/protocol";
-import { app, awayMachine, handleFor, limitsFor, limitsOn, modelsFor, modelsLoadingOn, modelsOn, noModel, providersFor, providersOn, refreshModelsFor, refreshModelsOn, servedFor, servedOn, toast } from "../state/app";
+import { planLimitKey, type AccountInfo, type EffortLevel, type ModelSummary, type PlanLimits, type ProviderInfo, type ProviderModels } from "@shared/protocol";
+import { app, awayMachine, handleFor, limitsFor, modelsFor, noModel, providersFor, refreshModelsFor, servedFor, toast } from "../state/app";
 import { setEffort, setModel, setFastMode, setAccount } from "../state/actions";
 import { prefs, setPrefs } from "../state/prefs";
 import { comparePicks, setAddAccountFor, setComparePicks, setSettingsTab } from "../state/ui";
@@ -81,14 +81,20 @@ export interface CompareOption {
 }
 
 /**
- * A model picked for something that isn't a session or Home (a suggested task's card): from machine `machine`'s models
- * (awayMachine's names; undefined: the window's own), asked for over a connection to it when the picker first opens.
- * What's picked goes to `model` and `effort`, not to any session. Its default account; no fast mode.
+ * A model picked for something that isn't a session or Home (a suggested task's card): from machine `machine`'s lists
+ * (awayMachine's names; undefined: the window's own), which the target gives (`refresh` asks for them, as when the
+ * picker opens with none). What's picked goes to `model` and `effort`, not to any session. Its default account; no fast mode.
  */
 export interface PickTarget {
     machine: string | undefined;
     model: (ref: string) => void;
     effort: (level: EffortLevel) => void;
+    models: () => ProviderModels[];
+    providers: () => ProviderInfo[];
+    limits: () => Record<string, PlanLimits>;
+    served: () => Record<string, string>;
+    loading: () => boolean;
+    refresh: (again?: boolean) => Promise<void>;
 }
 
 const MAX_COMPARE = 4;
@@ -131,8 +137,8 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
     const currentRef = () => p.current?.ref ?? (noModel() && machineOn() === undefined ? undefined : p.currentRef);
     const isCurrent = (ref: string) => ref === currentRef();
     // The machine's that the session is on (one of another machine's, opened in this window, has its own).
-    const models = () => (p.target ? modelsOn(p.target.machine) : modelsFor(p.sessionId));
-    const providers = () => (p.target ? providersOn(p.target.machine) : providersFor(p.sessionId));
+    const models = () => (p.target ? p.target.models() : modelsFor(p.sessionId));
+    const providers = () => (p.target ? p.target.providers() : providersFor(p.sessionId));
     const currentModel = createMemo(() => resolve(p.current, currentRef(), models()));
     const currentProvider = () => currentModel()?.provider ?? currentRef()?.split(":")[0];
     const away = () => machineOn() !== undefined;
@@ -245,7 +251,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
     const acctProvider = () => (!p.target && !q() && filter() !== FAVORITES && accountInfo(filter()) && accountInfo(filter())!.multiAccount !== false ? filter() : undefined);
     /** A plan nearing or at its limit: its fullest window's percentage, from 80%; 100 once reached. */
     // The limits of the session's machine's accounts: another machine's "Default" isn't this computer's.
-    const limitOf = (provider: string, id: string) => (p.target ? limitsOn(p.target.machine) : limitsFor(p.sessionId))[planLimitKey(provider, id)];
+    const limitOf = (provider: string, id: string) => (p.target ? p.target.limits() : limitsFor(p.sessionId))[planLimitKey(provider, id)];
     const accountLimit = (provider: string, id: string) => {
         return nearLimit(meterOf(limitOf(provider, id), now()));
     };
@@ -332,8 +338,8 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
         const text = [chipName(), showAccounts() ? accountName() : undefined, reasoning() && effortOf(effort()) ? `${effortOf(effort())!.label} effort` : undefined, fastOn() ? "fast mode" : undefined].filter(Boolean).join(" · ");
         return p.target ? text : withShortcut(text, "chat:modelPicker");
     };
-    const refresh = (again = false) => (p.target ? refreshModelsOn(machineOn(), again) : refreshModelsFor(p.sessionId, again));
-    const loading = () => (p.target ? modelsLoadingOn(p.target.machine) : app.modelsLoading);
+    const refresh = (again = false) => (p.target ? p.target.refresh(again) : refreshModelsFor(p.sessionId, again));
+    const loading = () => (p.target ? p.target.loading() : app.modelsLoading);
     const onKey = (e: KeyboardEvent) => {
         if (isMod(e) && /^[1-9]$/.test(e.key)) {
             const r = rows()[Number(e.key) - 1];
@@ -411,7 +417,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
     /** What the list says when it has nothing to show, and the one thing to do about it. */
     const empty = (): { text: string; icon?: "loading" | "error" | "star" | "search"; action?: { label: string; run: () => void } } => {
         const providers = { label: "Set up providers", run: () => (p.setOpen(false), setSettingsTab("providers")) };
-        if (loading() && !models().length) return { text: "Loading models…", icon: "loading" };
+        if (p.target ? loading() && !models().length : app.modelsLoading && !app.models.length) return { text: "Loading models…", icon: "loading" };
         if (q()) return { text: `No models match “${q()}”.`, icon: "search" };
         if (!groups().length) return { text: "No providers yet.", action: providers };
         if (filter() === FAVORITES) return { text: "Star a model to keep it here.", icon: "star" };
@@ -428,7 +434,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
         if (!accountInfo(m.provider)) return undefined;
         const meter = meterOf(limitOf(m.provider, selectedAccount(m.provider)), now());
         const account = selectedAccount(m.provider);
-        const served = (p.sessionId && isCurrent(m.ref) ? handleFor(p.sessionId)?.view.state.servedModel : undefined) ?? resolvedOn(m, account, p.target ? servedOn(p.target.machine) : servedFor(p.sessionId));
+        const served = (p.sessionId && isCurrent(m.ref) ? handleFor(p.sessionId)?.view.state.servedModel : undefined) ?? resolvedOn(m, account, p.target ? p.target.served() : servedFor(p.sessionId));
         const model = { id: m.id, resolved: served };
         const stop = limitFor(meter, model);
         if (!stop || (!stop.window?.scope && acctProvider() === m.provider)) return undefined;

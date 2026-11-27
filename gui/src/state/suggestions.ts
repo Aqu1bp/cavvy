@@ -5,8 +5,9 @@
 //
 // Machines are named as session rows name them (SessionSummary.machine): undefined, this computer; a server's name.
 
-import type { EffortLevel, ModelSummary, PermissionModeId, SuggestionStarted, SuggestionState, StartTaskParams, StartTaskResult } from "@shared/protocol";
-import { activate, knownMachineOf, linkFor, machineOf, madeOn, modelsOn, reportError, requestTrust, restoredFrom, rpc, settingsOn } from "./app";
+import type { EffortLevel, GuiSettings, ModelSummary, ProviderModels, PermissionModeId, SuggestionStarted, SuggestionState, StartTaskParams, StartTaskResult } from "@shared/protocol";
+import { activate, app, linkFor, machineOf, machinesInside, refreshModels, reportError, requestTrust, restoredFrom, rpc } from "./app";
+import { createStore } from "solid-js/store";
 import { machine, os } from "../lib/platform";
 import { RpcError, type Rpc } from "../lib/rpc";
 import { effortLevels, takesEffort } from "../lib/effort";
@@ -30,6 +31,79 @@ export const awayKey = (on: string | undefined): string | undefined => (on === m
 
 /** The connection to machine `on`: the window's own, or one made to it. */
 export const linkOn = (on: string | undefined): Promise<Rpc> => (on === machine ? Promise.resolve(rpc) : linkFor(on));
+
+/** The machine `id` is on, if the window knows (opened here from it, or its row listed); null if it doesn't. */
+export function knownMachineOf(id: string): string | undefined | null {
+    const { awayOn } = machinesInside;
+    if (awayOn.has(id)) return awayOn.get(id) || undefined;
+    const at = [...app.sessions, ...app.archived].find((s) => s.id === id);
+    return at ? at.machine : null;
+}
+/** Machine `k`'s models (awayMachine's names; undefined: the window's own). Another's are there once asked for (loadMachine). */
+export const modelsOn = (k: string | undefined): ProviderModels[] => (k === undefined ? app.models : (machinesInside.machineModels[k] ?? []));
+/** The machines whose models are being asked for here. */
+const [machinesLoading, setMachinesLoading] = createStore<Record<string, boolean>>({});
+/**
+ * Machine `k`'s models, accounts and settings: asked for over a connection to it, made if it isn't. Once: kept up to
+ * date from then on (app.ts linkMade). Fails as linkFor does when it can't be reached.
+ */
+export async function loadMachine(k: string): Promise<void> {
+    const { machineModels, machineSettings, machineReady } = machinesInside;
+    if (k in machineModels && k in machineSettings) return;
+    setMachinesLoading(k, true);
+    try {
+        await machineReady(k, await linkFor(k || undefined));
+        // Its answer didn't come (it's let go of there): said, so what waits for the list isn't left waiting.
+        if (!(k in machineModels)) throw new Error(`Couldn't list the models of ${k || "this computer"}`);
+    } finally {
+        setMachinesLoading(k, false);
+    }
+}
+/** Machine `k`'s lists, for a model picker of a card that starts something there (ModelPicker's PickTarget). */
+export function listsOn(k: string | undefined) {
+    const { machineModels, machineProviders, machineLimits, machineModelsAgain } = machinesInside;
+    return {
+        models: () => modelsOn(k),
+        providers: () => (k === undefined ? app.providers : (machineProviders[k] ?? [])),
+        limits: () => (k === undefined ? app.limits : (machineLimits[k] ?? {})),
+        served: () => (k === undefined ? app.served : {}),
+        loading: () => (k === undefined ? app.modelsLoading : Boolean(machinesLoading[k])),
+        refresh: async (again = false) => {
+            if (k === undefined) return refreshModels(again);
+            if (!(k in machineModels)) return loadMachine(k).catch(() => undefined);
+            setMachinesLoading(k, true);
+            try {
+                await machineModelsAgain(k, await linkFor(k || undefined), again);
+            } catch {
+                // Not reached: its list stays as it was.
+            } finally {
+                setMachinesLoading(k, false);
+            }
+        },
+    };
+}
+/** Machine `k`'s settings (awayMachine's names): the model and effort a session made there starts with. Another's once asked for (loadMachine). */
+const settingsOn = (k: string | undefined): GuiSettings | undefined => (k === undefined ? app.settings : machinesInside.machineSettings[k]);
+/** Machine `k`'s models have been listed here (none may be what it has). */
+export const modelsKnownOn = (k: string | undefined) => (k === undefined ? app.modelsLoaded : k in machinesInside.machineModels);
+/** Whether `id`, as machine `on` named the session it made, is one this window doesn't know elsewhere: else it isn't taken. */
+export function newOn(id: string, on: string | undefined): boolean {
+    if (machinesInside.handles.has(id)) return false;
+    const known = knownMachineOf(id);
+    return known === null || known === on;
+}
+/**
+ * Session `id`, just made on machine `on` over `link` from this window: opened from that machine from now on, and
+ * what it said for this window before it was linked here (its draft) kept for it.
+ */
+function madeOn(id: string, on: string | undefined, link: Rpc) {
+    const { away, earlyDrafts, linked, keepDraft } = machinesInside;
+    if (on === machine || away.has(id)) return;
+    linked(id, on, link);
+    const early = earlyDrafts.get(id);
+    earlyDrafts.delete(id);
+    if (early?.link === link) for (const d of early.drafts) keepDraft(id, d);
+}
 
 // ---------------------------------------------------------------------------
 // Showing what the agent wrote
@@ -152,6 +226,8 @@ export interface StartCalls {
     alive?: () => boolean;
     /** The claim was answered and taken. */
     claimed?: () => void;
+    /** Whether a session id machine `on` answered with is new to this window. */
+    fresh?: (sessionId: string, on: string | undefined) => boolean;
     /** The session tasks.start made, on machine `on` over `link`. */
     made?: (sessionId: string, link: Pick<Rpc, "call">, on: string | undefined) => void;
 }
@@ -162,6 +238,7 @@ export const windowCalls = (again: () => void = () => undefined): StartCalls => 
     link: linkOn,
     trust: (folder, then, link, on) => requestTrust(folder, then, undefined, undefined, link as Rpc, on ?? ""),
     again,
+    fresh: newOn,
     made: (id, link, on) => madeOn(id, on, link as Rpc),
 });
 
@@ -195,7 +272,12 @@ export async function startSuggestion(pick: StartPick, calls: StartCalls = windo
     };
     // Let go of while the claim was answered (no answer for a minute, or the destination changed): nothing is made.
     const gone = () => Boolean(calls.alive && !calls.alive());
-    if (gone()) return { kind: "superseded" };
+    // Let go of after the claim was taken: given back, so the card isn't left starting.
+    const letGo = async (): Promise<StartOutcome> => {
+        await on({ action: "failed", message: "", ...claim }).catch(() => undefined);
+        return { kind: "superseded" };
+    };
+    if (gone()) return letGo();
     calls.claimed?.();
     const models = modelsOf(pick.on);
     let link: Pick<Rpc, "call">;
@@ -204,7 +286,7 @@ export async function startSuggestion(pick: StartPick, calls: StartCalls = windo
     } catch {
         return fail(`${boxName(pick.on)} isn't connected.`, { retry: true });
     }
-    if (gone()) return { kind: "superseded" };
+    if (gone()) return letGo();
     const suggesterOn = pick.from.on;
     const params: StartTaskParams = {
         cwd: pick.cwd,
@@ -249,6 +331,8 @@ export async function startSuggestion(pick: StartPick, calls: StartCalls = windo
         // Something was made (the worktree) but not the session: Try again starts in it.
         return fail(result.failed?.message || "Couldn't start it.", { retry: true, resume });
     }
+    // Only a session new to this window, and not the suggesting one, is taken as the one it made.
+    if (result.sessionId === sessionId || (calls.fresh && !calls.fresh(result.sessionId, pick.on))) return fail("Couldn't start it.", { retry: true });
     calls.made?.(result.sessionId, link, pick.on);
     const started: SuggestionStarted = {
         sessionId: result.sessionId,

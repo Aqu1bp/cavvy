@@ -190,12 +190,6 @@ export function updateHomeSettings(patch: Partial<GuiSettings>): Promise<GuiSett
 export function awayMachine(sessionId: string | undefined): string | undefined {
     return sessionId !== undefined ? awayOn.get(sessionId) : homeOn();
 }
-/** The machine `id` is on, if the window knows (opened here from it, or its row listed); null if it doesn't. */
-export function knownMachineOf(id: string): string | undefined | null {
-    if (awayOn.has(id)) return awayOn.get(id) || undefined;
-    const at = [...app.sessions, ...app.archived].find((s) => s.id === id);
-    return at ? at.machine : null;
-}
 /** A new session from `sessionId` (its project, New session while it's shown) goes on its machine: this is it, when that isn't the window's. */
 export function machineFor(sessionId: string | undefined): { machine?: string } | undefined {
     const on = awayMachine(sessionId);
@@ -246,38 +240,8 @@ export function rpcFor(sessionId: string | undefined): Rpc {
 const [machineModels, setMachineModels] = createStore<Record<string, ProviderModels[]>>({});
 /** The models to offer in `sessionId`: its machine's. */
 export function modelsFor(sessionId: string | undefined): ProviderModels[] {
-    return modelsOn(awayMachine(sessionId));
-}
-/** Machine `on`'s models (awayMachine's names; undefined: the window's own). Another's are there once asked for (loadMachine). */
-export function modelsOn(on: string | undefined): ProviderModels[] {
+    const on = awayMachine(sessionId);
     return on === undefined ? app.models : (machineModels[on] ?? []);
-}
-/** Machine `on`'s settings: the model and effort a session made there starts with. Another's once asked for (loadMachine). */
-export function settingsOn(on: string | undefined): GuiSettings | undefined {
-    return on === undefined ? app.settings : machineSettings[on];
-}
-/** The machines whose models are being asked for by loadMachine. */
-const [machinesLoading, setMachinesLoading] = createStore<Record<string, boolean>>({});
-/** Machine `on`'s models have been listed here (none may be what it has). */
-export const modelsKnownOn = (on: string | undefined) => (on === undefined ? app.modelsLoaded : on in machineModels);
-/** Machine `on`'s models are being asked for. */
-export const modelsLoadingOn = (on: string | undefined) => (on === undefined ? app.modelsLoading : Boolean(machinesLoading[on]));
-/**
- * Machine `on`'s models, accounts and settings, for something made there from this window that isn't Home (a suggested
- * task's card): asked for over a connection to it, made if it isn't. Once: kept up to date from then on (linkMade).
- * Fails as linkFor does when it can't be reached.
- */
-export async function loadMachine(on: string): Promise<void> {
-    if (on in machineModels && on in machineSettings) return;
-    setMachinesLoading(on, true);
-    try {
-        const link = await linkFor(on || undefined);
-        await machineReady(on, link);
-        // Its answer didn't come (machineModelsAgain lets that go): said, so what waits for the list isn't left waiting.
-        if (!(on in machineModels)) throw new Error(`Couldn't list the models of ${on || "this computer"}`);
-    } finally {
-        setMachinesLoading(on, false);
-    }
 }
 /** That machine's models asked for again (`refresh`: from its providers, as Refresh asks). */
 function machineModelsAgain(on: string, link: Rpc, refresh = false): Promise<unknown> {
@@ -287,10 +251,7 @@ function machineModelsAgain(on: string, link: Rpc, refresh = false): Promise<unk
 const [machineProviders, setMachineProviders] = createStore<Record<string, ProviderInfo[]>>({});
 /** The providers of `sessionId`'s machine: whose accounts its model menu offers. */
 export function providersFor(sessionId: string | undefined): ProviderInfo[] {
-    return providersOn(awayMachine(sessionId));
-}
-/** Machine `on`'s providers (awayMachine's names). */
-export function providersOn(on: string | undefined): ProviderInfo[] {
+    const on = awayMachine(sessionId);
     return on === undefined ? app.providers : (machineProviders[on] ?? []);
 }
 function machineProvidersAgain(on: string, link: Rpc): Promise<unknown> {
@@ -302,14 +263,11 @@ function machineProvidersAgain(on: string, link: Rpc): Promise<unknown> {
 const [machineLimits, setMachineLimits] = createStore<Record<string, Record<string, PlanLimits>>>({});
 /** The aliases' served models of `sessionId`'s machine's accounts: this computer's only (another machine's aren't known here). */
 export function servedFor(sessionId: string | undefined): Record<string, string> {
-    return servedOn(awayMachine(sessionId));
+    return awayMachine(sessionId) === undefined ? app.served : {};
 }
-export const servedOn = (on: string | undefined): Record<string, string> => (on === undefined ? app.served : {});
 /** The plan limits of `sessionId`'s machine's accounts. */
 export function limitsFor(sessionId: string | undefined): Record<string, PlanLimits> {
-    return limitsOn(awayMachine(sessionId));
-}
-export function limitsOn(on: string | undefined): Record<string, PlanLimits> {
+    const on = awayMachine(sessionId);
     return on === undefined ? app.limits : (machineLimits[on] ?? {});
 }
 /** Refresh in the model menu of `sessionId`: its machine's list, or this computer's. */
@@ -318,12 +276,6 @@ export function refreshModelsFor(sessionId: string | undefined, refresh = false)
     if (on === undefined) return refreshModels(refresh);
     machineModelsAgain(on, rpcFor(sessionId), refresh);
     return Promise.resolve();
-}
-/** Refresh in a model menu for machine `on` (awayMachine's names): asked for over a connection to it, made if it isn't. */
-export async function refreshModelsOn(on: string | undefined, refresh = false): Promise<void> {
-    if (on === undefined) return refreshModels(refresh);
-    if (!(on in machineModels)) return loadMachine(on).catch(() => undefined);
-    await machineModelsAgain(on, await linkFor(on || undefined), refresh).catch(() => undefined);
 }
 /** Each other machine's connection, as it is now: for its sessions opened here (connFor). */
 const [linkStates, setLinkStates] = createStore<Record<string, ConnectionState>>({});
@@ -407,6 +359,8 @@ async function linkMade(name: string | undefined): Promise<Rpc> {
         if (typeof sessionId === "string" && away.get(sessionId) === from && forUs(e)) rpc.hear(e);
         // Its models changed (a key added there): asked for again, if they were asked for.
         else if (e.type === "models.changed" && on in machineModels) machineModelsAgain(on, from);
+        // A draft for a session it's making for this window, said before it's linked here (madeOn takes it then).
+        else if (e.type === "draft" && typeof sessionId === "string" && !away.has(sessionId)) earlyDraft(sessionId, from, { text: e.text, images: e.images, files: e.files, after: e.after });
         // Its accounts' limits, as they move: for the meter of its sessions here.
         else if (e.type === "limits" && on in machineLimits) setMachineLimits(on, planLimitKey(e.limits.provider, e.limits.accountId), reconcile(fromWireLimits(e.limits)));
     };
@@ -854,12 +808,12 @@ function keepDraft(id: string, d: Draft) {
     if (draftsFor.size > 20) draftsFor.delete(draftsFor.keys().next().value!);
 }
 
-/**
- * Session `id`, just made on machine `on` (machineOf's names) over `link` from this window (a suggested task
- * started there): opened from that machine from now on, and what it says for this window (its draft) heard.
- */
-export function madeOn(id: string, on: string | undefined, link: Rpc) {
-    if (on !== machine && !away.has(id)) linked(id, on, link);
+/** Drafts another machine said for a session before it was linked here: only that machine's, and only once madeOn links it. */
+const earlyDrafts = new Map<string, { link: Rpc; drafts: Draft[] }>();
+function earlyDraft(id: string, link: Rpc, d: Draft) {
+    const had = earlyDrafts.get(id);
+    earlyDrafts.set(id, { link, drafts: had?.link === link ? [...had.drafts, d] : [d] });
+    if (earlyDrafts.size > 20) earlyDrafts.delete(earlyDrafts.keys().next().value!);
 }
 
 /** A session this window had open, asked for again after its connection was back: what it missed, or a snapshot. */
@@ -2095,3 +2049,6 @@ export function start() {
 export function attentionCount(): number {
     return app.sessions.filter((s) => s.status === "waiting").length;
 }
+
+/** What a suggested task's card reads and does of the window's machines and sessions (state/suggestions.ts, loaded with it). */
+export const machinesInside = { away, awayOn, handles, machineModels, machineSettings, machineProviders, machineLimits, earlyDrafts, linked, keepDraft, machineReady, machineModelsAgain };
