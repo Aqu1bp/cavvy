@@ -168,7 +168,8 @@ jobs:
           path: ${{ runner.temp }}/release
       # A draft until every file is on it: the updater reads releases/latest/download/…, which must never find a
       # description without its zip. Then published: as a prerelease for a version with a "-" (1.3.0-beta.1), and as
-      # Latest only when it's the highest version (a fix for an older line doesn't take over the updates).
+      # Latest only when it's the highest version (a fix for an older line doesn't take over the updates). A release
+      # that's already published is left alone: replacing its files would take them away from the updater meanwhile.
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
@@ -176,14 +177,19 @@ jobs:
         run: |
           tag="$GITHUB_REF_NAME"
           version="${tag#v}"
-          gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --draft --title "$tag" --notes "" --verify-tag
+          if draft=$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null); then
+            if [ "$draft" != true ]; then echo "$tag is already published: its files aren't replaced." >&2; exit 1; fi
+          else
+            gh release create "$tag" --draft --title "$tag" --notes "" --verify-tag
+          fi
           gh release upload "$tag" "$RUNNER_TEMP"/release/* --clobber
           case "$version" in
             *-*)
               gh release edit "$tag" --draft=false --prerelease --latest=false
               ;;
             *)
-              highest=$( { gh release list --exclude-drafts --exclude-pre-releases --limit 1000 --json tagName --jq '.[].tagName'; echo "$tag"; } \
+              released=$(gh release list --exclude-drafts --exclude-pre-releases --limit 1000 --json tagName --jq '.[].tagName')
+              highest=$(printf '%s\n%s\n' "$released" "$tag" \
                 | sed 's/^v//' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)
               if [ "$highest" = "$version" ]; then latest=true; else latest=false; fi
               gh release edit "$tag" --draft=false --prerelease=false --latest="$latest"
