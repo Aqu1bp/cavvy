@@ -490,15 +490,21 @@ if ((Test-Path $log) -and ((Get-Item $log).Length -gt 5000000)) {
     Move-Item -Force -Path $log -Destination (Join-Path $d "server.log.1")
 }
 $env:CAVVY_NO_KEYCHAIN = '1'
-& $bin host run --login-env *>> $log
+Start-Process -FilePath $bin -ArgumentList 'host','run','--login-env' -RedirectStandardError $log -RedirectStandardOutput (Join-Path $d "server.out.log") -WindowStyle Hidden -Wait
 '@
     [System.IO.File]::WriteAllText((Join-Path $d "run.ps1"), $script)
 }
 function Get-CavvyStatus {
     $bin = Get-CavvyBin
     if (-not $bin) { return $null }
-    $out = (& $bin host status 2>$null) -join ""
-    if ($LASTEXITCODE -eq 0 -and $out) { return $out }
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $out = (& $bin host status 2>$null) -join ""
+        if ($LASTEXITCODE -eq 0 -and $out) { return $out }
+    } finally {
+        $ErrorActionPreference = $prevEap
+    }
     return $null
 }
 function Start-Cavvy {
@@ -584,7 +590,9 @@ try {
         Write-Output "status=$st"
         exit 0
     }
-    [Console]::Error.WriteLine("the new build didn't start")
+    $logFile = Join-Path $d "server.log"
+    $hint = if (Test-Path $logFile) { ((Get-Content -Tail 3 $logFile -ErrorAction SilentlyContinue) -join " | ") } else { "no server.log" }
+    [Console]::Error.WriteLine("the new build didn't start ($hint)")
     Stop-Cavvy
     if ($prev -and $prev -ne $new -and (Test-Path (Join-Path $d ("builds\\" + $prev + "\\cavvy.exe")))) {
         Set-CurrentId $prev
@@ -778,8 +786,15 @@ export function readCheck(text: string | undefined): HostCheck | undefined {
     };
 }
 
-/** What the server's last line of complaint was, safe to show. */
-const said = (stderr: string) => printable(stderr.trim().split(/\r?\n/).at(-1) ?? "");
+/** What the server's last line of complaint was, safe to show (strips PowerShell CLIXML noise). */
+function said(stderr: string): string {
+    const lines = stderr
+        .trim()
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter((l) => l && !l.startsWith("#< CLIXML") && !l.startsWith("<Objs "));
+    return printable(lines.at(-1) ?? "");
+}
 
 /** Sets the server up to keep Cavvy running, as well as it allows. */
 export async function setUpService(e: ServerEntry, signal?: AbortSignal): Promise<ServiceReport> {

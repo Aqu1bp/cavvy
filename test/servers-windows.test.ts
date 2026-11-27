@@ -279,6 +279,13 @@ process.exit(await proc.exited);
                     await stopRemote(localWin);
                     expect(await remoteStatus(localWin)).toBeUndefined();
                     expect(existsSync(join(remoteHome, ".cavvy", "server", "stopped"))).toBe(true);
+                } catch (err) {
+                    const sdir = join(remoteHome, ".cavvy", "server");
+                    const diag = ["current.txt", "run.ps1", "state.json", "control.json", "server.log", "server.out.log"].map((f) => {
+                        const p = join(sdir, f);
+                        return existsSync(p) ? `${f}=${readFileSync(p, "utf-8").slice(0, 400)}` : `${f}=MISSING`;
+                    });
+                    throw new Error(`${(err as Error).message}\n[diag] ${diag.join("\n[diag] ")}`);
                 } finally {
                     await stopRemote(localWin).catch(() => undefined);
                 }

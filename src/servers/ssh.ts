@@ -120,6 +120,7 @@ export function psQuote(s: string): string {
  */
 export function remotePs(script: string, args: string[] = []): string {
     const header = [
+        "$global:ProgressPreference = 'SilentlyContinue'",
         "$ProgressPreference = 'SilentlyContinue'",
         "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)",
         "$OutputEncoding = [Console]::OutputEncoding",
@@ -130,7 +131,7 @@ export function remotePs(script: string, args: string[] = []): string {
     const prefix = "powershell.exe -NoLogo -NoProfile -NonInteractive -InputFormat Text -OutputFormat Text -EncodedCommand ";
     if (prefix.length + encoded.length > 6500) {
         const gz = gzipSync(Buffer.from(full, "utf-8")).toString("base64");
-        const loader = `$z=[Convert]::FromBase64String('${gz}');$m=New-Object IO.MemoryStream(,$z);$g=New-Object IO.Compression.GZipStream($m,[IO.Compression.CompressionMode]::Decompress);$r=New-Object IO.StreamReader($g,[Text.Encoding]::UTF8);$s=$r.ReadToEnd();$r.Dispose();$g.Dispose();$m.Dispose();& ([scriptblock]::Create($s))`;
+        const loader = `$global:ProgressPreference='SilentlyContinue';$z=[Convert]::FromBase64String('${gz}');$m=New-Object IO.MemoryStream(,$z);$g=New-Object IO.Compression.GZipStream($m,[IO.Compression.CompressionMode]::Decompress);$r=New-Object IO.StreamReader($g,[Text.Encoding]::UTF8);$s=$r.ReadToEnd();$r.Dispose();$g.Dispose();$m.Dispose();& ([scriptblock]::Create($s))`;
         encoded = Buffer.from(loader, "utf16le").toString("base64");
     }
     return `${prefix}${encoded}`;
