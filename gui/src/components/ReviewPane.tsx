@@ -572,7 +572,8 @@ function FileCard(p: {
             setWhole((all = r.file));
         }
         const next = new Set(opened()).add(at);
-        if (expand(shown(), all, next).stale.includes(at)) return void toast("The file changed. Refresh to see it.", "warn");
+        // The whole file cut short before this gap: it's too long, not changed.
+        if (expand(shown(), all, next).stale.includes(at)) return void toast(all.truncated ? "Too long to show here." : "The file changed. Refresh to see it.", "warn");
         setOpened(next);
     };
     /** A hunk header's button for the lines hidden before hunk `h` (the number of hunks: after the last). */

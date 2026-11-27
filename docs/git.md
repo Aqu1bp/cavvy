@@ -78,6 +78,8 @@ The terminal app has no command for these; use `git` there.
 - checks it out in a new worktree in `.claude/worktrees`, as **New worktree…** does (the same trust checks and `WorktreeCreate` hooks): one from this repository on its own branch, tracking the remote's, so ahead/behind, **Pull** and **Push…** work; one from a fork on `pr-<n>`, at its head, with no upstream (pushing to a fork is for a terminal);
 - opens a new session there, with `Pull request #123: <title>` and its URL in the message box, for you to say what to do with it.
 
+A fork's pull request is someone else's code, so trusting the repository doesn't trust its worktree: if it has project configuration of its own (`.cavvy/settings.json`, `.mcp.json`, an agent CLI's), its session asks you to trust it first, or to open it without that configuration.
+
 If a worktree is already on that branch, it's opened as it is, without fetching. A local branch of that name that isn't checked out gets a worktree as it is too: update it with **Pull**.
 
 It needs the GitHub CLI, signed in (`gh auth status`). Signed out, the dialog offers **Sign in to GitHub** when a session is open (its sign-in card, see [Signing in](sign-in.md)), and says to run `gh auth login` otherwise. A remote that isn't on github.com is refused: it works only with GitHub for now. A URL of another repository's pull request is refused too.

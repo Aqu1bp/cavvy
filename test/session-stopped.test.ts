@@ -30,6 +30,14 @@ test("a reply ends it: done", () => {
     expect(listed(session(prompt("hi"), calling, results, reply("Read it.")).meta.id)?.stopped).toBeUndefined();
 });
 
+test("a note Cavvy adds after the reply (stopped background tasks, messages to send again) leaves it as the reply did", () => {
+    const note = (o: Record<string, unknown> = {}) => ({ role: "user", content: [{ type: "text", text: "<system-reminder>Cavvy stopped these background tasks: x</system-reminder>" }], meta: { kind: "reminder", ...o } }) as never;
+    expect(listed(session(prompt("hi"), reply("Done."), note()).meta.id)?.stopped).toBeUndefined();
+    expect(listed(session(prompt("hi"), reply("Done."), note(), note({ resends: ["a"] })).meta.id)?.stopped).toBeUndefined();
+    // After a stop, still stopped.
+    expect(listed(session(prompt("hi"), interrupt, note()).meta.id)?.stopped).toBe(true);
+});
+
 test("stopped, before or during its tools: stopped", () => {
     expect(listed(session(prompt("hi"), interrupt).meta.id)?.stopped).toBe(true);
     expect(listed(session(prompt("hi"), calling, toolInterrupt).meta.id)?.stopped).toBe(true);

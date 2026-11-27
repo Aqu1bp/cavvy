@@ -31,8 +31,14 @@ const userTrusted = new Set<string>();
  */
 const emptyTrusted = new Set<string>();
 
+interface TrustFile {
+    dirs?: string[];
+    /** Folders whose trust is their own (someone else's code checked out inside a trusted folder): see trustOwnOnly. */
+    own?: string[];
+}
 /** Asked for every turn, MCP server and permission check: read again only once the file has changed. */
-const saved = () => readJsonCached<{ dirs?: string[] }>(file())?.dirs ?? [];
+const saved = () => readJsonCached<TrustFile>(file())?.dirs ?? [];
+const ownOnly = () => readJsonCached<TrustFile>(file())?.own ?? [];
 
 export function isTrusted(dir: string): boolean {
     const d = resolve(dir);
@@ -42,8 +48,23 @@ export function isTrusted(dir: string): boolean {
 /** The user said they trust this folder (now or before); a folder trusted only for having nothing to protect doesn't count. */
 export function trustedByUser(dir: string): boolean {
     const d = resolve(dir);
-    if ([...userTrusted].some((t) => isInside(d, t))) return true;
-    return saved().some((t) => isInside(d, t));
+    // Inside a folder whose trust is its own, trust from around it doesn't reach in.
+    const own = ownOnly().filter((o) => isInside(d, o));
+    const counts = (t: string) => isInside(d, t) && own.every((o) => isInside(t, o));
+    if ([...userTrusted].some(counts)) return true;
+    return saved().some(counts);
+}
+
+/**
+ * Trust of the folders around `dir` doesn't reach into it: it's trusted only when the user trusts it (or a folder
+ * inside it) themselves. For someone else's code checked out inside a trusted repository, such as a fork's pull
+ * request in a worktree under it. Saved, so it holds after a restart; forgotten with the folder (forgetTrustInside).
+ */
+export function trustOwnOnly(dir: string) {
+    const d = resolve(dir);
+    const cur = readJsonForUpdate<TrustFile>(file()) ?? {};
+    if ((cur.own ?? []).includes(d)) return;
+    writeJson(file(), { ...cur, own: [...(cur.own ?? []), d].sort() }, 0o600);
 }
 
 export function trustFolder(dir: string) {
@@ -53,9 +74,9 @@ export function trustFolder(dir: string) {
         userTrusted.add(d);
         return;
     }
-    let cur: { dirs?: string[] };
+    let cur: TrustFile;
     try {
-        cur = readJsonForUpdate<{ dirs?: string[] }>(file()) ?? {};
+        cur = readJsonForUpdate<TrustFile>(file()) ?? {};
     } catch (e) {
         // Don't drop the other trusted folders; trust this one until exit.
         userTrusted.add(d);
@@ -63,7 +84,7 @@ export function trustFolder(dir: string) {
     }
     const dirs = new Set(cur.dirs ?? []);
     dirs.add(d);
-    writeJson(file(), { dirs: [...dirs].sort() }, 0o600);
+    writeJson(file(), { ...cur, dirs: [...dirs].sort() }, 0o600);
 }
 
 /**
@@ -74,9 +95,10 @@ export function trustFolder(dir: string) {
 export function forgetTrustInside(dir: string) {
     const d = resolve(dir);
     for (const t of [...userTrusted]) if (isInside(t, d)) userTrusted.delete(t);
-    const cur = readJsonForUpdate<{ dirs?: string[] }>(file()) ?? {};
+    const cur = readJsonForUpdate<TrustFile>(file()) ?? {};
     const dirs = (cur.dirs ?? []).filter((t) => !isInside(resolve(t), d));
-    if (dirs.length !== (cur.dirs ?? []).length) writeJson(file(), { dirs }, 0o600);
+    const own = (cur.own ?? []).filter((t) => !isInside(resolve(t), d));
+    if (dirs.length !== (cur.dirs ?? []).length || own.length !== (cur.own ?? []).length) writeJson(file(), { ...cur, dirs, ...(cur.own ? { own } : {}) }, 0o600);
 }
 
 /** The user's own trust in this folder (and the ones inside it), for this session only: not saved. */

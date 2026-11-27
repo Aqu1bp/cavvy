@@ -3,7 +3,7 @@
 // it's closed or its parent is.
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, writeFileSync } from "fs";
+import { existsSync, realpathSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
@@ -12,6 +12,7 @@ const { Engine } = await import("../src/server/engine");
 const { startMockLlm } = await import("../scripts/mock-llm");
 const { createDemoProject } = await import("../scripts/demo-project");
 const { sideChatCut, sideChatDir, withContext } = await import("../src/agent/side-chat");
+const { gitArgv, gitEnv } = await import("../src/util/git");
 import type { Message } from "../src/providers/types";
 import type { ServerEvent, SessionSnapshot } from "../src/server/protocol";
 
@@ -165,12 +166,54 @@ describe("a side chat", () => {
         expect(((await engine.handle(c, "session.open", { id })) as SessionSnapshot).state.sideChat).toBeUndefined();
     });
 
+    test("streams at the pace of a session on screen while its session is the one shown", async () => {
+        const { engine, c, id } = await parentWithTurn("hello there");
+        const { id: sideId } = (await engine.handle(c, "session.sideChat", { id })) as { id: string };
+        const client = c as unknown as { subs: Set<string>; shown?: string };
+        client.subs.add(sideId);
+        client.shown = id;
+        expect(engine.sessionShown(sideId)).toBe(true);
+        client.shown = "another";
+        expect(engine.sessionShown(sideId)).toBe(false);
+        await engine.stop();
+    });
+
     test("goes when its parent is archived", async () => {
         const { engine, c, id, rt } = await parentWithTurn("hello there");
         const { id: sideId } = (await engine.handle(c, "session.sideChat", { id })) as { id: string };
         await engine.handle(c, "session.archive", { id, archived: true });
         await until(() => !engine.runtimes.has(sideId) && !existsSync(sideChatDir(sideId)));
         expect(rt.snapshot().state.sideChat).toBeUndefined();
+    });
+
+    test("doesn't hold its session's worktree when that's archived with it removed: open, or closed for Undo", async () => {
+        const git = (cwd: string, ...args: string[]) => {
+            const r = Bun.spawnSync(gitArgv(["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", ...args]), { cwd, env: gitEnv(), stdout: "pipe", stderr: "pipe", timeout: 5000 });
+            if (r.exitCode) throw new Error(r.stderr.toString());
+        };
+        for (const closed of [false, true]) {
+            const main = realpathSync(tempDir("cavvy-side-wt-"));
+            writeFileSync(join(main, "README.md"), "base\n");
+            git(main, "init", "-q", "-b", "main");
+            git(main, "add", ".");
+            git(main, "commit", "-qm", "init");
+            git(main, "init", "-q", "--bare", `${main}.git`);
+            git(main, "remote", "add", "origin", `${main}.git`);
+            git(main, "push", "-q", "origin", "main");
+            const engine = new Engine({});
+            const c = { subs: new Set<string>(), send: () => {} } as never;
+            engine.clients.add(c);
+            const made = (await engine.handle(c, "projects.createWorktree", { path: main, branch: `side-${closed}` })) as { path: string };
+            const id = ((await engine.handle(c, "session.create", { cwd: made.path })) as SessionSnapshot).state.id;
+            engine.runtimes.get(id)!.session.push({ role: "user", content: [{ type: "text", text: "hello" }] });
+            await engine.handle(c, "session.sideChat", { id });
+            if (closed) await engine.handle(c, "session.closeSideChat", { id });
+            const r = (await engine.handle(c, "session.archive", { id, archived: true, removeWorktree: true })) as { removed?: boolean; kept?: string };
+            expect(r.kept).toBeUndefined();
+            expect(r.removed).toBe(true);
+            expect(existsSync(made.path)).toBe(false);
+            await engine.stop();
+        }
     });
 
     test("of a session with nothing in it yet: a question in its folder", async () => {

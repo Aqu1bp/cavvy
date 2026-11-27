@@ -1767,8 +1767,13 @@ const LINE_END_BYTES = 128;
 const INTERRUPT_ENDS = [/"text":"\[Request interrupted by user\]"\}\],"meta":\{"kind":"interrupt"\}\}\}$/, /"text":"\[Request interrupted by user for tool use\]"\}\],"meta":\{"kind":"tool_results"\}\}\}$/];
 const TOOL_CALL = Buffer.from('"type":"tool_call"');
 
-/** How a message leaves its turn (SessionHead.last). */
-function lastOf(m: Message): SessionHead["last"] {
+/** A note Cavvy adds after a turn (stopped background tasks, messages to send again): its line's end. */
+const REMINDER_END = /"meta":\{"kind":"reminder"[,}]/;
+
+/** How a message leaves its turn (SessionHead.last); `before`, the one before's. */
+function lastOf(m: Message, before?: SessionHead["last"]): SessionHead["last"] {
+    // Written after the reply, as the turn ends: the turn is as the reply left it.
+    if (m.role === "user" && m.meta?.kind === "reminder") return before;
     if (m.role === "assistant") return m.content.some((p) => p.type === "tool_call") ? "open" : "done";
     if (m.meta?.kind === "interrupt" || m.content.some((p) => p.type === "text" && p.text.startsWith("[Request interrupted by user"))) return "stopped";
     return "open";
@@ -1942,7 +1947,7 @@ function scanHead(fd: number, from: number, head: SessionHead): number {
             // A torn line, which load() skipped (and ended), isn't counted.
             else if (end.endsWith("}}") && Buffer.concat(parts).toString("latin1").startsWith(MSG_PREFIX)) {
                 head.count++;
-                head.last = role === "a" ? (calls ? "open" : "done") : INTERRUPT_ENDS.some((r) => r.test(end)) ? "stopped" : "open";
+                head.last = role === "a" ? (calls ? "open" : "done") : REMINDER_END.test(end) ? head.last : INTERRUPT_ENDS.some((r) => r.test(end)) ? "stopped" : "open";
             }
             parts = [];
             len = 0;
@@ -1974,7 +1979,7 @@ function lastFromEnd(fd: number, end: number): SessionHead["last"] {
     for (const raw of lines) {
         if (raw.startsWith(MSG_PREFIX)) {
             try {
-                last = lastOf((JSON.parse(raw) as { m: Message }).m);
+                last = lastOf((JSON.parse(raw) as { m: Message }).m, last);
             } catch {
                 // torn: as load() does, skipped
             }
@@ -2001,7 +2006,7 @@ function readHeadLine(raw: string, head: SessionHead) {
             head.firstAt = head.count;
         }
         head.count++;
-        head.last = lastOf(l.m);
+        head.last = lastOf(l.m, head.last);
     } else if (l.t === "rewind") {
         // Its last message is now an earlier one, not seen here.
         if (l.count < head.count) head.last = undefined;

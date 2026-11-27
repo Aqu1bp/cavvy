@@ -20,6 +20,11 @@ describe("hidden lines", () => {
         ]);
         // The file's length unknown: nothing after the last hunk.
         expect(gaps({ hunks: shown.hunks }).map((g) => g.at)).toEqual([0, 1]);
+        // A diff cut short (too many changed lines): what's after its last hunk wasn't sent, so it isn't offered.
+        const big = text(5000), bigAfter = text(5000, (i) => (i % 10 === 0 ? `changed ${i}` : undefined));
+        const cut = { ...fileDiff("big.txt", big, bigAfter), lines: 5000 };
+        expect(cut.truncated).toBe(true);
+        expect(gaps(cut).at(-1)!.at).toBeLessThan(cut.hunks.length);
         // A hunk at the top and bottom of the file leaves nothing there.
         const whole = fileDiff("g.txt", "a\n", "b\n");
         expect(gaps({ ...whole, lines: 1 })).toEqual([]);

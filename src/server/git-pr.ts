@@ -5,6 +5,7 @@ import type { GitPrListInfo, GitPrWorktree, WorktreeInfo } from "./protocol";
 import { cleanGitText, ghState, githubRepo, remoteUrl, runGh, runGit } from "./git-publish";
 import { gitReason, withReason } from "./git-sync";
 import { RpcError } from "./rpc-error";
+import { trustOwnOnly } from "../config/trust";
 import { createWorktree, createWorktreeWithHooks, listWorktrees } from "./worktrees";
 import type { Log } from "./worktrees";
 
@@ -104,7 +105,10 @@ export async function gitPrWorktree(cwd: string, input: string, log?: Log): Prom
     let worktrees: WorktreeInfo[] = [];
     try { worktrees = listWorktrees(cwd); } catch { /* not listed: one is made */ }
     const there = worktrees.find((w) => w.branch === branch && w.exists);
-    if (there) return { path: there.path, branch, reused: true, pr };
+    if (there) {
+        if (fork) trustOwnOnly(there.path);
+        return { path: there.path, branch, reused: true, pr };
+    }
 
     // Fetched from the URL checked as publishing checks it: the branch into its remote-tracking ref, a fork's head into FETCH_HEAD.
     const spec = fork ? `refs/pull/${ref.number}/head` : `+refs/heads/${head}:refs/remotes/${remote}/${head}`;
@@ -120,6 +124,9 @@ export async function gitPrWorktree(cwd: string, input: string, log?: Log): Prom
 
     const exists = Boolean(await local(cwd, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]));
     const made = exists ? await createWorktree({ path: cwd, branch }, log, { existingBranch: true }) : await createWorktreeWithHooks({ path: cwd, branch, base: commit }, log);
+    // A fork's code is someone else's: trusting this repository doesn't trust it. Its session asks first when it has
+    // project configuration of its own.
+    if (fork) trustOwnOnly(made.path);
     if (!exists && !fork) {
         // Tracking the pull request's branch, as `gh pr checkout` would have it: ahead/behind, Push and Pull work.
         await runGit(made.path, ["config", "--local", `branch.${branch}.remote`, remote], false);
