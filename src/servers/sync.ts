@@ -5,6 +5,11 @@
 // What a server has of its own is left alone: a file there is replaced or removed only if this machine put it there
 // and it hasn't changed since (the server keeps a record of what it was given: SYNCED_FILE). Files named like a key,
 // or holding a key of a known format, stay here. CLI subscription credentials are never read, copied or synced.
+//
+// Several of the user's computers can sync one server: it keeps what both send. The record says what each one last
+// sent, so a computer sends only what changed on it, and the newest change to a file is the one the server has. One
+// that starts syncing adds what the server lacks without replacing what another sent, and a file goes from the server
+// only once no computer still has it.
 
 import { createHash, randomUUID } from "crypto";
 import { lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, rmdirSync, statSync, writeFileSync } from "fs";
@@ -226,23 +231,61 @@ export function syncedWatchTargets(): { recursive: string[]; shallow: { dir: str
 // ---------------------------------------------------------------------------
 // On a server
 
-/** What a server was given, by path under its home, with what each file held then. */
+/**
+ * What a server was given, by path under its home, with what each file held then (`given`); and what each computer
+ * that syncs it last sent (`by`, by the id it signed in with). A record from before `by` is the one computer's.
+ */
 const SYNCED_FILE = () => join(cavvyHome(), "synced-files.json");
 
-export function readSynced(): Record<string, string> {
+interface SyncedFiles {
+    given: Record<string, string>;
+    by: Record<string, Record<string, string>>;
+}
+
+const hashes = (v: unknown): Record<string, string> => {
+    const out: Record<string, string> = {};
+    if (v && typeof v === "object") for (const [k, h] of Object.entries(v)) if (syncablePath(k) && typeof h === "string" && /^[0-9a-f]{64}$/.test(h)) out[k] = h;
+    return out;
+};
+
+function readRecord(): SyncedFiles {
     try {
         const v = JSON.parse(readFileSync(SYNCED_FILE(), "utf-8"));
-        const out: Record<string, string> = {};
-        if (v && typeof v === "object") for (const [k, h] of Object.entries(v)) if (syncablePath(k) && typeof h === "string" && /^[0-9a-f]{64}$/.test(h)) out[k] = h;
-        return out;
+        if (v?.v !== 2) return { given: hashes(v), by: {} };
+        const by: SyncedFiles["by"] = {};
+        if (v.by && typeof v.by === "object") for (const [m, r] of Object.entries(v.by)) if (typeof m === "string") by[m] = hashes(r);
+        return { given: hashes(v.given), by };
     } catch {
-        return {};
+        return { given: {}, by: {} };
     }
 }
 
-function writeSynced(record: Record<string, string>) {
+function writeRecord(r: SyncedFiles) {
     mkdirSync(dirname(SYNCED_FILE()), { recursive: true });
-    writeNew(SYNCED_FILE(), JSON.stringify(record), 0o600);
+    writeNew(SYNCED_FILE(), JSON.stringify({ v: 2, ...r }), 0o600);
+}
+
+/** What this server was given, whoever sent it. */
+export function readSynced(): Record<string, string> {
+    return readRecord().given;
+}
+
+/**
+ * What computer `from` last sent, which it compares with what it has. The first to sync after the record had no
+ * computers takes what was given as its own: until now there was only one.
+ */
+export function syncedFor(from = ""): Record<string, string> {
+    const r = readRecord();
+    if (r.by[from]) return r.by[from];
+    return Object.keys(r.by).length ? {} : r.given;
+}
+
+/** A computer signed out of this server for good: what it sent no longer keeps a file here. */
+export function forgetSyncedFiles(from: string) {
+    const r = readRecord();
+    if (!(from in r.by)) return;
+    delete r.by[from];
+    writeRecord(r);
 }
 
 /**
@@ -292,12 +335,17 @@ export interface ApplySyncResult {
 }
 
 /**
- * Takes what another machine of the user's sends: each file written unless the server has one of its own there, or
- * one it was given that has changed since; each removal done only for a file it was given and that's as it was.
- * Returns how many files changed and which paths were touched.
+ * Takes what computer `from` sends: each file written unless the server has one of its own there, or one it was given
+ * that has changed since, or one another computer sent that `from` never changed; each removal done only for a file
+ * it was given, that's as it was, and that no other computer still has. Returns how many files changed and which.
  */
-export function applySync(files: unknown, remove: unknown, home?: string): ApplySyncResult {
-    const record = readSynced();
+export function applySync(files: unknown, remove: unknown, home?: string, from = ""): ApplySyncResult {
+    const record = readRecord();
+    const given = record.given;
+    // Until now the record had no computers: the one there was is this one.
+    if (!Object.keys(record.by).length) record.by[from] = { ...given };
+    const mine = (record.by[from] ??= {});
+    const others = () => Object.entries(record.by).filter(([m]) => m !== from).map(([, r]) => r);
     let written = 0;
     let removed = 0;
     const changed: string[] = [];
@@ -305,7 +353,7 @@ export function applySync(files: unknown, remove: unknown, home?: string): Apply
         take();
     } finally {
         // What was done before a failure is recorded, or the next sync takes it for the server's own.
-        writeSynced(record);
+        writeRecord(record);
     }
     return { written, removed, changed };
 
@@ -317,26 +365,41 @@ export function applySync(files: unknown, remove: unknown, home?: string): Apply
             const now = current(f.path, home);
             if (now.blocked) continue;
             const h = sha(body);
-            // As this machine has it already (the one-time copy put it there): taken as given.
+            // As this computer has it already (the one-time copy put it there): taken as given.
             if (now.sha === h) {
-                record[f.path] = h;
+                given[f.path] = h;
+                mine[f.path] = h;
                 continue;
             }
             // Its own (never given), or given and changed there since: left as it is.
-            if (now.sha !== undefined && now.sha !== record[f.path]) continue;
+            if (now.sha !== undefined && now.sha !== given[f.path]) continue;
+            // Another computer's, and this one has had it as it is since it started syncing: the other's stays.
+            if (now.sha !== undefined && !(f.path in mine) && others().some((r) => f.path in r)) {
+                mine[f.path] = h;
+                continue;
+            }
             mkdirSync(dirname(now.dest), { recursive: true });
             writeNew(now.dest, body, f.exec === true ? 0o755 : 0o644);
-            record[f.path] = h;
+            given[f.path] = h;
+            mine[f.path] = h;
             written++;
             changed.push(f.path);
         }
         for (const path of Array.isArray(remove) ? remove : []) {
-            if (!syncablePath(path) || !(path in record)) continue;
+            if (!syncablePath(path)) continue;
+            delete mine[path];
+            // Another computer still has it: it stays. One that has it otherwise than the server does sends its own next.
+            if (!(path in given)) continue;
+            const still = others().filter((r) => path in r);
+            if (still.length) {
+                for (const r of still) if (r[path] !== given[path]) delete r[path];
+                continue;
+            }
             const now = current(path, home);
             if (now.blocked) continue;
-            if (now.sha !== undefined && now.sha !== record[path]) {
+            if (now.sha !== undefined && now.sha !== given[path]) {
                 // Changed there since: it's the server's now.
-                delete record[path];
+                delete given[path];
                 continue;
             }
             if (now.sha !== undefined) {
@@ -356,7 +419,7 @@ export function applySync(files: unknown, remove: unknown, home?: string): Apply
                     }
                 }
             }
-            delete record[path];
+            delete given[path];
         }
     }
 }

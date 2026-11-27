@@ -3,8 +3,8 @@
 // once, in different projects; each project gets its own settings, trust
 // decision, MCP servers and file index, shared by its sessions.
 
-import { applySync, readSynced } from "../servers/sync";
-import { applyStateSync, readSyncedStateDigest } from "../servers/sync-state";
+import { applySync, syncedFor } from "../servers/sync";
+import { applyStateFrom, syncedStateFor } from "../servers/sync-merge";
 import { installState } from "../servers/sync-install";
 import { FAR_GRACE_MS, searchServers, withServers, trashOnServers } from "./far-search";
 import { answerPeers, homeFarPeers, peersDenied, PEERS_WAIT_MS, serverFarPeers } from "./far-peers";
@@ -239,6 +239,8 @@ export interface EngineClient {
     subs: Set<string>;
     /** The window's key, when its connection presented one: its terminals are the window's, not this connection's. */
     window?: string;
+    /** On a server: the computer its connection signed in as. Sync keeps what each one sent apart. */
+    signedInAs?: string;
     /** The session on its screen (null: none). Undefined until it says, and then all count. */
     shown?: string | null;
     /** The theme its window shows (null: none), as it last said, and when. */
@@ -3676,14 +3678,14 @@ export class Engine {
             }
             case "sync.files": {
                 if (!this.o.away) throw new RpcError("Only a server takes another machine's skills.", "unsupported");
-                return readSynced();
+                return syncedFor(client.signedInAs);
             }
             case "sync.apply": {
                 if (!this.o.away) throw new RpcError("Only a server takes another machine's skills.", "unsupported");
                 return await this.enqueueSync(async () => {
                     let changed: string[] = [];
                     try {
-                        const r = applySync(p.files, p.remove);
+                        const r = applySync(p.files, p.remove, undefined, client.signedInAs);
                         changed = r.changed;
                         return { written: r.written, removed: r.removed };
                     } finally {
@@ -3697,14 +3699,14 @@ export class Engine {
             }
             case "sync.state": {
                 if (!this.o.away) throw new RpcError("Only a server takes another machine's state.", "unsupported");
-                return await readSyncedStateDigest();
+                return await syncedStateFor(client.signedInAs);
             }
             case "sync.applyState": {
                 if (!this.o.away) throw new RpcError("Only a server takes another machine's state.", "unsupported");
                 return await this.enqueueSync(async () => {
                     const run = this.pluginQueue.then(
-                        () => applyStateSync(p.digest, p.payload),
-                        () => applyStateSync(p.digest, p.payload),
+                        () => applyStateFrom(client.signedInAs ?? "", p.digest, p.payload),
+                        () => applyStateFrom(client.signedInAs ?? "", p.digest, p.payload),
                     );
                     this.pluginQueue = run.catch(() => undefined);
                     let r: Awaited<typeof run> | undefined;

@@ -422,8 +422,12 @@ export async function hostRun(args: string[], env: HostRunEnv): Promise<void> {
             if (path === "/revoke") {
                 if (!machine) return Response.json({ error: "A machine id is 32 hex digits." }, { status: 400 });
                 signIns.revoke(machine, client);
-                // The machine itself is forgotten only when all of it is signed out.
-                if (!client) noteMachine(machine, undefined);
+                // The machine itself is forgotten only when all of it is signed out, and what it synced here with it:
+                // what only it sent no longer stays for it (sync.ts, sync-merge.ts).
+                if (!client) {
+                    noteMachine(machine, undefined);
+                    await Promise.all([import("./sync").then((m) => m.forgetSyncedFiles(machine)), import("./sync-merge").then((m) => m.forgetSyncedState(machine))]).catch(() => undefined);
+                }
                 return Response.json({ closed: srv.dropMachine(machine, client) });
             }
             if (path === "/connect-cli") {
