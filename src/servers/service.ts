@@ -25,8 +25,8 @@
 
 import { agentCli } from "../backends/defs";
 import { ServerError, type ServerEntry } from "./store";
-import { hostOf, printable, remoteSh, ssh, shQuote } from "./ssh";
-import { BUILD_ID, MAC_DAEMON, MAC_LABEL, macLaunchd, REMOTE_DIR, withMacPaths, type ServerFacts } from "./remote";
+import { hostOf, printable, remotePs, remoteSh, ssh, shQuote } from "./ssh";
+import { BUILD_ID, isWindowsServer, MAC_DAEMON, MAC_LABEL, macLaunchd, REMOTE_DIR, withMacPaths, type ServerFacts } from "./remote";
 import { NOT_RUNNING, type HostCheck, type HostStatus } from "./host";
 import { PERMISSION_MODES } from "../permissions/modes";
 
@@ -441,8 +441,243 @@ done
 exit 0
 `;
 
+// ---------------------------------------------------------------------------
+// Windows remote lifecycle scripts (PowerShell, run over OpenSSH via remotePs).
+// Uses `current.txt` instead of symlinks (no Developer Mode / Admin required)
+// and a Scheduled Task (or WMI Win32_Process.Create fallback) so Cavvy outlives
+// the SSH session's Job Object.
+
+const WIN_TASK = "CavvyServer";
+const WIN_BOOT_FIX = `Register-ScheduledTask -TaskName ${WIN_TASK} -Action (New-ScheduledTaskAction -Execute powershell.exe -Argument '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "$env:USERPROFILE\\.cavvy\\server\\run.ps1"') -Trigger (New-ScheduledTaskTrigger -AtStartup) -Principal (New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\\$env:USERNAME" -LogonType S4U -RunLevel Limited) -Force`;
+
+const LIB_PS = `
+$ErrorActionPreference = 'Stop'
+$d = Join-Path $env:USERPROFILE ".cavvy\\server"
+$taskName = '${WIN_TASK}'
+function Get-CurrentId {
+    $f = Join-Path $d "current.txt"
+    if (-not (Test-Path $f)) { return $null }
+    $v = (Get-Content -Raw $f).Trim()
+    if ($v) { return $v }
+    return $null
+}
+function Get-CavvyBin {
+    $id = Get-CurrentId
+    if (-not $id) { return $null }
+    $p = Join-Path $d ("builds\\" + $id + "\\cavvy.exe")
+    if (Test-Path $p) { return $p }
+    return $null
+}
+function Set-CurrentId([string]$id) {
+    New-Item -ItemType Directory -Force -Path $d | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $d "current.txt"), $id + "\`n")
+}
+function Write-RunScript {
+    New-Item -ItemType Directory -Force -Path $d | Out-Null
+    $script = @'
+$ErrorActionPreference = 'SilentlyContinue'
+$d = Join-Path $env:USERPROFILE ".cavvy\\server"
+if (Test-Path (Join-Path $d "stopped")) { exit 0 }
+$curFile = Join-Path $d "current.txt"
+if (-not (Test-Path $curFile)) { exit 0 }
+$id = (Get-Content -Raw $curFile).Trim()
+$bin = Join-Path $d ("builds\\" + $id + "\\cavvy.exe")
+if (-not (Test-Path $bin)) { exit 0 }
+$log = Join-Path $d "server.log"
+if ((Test-Path $log) -and ((Get-Item $log).Length -gt 5000000)) {
+    Move-Item -Force -Path $log -Destination (Join-Path $d "server.log.1")
+}
+$env:CAVVY_NO_KEYCHAIN = '1'
+& $bin host run --login-env *>> $log
+'@
+    [System.IO.File]::WriteAllText((Join-Path $d "run.ps1"), $script)
+}
+function Get-CavvyStatus {
+    $bin = Get-CavvyBin
+    if (-not $bin) { return $null }
+    $out = (& $bin host status 2>$null) -join ""
+    if ($LASTEXITCODE -eq 0 -and $out) { return $out }
+    return $null
+}
+function Start-Cavvy {
+    Write-RunScript
+    $runScript = Join-Path $d "run.ps1"
+    $started = $false
+    try {
+        $null = Get-ScheduledTask -TaskName $taskName -ErrorAction Stop
+        Start-ScheduledTask -TaskName $taskName -ErrorAction Stop
+        $started = $true
+    } catch {}
+    if (-not $started) {
+        $cmdLine = 'powershell.exe -NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $runScript + '"'
+        $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $cmdLine }
+        if ($r.ReturnValue -ne 0) { throw "Win32_Process.Create failed ($($r.ReturnValue))" }
+    }
+}
+function Stop-Cavvy {
+    $bin = Get-CavvyBin
+    if ($bin) {
+        try { & $bin host stop 2>$null | Out-Null } catch {}
+    }
+}
+function Wait-CavvyUp([string]$want) {
+    for ($i = 0; $i -lt @@START_TRIES@@; $i++) {
+        $s = Get-CavvyStatus
+        if ($s) {
+            if (-not $want -or $s.Contains('"build":"' + $want + '"')) { return $s }
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    return $null
+}
+`;
+
+const SETUP_PS = `${LIB_PS}
+Write-RunScript
+$runScript = Join-Path $d "run.ps1"
+$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $runScript + '"')
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 5 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero)
+$boot = 0
+try {
+    $trigger = New-ScheduledTaskTrigger -AtStartup
+    $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\\$env:USERNAME" -LogonType S4U -RunLevel Limited
+    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force -ErrorAction Stop | Out-Null
+    $boot = 1
+} catch {
+    try {
+        $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\\$env:USERNAME" -LogonType Interactive -RunLevel Limited
+        Register-ScheduledTask -TaskName $taskName -Action $action -Settings $settings -Principal $principal -Force -ErrorAction Stop | Out-Null
+    } catch {}
+}
+Write-Output "windows=1"
+Write-Output "wintask=$boot"
+Write-Output "user=$env:USERNAME"
+`;
+
+const APPLY_PS = `${LIB_PS}
+$new = $cavvyArgs[0]
+$newBin = Join-Path $d ("builds\\" + $new + "\\cavvy.exe")
+if (-not (Test-Path $newBin)) { [Console]::Error.WriteLine("no build $new there"); exit 43 }
+New-Item -ItemType Directory -Force -Path $d | Out-Null
+$lockDir = Join-Path $d "applying"
+$pidFile = Join-Path $lockDir "pid"
+if (Test-Path $lockDir) {
+    $other = $null
+    if (Test-Path $pidFile) { $other = (Get-Content -Raw $pidFile -ErrorAction SilentlyContinue).Trim() }
+    if ($other -and (Get-Process -Id ([int]$other) -ErrorAction SilentlyContinue)) { exit 48 }
+    if (-not $other -and ((Get-Item $lockDir).LastWriteTime -gt (Get-Date).AddMinutes(-1))) { exit 48 }
+    Remove-Item -Recurse -Force -Path $lockDir -ErrorAction SilentlyContinue
+}
+try { New-Item -ItemType Directory -Path $lockDir -ErrorAction Stop | Out-Null } catch { exit 48 }
+[System.IO.File]::WriteAllText($pidFile, [string]$PID)
+try {
+    $prev = Get-CurrentId
+    Stop-Cavvy
+    Remove-Item -Force -Path (Join-Path $d "stopped") -ErrorAction SilentlyContinue
+    Set-CurrentId $new
+    Start-Cavvy
+    $st = Wait-CavvyUp $new
+    if ($st) {
+        if ($prev -and $prev -ne $new) { [System.IO.File]::WriteAllText((Join-Path $d "previous"), $prev + "\`n") }
+        Write-Output "status=$st"
+        exit 0
+    }
+    [Console]::Error.WriteLine("the new build didn't start")
+    Stop-Cavvy
+    if ($prev -and $prev -ne $new -and (Test-Path (Join-Path $d ("builds\\" + $prev + "\\cavvy.exe")))) {
+        Set-CurrentId $prev
+        Start-Cavvy
+        $stPrev = Wait-CavvyUp $prev
+        if ($stPrev) { Write-Output "status=$stPrev"; exit 44 }
+    }
+    exit 45
+} finally {
+    Remove-Item -Recurse -Force -Path $lockDir -ErrorAction SilentlyContinue
+}
+`;
+
+const CONNECT_PS = `${LIB_PS}
+$bin = Get-CavvyBin
+if (-not $bin) { exit 46 }
+if (-not (Get-CavvyStatus)) {
+    if ($cavvyArgs[2] -eq 'resume' -and (Test-Path (Join-Path $d "stopped"))) { exit 47 }
+    Remove-Item -Force -Path (Join-Path $d "stopped") -ErrorAction SilentlyContinue
+    Start-Cavvy
+    if (-not (Wait-CavvyUp "")) { exit 45 }
+}
+$pairArgs = @('host', 'pair', '--machine', $cavvyArgs[0], '--label', $cavvyArgs[1])
+if ($cavvyArgs[3]) { $pairArgs += @('--client', $cavvyArgs[3]) }
+$p = (& $bin @pairArgs) -join ""
+if ($LASTEXITCODE -ne 0 -or -not $p) { exit 45 }
+Write-Output "pair=$p"
+`;
+
+const STATUS_PS = `${LIB_PS}
+$bin = Get-CavvyBin
+if (-not $bin) { exit 46 }
+$s = (& $bin host status 2>$null) -join ""
+$code = $LASTEXITCODE
+Write-Output "status=$s"
+exit $code
+`;
+
+const STOP_PS = `${LIB_PS}
+$bin = Get-CavvyBin
+if (-not $bin) { exit 0 }
+Stop-Cavvy
+New-Item -ItemType Directory -Force -Path $d | Out-Null
+[System.IO.File]::WriteAllText((Join-Path $d "stopped"), "")
+Remove-Item -Force -Path (Join-Path $d "working.json") -ErrorAction SilentlyContinue
+exit 0
+`;
+
+const REVOKE_PS = `${LIB_PS}
+$bin = Get-CavvyBin
+if (-not $bin) { exit 0 }
+$rArgs = @('host', 'revoke', '--machine', $cavvyArgs[0])
+if ($cavvyArgs[1]) { $rArgs += @('--client', $cavvyArgs[1]) }
+try { & $bin @rArgs 2>$null | Out-Null } catch {}
+exit 0
+`;
+
+const CHECK_PS = `${LIB_PS}
+$bin = Get-CavvyBin
+if (-not $bin) { exit 46 }
+$c = (& $bin host check) -join ""
+if ($LASTEXITCODE -ne 0) { exit 1 }
+Write-Output "check=$c"
+`;
+
+const PREVIOUS_PS = `${LIB_PS}
+$bin = Get-CavvyBin
+if (-not $bin) { exit 46 }
+$pf = Join-Path $d "previous"
+if (-not (Test-Path $pf)) { exit 49 }
+$p = (Get-Content -Raw $pf).Trim()
+if ($p -notmatch '^[0-9a-z.-]+$') { exit 49 }
+if (-not (Test-Path (Join-Path $d ("builds\\" + $p + "\\cavvy.exe")))) { exit 49 }
+if ($p -eq (Get-CurrentId)) { exit 49 }
+Write-Output "previous=$p"
+`;
+
+const PRUNE_PS = `${LIB_PS}
+$cur = Get-CurrentId
+$prevFile = Join-Path $d "previous"
+$prevSaved = if (Test-Path $prevFile) { (Get-Content -Raw $prevFile).Trim() } else { "" }
+$buildsDir = Join-Path $d "builds"
+if (Test-Path $buildsDir) {
+    $cutoff = (Get-Date).AddMinutes(-60)
+    Get-ChildItem -Path $buildsDir -Directory | ForEach-Object {
+        $n = $_.Name
+        if ($n -eq $cur -or $n -eq $cavvyArgs[0] -or $n -eq $cavvyArgs[1] -or $n -eq $prevSaved) { return }
+        if ($_.LastWriteTime -lt $cutoff) { Remove-Item -Recurse -Force -Path $_.FullName -ErrorAction SilentlyContinue }
+    }
+}
+exit 0
+`;
+
 function value(out: string, key: string): string | undefined {
-    for (const line of out.split("\n")) if (line.startsWith(`${key}=`)) return line.slice(key.length + 1).trim();
+    for (const line of out.split(/\r?\n/)) if (line.startsWith(`${key}=`)) return line.slice(key.length + 1).trim();
     return undefined;
 }
 
@@ -465,7 +700,8 @@ export interface ServiceReport {
     bootHere?: true;
 }
 
-function report(o: { systemd: boolean; linger: boolean; user: string; mac: boolean; boot?: string }): ServiceReport {
+function report(o: { systemd: boolean; linger: boolean; user: string; mac: boolean; boot?: string; windows?: boolean; windowsTask?: boolean }): ServiceReport {
+    if (o.windows) return o.windowsTask ? { service: true } : { service: false, bootFix: WIN_BOOT_FIX };
     // Another account's daemon has the name there: nothing this one runs would change that.
     if (o.mac) return o.boot === "mine" ? { service: true } : o.boot === undefined ? { service: false, bootHere: true } : { service: false };
     if (o.systemd && o.linger) return { service: true };
@@ -474,7 +710,7 @@ function report(o: { systemd: boolean; linger: boolean; user: string; mac: boole
 
 /** The same report, from what a probe found, for a server that's only being looked at. */
 export function serviceReport(facts: ServerFacts): ServiceReport {
-    return report({ systemd: facts.systemd, linger: facts.linger === true, user: facts.user, mac: facts.os === "Darwin", boot: facts.launchDaemon });
+    return report({ systemd: facts.systemd, linger: facts.linger === true, user: facts.user, mac: facts.os === "Darwin", boot: facts.launchDaemon, windows: facts.os === "Windows", windowsTask: facts.windowsTask === true });
 }
 
 const count = (v: unknown) => (typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : 0);
@@ -541,14 +777,23 @@ export function readCheck(text: string | undefined): HostCheck | undefined {
 }
 
 /** What the server's last line of complaint was, safe to show. */
-const said = (stderr: string) => printable(stderr.trim().split("\n").at(-1) ?? "");
+const said = (stderr: string) => printable(stderr.trim().split(/\r?\n/).at(-1) ?? "");
 
 /** Sets the server up to keep Cavvy running, as well as it allows. */
 export async function setUpService(e: ServerEntry, signal?: AbortSignal): Promise<ServiceReport> {
-    const r = await ssh(e, remoteSh(timed(SETUP), [UNIT, withMacPaths(MAC_BOOT)]), { timeoutMs: 60_000, signal });
+    const cmd = isWindowsServer(e) ? remotePs(timed(SETUP_PS)) : remoteSh(timed(SETUP), [UNIT, withMacPaths(MAC_BOOT)]);
+    const r = await ssh(e, cmd, { timeoutMs: 60_000, signal });
     if (r.code !== 0) throw new ServerError(`Couldn't set ${hostOf(e)} up to keep Cavvy running: ${said(r.stderr) || `exit ${r.code}`}`);
     const boot = value(r.stdout, "boot");
-    return report({ systemd: value(r.stdout, "systemd") === "1", linger: value(r.stdout, "linger") === "yes", user: value(r.stdout, "user") ?? "", mac: value(r.stdout, "mac") === "1", boot: boot === "mine" || boot === "other" ? boot : undefined });
+    return report({
+        systemd: value(r.stdout, "systemd") === "1",
+        linger: value(r.stdout, "linger") === "yes",
+        user: value(r.stdout, "user") ?? "",
+        mac: value(r.stdout, "mac") === "1",
+        boot: boot === "mine" || boot === "other" ? boot : undefined,
+        windows: value(r.stdout, "windows") === "1",
+        windowsTask: value(r.stdout, "wintask") === "1",
+    });
 }
 
 /** What `bootCommand` exits with when another account's Cavvy has the daemon's name on that Mac. */
@@ -579,7 +824,8 @@ export class UpdateFailed extends ServerError {
 /** Runs `build` there in place of whatever runs now, going back to that if the new one doesn't start. */
 export async function applyBuild(e: ServerEntry, build: string, signal?: AbortSignal): Promise<HostStatus> {
     if (!BUILD_ID.test(build)) throw new ServerError("That isn't a build.");
-    const r = await ssh(e, remoteSh(timed(APPLY), [build]), { timeoutMs: (serviceTiming.startWaitSeconds * 2 + 90) * 1000, signal });
+    const cmd = isWindowsServer(e) ? remotePs(timed(APPLY_PS), [build]) : remoteSh(timed(APPLY), [build]);
+    const r = await ssh(e, cmd, { timeoutMs: (serviceTiming.startWaitSeconds * 2 + 90) * 1000, signal });
     const status = readStatus(value(r.stdout, "status"));
     if (r.code === 0 && status) return status;
     if (r.code === 48) throw new ServerError(`Cavvy on ${e.name} is being updated right now. Try again in a minute.`);
@@ -600,7 +846,8 @@ echo "previous=$p"
 
 /** The build a server can be put back on: the one it ran before its last update. Undefined when there's none to go back to. */
 export async function previousBuild(e: ServerEntry, signal?: AbortSignal): Promise<string | undefined> {
-    const r = await ssh(e, remoteSh(timed(PREVIOUS), []), { timeoutMs: 30_000, signal });
+    const cmd = isWindowsServer(e) ? remotePs(timed(PREVIOUS_PS)) : remoteSh(timed(PREVIOUS), []);
+    const r = await ssh(e, cmd, { timeoutMs: 30_000, signal });
     if (r.code === 46) throw new NotSetUp(`Cavvy isn't set up on ${hostOf(e)}.`);
     const p = value(r.stdout, "previous");
     return r.code === 0 && p && BUILD_ID.test(p) ? p : undefined;
@@ -634,7 +881,9 @@ export class StoppedThere extends ServerError {}
  * of this machine's connections the sign-in is for, so it can be taken away alone.
  */
 export async function pairOverSsh(e: ServerEntry, machine: { id: string; label: string; client?: string }, o: { signal?: AbortSignal; resume?: boolean } = {}): Promise<Pairing> {
-    const r = await ssh(e, remoteSh(timed(CONNECT), [machine.id, machine.label, o.resume ? "resume" : "start", machine.client ?? ""]), { timeoutMs: (serviceTiming.startWaitSeconds + 30) * 1000, signal: o.signal });
+    const args = [machine.id, machine.label, o.resume ? "resume" : "start", machine.client ?? ""];
+    const cmd = isWindowsServer(e) ? remotePs(timed(CONNECT_PS), args) : remoteSh(timed(CONNECT), args);
+    const r = await ssh(e, cmd, { timeoutMs: (serviceTiming.startWaitSeconds + 30) * 1000, signal: o.signal });
     if (r.code === 46) throw new NotSetUp(`Cavvy isn't set up on ${hostOf(e)}.`);
     if (r.code === 47) throw new StoppedThere(`Cavvy on ${e.name} was stopped.`);
     const p = json<Record<string, unknown>>(value(r.stdout, "pair"));
@@ -658,7 +907,8 @@ export async function pairOverSsh(e: ServerEntry, machine: { id: string; label: 
 
 /** What runs there: undefined when nothing does. Throws NotSetUp when Cavvy isn't there at all. */
 export async function remoteStatus(e: ServerEntry, signal?: AbortSignal): Promise<HostStatus | undefined> {
-    const r = await ssh(e, remoteSh(timed(STATUS)), { timeoutMs: 30_000, signal });
+    const cmd = isWindowsServer(e) ? remotePs(timed(STATUS_PS)) : remoteSh(timed(STATUS));
+    const r = await ssh(e, cmd, { timeoutMs: 30_000, signal });
     if (r.code === 46) throw new NotSetUp(`Cavvy isn't set up on ${hostOf(e)}.`);
     if (r.code === NOT_RUNNING) return undefined;
     return r.code === 0 ? readStatus(value(r.stdout, "status")) : undefined;
@@ -666,18 +916,23 @@ export async function remoteStatus(e: ServerEntry, signal?: AbortSignal): Promis
 
 /** Stops the server's Cavvy and leaves it stopped (not started again at boot). */
 export async function stopRemote(e: ServerEntry, signal?: AbortSignal): Promise<void> {
-    await ssh(e, remoteSh(timed(STOP)), { timeoutMs: 60_000, signal });
+    const cmd = isWindowsServer(e) ? remotePs(timed(STOP_PS)) : remoteSh(timed(STOP));
+    await ssh(e, cmd, { timeoutMs: 60_000, signal });
 }
 
 /** This machine's sign-ins there stop working: all of them, or the ones its connection `client` made. */
 export async function revokeOverSsh(e: ServerEntry, machine: string, o: { client?: string; signal?: AbortSignal } = {}): Promise<void> {
-    await ssh(e, remoteSh(timed(REVOKE), [machine, o.client ?? ""]), { timeoutMs: 30_000, signal: o.signal });
+    const args = [machine, o.client ?? ""];
+    const cmd = isWindowsServer(e) ? remotePs(timed(REVOKE_PS), args) : remoteSh(timed(REVOKE), args);
+    await ssh(e, cmd, { timeoutMs: 30_000, signal: o.signal });
 }
 
 /** The server's own account of what's there for agents, and on a Mac how Xcode stands. */
 export async function remoteCheck(e: ServerEntry, signal?: AbortSignal): Promise<HostCheck> {
-    const script = timed(CHECK).replaceAll("@@XCODE_VERSION@@", seconds(xcodeTiming.versionSeconds)).replaceAll("@@XCODE_SIMULATORS@@", seconds(xcodeTiming.simulatorsSeconds));
-    const r = await ssh(e, remoteSh(script), { timeoutMs: 60_000, signal });
+    const cmd = isWindowsServer(e)
+        ? remotePs(timed(CHECK_PS))
+        : remoteSh(timed(CHECK).replaceAll("@@XCODE_VERSION@@", seconds(xcodeTiming.versionSeconds)).replaceAll("@@XCODE_SIMULATORS@@", seconds(xcodeTiming.simulatorsSeconds)));
+    const r = await ssh(e, cmd, { timeoutMs: 60_000, signal });
     if (r.code === 46) throw new NotSetUp(`Cavvy isn't set up on ${hostOf(e)}.`);
     const check = r.code === 0 ? readCheck(value(r.stdout, "check")) : undefined;
     if (!check) throw new ServerError(`Couldn't check ${hostOf(e)}${said(r.stderr) ? `: ${said(r.stderr)}` : "."}`);
@@ -687,5 +942,7 @@ export async function remoteCheck(e: ServerEntry, signal?: AbortSignal): Promise
 
 /** Builds the server no longer needs go: all but the one running, `previous` and `keep`. */
 export async function pruneBuilds(e: ServerEntry, previous: string | undefined, keep: string, signal?: AbortSignal): Promise<void> {
-    await ssh(e, remoteSh(timed(PRUNE), [previous && BUILD_ID.test(previous) ? previous : "-", BUILD_ID.test(keep) ? keep : "-"]), { timeoutMs: 30_000, signal }).catch(() => undefined);
+    const args = [previous && BUILD_ID.test(previous) ? previous : "-", BUILD_ID.test(keep) ? keep : "-"];
+    const cmd = isWindowsServer(e) ? remotePs(timed(PRUNE_PS), args) : remoteSh(timed(PRUNE), args);
+    await ssh(e, cmd, { timeoutMs: 30_000, signal }).catch(() => undefined);
 }

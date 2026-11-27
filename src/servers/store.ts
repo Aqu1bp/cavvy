@@ -20,6 +20,8 @@ export interface ServerEntry {
     identityFile?: string;
     /** Where this server's host key is kept, when the user's ssh config keeps none for it (ssh.ts trustHostKey). */
     knownHostsFile?: string;
+    /** Operating system family on the server: omitted / "posix" for Linux and macOS, "windows" for Windows. */
+    platform?: "posix" | "windows";
     /** A machine rented for this (an agent created it): what it is, what it costs, and how it's given back. */
     cloud?: ServerCloud;
     addedAt: string;
@@ -96,6 +98,7 @@ function checked(e: Partial<ServerEntry>): ServerEntry {
         if (!isAbsolute(f) || /[\0\n\r]/.test(f)) throw new ServerError("That isn't a known-hosts file's path.");
         out.knownHostsFile = f;
     }
+    if (e.platform === "windows" || e.platform === "posix") out.platform = e.platform;
     if (e.cloud !== undefined) out.cloud = checkedCloud(e.cloud);
     return out;
 }

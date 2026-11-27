@@ -23,7 +23,8 @@ import { cavvyHome, paths } from "../config/paths";
 import type { McpServerConfig, Settings } from "../config/settings";
 import { childEnv } from "../util/env";
 import { matchesSecretPattern } from "../util/secret-patterns";
-import { hostOf, printable, remoteSh, ssh } from "./ssh";
+import { isWindowsServer } from "./remote";
+import { hostOf, printable, remotePs, remoteSh, ssh } from "./ssh";
 import { ServerError, type ServerEntry } from "./store";
 
 /** Settings that are a way of working, and can't hold a secret or run a command. */
@@ -404,16 +405,45 @@ find . -type f | while IFS= read -r f; do
 done
 `;
 
+/** Windows equivalent of RECEIVE: unpacks stdin .tar.gz and moves files that aren't already under USERPROFILE. */
+const RECEIVE_PS = `
+$ErrorActionPreference = 'Stop'
+$tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("cavvy-copy-" + [System.Guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+$archive = Join-Path $tmp "copy.tar.gz"
+try {
+    $inStream = [Console]::OpenStandardInput()
+    $outStream = [System.IO.File]::Create($archive)
+    try { $inStream.CopyTo($outStream) } finally { $outStream.Close() }
+    & tar.exe -xzf $archive -C $tmp
+    if ($LASTEXITCODE -ne 0) { throw "tar failed with exit $LASTEXITCODE" }
+    Remove-Item -Force -Path $archive -ErrorAction SilentlyContinue
+    $baseLen = $tmp.TrimEnd('\\').Length + 1
+    Get-ChildItem -Path $tmp -Recurse -File | ForEach-Object {
+        $rel = $_.FullName.Substring($baseLen)
+        $dest = Join-Path $env:USERPROFILE $rel
+        if (-not (Test-Path $dest)) {
+            $parent = Split-Path -Parent $dest
+            if ($parent) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
+            Move-Item -Path $_.FullName -Destination $dest
+            Write-Output ("copied=" + $rel.Replace('\\', '/'))
+        }
+    }
+} finally {
+    Remove-Item -Recurse -Force -Path $tmp -ErrorAction SilentlyContinue
+}
+`;
+
 /** Sends a plan's files. Returns the ones the server took, as paths under its home (the rest were there already). */
 export async function sendCopy(e: ServerEntry, plan: CopyPlan, signal?: AbortSignal): Promise<string[]> {
     if (!plan.files) return [];
     const tar = Bun.spawn(["tar", "-czf", "-", "-C", plan.stage, "."], { stdin: "ignore", stdout: "pipe", stderr: "ignore", env: { ...childEnv(), COPYFILE_DISABLE: "1" } });
     const body = new Uint8Array(await new Response(tar.stdout).arrayBuffer());
     if ((await tar.exited) !== 0) throw new ServerError("Couldn't pack your settings to copy.");
-    const r = await ssh(e, remoteSh(RECEIVE), { stdin: body, timeoutMs: 120_000, signal });
+    const r = await ssh(e, isWindowsServer(e) ? remotePs(RECEIVE_PS) : remoteSh(RECEIVE), { stdin: body, timeoutMs: 120_000, signal });
     if (r.code !== 0) throw new ServerError(`Couldn't copy your settings to ${hostOf(e)}: ${printable(r.stderr.trim().split("\n").at(-1) ?? `exit ${r.code}`)}`);
     return r.stdout
-        .split("\n")
+        .split(/\r?\n/)
         .filter((l) => l.startsWith("copied="))
         .map((l) => l.slice("copied=".length));
 }

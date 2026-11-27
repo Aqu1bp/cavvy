@@ -256,18 +256,22 @@ export async function serverBuild(target: ServerTarget, o: { onStep?: (text: str
  * when it's needed (serverBuild), put in the desktop app when that's packed (desktop-electron/pack.ts), or published
  * (scripts/release-server-builds.ts). `guiBuilt`: the GUI in gui/dist was just built, and is taken as it is.
  */
+/** Executable filename inside a server build bundle. */
+export const binaryName = (target: ServerTarget) => (target.startsWith("windows-") ? "cavvy.exe" : "cavvy");
+
 export async function packServerBuild(root: string, id: string, target: ServerTarget, tmp: string, out: string, o: { onStep?: (text: string) => void; signal?: AbortSignal; bun: string; guiBuilt?: boolean }): Promise<{ sha256: string; gui: boolean; guiFailed: boolean }> {
     const stage = join(tmp, `stage-${target}`);
+    const bin = binaryName(target);
     mkdirSync(stage);
     o.onStep?.(`Building Cavvy for ${targetName(target)}…`);
     const built = await run(
-        [o.bun, "build", "--compile", "--minify", "--sourcemap=none", ...bytecodeFor(o.bun), `--target=bun-${target}-v${SERVER_BUN}`, "--define", `CAVVY_BUILD_ID=${JSON.stringify(id)}`, ...buildTimeDefine(), "--no-compile-autoload-dotenv", "--no-compile-autoload-bunfig", "--outfile", join(stage, "cavvy"), join(root, "src", "index.ts"), join(root, "src", "agent", "stat-worker.ts"), join(root, "src", "ui", "mention-worker.ts")],
+        [o.bun, "build", "--compile", "--minify", "--sourcemap=none", ...bytecodeFor(o.bun), `--target=bun-${target}-v${SERVER_BUN}`, "--define", `CAVVY_BUILD_ID=${JSON.stringify(id)}`, ...buildTimeDefine(), "--no-compile-autoload-dotenv", "--no-compile-autoload-bunfig", "--outfile", join(stage, bin), join(root, "src", "index.ts"), join(root, "src", "agent", "stat-worker.ts"), join(root, "src", "ui", "mention-worker.ts")],
         root,
         o.signal,
     );
-    if (!built.ok || !existsSync(join(stage, "cavvy"))) throw new ServerError(o.signal?.aborted ? "Stopped." : `The server's build failed:\n${built.out}`);
+    if (!built.ok || !existsSync(join(stage, bin))) throw new ServerError(o.signal?.aborted ? "Stopped." : `The server's build failed:\n${built.out}`);
     // Bun leaves source maps beside it whatever it's told: only the program goes.
-    for (const f of readdirSync(stage)) if (f !== "cavvy") rmSync(join(stage, f), { recursive: true, force: true });
+    for (const f of readdirSync(stage)) if (f !== bin) rmSync(join(stage, f), { recursive: true, force: true });
 
     const guiDist = join(root, "gui", "dist");
     let gui = false;
@@ -283,10 +287,10 @@ export async function packServerBuild(root: string, id: string, target: ServerTa
     } else gui = existsSync(join(guiDist, "index.html"));
     if (gui) cpSync(guiDist, join(stage, "gui"), { recursive: true });
 
-    const sha256 = await sha256File(join(stage, "cavvy"));
+    const sha256 = await sha256File(join(stage, bin));
     // macOS's tar would add its own metadata files, which a Linux tar unpacks as clutter (and a Mac's as the
     // attributes they hold).
-    const tar = await run(["tar", "-czf", out, "-C", stage, "cavvy", ...(gui ? ["gui"] : [])], tmp, o.signal, { COPYFILE_DISABLE: "1" });
+    const tar = await run(["tar", "-czf", out, "-C", stage, bin, ...(gui ? ["gui"] : [])], tmp, o.signal, { COPYFILE_DISABLE: "1" });
     // Packed: the unpacked copy (over a hundred MB) isn't left in the caller's folder.
     rmSync(stage, { recursive: true, force: true });
     if (!tar.ok) throw new ServerError(o.signal?.aborted ? "Stopped." : `Couldn't pack the server's build:\n${tar.out}`);
@@ -300,7 +304,7 @@ export function buildTimeDefine(): string[] {
 }
 
 /** A kind of server, in words. */
-export const targetName = (target: ServerTarget) => (target === "darwin-arm64" ? "macOS" : target === "linux-arm64" ? "Linux arm64" : "Linux x64");
+export const targetName = (target: ServerTarget) => (target === "darwin-arm64" ? "macOS" : target === "windows-x64" ? "Windows x64" : target === "linux-arm64" ? "Linux arm64" : "Linux x64");
 
 /**
  * The kinds a packed desktop app carries a build for: for x64, the one that runs on every x64 processor (a

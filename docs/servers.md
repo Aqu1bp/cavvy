@@ -1,6 +1,6 @@
 # Servers
 
-Cavvy can run on another machine and be used from this one: a VPS, a build box, a Mac mini, anything running Linux or macOS that you reach with `ssh`. The sessions, the agent CLIs, the files and the commands are all on the server, and they keep going when your laptop sleeps or the connection drops.
+Cavvy can run on another machine and be used from this one: a VPS, a build box, a Mac mini, or a Windows workstation — anything running Linux, macOS, or Windows that you reach with `ssh`. The sessions, the agent CLIs, the files and the commands are all on the server, and they keep going when your laptop sleeps or the connection drops.
 
 ```bash
 cavvy servers add box me@box.example     # connect, put Cavvy there, start it
@@ -11,7 +11,7 @@ cavvy gui --server box                   # the server's GUI, in your browser
 
 `--port` and `--identity <file>` say how to connect when that isn't in your SSH config. Everything else in `~/.ssh/config` applies (a `Host` alias, `ProxyJump`, your agent): Cavvy runs the system's `ssh`.
 
-A server needs Linux on x64 or arm64 with glibc (so not Alpine), or a Mac with Apple silicon ([a Mac as a server](#a-mac-as-a-server)); about 400 MB of disk; and nothing installed beforehand. Your login shell there has to be sh, bash, zsh, dash or ksh (not csh or tcsh). Only put credentials on a server that you'd accept an agent using: agents there run as the user you signed in as, so they can read what that user can.
+A server needs Linux on x64 or arm64 with glibc (so not Alpine), a Mac with Apple silicon ([a Mac as a server](#a-mac-as-a-server)), or 64-bit x64 Windows (Windows 10 1803+ or Windows Server 2019+ with OpenSSH Server); about 400 MB of disk; and nothing installed beforehand. On Linux and macOS your login shell there has to be sh, bash, zsh, dash or ksh (not csh or tcsh). On Windows, Cavvy runs over OpenSSH using PowerShell and built-in `tar.exe`, with no symlink/Developer Mode requirement. Only put credentials on a server that you'd accept an agent using: agents there run as the user you signed in as, so they can read what that user can.
 
 ## Adding a server
 

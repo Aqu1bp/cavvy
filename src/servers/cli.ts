@@ -13,9 +13,9 @@ import { ServerLink, type LinkState } from "./connect";
 import { countCopied, describeCopy, describeLeft, planCopy, sendCopy } from "./copy";
 import type { HostCheck, HostStatus } from "./host";
 import { ensureBuildThere, ServerBusy, setUpServer, type SetupProgress, type SetupResult } from "./install";
-import { LOGIN_EXIT, probeServer, REMOTE_CURRENT, REMOTE_DIR, remoteBuildDir } from "./remote";
+import { isWindowsServer, LOGIN_EXIT, probeServer, REMOTE_CURRENT, REMOTE_DIR, remoteBuildDir } from "./remote";
 import { applyBuild, BOOT_TAKEN, bootCommand, NotSetUp, previousBuild, remoteCheck, remoteStatus, revokeOverSsh, serviceReport, stopRemote, UpdateFailed, type ServiceReport } from "./service";
-import { hostOf, offeredHostKey, printable, remoteSh, shQuote, ssh, sshCommandArgv, SshError, trustHostKey } from "./ssh";
+import { hostOf, offeredHostKey, printable, remotePs, remoteSh, shQuote, ssh, sshCommandArgv, SshError, trustHostKey } from "./ssh";
 import { draftServer, listServers, removeServer, requireServer, saveServer, ServerError, thisDesktop, type ServerEntry } from "./store";
 import type { PermissionMode } from "../permissions/modes";
 
@@ -282,6 +282,17 @@ b="${REMOTE_CURRENT}"
 exec "$b" host login "$1"
 `;
 
+const LOGIN_PS = `
+$d = Join-Path $env:USERPROFILE ".cavvy\\server"
+$cur = Join-Path $d "current.txt"
+if (-not (Test-Path $cur)) { exit ${NOT_SET_UP} }
+$id = (Get-Content -Raw $cur).Trim()
+$b = Join-Path $d ("builds\\" + $id + "\\cavvy.exe")
+if (-not (Test-Path $b)) { exit ${NOT_SET_UP} }
+& $b host login $cavvyArgs[0]
+exit $LASTEXITCODE
+`;
+
 /**
  * Signs a CLI in on the server and turns it on in the Cavvy there. The CLI's own sign-in has this terminal for as
  * long as it runs: its link is opened here, and what's typed goes to it alone. True once it's usable there.
@@ -290,7 +301,8 @@ async function signInThere(e: ServerEntry, cli: CheckedCli): Promise<boolean> {
     // The CLI talks of a browser that didn't open: it's on the server, and the browser is here.
     if (needsSignIn(cli)) err(`Open the link ${cli.product} shows in a browser on this machine.`);
     const tty = interactive();
-    const proc = Bun.spawn(sshCommandArgv(e, remoteSh(LOGIN, [cli.id]), { tty }), { stdin: "inherit", stdout: "inherit", stderr: "inherit", env: childEnv() });
+    const cmd = isWindowsServer(e) ? remotePs(LOGIN_PS, [cli.id]) : remoteSh(LOGIN, [cli.id]);
+    const proc = Bun.spawn(sshCommandArgv(e, cmd, { tty }), { stdin: "inherit", stdout: "inherit", stderr: "inherit", env: childEnv() });
     // With a terminal, Ctrl+C is typed to the other end. Without one it reaches this and ssh both, and ssh ends.
     let interrupted = false;
     const onInterrupt = () => {
@@ -386,9 +398,11 @@ async function add(args: string[]): Promise<number> {
     let setup: SetupResult | undefined;
     try {
         ({ value: setup } = await withTrust(e, (entry) => setUpServer(entry, setupOptions(entry)), { onTrusted: (entry) => (e = entry) }));
+        if (setup.facts.os === "Windows") e = { ...e, platform: "windows" };
     } catch (x) {
         // It's there and working, on its own version: added, and updated another time.
         if (!(x instanceof ServerBusy)) throw x;
+        if (x.platform === "windows") e = { ...e, platform: "windows" };
         saveServer(e);
         out(`${e.name} is added. It's working, so Cavvy there wasn't updated: ${APP_NAME} servers update ${e.name}`);
         return 0;
@@ -713,6 +727,55 @@ function openRuns(): string[] {
     return open;
 }
 
+const RUN_PS = `
+$b = Join-Path $env:USERPROFILE (".cavvy\\server\\builds\\" + $cavvyArgs[0] + "\\cavvy.exe")
+if (-not (Test-Path $b)) { exit ${NO_BUILD} }
+$dir = $cavvyArgs[1]
+if ($dir -eq '~') { $dir = $env:USERPROFILE }
+elseif ($dir.StartsWith('~/') -or $dir.StartsWith('~\\')) { $dir = Join-Path $env:USERPROFILE $dir.Substring(2) }
+$runs = Join-Path $env:USERPROFILE (".cavvy\\server\\runs\\" + $cavvyArgs[2])
+New-Item -ItemType Directory -Force -Path $runs | Out-Null
+$start = (Get-Process -Id $PID).StartTime.ToFileTimeUtc()
+[System.IO.File]::WriteAllText((Join-Path $runs $cavvyArgs[3]), "$PID $start\`n")
+try { Set-Location -LiteralPath $dir -ErrorAction Stop } catch { [Console]::Error.WriteLine("No folder $dir there."); exit ${NO_FOLDER} }
+$env:CAVVY_NO_KEYCHAIN = '1'
+$fwd = @()
+if ($cavvyArgs.Length -gt 4) { $fwd = $cavvyArgs[4..($cavvyArgs.Length - 1)] }
+& $b @fwd
+exit $LASTEXITCODE
+`;
+
+const LEFTOVERS_PS = `
+$runs = Join-Path $env:USERPROFILE (".cavvy\\server\\runs\\" + $cavvyArgs[1])
+if (Test-Path $runs) {
+    Get-ChildItem -Path $runs -File -ErrorAction SilentlyContinue | ForEach-Object { Write-Output ("run " + $_.Name) }
+}
+Write-Output "listed"
+$gone = [Console]::In.ReadLine()
+if ($gone) {
+    $ending = @()
+    foreach ($id in ($gone -split '\\s+')) {
+        if ($id -notmatch '^[0-9a-f]+$') { continue }
+        $f = Join-Path $runs $id
+        if (-not (Test-Path $f)) { continue }
+        $parts = ((Get-Content -Raw $f -ErrorAction SilentlyContinue).Trim()) -split '\\s+'
+        if ($parts.Length -ge 2) {
+            try {
+                $proc = Get-Process -Id ([int]$parts[0]) -ErrorAction Stop
+                if ([string]$proc.StartTime.ToFileTimeUtc() -eq $parts[1]) {
+                    Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+                    $ending += $id
+                }
+            } catch {}
+        }
+        Remove-Item -Force -Path $f -ErrorAction SilentlyContinue
+    }
+    if ($ending.Count -gt 0) { Write-Output "ending" }
+}
+$b = Join-Path $env:USERPROFILE (".cavvy\\server\\builds\\" + $cavvyArgs[0] + "\\cavvy.exe")
+if (-not (Test-Path $b)) { exit ${NO_BUILD} }
+`;
+
 /** Runs LEFTOVERS: answers its list of this machine's runs with the ones that aren't open here, read only then. */
 function endLeftovers(e: ServerEntry, build: string, machine: string) {
     let heard = "";
@@ -724,12 +787,13 @@ function endLeftovers(e: ServerEntry, build: string, machine: string) {
         const open = new Set(openRuns());
         yield new TextEncoder().encode(`${ids.filter((id) => !open.has(id)).join(" ")}\n`);
     }
-    return ssh(e, remoteSh(LEFTOVERS, [build, machine]), {
+    const cmd = isWindowsServer(e) ? remotePs(LEFTOVERS_PS, [build, machine]) : remoteSh(LEFTOVERS, [build, machine]);
+    return ssh(e, cmd, {
         timeoutMs: 45_000,
         stdin: answer(),
         onStdout(text, done) {
             heard += text;
-            const lines = heard.split("\n");
+            const lines = heard.split(/\r?\n/);
             const at = lines.indexOf("listed");
             // With no more to come (it never connected, or ended early) it's answered with nothing to end.
             if (at >= 0 || done) listed(lines.slice(0, Math.max(at, 0)).flatMap((l) => /^run ([0-9a-f]{16})$/.exec(l)?.[1] ?? []));
@@ -763,7 +827,9 @@ export async function runOnServer(spec: string, forwarded: string[]): Promise<nu
         const env = TERMINAL_ENV.filter((k) => process.env[k]).map((k) => `${k}=${shQuote(process.env[k]!)}`);
         const machine = thisDesktop().id;
         const run = randomBytes(8).toString("hex");
-        const command = `env ${["CAVVY_NO_KEYCHAIN=1", ...env].join(" ")} ${remoteSh(RUN, [build, folder, machine, run, ...forwarded])}`;
+        const command = isWindowsServer(e)
+            ? remotePs(RUN_PS, [build, folder, machine, run, ...forwarded])
+            : `env ${["CAVVY_NO_KEYCHAIN=1", ...env].join(" ")} ${remoteSh(RUN, [build, folder, machine, run, ...forwarded])}`;
         // Asked first without the terminal, so a server that can't be reached, or has no build yet, is said in plain
         // words; and what earlier runs from here left running there is ended, so their sessions can be continued.
         const asked = await withTrust(e, (entry) => endLeftovers(entry, build, machine), { saved: true, onTrusted: (entry) => (e = entry) });

@@ -360,7 +360,9 @@ describe("what a server is", () => {
         expect(targetFor(f("os=Linux\narch=x86_64\nhome=/h\nlibc=glibc 2.39\navx2=1"), entry)).toBe("linux-x64");
         expect(targetFor(f("os=Linux\narch=x86_64\nhome=/h\nlibc=glibc 2.31"), entry)).toBe("linux-x64-baseline");
         expect(targetFor(f("os=Linux\narch=aarch64\nhome=/h\nlibc=glibc 2.39"), entry)).toBe("linux-arm64");
-        expect(() => targetFor(f("os=FreeBSD\narch=amd64\nhome=/h\nlibc=unknown"), entry)).toThrow("Cavvy can't run on box.example: it needs Linux or macOS, and this is FreeBSD.");
+        expect(() => targetFor(f("os=FreeBSD\narch=amd64\nhome=/h\nlibc=unknown"), entry)).toThrow("Cavvy can't run on box.example: it needs Linux, macOS or Windows, and this is FreeBSD.");
+        expect(targetFor(f("os=Windows\narch=AMD64\nhome=C:\\Users\\me\nlibc=unknown"), entry)).toBe("windows-x64");
+        expect(() => targetFor(f("os=Windows\narch=ARM64\nhome=C:\\Users\\me\nlibc=unknown"), entry)).toThrow("Cavvy can't run on box.example: it needs 64-bit x64 Windows, and this one's processor is ARM64.");
         expect(() => targetFor(f("os=Linux\narch=armv7l\nhome=/h\nlibc=glibc 2.39"), entry)).toThrow("it needs an x64 or arm64 processor, and this is armv7l.");
         expect(() => targetFor(f("os=Linux\narch=x86_64\nhome=/h\nlibc=musl"), entry)).toThrow("it needs glibc, and this system uses musl (Alpine).");
         // Room is asked about only when a build will be copied: a server that's short of it can still be looked at.

@@ -1,0 +1,166 @@
+// Windows remote servers: PowerShell transport encoding, Windows probe fallback,
+// target selection, build naming, store persistence, and service reporting.
+
+import { afterAll, describe, expect, test } from "bun:test";
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from "fs";
+import { join } from "path";
+import { isolate, tempDir } from "./helpers/isolate";
+
+const iso = isolate();
+const { psQuote, remotePs } = await import("../src/servers/ssh");
+const { isWindowsServer, parseFacts, probeServer, targetFor } = await import("../src/servers/remote");
+const { binaryName, targetName } = await import("../src/servers/build");
+const { serviceReport, setUpService } = await import("../src/servers/service");
+const { draftServer, getServer, saveServer } = await import("../src/servers/store");
+const { parseServerSpec } = await import("../src/servers/cli");
+import type { ServerEntry } from "../src/servers/store";
+
+const scratch = tempDir("cavvy-win-servers-");
+const savedSsh = process.env.CAVVY_SSH;
+
+afterAll(() => {
+    if (savedSsh === undefined) delete process.env.CAVVY_SSH;
+    else process.env.CAVVY_SSH = savedSsh;
+    rmSync(scratch, { recursive: true, force: true });
+    iso.cleanup();
+});
+
+const winEntry: ServerEntry = { name: "winbox", destination: "dev@winbox.example", platform: "windows", addedAt: "2026-01-01T00:00:00.000Z" };
+
+describe("PowerShell SSH transport", () => {
+    test("psQuote doubles single quotes safely", () => {
+        expect(psQuote("hello")).toBe("'hello'");
+        expect(psQuote("it's $HOME")).toBe("'it''s $HOME'");
+    });
+
+    test("remotePs emits shell-neutral -EncodedCommand with UTF-8 preamble and bound arguments", () => {
+        const cmd = remotePs(`Write-Output $cavvyArgs[0]`, ["a'b", "C:\\Program Files\\Cavvy"]);
+        expect(cmd).toMatch(/^powershell\.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand [A-Za-z0-9+/=]+$/);
+        const b64 = cmd.split(" ").at(-1)!;
+        const decoded = Buffer.from(b64, "base64").toString("utf16le");
+        expect(decoded).toContain("UTF8Encoding");
+        expect(decoded).toContain(`$cavvyArgs = @('a''b', 'C:\\Program Files\\Cavvy')`);
+        expect(decoded).toContain("Write-Output $cavvyArgs[0]");
+    });
+});
+
+describe("Windows server facts, target, store, and build helpers", () => {
+    test("parses Windows probe output including wintask and builds", () => {
+        const facts = parseFacts(
+            [
+                "os=Windows",
+                "arch=AMD64",
+                "home=C:\\Users\\me",
+                "user=me",
+                "shell=powershell",
+                "mem=16384",
+                "disk=45000",
+                "wintask=1",
+                "build=0123456789ab",
+                "gui=0123456789ab",
+                "current=0123456789ab",
+            ].join("\r\n"),
+        );
+        expect(facts.os).toBe("Windows");
+        expect(facts.arch).toBe("AMD64");
+        expect(facts.home).toBe("C:\\Users\\me");
+        expect(facts.windowsTask).toBe(true);
+        expect(facts.builds).toEqual(["0123456789ab"]);
+        expect(facts.guiBuilds).toEqual(["0123456789ab"]);
+        expect(facts.current).toBe("0123456789ab");
+        expect(targetFor(facts, winEntry)).toBe("windows-x64");
+        expect(serviceReport(facts)).toEqual({ service: true });
+    });
+
+    test("serviceReport gives a bootFix when Windows Scheduled Task is not registered for startup", () => {
+        const facts = parseFacts("os=Windows\narch=AMD64\nhome=C:\\Users\\me\nuser=me");
+        const rep = serviceReport(facts);
+        expect(rep.service).toBe(false);
+        expect(rep.bootFix).toContain("Register-ScheduledTask");
+        expect(rep.bootFix).toContain("CavvyServer");
+    });
+
+    test("binaryName and targetName handle windows-x64", () => {
+        expect(binaryName("windows-x64")).toBe("cavvy.exe");
+        expect(binaryName("linux-x64")).toBe("cavvy");
+        expect(binaryName("darwin-arm64")).toBe("cavvy");
+        expect(targetName("windows-x64")).toBe("Windows x64");
+    });
+
+    test("store persists platform=windows across save/load", () => {
+        const e = draftServer({ name: "win-dev", destination: "dev@win.example", platform: "windows" });
+        expect(isWindowsServer(e)).toBe(true);
+        saveServer(e);
+        const loaded = getServer("win-dev");
+        expect(loaded?.platform).toBe("windows");
+    });
+
+    test("parseServerSpec preserves Windows drive letters after the server name", () => {
+        expect(parseServerSpec("winbox:C:\\code\\app")).toEqual({ name: "winbox", folder: "C:\\code\\app" });
+    });
+});
+
+describe("Windows SSH probe fallback and service setup (mocked SSH)", () => {
+    test("probeServer falls back to PowerShell when POSIX sh fails on a Windows OpenSSH server", async () => {
+        const fakeSshBin = join(scratch, "fake-win-ssh");
+        mkdirSync(scratch, { recursive: true });
+        // Simulates Windows OpenSSH: rejects `sh -c ...`, accepts `powershell.exe ... -EncodedCommand ...`.
+        writeFileSync(
+            fakeSshBin,
+            `#!/bin/sh
+cmd=""
+for arg in "$@"; do cmd="$arg"; done
+case "$cmd" in
+    sh\\ -c*)
+        echo "'sh' is not recognized as an internal or external command." >&2
+        exit 1
+        ;;
+    powershell.exe*-EncodedCommand*)
+        printf 'os=Windows\\r\\narch=AMD64\\r\\nhome=C:\\\\Users\\\\me\\r\\nuser=me\\r\\nshell=powershell\\r\\ndisk=2048\\r\\n'
+        exit 0
+        ;;
+    *)
+        exit 2
+        ;;
+esac
+`,
+        );
+        chmodSync(fakeSshBin, 0o755);
+        process.env.CAVVY_SSH = fakeSshBin;
+
+        // First probe without platform set yet (like `cavvy servers add`).
+        const unknownPlatform: ServerEntry = { name: "winbox", destination: "dev@winbox.example", addedAt: "2026-01-01T00:00:00.000Z" };
+        const facts = await probeServer(unknownPlatform);
+        expect(facts.os).toBe("Windows");
+        expect(facts.arch).toBe("AMD64");
+        expect(facts.home).toBe("C:\\Users\\me");
+        expect(targetFor(facts, unknownPlatform)).toBe("windows-x64");
+    });
+
+    test("setUpService dispatches to PowerShell and parses windows=1 / wintask=0", async () => {
+        const fakeSshBin = join(scratch, "fake-win-setup-ssh");
+        writeFileSync(
+            fakeSshBin,
+            `#!/bin/sh
+cmd=""
+for arg in "$@"; do cmd="$arg"; done
+case "$cmd" in
+    powershell.exe*-EncodedCommand*)
+        printf 'windows=1\\r\\nwintask=0\\r\\nuser=me\\r\\n'
+        exit 0
+        ;;
+    *)
+        echo "unexpected non-powershell command: $cmd" >&2
+        exit 1
+        ;;
+esac
+`,
+        );
+        chmodSync(fakeSshBin, 0o755);
+        process.env.CAVVY_SSH = fakeSshBin;
+
+        const rep = await setUpService(winEntry);
+        expect(rep.service).toBe(false);
+        expect(rep.bootFix).toContain("Register-ScheduledTask");
+    });
+});

@@ -318,13 +318,16 @@ export class ServerLinks {
         let note: string | undefined;
         try {
             const setup = await setUpServer(entry, { progress: this.progress(entry.name, heard), source: this.o.source });
+            if (setup.facts.os === "Windows") entry = { ...entry, platform: "windows" };
             if (setup.kept === "newer") note = "It runs a newer Cavvy than this machine.";
         } catch (e) {
             const unknown = await this.unknown(entry.name, entry, e).catch(() => undefined);
             if (unknown) return { status: "unknown-host", unknown };
             // It's there and working, on its own version: added, and updated another time.
-            if (e instanceof ServerBusy) note = "It's working, so Cavvy there wasn't updated.";
-            else return { status: "failed", problem: problemOf(e) };
+            if (e instanceof ServerBusy) {
+                if (e.platform === "windows") entry = { ...entry, platform: "windows" };
+                note = "It's working, so Cavvy there wasn't updated.";
+            } else return { status: "failed", problem: problemOf(e) };
         }
         saveServer(entry);
         if (this.watching) this.watchAll();

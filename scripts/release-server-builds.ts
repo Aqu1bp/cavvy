@@ -36,8 +36,8 @@ mkdirSync(out, { recursive: true });
 const tmp = mkdtempSync(join(tmpdir(), "cavvy-release-"));
 try {
     let first = true;
-    // A Mac's too, from here: Bun compiles it on Linux, signed ad hoc as macOS needs to run it.
-    for (const target of ["linux-x64", "linux-x64-baseline", "linux-arm64", "darwin-arm64"] as const) {
+    // A Mac's and Windows's too, from here: Bun cross-compiles both on Linux.
+    for (const target of ["linux-x64", "linux-x64-baseline", "linux-arm64", "darwin-arm64", "windows-x64"] as const) {
         const bundle = join(out, bundleName(id, target));
         // The GUI is built once, with the first.
         const made = await packServerBuild(root, id, target, tmp, bundle, { bun: process.execPath, guiBuilt: !first, onStep: (text) => console.log(text) });

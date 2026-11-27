@@ -104,6 +104,27 @@ export function remoteSh(script: string, args: string[] = []): string {
     return ["sh", "-c", shQuote(script), "cavvy", ...args.map(shQuote)].join(" ");
 }
 
+/** PowerShell single-quoted string literal. */
+export function psQuote(s: string): string {
+    return `'${s.replace(/'/g, "''")}'`;
+}
+
+/**
+ * A script for Windows PowerShell over SSH, encoded as UTF-16LE base64 (`-EncodedCommand`).
+ * Base64 contains no quotes, spaces or shell metacharacters, so it arrives intact whether
+ * Windows OpenSSH's default shell is `cmd.exe`, `powershell.exe` or `pwsh.exe`.
+ * Arguments are bound into `$cavvyArgs` (0-indexed) inside the script.
+ */
+export function remotePs(script: string, args: string[] = []): string {
+    const header = [
+        "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)",
+        "$OutputEncoding = [Console]::OutputEncoding",
+        `$cavvyArgs = @(${args.map(psQuote).join(", ")})`,
+    ].join("\n");
+    const encoded = Buffer.from(`${header}\n${script}`, "utf16le").toString("base64");
+    return `powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand ${encoded}`;
+}
+
 /** argv for a command on the server. `tty`: an interactive one, on this terminal. */
 export function sshCommandArgv(e: ServerEntry, command: string, o: { tty?: boolean } = {}): string[] {
     return [sshBin(), ...baseOptions(e), o.tty ? "-t" : "-T", "--", e.destination, command];

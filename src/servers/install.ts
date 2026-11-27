@@ -10,9 +10,9 @@ import { createReadStream } from "fs";
 import { type BuildSource, type ServerBuild } from "./build";
 import { buildSource } from "./sources";
 import type { HostStatus } from "./host";
-import { checkRoom, probeServer, REMOTE_DIR, targetFor, type ServerFacts } from "./remote";
+import { checkRoom, isWindowsServer, probeServer, REMOTE_DIR, targetFor, type ServerFacts } from "./remote";
 import { applyBuild, pruneBuilds, remoteStatus, NotSetUp, setUpService, type ServiceReport } from "./service";
-import { hostOf, printable, remoteSh, ssh } from "./ssh";
+import { hostOf, printable, remotePs, remoteSh, ssh } from "./ssh";
 import { ServerError, type ServerEntry } from "./store";
 
 /**
@@ -44,6 +44,41 @@ mv "$in" "$b/$id"
 trap - EXIT
 `;
 
+/** Windows equivalent of RECEIVE: reads .tar.gz from binary stdin, verifies hash and version, moves into builds/<id>. */
+const RECEIVE_PS = `
+$ErrorActionPreference = 'Stop'
+$id = $cavvyArgs[0]
+$want = $cavvyArgs[1].ToLowerInvariant()
+$root = Join-Path $env:USERPROFILE ".cavvy\\server"
+$b = Join-Path $root "builds"
+New-Item -ItemType Directory -Force -Path $b | Out-Null
+Get-ChildItem -Path $b -Directory -Filter ".incoming-*" -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -lt (Get-Date).AddMinutes(-30) } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+$in = Join-Path $b (".incoming-" + $id + "-" + $PID)
+New-Item -ItemType Directory -Force -Path $in | Out-Null
+$archive = Join-Path $in "bundle.tar.gz"
+try {
+    $inStream = [Console]::OpenStandardInput()
+    $outStream = [System.IO.File]::Create($archive)
+    try { $inStream.CopyTo($outStream) } finally { $outStream.Close() }
+    & tar.exe -xzf $archive -C $in
+    if ($LASTEXITCODE -ne 0) { throw "tar failed with exit $LASTEXITCODE" }
+    Remove-Item -Force -Path $archive -ErrorAction SilentlyContinue
+    $exe = Join-Path $in "cavvy.exe"
+    if (-not (Test-Path $exe)) { [Console]::Error.WriteLine("missing cavvy.exe"); exit 41 }
+    $got = (Get-FileHash -Algorithm SHA256 -Path $exe).Hash.ToLowerInvariant()
+    if ($got -ne $want) { [Console]::Error.WriteLine("expected $want, got $got"); exit 41 }
+    $out = (& $exe host version 2>&1) -join "\`n"
+    if ($LASTEXITCODE -ne 0) { [Console]::Error.WriteLine($out); exit 42 }
+    if (-not $out.Contains('"build":"' + $id + '"')) { [Console]::Error.WriteLine("it answered: $out"); exit 42 }
+    $dest = Join-Path $b $id
+    if (Test-Path $dest) { Remove-Item -Recurse -Force -Path $dest }
+    Move-Item -Path $in -Destination $dest
+    $in = $null
+} finally {
+    if ($in -and (Test-Path $in)) { Remove-Item -Recurse -Force -Path $in -ErrorAction SilentlyContinue }
+}
+`;
+
 export interface SetupProgress {
     /** A new line: what's being done now. */
     step(text: string): void;
@@ -58,7 +93,8 @@ export async function sendBuild(e: ServerEntry, build: ServerBuild, facts: Serve
     checkRoom(facts, e);
     const host = hostOf(e);
     o.progress?.step(`Copying Cavvy to ${e.name}…`);
-    const r = await ssh(e, remoteSh(RECEIVE, [build.id, build.sha256]), {
+    const cmd = facts.os === "Windows" || isWindowsServer(e) ? remotePs(RECEIVE_PS, [build.id, build.sha256]) : remoteSh(RECEIVE, [build.id, build.sha256]);
+    const r = await ssh(e, cmd, {
         stdin: createReadStream(build.bundle) as unknown as AsyncIterable<Uint8Array>,
         // A slow line still gets there: 55 MB at 100 KB/s is ten minutes.
         timeoutMs: 30 * 60_000,
@@ -108,6 +144,7 @@ export class ServerBusy extends ServerError {
         readonly server: string,
         readonly busy: { working: number; waiting: number },
         readonly status: HostStatus,
+        readonly platform?: "posix" | "windows",
     ) {
         super(`${server} is working, so Cavvy there wasn't updated.`);
     }
@@ -123,11 +160,12 @@ export class ServerBusy extends ServerError {
 export async function setUpServer(e: ServerEntry, o: SetupOptions = {}): Promise<SetupResult> {
     const facts = await probeServer(e, o.signal);
     const target = targetFor(facts, e);
+    const server: ServerEntry = facts.os === "Windows" ? { ...e, platform: "windows" } : e;
     const source = o.source ?? buildSource();
     const id = source.id;
     let running: HostStatus | undefined;
     try {
-        running = await remoteStatus(e, o.signal);
+        running = await remoteStatus(server, o.signal);
     } catch (err) {
         if (!(err instanceof NotSetUp)) throw err;
     }
@@ -136,33 +174,33 @@ export async function setUpServer(e: ServerEntry, o: SetupOptions = {}): Promise
     const relation = theirs ? source.compare(theirs, running?.build === theirs ? running.builtAt : undefined) : undefined;
     if (theirs && (relation === "newer" || relation === "different") && !(await o.confirmReplace?.(relation))) {
         if (running) return { facts, status: running, kept: relation };
-        o.progress?.step(`Starting Cavvy on ${e.name}…`);
-        return { facts, status: await applyBuild(e, theirs, o.signal), kept: relation };
+        o.progress?.step(`Starting Cavvy on ${server.name}…`);
+        return { facts, status: await applyBuild(server, theirs, o.signal), kept: relation };
     }
     const settled = Boolean(running) && relation === "same" && facts.current === id;
     // The same build, but put there before its GUI was built here: sent again with it, if a build made now has it.
     const wantsGui = source.gui && !facts.guiBuilds.includes(id);
-    if (settled && !wantsGui) return { facts, status: running!, service: await setUpService(e, o.signal) };
+    if (settled && !wantsGui) return { facts, status: running!, service: await setUpService(server, o.signal) };
     /** Everything past this restarts the server: asked about first when that would cut work off. */
     const mayRestart = async () => {
         if (!running || (running.working === 0 && running.waiting === 0)) return;
         const busy = { working: running.working, waiting: running.waiting };
-        if (!(await o.confirmRestart?.(busy))) throw new ServerBusy(e.name, busy, running);
+        if (!(await o.confirmRestart?.(busy))) throw new ServerBusy(server.name, busy, running, server.platform);
     };
     // Another build is certain to restart it: asked before anything is built or copied for nothing.
     if (!settled) await mayRestart();
     // And no room for one is said before it's built, not after.
-    if (!facts.builds.includes(id)) checkRoom(facts, e);
+    if (!facts.builds.includes(id)) checkRoom(facts, server);
     const build = !facts.builds.includes(id) || wantsGui ? await source.build(target, { onStep: o.progress?.step, signal: o.signal }) : undefined;
     const send = build !== undefined && (!facts.builds.includes(id) || (build.gui && !facts.guiBuilds.includes(id)));
     // The GUI didn't build here after all: what's there is as good as it gets, and restarting it would change nothing.
-    if (settled && !send) return { facts, status: running!, service: await setUpService(e, o.signal) };
+    if (settled && !send) return { facts, status: running!, service: await setUpService(server, o.signal) };
     if (settled) await mayRestart();
-    if (send) await sendBuild(e, build, facts, o);
-    const service = await setUpService(e, o.signal);
-    o.progress?.step(`Starting Cavvy on ${e.name}…`);
-    const status = await applyBuild(e, id, o.signal);
-    void pruneBuilds(e, theirs, id);
+    if (send) await sendBuild(server, build, facts, o);
+    const service = await setUpService(server, o.signal);
+    o.progress?.step(`Starting Cavvy on ${server.name}…`);
+    const status = await applyBuild(server, id, o.signal);
+    void pruneBuilds(server, theirs, id);
     return { facts, status, service, replaced: theirs && theirs !== id ? theirs : undefined };
 }
 
@@ -170,10 +208,11 @@ export async function setUpServer(e: ServerEntry, o: SetupOptions = {}): Promise
 export async function ensureBuildThere(e: ServerEntry, o: { progress?: SetupProgress; signal?: AbortSignal; source?: BuildSource } = {}): Promise<void> {
     const facts = await probeServer(e, o.signal);
     const target = targetFor(facts, e);
+    const server: ServerEntry = facts.os === "Windows" ? { ...e, platform: "windows" } : e;
     const source = o.source ?? buildSource();
     if (facts.builds.includes(source.id)) return;
-    checkRoom(facts, e);
-    await sendBuild(e, await source.build(target, { onStep: o.progress?.step, signal: o.signal }), facts, o);
+    checkRoom(facts, server);
+    await sendBuild(server, await source.build(target, { onStep: o.progress?.step, signal: o.signal }), facts, o);
     // Each change here makes another build: the ones before it go, but for what runs there.
-    void pruneBuilds(e, facts.current, source.id);
+    void pruneBuilds(server, facts.current, source.id);
 }

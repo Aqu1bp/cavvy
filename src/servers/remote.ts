@@ -9,7 +9,10 @@
 //   ~/.cavvy/server/…                      the running server's own files (host.ts)
 
 import { ServerError, type ServerEntry } from "./store";
-import { hostOf, printable, remoteSh, ssh } from "./ssh";
+import { hostOf, printable, remotePs, remoteSh, ssh } from "./ssh";
+
+/** Whether `e` is known to be a Windows server. */
+export const isWindowsServer = (e: Pick<ServerEntry, "platform">) => e.platform === "windows";
 
 /** `$HOME`-relative, for scripts: always inside double quotes there. */
 export const REMOTE_DIR = "$HOME/.cavvy/server";
@@ -23,8 +26,8 @@ export const LOGIN_EXIT = { notInstalled: 4, notSignedIn: 5, unknown: 6, problem
 /** A build's name on disk: nothing a shell or a path would read into. */
 export const BUILD_ID = /^[0-9a-z][0-9a-z.-]{5,60}$/;
 
-/** The kinds of machine a server's build is made for: Linux with glibc, and a Mac with Apple silicon. */
-export type ServerTarget = "linux-x64" | "linux-x64-baseline" | "linux-arm64" | "darwin-arm64";
+/** The kinds of machine a server's build is made for: Linux with glibc, a Mac with Apple silicon, and Windows x64. */
+export type ServerTarget = "linux-x64" | "linux-x64-baseline" | "linux-arm64" | "darwin-arm64" | "windows-x64";
 
 /** The name of Cavvy's job in launchd, and of its files. */
 export const MAC_LABEL = "dev.cavvy.server";
@@ -60,6 +63,8 @@ export interface ServerFacts {
     linger?: boolean;
     /** A Mac: a LaunchDaemon for Cavvy is installed, so it starts at boot: this user's (`mine`), or another's under the same name. */
     launchDaemon?: "mine" | "other";
+    /** Windows: a boot-time Scheduled Task for Cavvy is registered for this user. */
+    windowsTask?: boolean;
     memMb?: number;
     diskFreeMb?: number;
     /** Builds already there. */
@@ -106,6 +111,49 @@ if [ -L "$d/current" ]; then echo "current=$(basename "$(readlink "$d/current")"
 exit 0
 `;
 
+const PROBE_PS = `
+$ErrorActionPreference = 'SilentlyContinue'
+Write-Output "os=Windows"
+$arch = $env:PROCESSOR_ARCHITEW6432
+if (-not $arch) { $arch = $env:PROCESSOR_ARCHITECTURE }
+Write-Output "arch=$arch"
+Write-Output "home=$env:USERPROFILE"
+Write-Output "user=$env:USERNAME"
+Write-Output "shell=powershell"
+try {
+    $mem = (Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory
+    if ($mem) { Write-Output ("mem=" + [int][math]::Floor($mem / 1MB)) }
+} catch {}
+try {
+    $root = [System.IO.Path]::GetPathRoot($env:USERPROFILE)
+    $drive = New-Object System.IO.DriveInfo($root)
+    Write-Output ("disk=" + [int][math]::Floor($drive.AvailableFreeSpace / 1MB))
+} catch {}
+try {
+    $t = Get-ScheduledTask -TaskName 'CavvyServer' -ErrorAction Stop
+    $hasBoot = $t.Triggers | Where-Object { $_.CimClass.CimClassName -eq 'MSFT_TaskBootTrigger' }
+    if ($hasBoot) { Write-Output "wintask=1" }
+} catch {}
+$d = Join-Path $env:USERPROFILE ".cavvy\\server"
+$buildsDir = Join-Path $d "builds"
+if (Test-Path $buildsDir) {
+    Get-ChildItem -Path $buildsDir -Directory | ForEach-Object {
+        if (Test-Path (Join-Path $_.FullName "cavvy.exe")) {
+            Write-Output ("build=" + $_.Name)
+            if (Test-Path (Join-Path $_.FullName "gui\\index.html")) {
+                Write-Output ("gui=" + $_.Name)
+            }
+        }
+    }
+}
+$curFile = Join-Path $d "current.txt"
+if (Test-Path $curFile) {
+    $cur = (Get-Content -Raw $curFile).Trim()
+    if ($cur) { Write-Output "current=$cur" }
+}
+exit 0
+`;
+
 export function parseFacts(out: string): ServerFacts {
     const one = new Map<string, string>();
     const builds: string[] = [];
@@ -138,6 +186,7 @@ export function parseFacts(out: string): ServerFacts {
         systemd: one.get("systemd") === "1",
         linger: linger === "yes" ? true : linger === "no" ? false : undefined,
         ...(boot === "mine" || boot === "other" ? { launchDaemon: boot } : {}),
+        ...(one.get("wintask") === "1" ? { windowsTask: true } : {}),
         memMb: num("mem"),
         diskFreeMb: num("disk"),
         builds,
@@ -147,10 +196,25 @@ export function parseFacts(out: string): ServerFacts {
 }
 
 export async function probeServer(e: ServerEntry, signal?: AbortSignal): Promise<ServerFacts> {
+    if (isWindowsServer(e)) {
+        const w = await ssh(e, remotePs(PROBE_PS), { timeoutMs: 45_000, signal });
+        if (w.code !== 0) throw new ServerError(`A command on ${hostOf(e)} failed (${w.code}): ${printable(w.stderr.trim().split("\n").at(-1) ?? "no output")}`);
+        const facts = parseFacts(w.stdout);
+        if (!facts.os || !facts.home) throw new ServerError(`${hostOf(e)} didn't answer as a Windows server Cavvy can read.`);
+        return facts;
+    }
     const r = await ssh(e, remoteSh(withMacPaths(PROBE)), { timeoutMs: 45_000, signal });
     // csh and tcsh can't take a quoted script of several lines, which is how every command is sent (ssh.ts remoteSh).
     if (r.code !== 0 && /Unmatched ['"]/.test(r.stderr)) throw new ServerError(`Cavvy can't run commands on ${hostOf(e)}: your login shell there is csh or tcsh. It needs sh, bash, zsh, dash or ksh.`);
-    if (r.code !== 0) throw new ServerError(`A command on ${hostOf(e)} failed (${r.code}): ${printable(r.stderr.trim().split("\n").at(-1) ?? "no output")}`);
+    if (r.code !== 0) {
+        // A Windows OpenSSH server runs cmd.exe or PowerShell and has no `sh`: probe with PowerShell before failing.
+        const w = await ssh(e, remotePs(PROBE_PS), { timeoutMs: 45_000, signal }).catch(() => undefined);
+        if (w && w.code === 0) {
+            const wfacts = parseFacts(w.stdout);
+            if (wfacts.os === "Windows" && wfacts.home) return wfacts;
+        }
+        throw new ServerError(`A command on ${hostOf(e)} failed (${r.code}): ${printable(r.stderr.trim().split("\n").at(-1) ?? "no output")}`);
+    }
     const facts = parseFacts(r.stdout);
     if (!facts.os || !facts.home) throw new ServerError(`${hostOf(e)} didn't answer as a server Cavvy can read (no \`sh\`, \`uname\` or home folder there).`);
     return facts;
@@ -172,7 +236,12 @@ export function targetFor(facts: ServerFacts, e: ServerEntry): ServerTarget {
         if (facts.arch === "arm64") return "darwin-arm64";
         throw cant(facts.arch === "x86_64" ? "it needs a Mac with Apple silicon, and this one has an Intel processor." : `it needs a Mac with Apple silicon, and this one's processor is ${facts.arch || "unknown"}.`);
     }
-    if (facts.os !== "Linux") throw cant(`it needs Linux or macOS, and this is ${facts.os || "something else"}.`);
+    if (facts.os === "Windows") {
+        const a = facts.arch.toLowerCase();
+        if (a === "amd64" || a === "x86_64" || a === "x64") return "windows-x64";
+        throw cant(`it needs 64-bit x64 Windows, and this one's processor is ${facts.arch || "unknown"}.`);
+    }
+    if (facts.os !== "Linux") throw cant(`it needs Linux, macOS or Windows, and this is ${facts.os || "something else"}.`);
     const arch = facts.arch === "x86_64" || facts.arch === "amd64" ? "x64" : facts.arch === "aarch64" || facts.arch === "arm64" ? "arm64" : undefined;
     if (!arch) throw cant(`it needs an x64 or arm64 processor, and this is ${facts.arch || "unknown"}.`);
     if (!facts.libc.startsWith("glibc")) throw cant(facts.libc === "musl" ? "it needs glibc, and this system uses musl (Alpine)." : "it needs glibc, which wasn't found there.");
