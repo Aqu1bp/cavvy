@@ -11,7 +11,7 @@ import { machine, os } from "../lib/platform";
 import { updateServer } from "../lib/server-update";
 import { app, homeOn, reportError, rpc, setApp, toast, warmLink } from "../state/app";
 import { goHomeOn, goingTo } from "../state/go-home";
-import { HERE, setKeySync } from "../state/servers";
+import { HERE, providersOn, refreshServerList, serverList, serverTouched, setKeySync, setProvidersOn } from "../state/servers";
 import { Dialog } from "./ui/Dialog";
 import { Menu } from "./ui/Menu";
 import { Logo, Spinner } from "./ui/bits";
@@ -128,7 +128,9 @@ if (machine) {
 }
 
 /** What this computer is called in the list of machines. */
-export { HERE };
+// The servers' state, for what else shows them (Settings → Providers, which asks for this module when it opens:
+// state/app.ts serversUi): through here, so it comes with this code and nothing that starts with the window carries it.
+export { HERE, providersOn, refreshServerList, serverList, serverTouched, setKeySync, setProvidersOn };
 
 const servers = () => homeRpc(rpc);
 

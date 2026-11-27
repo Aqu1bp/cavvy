@@ -99,6 +99,8 @@ export const [terminalLogin, setTerminalLogin] = createSignal(false);
 
 /** Set while the terminal panel is mounted: opens it on a new tab that runs a project script there (`setup`: a new worktree's setup run). */
 export const terminalActions: {
+    /** A sign-in on a server ended in a terminal here: what shows that server follows (state/servers.ts, which sets this). */
+    serverSignedIn?: (server: string) => void;
     /** `server`: the sign-in is that CLI's on one of the user's servers, in a terminal here. */
     loginAccount?: (provider: string, accountId: string, name: string, server?: string) => void;
     runScript?: (cwd: string, script: { id: string; name: string }, setup?: SetupRun) => void;

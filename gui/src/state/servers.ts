@@ -1,12 +1,16 @@
 // The user's servers as this computer's Cavvy lists them, for the parts of a window that aren't the Machines menu
 // (Settings → Providers says what each still lacks: lib/server-needs.ts). Asked for when something shows it, and
 // again after what changes it: nothing polls.
+//
+// Loaded with the servers' own code (components/Servers.tsx, which hands it on): nothing that starts with the
+// window imports this, so a window without servers doesn't carry it.
 
 import { createSignal } from "solid-js";
 import type { ServerSummary } from "@shared/protocol";
 import { homeRpc } from "../lib/machines";
 import { machine, os } from "../lib/platform";
 import { reportError, rpc, toast } from "./app";
+import { terminalActions } from "./ui";
 
 /** What the user's own machine is called beside its servers. */
 export const HERE = os === "macos" ? "This Mac" : "This computer";
@@ -74,3 +78,5 @@ export async function serverSignedIn(name: string): Promise<void> {
     await refreshServerList();
     setServerTouched((n) => n + 1);
 }
+
+terminalActions.serverSignedIn = (name) => void serverSignedIn(name);

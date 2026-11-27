@@ -5,7 +5,7 @@
 import { createEffect, createMemo, createSignal, For, lazy, Match, on, onMount, Show, Suspense, Switch, type JSX } from "solid-js";
 import { AlertTriangle, ArrowLeft, ChartColumn, ChevronDown, CircleAlert, Copy, Download, ExternalLink, FolderOpen, Info, Keyboard, Minus, Palette, Plug, Plus, Puzzle, RotateCcw, SlidersHorizontal, X } from "lucide-solid";
 import { MODE_LABELS, type FollowUpMode, type GuiSettings, type PermissionModeId, type ProviderInfo } from "@shared/protocol";
-import { app, linkFor, refreshModels, refreshProviders, refreshSettings, reportError, rpc, setApp, toast } from "../state/app";
+import { app, linkFor, refreshModels, refreshProviders, refreshSettings, reportError, rpc, serversUi, setApp, toast } from "../state/app";
 import { createStore, reconcile } from "solid-js/store";
 import { now } from "../lib/clock";
 import { updateView } from "../lib/app-update";
@@ -24,8 +24,7 @@ import { ConfirmDialog } from "./ui/ConfirmDialog";
 import { ProviderIcon } from "./ui/ProviderIcon";
 import { Accounts } from "./Accounts";
 import { serverNeeds } from "../lib/server-needs";
-import { HERE, providersOn, refreshServerList, serverList, serverTouched, setKeySync, setProvidersOn } from "../state/servers";
-import { ProvidersAtContext, useProvidersAt } from "../state/providers-at";
+import { ProvidersAtContext, useProvidersAt, type ProvidersAt } from "../state/providers-at";
 import type { Rpc } from "../lib/rpc";
 import { createUpdateAction } from "./UpdateAction";
 import { MessageText } from "./ErrorCards";
@@ -501,6 +500,28 @@ function Appearance() {
 
 const [removingProviders, setRemovingProviders] = createSignal<ReadonlySet<string>>(new Set());
 
+/**
+ * The servers' state and what's done to them (state/servers.ts), which comes with their own code: asked for when
+ * Providers opens on a computer that has servers, so a window doesn't start with it. Until then there are none to show.
+ */
+const [servers, setServers] = createSignal<typeof import("./Servers")>();
+const serverList = () => servers()?.serverList() ?? [];
+const providersOn = () => servers()?.providersOn() ?? "";
+
+/** connectCli (state/actions.ts) for a server shown from here: asked of the Cavvy there, whose providers are read again. */
+async function connectThere(pr: ProviderInfo, at: ProvidersAt, failed: (e: unknown) => void): Promise<boolean> {
+    try {
+        const r = await at.link.call("providers.connectCli", { provider: pr.id });
+        toast(`Using your ${pr.agentCli?.plan ?? pr.name} on ${at.server} (${r.description})`, "success");
+        if (r.warning) toast(r.warning, "warn");
+    } catch (e) {
+        failed(e);
+        return false;
+    }
+    await at.changed().catch(reportError);
+    return true;
+}
+
 function ProviderRow(p: { pr: ProviderInfo }) {
     const at = useProvidersAt();
     const [confirmRemove, setConfirmRemove] = createSignal(false);
@@ -566,10 +587,11 @@ function ProviderRow(p: { pr: ProviderInfo }) {
         setBusy(true);
         try {
             // A failure shows on this row, not as an error card.
-            const ok = await connectCli(p.pr, (e) => {
+            const refused = (e: unknown) => {
                 const code = (e as { code?: string }).code;
                 failed(e, code === "not_signed_in" ? "Not signed in" : code === "not_installed" ? "Not installed" : "Couldn't connect");
-            }, at);
+            };
+            const ok = at.server ? await connectThere(p.pr, at, refused) : await connectCli(p.pr, refused);
             if (ok) setFailure(undefined);
         } finally {
             setBusy(false);
@@ -759,7 +781,7 @@ function ProviderSections() {
         <Show when={at.server}>
             {(name) => (
                 <Row class="keys-sync" title={`Sync keys from ${os === "macos" ? "this Mac" : "this computer"}`} desc="API keys and MCP secrets.">
-                    <Toggle label={`Sync API keys to ${name()}`} checked={synced()} onChange={(v) => void setKeySync(name(), v)} />
+                    <Toggle label={`Sync API keys to ${name()}`} checked={synced()} onChange={(v) => void servers()?.setKeySync(name(), v)} />
                 </Row>
             )}
         </Show>
@@ -798,7 +820,7 @@ function ServerProviders(p: { name: string }) {
         void linkFor(p.name).then((l) => (setLink(l), refresh())).catch((e) => setProblem(e instanceof Error ? e.message : String(e)));
     });
     // Signed in there from here, or its keys taken or given: asked again how each account stands, then read again.
-    createEffect(on(serverTouched, () => {
+    createEffect(on(() => servers()?.serverTouched(), () => {
         const l = link();
         if (!l) return;
         void Promise.all(state.list.filter((pr) => pr.agentCli?.installed && pr.configured).map((pr) => l.call("accounts.list", { provider: pr.id, refresh: true }).catch(() => undefined))).then(refresh).catch(() => undefined);
@@ -829,11 +851,14 @@ function Providers() {
     // Which machine's are shown (state/servers.ts). Its servers are offered from the user's own computer, by name:
     // the order they're kept in changes as they're changed.
     const listed = createMemo(() => [...serverList()].sort((a, b) => a.name.localeCompare(b.name)));
-    onMount(() => void refreshServerList());
+    onMount(() => {
+        if (machine || !app.hello?.servers) return;
+        void serversUi().then((m) => (setServers(() => m), m.refreshServerList())).catch(() => undefined);
+    });
     // A server that's gone from the list (removed meanwhile) isn't shown on.
-    createEffect(on(serverList, (all) => { if (providersOn() && !all.some((s) => s.name === providersOn())) setProvidersOn(""); }, { defer: true }));
+    createEffect(on(serverList, (all) => { if (providersOn() && !all.some((s) => s.name === providersOn())) servers()?.setProvidersOn(""); }, { defer: true }));
     const machines = () => [
-        { value: "", label: HERE as JSX.Element },
+        { value: "", label: (servers()?.HERE ?? "") as JSX.Element },
         ...listed().map((s) => ({
             value: s.name,
             label: (
@@ -848,7 +873,7 @@ function Providers() {
         <>
             <Show when={!machine && listed().length}>
                 <div class="prov-machines">
-                    <Segmented label="Machine" value={providersOn()} options={machines()} onChange={setProvidersOn} />
+                    <Segmented label="Machine" value={providersOn()} options={machines()} onChange={(v) => servers()?.setProvidersOn(v)} />
                 </div>
             </Show>
             <Show when={!machine && providersOn()} keyed fallback={<ProviderSections />}>
