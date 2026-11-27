@@ -1092,17 +1092,6 @@ button.att-card:hover {
     gap: calc(8 * var(--sp));
 }
 
-@keyframes composer-top-fade {
-    0% {
-        mask-image: none;
-    }
-
-    0.1%,
-    100% {
-        mask-image: linear-gradient(transparent, #000 4px);
-    }
-}
-
 /* A modest height, seven lines of the text size or less in a short column; past it the text scrolls, and the expand
    button (Composer.tsx) opens it large. */
 .composer textarea {
@@ -1112,13 +1101,6 @@ button.att-card:hover {
     min-height: calc(40 * var(--sp));
     max-height: min(calc(7lh + 2 * var(--sp)), calc(var(--column-h, 100vh) * 0.3));
     padding: calc(2 * var(--sp)) 0 0;
-    /* Scrolled, the line above shows a sliver of its descenders in the top padding: faded out. Only while it's
-       scrolled (composer-top-fade, on the field's own scroll: with nothing to scroll there's no timeline, and no mask).
-       Unscrolled there's nothing in those 4px to fade, and the mask there all the time kept about 58 MB in the GPU
-       process for as long as a session was shown (measured at 1x; the conversation's own mask doesn't, and why this one
-       did isn't known). Without scroll timelines the animation is over at once and the mask is always there, as before. */
-    animation: composer-top-fade linear both;
-    animation-timeline: scroll(self);
     border: 0;
     resize: none;
     overflow-y: auto;
@@ -1126,6 +1108,14 @@ button.att-card:hover {
     font-size: 1.036rem;
     line-height: 1.5;
     color: var(--fg);
+}
+
+/* Scrolled, the line above shows a sliver of its descenders in the top padding: faded out. Only while it's scrolled
+   (Composer.tsx marks it): unscrolled there's nothing in those 4px to fade, and the mask there all the time kept about
+   55 MB in the GPU process for as long as a session was shown (the conversation's own mask doesn't, and why this one
+   did isn't known). */
+.composer textarea[data-scrolled] {
+    mask-image: linear-gradient(transparent, #000 4px);
 }
 
 .composer.v-home textarea {
