@@ -16,13 +16,12 @@ import { cavvyHome, paths } from "../config/paths";
 import { REPO_VARS } from "../util/git";
 import type { AppUpdateChange, AppUpdateInfo } from "./protocol";
 import {
-    canReplace,
     checkTree,
     compareVersions,
     downloadZip,
     hardwareArch,
+    notReplaceable,
     latestRelease,
-    MOVE_TO_APPLICATIONS,
     oldCopy,
     partialDir,
     readMarker,
@@ -497,7 +496,8 @@ export class AppUpdates {
 
     private releaseUnavailable(r: ReleaseApp): string | undefined {
         if (!r.req) return UNSIGNED_COPY;
-        if (!canReplace(r.bundle)) return MOVE_TO_APPLICATIONS;
+        const where = notReplaceable(r.bundle);
+        if (where) return refusalText(where);
         return undefined;
     }
 
@@ -611,7 +611,8 @@ export class AppUpdates {
                 system = m.minimumSystemVersion;
                 throw new Refused("system", `it needs macOS ${m.minimumSystemVersion}, this is ${r.system ?? "a version sw_vers didn't say"}`);
             }
-            if (!canReplace(r.bundle)) throw new Refused("location", `${r.bundle} can't be replaced from here`);
+            const where = notReplaceable(r.bundle);
+            if (where) throw new Refused(where, `${r.bundle} can't be replaced from here`);
             mkdirSync(cache, { recursive: true, mode: 0o700 });
             tmp = mkdtempSync(join(cache, ".tmp-"));
             const zip = join(tmp, m.zip.name);

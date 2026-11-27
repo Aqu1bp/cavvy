@@ -38,7 +38,7 @@ const HEX40 = /^[0-9a-f]{40}$/;
 const VERSION = /^(\d{1,6})\.(\d{1,6})\.(\d{1,6})$/;
 
 /** Why an update wasn't taken: what the user is told (refusalText); the detail goes in the log. */
-export type Refusal = "unsigned" | "download" | "system" | "location" | "install" | "management";
+export type Refusal = "unsigned" | "download" | "system" | "location" | "admin" | "install" | "management";
 
 export class Refused extends Error {
     constructor(
@@ -59,6 +59,8 @@ export function refusalText(reason: Refusal, o: { system?: string } = {}): strin
             return `This update needs macOS ${o.system ?? "a newer version"}.`;
         case "location":
             return MOVE_TO_APPLICATIONS;
+        case "admin":
+            return ASK_AN_ADMINISTRATOR;
         case "management":
             return "Allow Cavvy under Privacy & Security → App Management to update it.";
         case "install":
@@ -67,6 +69,8 @@ export function refusalText(reason: Refusal, o: { system?: string } = {}): strin
 }
 
 export const MOVE_TO_APPLICATIONS = "Move Cavvy to Applications to update it.";
+/** Where it is is fine, but this user can't change it (Applications, for someone who isn't an administrator). */
+export const ASK_AN_ADMINISTRATOR = "Ask an administrator to update Cavvy.";
 
 /** x.y.z, each a plain number: nothing else is a release's version. */
 export function versionParts(v: unknown): [number, number, number] | undefined {
@@ -440,17 +444,19 @@ export function checkTree(dir: string, top: string): string {
 // Where the app is, and what it's signed with
 
 /**
- * Whether the app can be put in place of itself: not translocated (opened where it was downloaded, which macOS
- * runs from a read-only copy), not on a disk image or other read-only volume, and its folder writable.
+ * Why the app can't be put in place of itself, if it can't: "location" when it's translocated (opened where it was
+ * downloaded, which macOS runs from a read-only copy) or on a disk image or other read-only volume (EROFS), so
+ * moving it to Applications is the answer; "admin" when the folder is fine but this user may not change it (EACCES:
+ * Applications, for a user who isn't an administrator).
  */
-export function canReplace(bundle: string): boolean {
-    if (bundle.includes("/AppTranslocation/")) return false;
+export function notReplaceable(bundle: string): "location" | "admin" | undefined {
+    if (bundle.includes("/AppTranslocation/")) return "location";
     try {
         accessSync(dirname(bundle), constants.W_OK);
         accessSync(bundle, constants.W_OK);
-        return true;
-    } catch {
-        return false;
+        return undefined;
+    } catch (e) {
+        return (e as NodeJS.ErrnoException).code === "EROFS" ? "location" : "admin";
     }
 }
 

@@ -42,6 +42,8 @@ Cavvy can't replace itself in these cases, and About says to move it to Applicat
 - macOS opened it from the folder it was downloaded to (app translocation).
 - Its folder is read-only.
 
+If Cavvy is in a folder you aren't allowed to change (for example Applications, when you aren't an administrator), About says to ask an administrator to update it.
+
 If macOS's App Management setting stops Cavvy from replacing itself, About says where to allow it: System
 Settings → Privacy & Security → App Management.
 

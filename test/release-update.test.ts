@@ -13,6 +13,8 @@ import { crc32 } from "zlib";
 import {
     checkManifest,
     checkTree,
+    notReplaceable,
+    refusalText,
     compareVersions,
     designatedRequirement,
     downloadZip,
@@ -555,16 +557,22 @@ describe.if(mac)("a downloaded app updating (macOS)", () => {
         expect(info.failed).toBe("The download isn't signed by Cavvy.");
         expect(existsSync(join(dir, "Applications", ".Cavvy.app.partial"))).toBe(false);
     });
-    test("a folder it can't write to (a disk image, a read-only volume): says to move it, fetches nothing", async () => {
+    test("a folder this user may not change (Applications, not an administrator): says to ask one, fetches nothing", async () => {
         const { u } = setup();
         chmodSync(join(dir, "Applications"), 0o555);
         try {
             u.start();
             const info = await u.check();
-            expect(info).toMatchObject({ unavailable: "Move Cavvy to Applications to update it.", available: false });
+            expect(info).toMatchObject({ unavailable: "Ask an administrator to update Cavvy.", available: false });
         } finally {
             chmodSync(join(dir, "Applications"), 0o755);
         }
+    });
+    test("where it can't be changed at all (a disk image, translocated): says to move it", () => {
+        expect(notReplaceable("/private/var/folders/xy/T/AppTranslocation/ABC/d/Cavvy.app")).toBe("location");
+        // A read-only volume (a disk image, or here macOS's sealed system volume) fails the check with EROFS, not EACCES.
+        expect(notReplaceable("/Cavvy.app")).toBe("location");
+        expect(refusalText("location")).toBe("Move Cavvy to Applications to update it.");
     });
     test("an ad hoc copy doesn't update", async () => {
         const apps = join(dir, "Applications");
