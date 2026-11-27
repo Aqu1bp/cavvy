@@ -23,7 +23,15 @@ API keys for the server are added there too (`cavvy --server box auth add`, or S
 
 You're offered a one-time copy of this machine's settings, memory, skills and commands (`--copy` or `--no-copy` to answer ahead). Nothing already on the server is replaced, and Cavvy says what the server took.
 
-While the desktop app is open and connected to the server, your skills and commands stay the same there as here, copy or not (so the app's copy leaves them out): one you add, change or delete here is added, changed or deleted there within a few seconds. A skill or command that's the server's own (one an agent there made, or one you changed there) is left as it is. A file named like a key, or with a key of a known format in it, stays here, as in the copy.
+While the desktop app is open and connected to a server (or whenever you run `cavvy servers sync [name]`), your setup stays in sync there automatically:
+
+- **Files:** skills (`~/.cavvy/skills`, `~/.claude/skills`, `~/.codex/skills`, `~/.agents/skills`), commands (`~/.cavvy/commands`, `~/.claude/commands`), custom agents (`~/.cavvy/agents`, `~/.claude/agents`, `~/.cavvy/agent-memory`), user memory and rules (`~/.cavvy/CAVVY.md`, `~/.claude/CLAUDE.md`, `~/.claude/rules`, `~/.codex/AGENTS.md`, `~/.codex/AGENTS.override.md`), themes (`~/.cavvy/themes`), and keybindings (`~/.cavvy/keybindings.json`).
+- **Settings, plugins and providers:** portable Cavvy settings, plain permission rules and portable MCP servers, remote plugin marketplaces and user-scoped plugins, non-local custom API providers, Vertex metadata, and which agent CLIs and Cavvy-managed named accounts you use.
+- **Opt-in API keys and MCP secrets:** off by default because servers run in Bypass mode. Turn it on per server in the Machines menu (key icon), in **Add server…**, or with `cavvy servers sync <name> --keys` (or `cavvy servers add … --sync-keys`) to also sync your Cavvy API keys, search keys and remote MCP server secrets (`env`/`headers`).
+
+What a server has of its own (or a synced file or setting you changed there) is left as it is; machine-local settings (`permissions.defaultMode`, `sandbox`, `browser`, `simulator`, `editor`, `hooks`, `statusLine`, `env`) stay local to each machine. A file named like a key, or with a key of a known format in it, never syncs.
+
+**CLI subscription sign-ins never sync:** Cavvy never reads, copies or sends Claude Code's, Codex's or other CLIs' own sign-in credentials. Sync mirrors your enabled CLIs and managed named account layout, and each server keeps its own independent login (`cavvy servers login <name> [cli] [--account <id>]`, or Settings → Providers on the server).
 
 Never copied: keys and sign-ins, hooks and the status line (they're commands, and would run there), and the permission mode. Permission rules and MCP servers can have a key written into them anywhere (an address's path, an option's value), so they go only when every word in them reads as a name: a rule of plain words with no options in it (`Bash(npm run lint:*)`), and an MCP server that's just a package to run (`npx -y @scope/server`) or a public address with a plain path. A long run of letters and digits, or groups of them, reads as a key and stays. A password that's an ordinary word can't be told from a command's own words, so look through your rules for one before you copy. The rest stay, and Cavvy says how many; add those on the server yourself (`cavvy --server box mcp add …`). A memory, skill or command file is left out when it's named like a key file or has a key of a known format in it.
 
@@ -175,7 +183,8 @@ Either way the daemon's file is written by root on the Mac, from a script Cavvy 
 ```bash
 cavvy servers                 # the servers you've added
 cavvy servers check [name]    # is Cavvy running there, and what's missing
-cavvy servers login <name>    # sign Claude Code or Codex in there, and turn it on
+cavvy servers sync [name]     # sync skills, settings, plugins and providers (--keys / --no-keys)
+cavvy servers login <name>    # sign Claude Code or Codex in there (--account <id>)
 cavvy servers update <name>   # bring its Cavvy up to this machine's
 cavvy servers rollback <name> # put it back on the version before its last update
 cavvy servers stop <name>     # stop Cavvy there

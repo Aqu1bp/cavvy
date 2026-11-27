@@ -1877,6 +1877,25 @@ export const RELAYED_SESSION_METHODS = ["session.rename", "session.pin", "sessio
  */
 export const RELAYED_ARCHIVE_OFFER = "session.archiveOffer";
 
+/** Latest sync status from this machine to a server (src/servers/watch.ts). */
+export interface ServerSyncStatus {
+    state: "idle" | "syncing" | "synced" | "error";
+    at?: number;
+    error?: string;
+    missingClis?: string[];
+    needsSignIn?: { provider: string; accountId: string; name: string }[];
+}
+
+export interface ServerSyncItemResult {
+    name: string;
+    ok: boolean;
+    summary?: string;
+    error?: string;
+    missingClis?: string[];
+    needsSignIn?: { provider: string; accountId: string; name: string }[];
+    warnings?: string[];
+}
+
 /** A server as a window lists it. */
 export interface ServerSummary {
     name: string;
@@ -1889,6 +1908,10 @@ export interface ServerSummary {
     cost?: string;
     /** An agent created it, and Cavvy knows how to delete it at its provider. */
     rented?: boolean;
+    /** Opt-in: Cavvy API keys and MCP server secrets sync to this server. */
+    syncSecrets?: boolean;
+    /** Sync status when an error or pending sign-in needs attention. */
+    sync?: ServerSyncStatus;
 }
 
 /**
@@ -2179,11 +2202,14 @@ export interface Methods {
     /** The same machine, to the same windows: the sessions on that server it asks its user something for right now. */
     "offers.asking": { params: { name: string }; result: { sessionId: string; lent: LentSession }[] };
     /**
-     * Only a server takes these, from the user's own machine (src/servers/sync.ts): what that machine gave it of its
-     * skills and commands (path under the home: sha256 of what it held), and more of them, or some gone.
+     * Only a server takes these, from the user's own machine (src/servers/sync.ts, sync-state.ts): files
+     * (skills, commands, agents, memory, themes, keybindings) and structured state (settings, remote plugins,
+     * provider topology, and opt-in Cavvy API keys / MCP secrets).
      */
     "sync.files": { params: Record<string, never>; result: Record<string, string> };
     "sync.apply": { params: { files: { path: string; data: string; sha: string; exec?: boolean }[]; remove: string[] }; result: { written: number; removed: number } };
+    "sync.state": { params: Record<string, never>; result: { digest?: string; missingClis: string[]; needsSignIn: { provider: string; accountId: string; name: string }[] } };
+    "sync.applyState": { params: { digest: string; payload: unknown }; result: unknown };
     /**
      * Sessions on the user's other machines (src/server/far-peers.ts). `peers.hub`: the user's own computer, connected
      * to this server, answers for every other machine (`peers.call` events), with `peers.result`. `peers.list`,
@@ -2209,8 +2235,10 @@ export interface Methods {
      * (RELAYED_ARCHIVE_OFFER).
      */
     "servers.relay": { params: { name: string; method: string; params: Record<string, unknown> }; result: { worktree: true } | null };
-    "servers.add": { params: { name: string; destination: string; port?: number; identityFile?: string; trust?: string[] }; result: AddResult };
+    "servers.add": { params: { name: string; destination: string; port?: number; identityFile?: string; trust?: string[]; syncSecrets?: boolean }; result: AddResult };
     "servers.copy": { params: { name: string }; result: { took: string; left?: string } };
+    "servers.sync": { params: { name?: string }; result: { results: ServerSyncItemResult[] } };
+    "servers.setSync": { params: { name: string; syncSecrets: boolean }; result: null };
     "servers.check": { params: { name: string }; result: ServerCheck };
     /**
      * `retry`: the window's connection trying again by itself. `renew`: the sign-in it was last given opened nothing.

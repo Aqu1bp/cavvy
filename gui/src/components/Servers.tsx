@@ -4,7 +4,7 @@
 
 import { createEffect, createResource, createSignal, createUniqueId, For, Match, Show, Switch } from "solid-js";
 import { render } from "solid-js/web";
-import { Check, ChevronDown, CircleArrowUp, Plus, Server, Trash2 } from "lucide-solid";
+import { Check, ChevronDown, CircleArrowUp, KeyRound, Plus, RefreshCw, Server, Trash2 } from "lucide-solid";
 import type { AddResult, ServerCheck, ServerProblem, UnknownHost } from "@shared/protocol";
 import { homeRpc, machineIssue, setMachineIssue, switchMachine, trustMachine, userAsked } from "../lib/machines";
 import { machine, os } from "../lib/platform";
@@ -171,7 +171,7 @@ export function checkLines(name: string, c: ServerCheck): string[] {
 
 /** The sidebar's list of machines. */
 function ServerMenu(p: { anchor: () => HTMLElement | undefined }) {
-    const [list] = createResource(
+    const [list, { refetch }] = createResource(
         () => serverMenu(),
         () =>
             servers()
@@ -180,6 +180,26 @@ function ServerMenu(p: { anchor: () => HTMLElement | undefined }) {
                 .catch(() => []),
     );
     const close = () => setServerMenu(false);
+    const syncOne = async (name: string) => {
+        close();
+        try {
+            const r = (await servers().call("servers.sync", { name })).results[0];
+            if (!r) return;
+            if (!r.ok) toast(r.error ?? `Couldn't sync ${name}`, "error");
+            else toast(r.summary && r.summary !== "Up to date" ? `Synced ${name}` : `${name} is up to date`, "info");
+        } catch (e) {
+            reportError(e);
+        }
+    };
+    const toggleKeys = async (name: string, next: boolean) => {
+        try {
+            await servers().call("servers.setSync", { name, syncSecrets: next });
+            void refetch();
+            toast(next ? `Syncing API keys to ${name}` : `Stopped syncing API keys`, "info");
+        } catch (e) {
+            reportError(e);
+        }
+    };
     // It can be put back, so nothing is asked first. (A rented machine stays rented: deleting it is asked of an agent.)
     const remove = async (name: string, rented?: boolean) => {
         close();
@@ -191,7 +211,7 @@ function ServerMenu(p: { anchor: () => HTMLElement | undefined }) {
         }
     };
     return (
-        <Menu label="Machines" open={serverMenu()} anchor={p.anchor} onClose={close} align={menuAlign()} width={240}>
+        <Menu label="Machines" open={serverMenu()} anchor={p.anchor} onClose={close} align={menuAlign()} width={270}>
             <button role="menuitemradio" aria-checked={!runsOn()} class="menu-item compact" onClick={() => (close(), goTo(undefined))}>
                 <span class="grow">{HERE}</span>
                 <Show when={!runsOn()}>
@@ -209,6 +229,25 @@ function ServerMenu(p: { anchor: () => HTMLElement | undefined }) {
                             <Show when={runsOn() === s.name}>
                                 <Check size={14} />
                             </Show>
+                        </button>
+                        <button
+                            role="menuitem"
+                            class={`hb${s.sync?.state === "error" ? " tone-warn" : ""}`}
+                            title={s.sync?.state === "error" ? `Sync failed: ${s.sync.error}` : `Sync ${s.name} now`}
+                            aria-label={`Sync ${s.name} now`}
+                            onClick={() => void syncOne(s.name)}
+                        >
+                            <RefreshCw size={13} />
+                        </button>
+                        <button
+                            role="menuitem"
+                            class={`hb${s.syncSecrets ? " server-keys-on" : ""}`}
+                            title={s.syncSecrets ? `Stop syncing API keys to ${s.name}` : `Sync API keys to ${s.name}`}
+                            aria-label={s.syncSecrets ? `Stop syncing API keys to ${s.name}` : `Sync API keys to ${s.name}`}
+                            aria-pressed={s.syncSecrets ? "true" : "false"}
+                            onClick={() => void toggleKeys(s.name, !s.syncSecrets)}
+                        >
+                            <KeyRound size={13} />
                         </button>
                         <Show when={s.behind}>
                             <button role="menuitem" class="hb" title={`Update Cavvy on ${s.name}`} aria-label={`Update Cavvy on ${s.name}`} onClick={() => (close(), void updateServer(s.name))}>
@@ -246,6 +285,7 @@ function AddServerDialog() {
     const [name, setName] = createSignal("");
     const [destination, setDestination] = createSignal("");
     const [identity, setIdentity] = createSignal("");
+    const [syncKeys, setSyncKeys] = createSignal(false);
     const [step, setStep] = createSignal<AddStep>({ at: "form" });
     const close = () => {
         // Not while it's being added: what comes next (its key to trust, what it lacks) would be asked of nobody.
@@ -255,8 +295,9 @@ function AddServerDialog() {
         setName("");
         setDestination("");
         setIdentity("");
+        setSyncKeys(false);
     };
-    const draft = () => ({ name: name().trim(), destination: destination().trim(), ...(identity().trim() ? { identityFile: identity().trim() } : {}) });
+    const draft = () => ({ name: name().trim(), destination: destination().trim(), ...(identity().trim() ? { identityFile: identity().trim() } : {}), ...(syncKeys() ? { syncSecrets: true } : {}) });
 
     // What it's doing, as this computer's Cavvy says it.
     servers().onEvent((e) => {
@@ -328,6 +369,13 @@ function AddServerDialog() {
                             <label>
                                 SSH key file
                                 <input class="input" value={identity()} onInput={(e) => setIdentity(e.currentTarget.value)} placeholder="Optional" autocapitalize="off" spellcheck={false} />
+                            </label>
+                            <label class="server-check">
+                                <input type="checkbox" checked={syncKeys()} onChange={(e) => setSyncKeys(e.currentTarget.checked)} />
+                                <span>
+                                    Sync API keys and MCP secrets
+                                    <span class="muted small"> · Sessions there run in Bypass.</span>
+                                </span>
                             </label>
                             <div class="server-actions">
                                 <button type="button" class="btn secondary" onClick={close}>

@@ -88,7 +88,12 @@ export const total = (c: Counts) => c.commands + c.agents + c.skills + c.hooks +
  * scopes yet). The entry's own manifest fields are saved with the copy, so
  * the plugin loads the same with or without its marketplace.
  */
-export async function fetchPlugin(entry: MarketplaceEntry, m: LoadedMarketplace): Promise<Omit<InstalledPlugin, "scopes">> {
+export async function fetchPlugin(
+    entry: MarketplaceEntry,
+    m: LoadedMarketplace,
+    opts?: { publicOnly?: boolean },
+): Promise<Omit<InstalledPlugin, "scopes">> {
+    const publicOnly = opts?.publicOnly === true;
     const cacheDir = ensureDir(pluginPaths.cache());
     const staging = mkdtempSync(join(cacheDir, ".fetch-"));
     try {
@@ -105,7 +110,7 @@ export async function fetchPlugin(entry: MarketplaceEntry, m: LoadedMarketplace)
             copyDir(src, dir);
         } else if (s.source === "github" || s.source === "git") {
             const repo = join(staging, "repo");
-            sha = await gitClone(s.source === "github" ? githubUrl(s.repo) : s.url, repo, { ref: s.ref, sha: s.sha });
+            sha = await gitClone(s.source === "github" ? githubUrl(s.repo) : s.url, repo, { ref: s.ref, sha: s.sha, publicOnly });
             rmSync(join(repo, ".git"), { recursive: true, force: true });
             dir = repo;
             if (s.source === "git" && s.path) {
@@ -114,7 +119,7 @@ export async function fetchPlugin(entry: MarketplaceEntry, m: LoadedMarketplace)
                 dir = canonical(dir);
             }
         } else {
-            const r = await fetchNpm(s.package, s.version, join(staging, "npm"), s.registry);
+            const r = await fetchNpm(s.package, s.version, join(staging, "npm"), s.registry, { publicOnly });
             dir = r.dir;
             fetchedVersion = r.version;
         }
@@ -199,14 +204,14 @@ export interface InstallResult {
 }
 
 /** Install `spec` (name or name@marketplace) and turn it on at `scope`. */
-export async function installPlugin(spec: string, scope: SettingsScope, cwd: string): Promise<InstallResult> {
+export async function installPlugin(spec: string, scope: SettingsScope, cwd: string, opts?: { publicOnly?: boolean }): Promise<InstallResult> {
     const { entry, marketplace } = findEntry(spec);
     const id = `${entry.name}@${marketplace.name}`;
     checkWritable(scope, cwd);
     let rec = readInstalled()[id];
     const reused = !!rec && existsSync(rec.installPath);
     if (!reused) {
-        const fetched = await fetchPlugin(entry, marketplace);
+        const fetched = await fetchPlugin(entry, marketplace, opts);
         rec = { ...fetched, scopes: rec?.scopes ?? [] };
     }
     const r = rec!;
@@ -320,7 +325,13 @@ export interface UpdateResult {
 }
 
 /** Fetch a plugin again from its marketplace (refreshed first) and keep its scopes. */
-export async function updatePlugin(spec: string, cwd: string, trusted: boolean, refreshed = new Set<string>()): Promise<UpdateResult> {
+export async function updatePlugin(
+    spec: string,
+    cwd: string,
+    trusted: boolean,
+    refreshed = new Set<string>(),
+    opts?: { publicOnly?: boolean },
+): Promise<UpdateResult> {
     const id = resolveInstalled(spec, cwd, trusted);
     const { name, marketplace } = splitId(id);
     const before = readInstalled()[id];
@@ -328,12 +339,12 @@ export async function updatePlugin(spec: string, cwd: string, trusted: boolean, 
     if (marketplace && !refreshed.has(marketplace)) {
         refreshed.add(marketplace);
         const k = readKnownMarketplaces()[marketplace];
-        if (k && k.source.source !== "directory" && k.source.source !== "file") await updateMarketplace(marketplace);
+        if (k && k.source.source !== "directory" && k.source.source !== "file") await updateMarketplace(marketplace, opts);
     }
     const { entry, marketplace: m } = findEntry(`${name}@${marketplace}`);
     // Taken before the fetch, which replaces the folder in place when the version is the same.
     const oldHash = treeHash(before.installPath);
-    const fetched = await fetchPlugin(entry, m);
+    const fetched = await fetchPlugin(entry, m, opts);
     const installed = readInstalled();
     const cur = installed[id] ?? before;
     installed[id] = { ...fetched, installedAt: cur.installedAt, scopes: cur.scopes };

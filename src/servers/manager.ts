@@ -7,7 +7,7 @@
 // a server that's working, a copy) says so in what it returns, and the
 // window calls again with the answer.
 
-import { PROTOCOL_VERSION, RELAYED_ARCHIVE_OFFER, RELAYED_SESSION_METHODS, type AddResult, type ConnectResult, type MachineOverview, type ServerCheck, type ServerProblem, type ServerSummary, type UnknownHost, type UpdateResult } from "../server/protocol";
+import { PROTOCOL_VERSION, RELAYED_ARCHIVE_OFFER, RELAYED_SESSION_METHODS, type AddResult, type ConnectResult, type MachineOverview, type ServerCheck, type ServerProblem, type ServerSummary, type ServerSyncItemResult, type UnknownHost, type UpdateResult } from "../server/protocol";
 import { existsSync, readFileSync, renameSync, rmSync, watch, writeFileSync, type FSWatcher } from "fs";
 import { dirname, join, relative, sep } from "path";
 import { cavvyHome, ensureDir } from "../config/paths";
@@ -20,8 +20,9 @@ import { ServerBusy, setUpServer, type SetupProgress } from "./install";
 import { probeServer } from "./remote";
 import { NotSetUp, remoteCheck, remoteStatus, revokeOverSsh, serviceReport, stopRemote, StoppedThere } from "./service";
 import { hostOf, offeredHostKey, printable, SshError, trustHostKey, type OfferedHostKey } from "./ssh";
-import { draftServer, getServer, listServers, removeServer, requireServer, saveServer, ServerError, thisDesktop, type ServerEntry } from "./store";
-import { syncedFolders, syncTo } from "./sync";
+import { draftServer, getServer, listServers, removeServer, requireServer, saveServer, ServerError, setServerSyncSecrets, thisDesktop, type ServerEntry } from "./store";
+import { syncedWatchTargets } from "./sync";
+import { describeSyncRun, syncAllTo } from "./sync-state";
 import { MachineWatch, type LentCall, type LentResult, type MachineNotice, type SessionChange } from "./watch";
 
 /** A server's sessions as last heard (MachineWatch kept): listed while it can't be reached, from the next launch too. */
@@ -164,7 +165,7 @@ export class ServerLinks {
                 lends: this.o.lends,
                 lendMode: this.o.lendMode,
                 lend: this.o.lend && ((call, signal) => this.o.lend!(name, call, signal)),
-                sync: this.o.sync ? syncTo : undefined,
+                sync: this.o.sync ? (ask) => syncAllTo(ask, { includeSecrets: () => getServer(name)?.syncSecrets === true }) : undefined,
                 peers: this.o.peers && ((op, params) => this.o.peers!(name, op, params)),
                 retryMs: this.o.watchRetryMs,
                 kept: { read: () => readKept(name), write: (sessions) => writeKept(name, sessions) },
@@ -250,15 +251,21 @@ export class ServerLinks {
     }
 
     list(): ServerSummary[] {
-        return listServers().map((s) => ({
-            name: s.name,
-            destination: s.destination,
-            connected: this.links.get(s.name)?.link.state.state === "connected",
-            ...(this.behind(s.name) ? { behind: true } : {}),
-            ...(s.cloud?.cost ? { cost: s.cloud.cost } : {}),
-            // Removing it can delete the machine too (ServerRemove): the window asks which is meant.
-            ...(s.cloud?.teardown?.length ? { rented: true } : {}),
-        }));
+        return listServers().map((s) => {
+            const sync = this.watches.get(s.name)?.syncStatus();
+            const showSync = sync && (sync.state === "error" || Boolean(sync.missingClis?.length) || Boolean(sync.needsSignIn?.length));
+            return {
+                name: s.name,
+                destination: s.destination,
+                connected: this.links.get(s.name)?.link.state.state === "connected",
+                ...(this.behind(s.name) ? { behind: true } : {}),
+                ...(s.cloud?.cost ? { cost: s.cloud.cost } : {}),
+                // Removing it can delete the machine too (ServerRemove): the window asks which is meant.
+                ...(s.cloud?.teardown?.length ? { rented: true } : {}),
+                ...(s.syncSecrets ? { syncSecrets: true } : {}),
+                ...(showSync ? { sync } : {}),
+            };
+        });
     }
 
     /** `also`: whoever asked for this setup hears each step too (an agent's tool call, which shows it in the conversation). */
@@ -306,7 +313,7 @@ export class ServerLinks {
      * Adds a server: connects, puts this machine's build of Cavvy there and starts it. `trusted`: the entry `trust`
      * handed back, when the host's key was just accepted.
      */
-    async add(draft: { name: string; destination: string; port?: number; identityFile?: string; knownHostsFile?: string; cloud?: ServerEntry["cloud"] }, trusted?: ServerEntry, heard?: (text: string) => void): Promise<AddResult> {
+    async add(draft: { name: string; destination: string; port?: number; identityFile?: string; knownHostsFile?: string; cloud?: ServerEntry["cloud"]; syncSecrets?: boolean }, trusted?: ServerEntry, heard?: (text: string) => void): Promise<AddResult> {
         let entry: ServerEntry;
         try {
             entry = trusted ?? draftServer(draft);
@@ -333,9 +340,12 @@ export class ServerLinks {
 
     /** What the one-time copy would carry, and what would stay, as the question is worded. */
     private copyOffer(): { copy?: { what: string }; left?: string } {
+        // When live sync is active, skills, commands, agents, memory, themes, keybindings, settings, plugins and
+        // providers sync automatically once connected, so no one-time copy dialog is needed.
+        if (this.o.sync) return {};
         let plan;
         try {
-            plan = planCopy(this.userSettings(), { skills: !this.o.sync });
+            plan = planCopy(this.userSettings(), { skills: true });
         } catch {
             return {};
         }
@@ -658,13 +668,169 @@ export class ServerLinks {
         this.unwatchSynced();
     }
 
-    /** What watches each of this machine's skills and commands folders for changes, while servers are watched (sync). */
+    /** Triggers a debounced resync to all connected watched servers (called after local key/settings/provider/account changes). */
+    resyncAll() {
+        if (!this.o.sync || this.stopped) return;
+        this.syncChanged();
+    }
+
+    /** Enables or disables opt-in Cavvy API key and MCP secret sync for `name`, and resyncs if connected. */
+    setSyncSecrets(name: string, on: boolean) {
+        setServerSyncSecrets(name, on);
+        if (this.o.sync) this.watches.get(name)?.resync();
+    }
+
+    /** Per-server in-flight manual sync, so concurrent manual runs share/serialize cleanly. */
+    private manualSyncs = new Map<string, Promise<ServerSyncItemResult>>();
+
+    /** Syncs one server (or all servers) right now, connecting first if needed. */
+    async syncNow(name?: string): Promise<ServerSyncItemResult[]> {
+        const targets = name ? [requireServer(name)] : listServers();
+        if (!targets.length) return [];
+        return Promise.all(targets.map((entry) => this.syncOneServer(entry)));
+    }
+
+    private syncOneServer(entry: ServerEntry): Promise<ServerSyncItemResult> {
+        const prev = this.manualSyncs.get(entry.name) ?? Promise.resolve(undefined);
+        const next = prev.then(
+            () => this.runSyncOneServer(entry),
+            () => this.runSyncOneServer(entry),
+        );
+        this.manualSyncs.set(entry.name, next);
+        void next.finally(() => {
+            if (this.manualSyncs.get(entry.name) === next) this.manualSyncs.delete(entry.name);
+        });
+        return next;
+    }
+
+    private async runSyncOneServer(entry: ServerEntry): Promise<ServerSyncItemResult> {
+        const existing = this.watches.get(entry.name);
+        try {
+            let run;
+            if (existing) {
+                // Always route through the server's watch when one exists so manual and automatic syncs never overlap.
+                if (existing.overview().state !== "connected") {
+                    const conn = await this.connect(entry.name);
+                    if (conn.status !== "connected") {
+                        const err =
+                            conn.status === "failed" ? conn.problem.message
+                            : conn.status === "stopped" ? `Cavvy on ${entry.name} is stopped.`
+                            : conn.status === "other-version" ? `${entry.name} runs another version of Cavvy.`
+                            : `${entry.name}'s host key isn't trusted yet.`;
+                        return { name: entry.name, ok: false, error: err };
+                    }
+                    await existing.connectNow(15_000);
+                }
+                if (existing.overview().state !== "connected") {
+                    return { name: entry.name, ok: false, error: `${entry.name} isn't connected.` };
+                }
+                run = await existing.syncNow();
+            } else {
+                const conn = await this.connect(entry.name);
+                if (conn.status !== "connected") {
+                    const err =
+                        conn.status === "failed" ? conn.problem.message
+                        : conn.status === "stopped" ? `Cavvy on ${entry.name} is stopped.`
+                        : conn.status === "other-version" ? `${entry.name} runs another version of Cavvy.`
+                        : `${entry.name}'s host key isn't trusted yet.`;
+                    return { name: entry.name, ok: false, error: err };
+                }
+                run = await this.syncOverDirectWs(conn.url, conn.token, () => getServer(entry.name)?.syncSecrets === true);
+            }
+            const st = run?.state?.result;
+            const summary = run ? describeSyncRun(run) : "";
+            const missingClis = run?.state.missingClis ?? st?.missingClis;
+            const needsSignIn = run?.state.needsSignIn ?? st?.needsSignIn;
+            if (run?.state.unsupported) {
+                return {
+                    name: entry.name,
+                    ok: false,
+                    ...(summary ? { summary } : {}),
+                    error: `${entry.name} runs an older Cavvy that doesn't support full sync. Update it first.`,
+                };
+            }
+            if (st?.warnings?.length) {
+                return {
+                    name: entry.name,
+                    ok: false,
+                    summary: summary || "Partial sync",
+                    error: st.warnings[0],
+                    warnings: st.warnings,
+                    ...(missingClis?.length ? { missingClis } : {}),
+                    ...(needsSignIn?.length ? { needsSignIn } : {}),
+                };
+            }
+            return {
+                name: entry.name,
+                ok: true,
+                summary: summary || "Up to date",
+                ...(missingClis?.length ? { missingClis } : {}),
+                ...(needsSignIn?.length ? { needsSignIn } : {}),
+            };
+        } catch (e) {
+            return { name: entry.name, ok: false, error: printable((e as Error)?.message ?? String(e), 300) };
+        }
+    }
+
+    /** Opens a short-lived WebSocket to run syncAllTo when no MachineWatch is already connected (e.g. CLI `cavvy servers sync`). */
+    private async syncOverDirectWs(url: string, token: string, includeSecrets: () => boolean) {
+        const ws = new WebSocket(url, ["cavvy.v1", `auth.${token}`]);
+        let nextId = 1;
+        const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+        await new Promise<void>((resolve, reject) => {
+            const t = setTimeout(() => reject(new Error("Timed out connecting to server.")), 15_000);
+            ws.onopen = () => {
+                clearTimeout(t);
+                resolve();
+            };
+            ws.onerror = () => {
+                clearTimeout(t);
+                reject(new Error("Couldn't open connection to server."));
+            };
+        });
+        ws.onmessage = (ev) => {
+            try {
+                const msg = JSON.parse(String(ev.data)) as { id?: number; result?: unknown; error?: { message?: string; code?: string } };
+                if (typeof msg.id !== "number") return;
+                const p = pending.get(msg.id);
+                if (!p) return;
+                pending.delete(msg.id);
+                clearTimeout(p.timer);
+                if (msg.error) p.reject(Object.assign(new Error(msg.error.message ?? "Sync failed."), msg.error.code ? { code: msg.error.code } : {}));
+                else p.resolve(msg.result);
+            } catch {
+                // ignore malformed frames
+            }
+        };
+        const ask = (method: string, params: Record<string, unknown>) =>
+            new Promise<unknown>((resolve, reject) => {
+                const id = nextId++;
+                const ms = method === "sync.applyState" ? 90_000 : 20_000;
+                const timer = setTimeout(() => {
+                    pending.delete(id);
+                    reject(new Error(`Timed out waiting for ${method}.`));
+                }, ms);
+                pending.set(id, { resolve, reject, timer });
+                ws.send(JSON.stringify({ id, method, params }));
+            });
+        try {
+            return await syncAllTo(ask, { includeSecrets });
+        } finally {
+            for (const p of pending.values()) clearTimeout(p.timer);
+            pending.clear();
+            ws.close();
+        }
+    }
+
+    /** What watches each of this machine's synced folders (and symlink targets) and config files for changes, while servers are watched. */
     private syncWatchers = new Map<string, FSWatcher>();
     private syncTimer?: ReturnType<typeof setTimeout>;
 
     private syncChanged() {
         clearTimeout(this.syncTimer);
         this.syncTimer = setTimeout(() => {
+            // Re-scan in case a new symlinked skill directory was added since startup.
+            this.watchSynced();
             for (const w of this.watches.values()) w.resync();
         }, this.o.syncSettleMs ?? 1500);
         (this.syncTimer as { unref?: () => void }).unref?.();
@@ -672,7 +838,42 @@ export class ServerLinks {
 
     private watchSynced() {
         if (!this.o.sync || this.stopped) return;
-        for (const dir of syncedFolders()) this.watchSyncedFolder(dir);
+        const { recursive, shallow } = syncedWatchTargets();
+        for (const dir of recursive) this.watchSyncedFolder(dir);
+        for (const s of shallow) this.watchShallowDir(s.dir, s.names);
+    }
+
+    /** Watches a parent folder non-recursively for changes to specific config/memory filenames; if absent, watches its nearest existing ancestor until created. */
+    private watchShallowDir(dir: string, names: Set<string>) {
+        const key = `shallow:${dir}`;
+        if (this.syncWatchers.has(key) || this.stopped) return;
+        let at = dir;
+        while (!existsSync(at) && dirname(at) !== at) at = dirname(at);
+        const there = at === dir;
+        const next = there ? "" : relative(at, dir).split(sep)[0]!;
+        try {
+            const w = watch(at, { persistent: false }, (_e, name) => {
+                if (!there) {
+                    if (String(name) !== next || !existsSync(join(at, next))) return;
+                    this.unwatchSyncedFolder(key, w);
+                    this.watchShallowDir(dir, names);
+                    this.syncChanged();
+                    return;
+                }
+                if (!name) return this.syncChanged();
+                const s = String(name);
+                if (names.has(s) || [...names].some((f) => s.startsWith(`.${f}.`))) this.syncChanged();
+            });
+            w.on("error", () => this.unwatchSyncedFolder(key, w));
+            this.syncWatchers.set(key, w);
+            if (!there && existsSync(join(at, next))) {
+                this.unwatchSyncedFolder(key, w);
+                this.watchShallowDir(dir, names);
+                this.syncChanged();
+            }
+        } catch {
+            // Can't be watched here: brought level on connect and explicit changes.
+        }
     }
 
     /** `dir` and what's in it; not there yet, the nearest folder above it that is, till the next one down is made. */

@@ -22,6 +22,8 @@ export interface ServerEntry {
     knownHostsFile?: string;
     /** A machine rented for this (an agent created it): what it is, what it costs, and how it's given back. */
     cloud?: ServerCloud;
+    /** Opt-in: sync this machine's Cavvy API keys and MCP server secrets to this server. Never syncs CLI subscription credentials. */
+    syncSecrets?: boolean;
     addedAt: string;
 }
 
@@ -97,6 +99,7 @@ function checked(e: Partial<ServerEntry>): ServerEntry {
         out.knownHostsFile = f;
     }
     if (e.cloud !== undefined) out.cloud = checkedCloud(e.cloud);
+    if (e.syncSecrets === true) out.syncSecrets = true;
     return out;
 }
 
@@ -138,10 +141,19 @@ export function requireServer(name: string): ServerEntry {
 }
 
 /** What `add` would save, checked, without saving it (the connection is tried first). */
-export function draftServer(e: { name: string; destination: string; port?: number; identityFile?: string; knownHostsFile?: string; cloud?: ServerCloud }): ServerEntry {
+export function draftServer(e: { name: string; destination: string; port?: number; identityFile?: string; knownHostsFile?: string; cloud?: ServerCloud; syncSecrets?: boolean }): ServerEntry {
     const entry = checked(e);
     if (getServer(entry.name)) throw new ServerError(`There's already a server named ${entry.name}.`);
     return entry;
+}
+
+/** Updates whether Cavvy API keys and MCP secrets sync to `name`. */
+export function setServerSyncSecrets(name: string, on: boolean): ServerEntry {
+    const entry = requireServer(name);
+    const next: ServerEntry = { ...entry };
+    if (on) next.syncSecrets = true;
+    else delete next.syncSecrets;
+    return saveServer(next);
 }
 
 /** Saves it. An entry of that name is replaced (putting a removed one back is the same call). */

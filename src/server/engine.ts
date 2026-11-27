@@ -4,6 +4,7 @@
 // decision, MCP servers and file index, shared by its sessions.
 
 import { applySync, readSynced } from "../servers/sync";
+import { applyStateSync, readSyncedStateDigest } from "../servers/sync-state";
 import { FAR_GRACE_MS, searchServers, withServers, trashOnServers } from "./far-search";
 import { answerPeers, homeFarPeers, peersDenied, PEERS_WAIT_MS, serverFarPeers } from "./far-peers";
 import { noteScheduleIndex, readScheduleIndex } from "../agent/schedule-host";
@@ -49,7 +50,7 @@ import { reportedOf } from "./plan-meter";
 import { AppUpdates } from "./app-update";
 import { findCli, stopTiming } from "../backends/cli";
 import { AGENT_CLIS, agentCli } from "../backends/defs";
-import { getKey, removeKey, setKey } from "../auth/credentials";
+import { forgetCachedKeys, getKey, removeKey, setKey } from "../auth/credentials";
 import { detectKeyProvider, validateKey } from "../auth/detect";
 import { FileIndex } from "../ui/mentions";
 import { gitRoot, gitBranch } from "../util/git";
@@ -811,6 +812,14 @@ export class Engine {
 
     /** Plugin changes run one at a time: two updates of one marketplace mustn't swap its folder at once. */
     private pluginQueue: Promise<unknown> = Promise.resolve();
+    /** Incoming sync applies run one at a time so concurrent RPCs cannot race ownership records or plugin installs. */
+    private syncQueue: Promise<unknown> = Promise.resolve();
+
+    private enqueueSync<T>(fn: () => Promise<T>): Promise<T> {
+        const next = this.syncQueue.then(fn, fn);
+        this.syncQueue = next.catch(() => undefined);
+        return next;
+    }
 
     private pluginAction(p: PluginActionParams): Promise<PluginsInfo & { message: string }> {
         const run = this.pluginQueue.then(() => this.runPluginAction(p));
@@ -2661,6 +2670,8 @@ export class Engine {
         for (const r of this.runtimes.values()) r.classifier.clearCache();
         await this.refreshListings(true);
         await Promise.all([...this.runtimes.values()].map((r) => r.keyChanged(id).catch(() => undefined)));
+        // Keychain API key changes don't touch a watched file, so notify connected servers directly.
+        this.serverLinks?.resyncAll();
     }
 
     // -----------------------------------------------------------------------
@@ -3129,10 +3140,14 @@ export class Engine {
                 return { path: keybindingsPath(), ...readKeybindings() } satisfies KeybindingsFile;
             case "themes.list":
                 return listThemes();
-            case "themes.remove":
-                return { text: removeTheme(str(p.id, "id")) };
+            case "themes.remove": {
+                const r = { text: removeTheme(str(p.id, "id")) };
+                this.serverLinks?.resyncAll();
+                return r;
+            }
             case "themes.restore":
                 restoreTheme(str(p.id, "id"), str(p.text, "text"), undefined, p.replace === true);
+                this.serverLinks?.resyncAll();
                 return null;
             case "themes.report": {
                 const r = p as unknown as ThemeReport;
@@ -3575,16 +3590,19 @@ export class Engine {
                 forgetClient(provider);
                 await this.refreshListings(true);
                 this.broadcast({ type: "models.changed" });
+                this.serverLinks?.resyncAll();
                 return added;
             }
             case "accounts.rename":
                 renameAccount(str(p.provider, "provider"), str(p.id, "id"), str(p.name, "name"));
                 this.broadcast({ type: "models.changed" });
+                this.serverLinks?.resyncAll();
                 return null;
             case "accounts.setDefault":
                 setDefaultAccount(str(p.provider, "provider"), str(p.id, "id"));
                 await this.refreshListings(true);
                 this.broadcast({ type: "models.changed" });
+                this.serverLinks?.resyncAll();
                 return null;
             case "accounts.remove": {
                 const provider = str(p.provider, "provider");
@@ -3627,13 +3645,68 @@ export class Engine {
             }
             case "sync.apply": {
                 if (!this.o.away) throw new RpcError("Only a server takes another machine's skills.", "unsupported");
-                try {
-                    return applySync(p.files, p.remove);
-                } finally {
-                    // A command added or changed (some, before a failure) is one the / menu and a sent /name know at once.
-                    // Skills are read again by themselves.
-                    for (const ws of this.workspaces.values()) ws.commands = loadCustomCommands(ws.cwd, ws.trusted);
-                }
+                return await this.enqueueSync(async () => {
+                    let changed: string[] = [];
+                    try {
+                        const r = applySync(p.files, p.remove);
+                        changed = r.changed;
+                        return { written: r.written, removed: r.removed };
+                    } finally {
+                        // A command added or changed (some, before a failure) is one the / menu and a sent /name know at once.
+                        // Skills, agents and memory are read again by themselves.
+                        for (const ws of this.workspaces.values()) ws.commands = loadCustomCommands(ws.cwd, ws.trusted);
+                        if (changed.some((f) => f.startsWith(".cavvy/themes/"))) this.broadcast({ type: "themes.changed", themes: listThemes() });
+                        if (changed.includes(".cavvy/keybindings.json")) this.broadcast({ type: "keybindings.changed", keybindings: { path: keybindingsPath(), ...readKeybindings() } });
+                    }
+                });
+            }
+            case "sync.state": {
+                if (!this.o.away) throw new RpcError("Only a server takes another machine's state.", "unsupported");
+                return await readSyncedStateDigest();
+            }
+            case "sync.applyState": {
+                if (!this.o.away) throw new RpcError("Only a server takes another machine's state.", "unsupported");
+                return await this.enqueueSync(async () => {
+                    const run = this.pluginQueue.then(
+                        () => applyStateSync(p.digest, p.payload),
+                        () => applyStateSync(p.digest, p.payload),
+                    );
+                    this.pluginQueue = run.catch(() => undefined);
+                    let r: Awaited<typeof run> | undefined;
+                    try {
+                        r = await run;
+                        return r;
+                    } finally {
+                        // Reload even if applyStateSync threw after writing settings/providers so open sessions never stay stale.
+                        if (!r || r.settingsChanged || r.pluginsChanged) {
+                            const restart = r?.restartedPlugins?.length ? pluginServerMatch(r.restartedPlugins) : undefined;
+                            this.reloadSettings();
+                            await Promise.all(
+                                [...this.workspaces.values()].map((ws) =>
+                                    ws.mcp
+                                        .sync()
+                                        .then(() => restart && ws.mcp.restartWhere(restart))
+                                        .catch(() => undefined),
+                                ),
+                            );
+                            for (const [key, names] of this.cliCommandNames) {
+                                const ws = this.workspaces.get(key.slice(key.indexOf(":") + 1));
+                                if (ws) this.cliCommandNames.set(key, withPluginCommands(names, ws.commands));
+                            }
+                        }
+                        if (!r || r.providersChanged || r.keysChanged || r.accountsAdded) {
+                            forgetCachedKeys();
+                            const ids = r ? r.changedProviders : allProviders().map((pr) => pr.id);
+                            for (const id of ids) forgetClient(id);
+                            for (const rt of this.runtimes.values()) rt.classifier.clearCache();
+                            await this.refreshListings(true);
+                            for (const id of ids) {
+                                await Promise.all([...this.runtimes.values()].map((rt) => rt.keyChanged(id).catch(() => undefined)));
+                            }
+                            this.broadcast({ type: "models.changed" });
+                        }
+                    }
+                });
             }
             case "offers.session": {
                 // Asked by this machine's own windows: a server's Cavvy lends nothing.
@@ -3735,12 +3808,17 @@ export class Engine {
             case "servers.add": {
                 const servers = await this.servers(client, str(p.name, "name"));
                 const name = str(p.name, "name");
-                const draft = { name, destination: str(p.destination, "destination"), ...(typeof p.port === "number" ? { port: p.port } : {}), ...(typeof p.identityFile === "string" && p.identityFile ? { identityFile: p.identityFile } : {}) };
+                const draft = { name, destination: str(p.destination, "destination"), ...(typeof p.port === "number" ? { port: p.port } : {}), ...(typeof p.identityFile === "string" && p.identityFile ? { identityFile: p.identityFile } : {}), ...(p.syncSecrets === true ? { syncSecrets: true } : {}) };
                 const trust = fingerprints(p.trust);
                 return await servers.add(draft, trust ? servers.trust(name, trust) : undefined);
             }
             case "servers.copy":
                 return await (await this.servers(client, str(p.name, "name"))).copy(str(p.name, "name"));
+            case "servers.sync":
+                return { results: await (await this.servers(client)).syncNow(optStr(p.name)) };
+            case "servers.setSync":
+                (await this.servers(client)).setSyncSecrets(str(p.name, "name"), p.syncSecrets === true);
+                return null;
             case "servers.check":
                 return await (await this.servers(client, str(p.name, "name"))).check(str(p.name, "name"));
             case "servers.connect": {
@@ -3955,8 +4033,11 @@ export class Engine {
             }
             case "plugins.list":
                 return this.pluginsInfo(optStr(p.cwd));
-            case "plugins.action":
-                return this.pluginAction(p as PluginActionParams);
+            case "plugins.action": {
+                const r = await this.pluginAction(p as PluginActionParams);
+                this.serverLinks?.resyncAll();
+                return r;
+            }
             case "plugins.logo":
                 return pluginLogo(str(p.owner, "owner"));
             case "session.mcpSignIn": {
@@ -3991,8 +4072,11 @@ export class Engine {
             }
             case "settings.get":
                 return this.guiSettings(optStr(p.cwd));
-            case "settings.update":
-                return this.updateGuiSettings((p.patch ?? {}) as GuiSettings);
+            case "settings.update": {
+                const r = this.updateGuiSettings((p.patch ?? {}) as GuiSettings);
+                this.serverLinks?.resyncAll();
+                return r;
+            }
             case "limits.get":
                 return [...this.limits.values()];
             case "served.get":

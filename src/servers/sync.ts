@@ -1,37 +1,84 @@
-// This machine's skills and commands, kept on the user's servers as they are here: a skill added on the Mac is in
-// a server session's / menu moments later, one deleted goes there too. The one-time copy (copy.ts) carries them
-// when a server is added; this keeps them level after that, over the connection this machine keeps to each server
-// (watch.ts), each time it connects and whenever one changes here.
+// This machine's skills, commands, custom agents, memory, themes and keybindings, kept on the user's servers as they
+// are here: a skill, memory note, theme or setting changed on this machine reaches every connected server moments
+// later, and any offline server catches up when it reconnects.
 //
 // What a server has of its own is left alone: a file there is replaced or removed only if this machine put it there
-// and it hasn't changed since (the server keeps a record of what it was given: SYNCED_FILE). The same files stay
-// here as the copy leaves here: one named like a key, or with a key of a known format in it.
+// and it hasn't changed since (the server keeps a record of what it was given: SYNCED_FILE). Files named like a key,
+// or holding a key of a known format, stay here. CLI subscription credentials are never read, copied or synced.
 
 import { createHash, randomUUID } from "crypto";
-import { lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, rmdirSync, statSync, writeFileSync } from "fs";
+import { lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, rmdirSync, statSync, writeFileSync } from "fs";
 import { homedir } from "os";
-import { dirname, join } from "path";
+import { basename, dirname, join } from "path";
 import { cavvyHome, paths } from "../config/paths";
 import { matchesSecretPattern } from "../util/secret-patterns";
-import { CLI_SYNCED, MAX_FILE, MAX_FILES, MAX_TOTAL, SECRET_NAME, SKIP_DIR } from "./copy";
+import { CLI_SYNCED, isProtectedCredentialPath, MAX_FILE, MAX_FILES, MAX_TOTAL, SECRET_NAME, SKIP_DIR } from "./copy";
 
-/** Where each kind is kept, here and (as a path under the home) on a server. */
-function syncedRoots(): { from: string; to: string }[] {
-    const claude = process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude");
+interface SyncRoot {
+    from: string;
+    to: string;
+}
+
+interface SyncSingle {
+    from: string;
+    to: string;
+}
+
+const claudeDir = (home?: string) => (home !== undefined ? join(home, ".claude") : process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"));
+const codexDir = (home?: string) => (home !== undefined ? join(home, ".codex") : process.env.CODEX_HOME || join(homedir(), ".codex"));
+const cavvyDir = (home?: string) => (home !== undefined ? join(home, ".cavvy") : cavvyHome());
+const agentsDir = (home?: string) => (home !== undefined ? join(home, ".agents") : process.env.CAVVY_AGENTS_HOME || join(homedir(), ".agents"));
+
+/** Folder trees kept level, here and (as a path under home) on a server. */
+function syncedRoots(): SyncRoot[] {
+    const claude = claudeDir();
+    const codex = codexDir();
     return [
         { from: join(cavvyHome(), "skills"), to: ".cavvy/skills" },
         { from: join(claude, "skills"), to: ".claude/skills" },
+        { from: join(codex, "skills"), to: ".codex/skills" },
+        { from: join(agentsDir(), "skills"), to: ".agents/skills" },
         { from: paths.userCommands(), to: ".cavvy/commands" },
+        { from: join(claude, "commands"), to: ".claude/commands" },
+        { from: paths.userAgents(), to: ".cavvy/agents" },
+        { from: join(claude, "agents"), to: ".claude/agents" },
+        { from: join(cavvyHome(), "agent-memory"), to: ".cavvy/agent-memory" },
+        { from: join(cavvyHome(), "themes"), to: ".cavvy/themes" },
+        { from: join(claude, "rules"), to: ".claude/rules" },
     ];
 }
 
-/** A path a server takes: under one of the synced folders, in plain parts. */
-const SYNCED_PATH = /^\.(cavvy|claude)\/skills\/|^\.cavvy\/commands\//;
+/** Individual files kept level, here and (as a path under home) on a server. */
+function syncedSingleFiles(): SyncSingle[] {
+    const claude = claudeDir();
+    const codex = codexDir();
+    return [
+        { from: paths.userMemory(), to: ".cavvy/CAVVY.md" },
+        { from: join(claude, "CLAUDE.md"), to: ".claude/CLAUDE.md" },
+        { from: join(codex, "AGENTS.md"), to: ".codex/AGENTS.md" },
+        { from: join(codex, "AGENTS.override.md"), to: ".codex/AGENTS.override.md" },
+        { from: join(cavvyHome(), "keybindings.json"), to: ".cavvy/keybindings.json" },
+    ];
+}
+
+const SYNCED_DIR_PATH = /^(\.(cavvy|claude|codex|agents)\/skills\/|\.(cavvy|claude)\/(commands|agents)\/|\.cavvy\/(themes|agent-memory)\/|\.claude\/rules\/)/;
+const SYNCED_SINGLE_PATHS = new Set([
+    ".cavvy/CAVVY.md",
+    ".claude/CLAUDE.md",
+    ".codex/AGENTS.md",
+    ".codex/AGENTS.override.md",
+    ".cavvy/keybindings.json",
+]);
+
+/** A path a server takes: under one of the synced folders or one of the synced single files, in plain parts. */
 export function syncablePath(p: unknown): p is string {
-    // Nor Claude Code's own folder there (one recorded as sent before it was left out isn't taken away from a server either).
-    if (typeof p !== "string" || p.length > 300 || !SYNCED_PATH.test(p) || /[\0-\x1f\\]/.test(p) || p.startsWith(`${CLI_SYNCED}/`)) return false;
+    if (typeof p !== "string" || p.length > 300 || /[\0-\x1f\\]/.test(p) || p.startsWith(`${CLI_SYNCED}/`)) return false;
+    if (!SYNCED_SINGLE_PATHS.has(p) && !SYNCED_DIR_PATH.test(p)) return false;
     const parts = p.split("/");
-    return parts.length <= 9 && parts.every((x) => x !== "" && x !== "." && x !== "..");
+    if (parts.length > 9 || !parts.every((x) => x !== "" && x !== "." && x !== "..")) return false;
+    // Never accept secret-named files on the server side either.
+    if (SECRET_NAME.test(parts.at(-1)!)) return false;
+    return true;
 }
 
 export const sha = (b: Buffer | string) => createHash("sha256").update(b).digest("hex");
@@ -44,10 +91,25 @@ export interface SyncFile {
     exec?: boolean;
 }
 
-/** This machine's skills and commands that a server should have, by their path there. */
+/** This machine's skills, commands, agents, memory, themes and keybindings that a server should have, by their path there. */
 export function localSyncFiles(): Map<string, SyncFile> {
     const out = new Map<string, SyncFile>();
     let total = 0;
+    const takeFile = (path: string, dest: string) => {
+        if (out.size >= MAX_FILES || !syncablePath(dest)) return;
+        try {
+            const st = statSync(path);
+            if (!st.isFile() || st.size > MAX_FILE || total + st.size > MAX_TOTAL || SECRET_NAME.test(basename(path))) return;
+            // Check resolved symlink target BEFORE opening so a linked file can never read CLI credentials or secret dirs.
+            if (isProtectedCredentialPath(path)) return;
+            const body = readFileSync(path);
+            if (!body.includes(0) && matchesSecretPattern(body.toString("utf-8"))) return;
+            total += st.size;
+            out.set(dest, { path: dest, data: body.toString("base64"), sha: sha(body), ...(st.mode & 0o111 ? { exec: true } : {}) });
+        } catch {
+            // unreadable or gone
+        }
+    };
     const visit = (from: string, to: string, depth: number, top: boolean) => {
         let names: string[];
         try {
@@ -61,29 +123,29 @@ export function localSyncFiles(): Map<string, SyncFile> {
             const path = join(from, name);
             try {
                 const l = lstatSync(path);
-                // A link is followed only at the top (a skill kept elsewhere), as the copy does.
+                // A link is followed only at the top (a skill or agent kept elsewhere), as the copy does.
                 if (l.isSymbolicLink() && !top) continue;
                 const st = statSync(path);
                 if (st.isDirectory()) {
+                    if (isProtectedCredentialPath(path)) continue;
                     if (depth > 0) visit(path, dest, depth - 1, false);
                     continue;
                 }
-                if (!st.isFile() || st.size > MAX_FILE || total + st.size > MAX_TOTAL || SECRET_NAME.test(name) || !syncablePath(dest)) continue;
-                const body = readFileSync(path);
-                if (!body.includes(0) && matchesSecretPattern(body.toString("utf-8"))) continue;
-                total += st.size;
-                out.set(dest, { path: dest, data: body.toString("base64"), sha: sha(body), ...(st.mode & 0o111 ? { exec: true } : {}) });
+                if (st.isFile()) takeFile(path, dest);
             } catch {
                 continue;
             }
         }
     };
     for (const r of syncedRoots()) visit(r.from, r.to, 6, true);
+    for (const f of syncedSingleFiles()) takeFile(f.from, f.to);
     return out;
 }
 
 /** Where a server's `path` (a synced one) is kept here. */
 function localPath(path: string): string | undefined {
+    const single = syncedSingleFiles().find((f) => f.to === path);
+    if (single) return single.from;
     const r = syncedRoots().find((r) => path.startsWith(`${r.to}/`));
     return r && join(r.from, path.slice(r.to.length + 1));
 }
@@ -113,9 +175,49 @@ function writeNew(dest: string, body: Buffer | string, mode: number) {
     }
 }
 
-/** The folders whose changes are kept level, as they're named here. */
-export function syncedFolders(): string[] {
-    return syncedRoots().map((r) => r.from);
+/**
+ * Watch targets on this machine: recursive trees (the synced folders plus the real target of any top-level
+ * symlinked directory inside them, so dotfiles-managed skills live-sync too) and shallow parent directories
+ * with the exact filenames whose changes trigger a sync.
+ */
+export function syncedWatchTargets(): { recursive: string[]; shallow: { dir: string; names: Set<string> }[] } {
+    const recursive = new Set<string>();
+    for (const r of syncedRoots()) {
+        recursive.add(r.from);
+        try {
+            for (const name of readdirSync(r.from)) {
+                if (SKIP_DIR.has(name) || `${r.to}/${name}` === CLI_SYNCED) continue;
+                const entry = join(r.from, name);
+                try {
+                    if (lstatSync(entry).isSymbolicLink() && statSync(entry).isDirectory() && !isProtectedCredentialPath(entry)) {
+                        recursive.add(realpathSync(entry));
+                    }
+                } catch {
+                    // broken link
+                }
+            }
+        } catch {
+            // root doesn't exist yet
+        }
+    }
+    const byDir = new Map<string, Set<string>>();
+    const watchFile = (file: string) => {
+        const dir = dirname(file);
+        let set = byDir.get(dir);
+        if (!set) byDir.set(dir, (set = new Set()));
+        set.add(basename(file));
+    };
+    for (const f of syncedSingleFiles()) watchFile(f.from);
+    // Settings, providers, credentials and plugin manifests live-sync via sync-state.ts.
+    watchFile(paths.userSettings());
+    watchFile(paths.providers());
+    watchFile(paths.credentialsFile());
+    watchFile(join(paths.plugins(), "known_marketplaces.json"));
+    watchFile(join(paths.plugins(), "installed_plugins.json"));
+    return {
+        recursive: [...recursive],
+        shallow: [...byDir.entries()].map(([dir, names]) => ({ dir, names })),
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -140,49 +242,76 @@ function writeSynced(record: Record<string, string>) {
     writeNew(SYNCED_FILE(), JSON.stringify(record), 0o600);
 }
 
-/** What's at `path` under `home` now, if it's a plain file reached through plain folders (no link below the synced folder). */
-function current(home: string, path: string): { sha?: string; blocked: boolean } {
+/**
+ * Resolves a synced path to its location on the server, respecting CAVVY_HOME, CLAUDE_CONFIG_DIR and CODEX_HOME
+ * when `home` isn't explicitly pinned (tests pass an isolated `home`).
+ */
+function resolveTarget(path: string, home?: string): { root: string; relParts: string[]; isSingle: boolean } {
     const parts = path.split("/");
-    // The synced folder itself may be a link (a dotfiles checkout); nothing below it may be.
-    const base = parts[0] === ".cavvy" && parts[1] === "commands" ? 2 : 3;
-    for (let i = base; i <= parts.length; i++) {
-        const at = join(home, ...parts.slice(0, i));
+    const top = parts[0]!;
+    const baseDir =
+        top === ".cavvy" ? cavvyDir(home)
+        : top === ".claude" ? claudeDir(home)
+        : top === ".codex" ? codexDir(home)
+        : agentsDir(home);
+    if (SYNCED_SINGLE_PATHS.has(path)) {
+        return { root: baseDir, relParts: parts.slice(1), isSingle: true };
+    }
+    // Directory roots are always two segments under home (e.g. `.cavvy/skills`, `.claude/rules`).
+    return { root: join(baseDir, parts[1]!), relParts: parts.slice(2), isSingle: false };
+}
+
+/** What's at `path` on the server now, if it's a plain file reached through plain folders (no link below the synced root). */
+function current(path: string, home?: string): { sha?: string; blocked: boolean; dest: string; root: string; isSingle: boolean } {
+    const { root, relParts, isSingle } = resolveTarget(path, home);
+    const dest = join(root, ...relParts);
+    // The synced root itself may be a link (a dotfiles checkout); nothing below it may be.
+    for (let i = 1; i <= relParts.length; i++) {
+        const at = join(root, ...relParts.slice(0, i));
         try {
             const l = lstatSync(at);
-            if (l.isSymbolicLink()) return { blocked: true };
-            if (i === parts.length) return l.isFile() ? { sha: sha(readFileSync(at)), blocked: false } : { blocked: true };
-            if (!l.isDirectory()) return { blocked: true };
+            if (l.isSymbolicLink()) return { blocked: true, dest, root, isSingle };
+            if (i === relParts.length) return l.isFile() ? { sha: sha(readFileSync(at)), blocked: false, dest, root, isSingle } : { blocked: true, dest, root, isSingle };
+            if (!l.isDirectory()) return { blocked: true, dest, root, isSingle };
         } catch (e) {
             // Not there: written. Anything else (no permission, an I/O error): left alone.
-            return { blocked: (e as NodeJS.ErrnoException).code !== "ENOENT" };
+            return { blocked: (e as NodeJS.ErrnoException).code !== "ENOENT", dest, root, isSingle };
         }
     }
-    return { blocked: false };
+    return { blocked: false, dest, root, isSingle };
+}
+
+export interface ApplySyncResult {
+    written: number;
+    removed: number;
+    /** Files that changed on the server, as synced paths (used by engine.ts to reload commands, themes and keybindings). */
+    changed: string[];
 }
 
 /**
  * Takes what another machine of the user's sends: each file written unless the server has one of its own there, or
  * one it was given that has changed since; each removal done only for a file it was given and that's as it was.
- * Returns how many files changed.
+ * Returns how many files changed and which paths were touched.
  */
-export function applySync(files: unknown, remove: unknown, home = homedir()): { written: number; removed: number } {
+export function applySync(files: unknown, remove: unknown, home?: string): ApplySyncResult {
     const record = readSynced();
     let written = 0;
     let removed = 0;
+    const changed: string[] = [];
     try {
         take();
     } finally {
         // What was done before a failure is recorded, or the next sync takes it for the server's own.
         writeSynced(record);
     }
-    return { written, removed };
+    return { written, removed, changed };
 
     function take() {
         for (const f of Array.isArray(files) ? files : []) {
             if (!f || typeof f !== "object" || !syncablePath(f.path) || typeof f.data !== "string") continue;
             const body = Buffer.from(f.data, "base64");
             if (body.length > MAX_FILE) continue;
-            const now = current(home, f.path);
+            const now = current(f.path, home);
             if (now.blocked) continue;
             const h = sha(body);
             // As this machine has it already (the one-time copy put it there): taken as given.
@@ -192,15 +321,15 @@ export function applySync(files: unknown, remove: unknown, home = homedir()): { 
             }
             // Its own (never given), or given and changed there since: left as it is.
             if (now.sha !== undefined && now.sha !== record[f.path]) continue;
-            const dest = join(home, f.path);
-            mkdirSync(dirname(dest), { recursive: true });
-            writeNew(dest, body, f.exec === true ? 0o755 : 0o644);
+            mkdirSync(dirname(now.dest), { recursive: true });
+            writeNew(now.dest, body, f.exec === true ? 0o755 : 0o644);
             record[f.path] = h;
             written++;
+            changed.push(f.path);
         }
         for (const path of Array.isArray(remove) ? remove : []) {
             if (!syncablePath(path) || !(path in record)) continue;
-            const now = current(home, path);
+            const now = current(path, home);
             if (now.blocked) continue;
             if (now.sha !== undefined && now.sha !== record[path]) {
                 // Changed there since: it's the server's now.
@@ -208,18 +337,20 @@ export function applySync(files: unknown, remove: unknown, home = homedir()): { 
                 continue;
             }
             if (now.sha !== undefined) {
-                rmSync(join(home, path), { force: true });
+                rmSync(now.dest, { force: true });
                 removed++;
-                // A skill's folder left empty goes with it, up to the synced folder.
-                let dir = dirname(join(home, path));
-                const stop = new Set([".cavvy/skills", ".claude/skills", ".cavvy/commands"].map((r) => join(home, r)));
-                while (!stop.has(dir) && dir.startsWith(home)) {
-                    try {
-                        rmdirSync(dir);
-                    } catch {
-                        break;
+                changed.push(path);
+                // A skill's folder left empty goes with it, up to the synced root folder (never for single files).
+                if (!now.isSingle) {
+                    let dir = dirname(now.dest);
+                    while (dir !== now.root && dir.startsWith(now.root)) {
+                        try {
+                            rmdirSync(dir);
+                        } catch {
+                            break;
+                        }
+                        dir = dirname(dir);
                     }
-                    dir = dirname(dir);
                 }
             }
             delete record[path];
@@ -230,29 +361,42 @@ export function applySync(files: unknown, remove: unknown, home = homedir()): { 
 /** Under this much a message: a server takes 48 MB, and a few MB at a time keeps one call short. */
 const BATCH_BYTES = 4 * 1024 * 1024;
 
+export interface SyncFilesResult {
+    written: number;
+    removed: number;
+}
+
 /**
- * Brings a server level with this machine: asks it what it was given, then sends what's new or changed and what's
- * gone. `ask` is a call over the connection to it.
+ * Brings a server level with this machine's synced files: asks it what it was given, then sends what's new or
+ * changed and what's gone. `ask` is a call over the connection to it.
  */
-export async function syncTo(ask: (method: string, params: Record<string, unknown>) => Promise<unknown>): Promise<void> {
+export async function syncTo(ask: (method: string, params: Record<string, unknown>) => Promise<unknown>): Promise<SyncFilesResult> {
     const mine = localSyncFiles();
     const theirs = await ask("sync.files", {});
     const given = theirs && typeof theirs === "object" ? (theirs as Record<string, unknown>) : {};
     const send = [...mine.values()].filter((f) => given[f.path] !== f.sha);
     // Gone here, not just left out of this scan (too many or too big, unreadable a moment): gone there.
     const remove = Object.keys(given).filter((p) => syncablePath(p) && !mine.has(p) && gone(localPath(p)));
-    if (!send.length && !remove.length) return;
+    if (!send.length && !remove.length) return { written: 0, removed: 0 };
+    let written = 0;
+    let removed = 0;
     let batch: SyncFile[] = [];
     let size = 0;
+    const apply = async (files: SyncFile[], rem: string[]) => {
+        const res = (await ask("sync.apply", { files, remove: rem })) as { written?: number; removed?: number } | null;
+        written += typeof res?.written === "number" ? res.written : 0;
+        removed += typeof res?.removed === "number" ? res.removed : 0;
+    };
     for (const f of send) {
         if (batch.length && size + f.data.length > BATCH_BYTES) {
-            await ask("sync.apply", { files: batch, remove: [] });
+            await apply(batch, []);
             batch = [];
             size = 0;
         }
         batch.push(f);
         size += f.data.length;
     }
-    await ask("sync.apply", { files: batch, remove });
+    await apply(batch, remove);
+    return { written, removed };
 }
 

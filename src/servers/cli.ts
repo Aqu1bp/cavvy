@@ -16,7 +16,8 @@ import { ensureBuildThere, ServerBusy, setUpServer, type SetupProgress, type Set
 import { LOGIN_EXIT, probeServer, REMOTE_CURRENT, REMOTE_DIR, remoteBuildDir } from "./remote";
 import { applyBuild, BOOT_TAKEN, bootCommand, NotSetUp, previousBuild, remoteCheck, remoteStatus, revokeOverSsh, serviceReport, stopRemote, UpdateFailed, type ServiceReport } from "./service";
 import { hostOf, offeredHostKey, printable, remoteSh, shQuote, ssh, sshCommandArgv, SshError, trustHostKey } from "./ssh";
-import { draftServer, listServers, removeServer, requireServer, saveServer, ServerError, thisDesktop, type ServerEntry } from "./store";
+import { draftServer, listServers, removeServer, requireServer, saveServer, ServerError, setServerSyncSecrets, thisDesktop, type ServerEntry } from "./store";
+import { ServerLinks } from "./manager";
 import type { PermissionMode } from "../permissions/modes";
 
 const out = (line = "") => process.stdout.write(line + "\n");
@@ -29,8 +30,10 @@ export const SERVERS_HELP = `Usage:
       --port <n>                             its SSH port, when it isn't 22
       --identity <file>                      the private key to use
       --copy / --no-copy                     copy your settings there, or don't (asked otherwise)
+      --sync-keys                            also sync Cavvy API keys and MCP secrets to this server
   ${APP_NAME} servers check [name]             what a server has, and what it's missing
-  ${APP_NAME} servers login <name> [cli]       sign Claude Code or Codex in there, and turn it on
+  ${APP_NAME} servers sync [name]              sync skills, settings, plugins, providers (--keys / --no-keys)
+  ${APP_NAME} servers login <name> [cli]       sign Claude Code or Codex in there (--account <id>)
   ${APP_NAME} servers update <name>            bring its Cavvy up to this machine's (--force: whatever it runs)
   ${APP_NAME} servers rollback <name>          put it back on the version it ran before its last update
   ${APP_NAME} servers stop <name>              stop Cavvy there
@@ -212,6 +215,7 @@ interface AddFlags {
     port?: number;
     identityFile?: string;
     copy?: boolean;
+    syncKeys?: boolean;
 }
 
 function parseAdd(args: string[]): { name?: string; destination?: string; flags: AddFlags } {
@@ -228,6 +232,7 @@ function parseAdd(args: string[]): { name?: string; destination?: string; flags:
         else if (a === "--identity" || a === "-i") flags.identityFile = value();
         else if (a === "--copy") flags.copy = true;
         else if (a === "--no-copy") flags.copy = false;
+        else if (a === "--sync-keys") flags.syncKeys = true;
         else if (a.startsWith("-")) throw new ServerError(`Unknown option ${a}.`);
         else rest.push(a);
     }
@@ -274,11 +279,12 @@ async function offerCopy(e: ServerEntry, wanted: boolean | undefined) {
     }
 }
 
-/** Not set up there (exit ${NOT_SET_UP}), or `cavvy host login` for CLI $1 with this terminal. */
+/** Not set up there (exit ${NOT_SET_UP}), or `cavvy host login` for CLI $1 (optional account $2) with this terminal. */
 const NOT_SET_UP = 46;
 const LOGIN = `
 b="${REMOTE_CURRENT}"
 [ -x "$b" ] || exit ${NOT_SET_UP}
+if [ -n "$2" ]; then exec "$b" host login "$1" --account "$2"; fi
 exec "$b" host login "$1"
 `;
 
@@ -286,11 +292,11 @@ exec "$b" host login "$1"
  * Signs a CLI in on the server and turns it on in the Cavvy there. The CLI's own sign-in has this terminal for as
  * long as it runs: its link is opened here, and what's typed goes to it alone. True once it's usable there.
  */
-async function signInThere(e: ServerEntry, cli: CheckedCli): Promise<boolean> {
+async function signInThere(e: ServerEntry, cli: CheckedCli, accountId?: string): Promise<boolean> {
     // The CLI talks of a browser that didn't open: it's on the server, and the browser is here.
-    if (needsSignIn(cli)) err(`Open the link ${cli.product} shows in a browser on this machine.`);
+    if (needsSignIn(cli) || accountId) err(`Open the link ${cli.product} shows in a browser on this machine.`);
     const tty = interactive();
-    const proc = Bun.spawn(sshCommandArgv(e, remoteSh(LOGIN, [cli.id]), { tty }), { stdin: "inherit", stdout: "inherit", stderr: "inherit", env: childEnv() });
+    const proc = Bun.spawn(sshCommandArgv(e, remoteSh(LOGIN, [cli.id, accountId ?? ""]), { tty }), { stdin: "inherit", stdout: "inherit", stderr: "inherit", env: childEnv() });
     // With a terminal, Ctrl+C is typed to the other end. Without one it reaches this and ssh both, and ssh ends.
     let interrupted = false;
     const onInterrupt = () => {
@@ -340,9 +346,25 @@ async function offerSignIns(e: ServerEntry, c: HostCheck): Promise<boolean> {
 }
 
 async function login(args: string[]): Promise<number> {
-    const [name, id] = args.filter((a) => !a.startsWith("-"));
+    let accountId: string | undefined;
+    const pos: string[] = [];
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i]!;
+        if (a === "--account" || a === "-a") {
+            const v = args[++i];
+            if (!v) throw new ServerError(`${a} needs an account id.`);
+            accountId = v;
+        } else if (!a.startsWith("-")) {
+            pos.push(a);
+        }
+    }
+    const [name, id] = pos;
     if (!name) {
-        err(`Usage: ${APP_NAME} servers login <name> [cli]`);
+        err(`Usage: ${APP_NAME} servers login <name> [cli] [--account <id>]`);
+        return 1;
+    }
+    if (accountId && !id) {
+        err("Give the CLI name with --account (e.g. claude-code or codex).");
         return 1;
     }
     let e = requireServer(name);
@@ -365,12 +387,57 @@ async function login(args: string[]): Promise<number> {
     }
     // One that's signed in there only needs turning on, which is done with a terminal or without. A sign-in shows a
     // link and may take a code: without a terminal those are said, and left.
-    const now = interactive() ? todo : todo.filter((x) => x.signedIn === true);
+    const now = interactive() ? todo : todo.filter((x) => x.signedIn === true && !accountId);
     let failed = 0;
-    for (const cli of now) if (!(await signInThere(e, cli))) failed++;
+    for (const cli of now) if (!(await signInThere(e, cli, accountId))) failed++;
     if (now.length < todo.length) {
         err("Signing in needs a terminal.");
         failed++;
+    }
+    return failed ? 1 : 0;
+}
+
+async function syncCommand(args: string[]): Promise<number> {
+    let keys: boolean | undefined;
+    let name: string | undefined;
+    for (const a of args) {
+        if (a === "--keys") keys = true;
+        else if (a === "--no-keys") keys = false;
+        else if (a.startsWith("-")) throw new ServerError(`Unknown option ${a}.`);
+        else if (!name) name = a;
+        else throw new ServerError(`Unexpected argument ${a}.`);
+    }
+    if (keys !== undefined && !name) {
+        throw new ServerError(`Specify a server name with ${keys ? "--keys" : "--no-keys"}: ${APP_NAME} servers sync <name> ${keys ? "--keys" : "--no-keys"}`);
+    }
+    const targets = name ? [requireServer(name)] : listServers();
+    if (!targets.length) {
+        out(`No servers yet. Add one: ${APP_NAME} servers add <name> <user@host>`);
+        return 0;
+    }
+    if (keys !== undefined && name) {
+        setServerSyncSecrets(targets[0]!.name, keys);
+    }
+    const links = new ServerLinks({ sync: true });
+    let failed = 0;
+    try {
+        const results = await links.syncNow(name);
+        for (const r of results) {
+            if (!r.ok) {
+                err(`${r.name}: ${r.error ?? "Sync failed."}`);
+                failed++;
+                continue;
+            }
+            out(`${r.name}: ${r.summary || "Up to date"}.`);
+            if (r.missingClis?.length) out(`  Not installed there: ${r.missingClis.join(", ")}.`);
+            for (const s of r.needsSignIn ?? []) {
+                const acc = s.accountId === "default" ? "" : ` --account ${s.accountId}`;
+                out(`  Sign in to ${s.provider}${s.accountId === "default" ? "" : ` (${s.name})`}: ${APP_NAME} servers login ${r.name} ${s.provider}${acc}`);
+            }
+            for (const w of r.warnings ?? []) err(`  ${w}`);
+        }
+    } finally {
+        await links.stopAll();
     }
     return failed ? 1 : 0;
 }
@@ -381,7 +448,7 @@ async function add(args: string[]): Promise<number> {
         err(`Usage: ${APP_NAME} servers add <name> <user@host> [--port n] [--identity file]`);
         return 1;
     }
-    let e = draftServer({ name, destination, port: flags.port, identityFile: flags.identityFile });
+    let e = draftServer({ name, destination, port: flags.port, identityFile: flags.identityFile, ...(flags.syncKeys ? { syncSecrets: true } : {}) });
     err(`Connecting to ${hostOf(e)}…`);
     let setup: SetupResult | undefined;
     try {
@@ -394,7 +461,12 @@ async function add(args: string[]): Promise<number> {
         return 0;
     }
     saveServer(e);
-    await offerCopy(e, flags.copy);
+    let syncFailed = false;
+    if (flags.syncKeys) {
+        syncFailed = (await syncCommand([e.name])) !== 0;
+    } else {
+        await offerCopy(e, flags.copy);
+    }
     out(setup.kept === "newer" ? `${e.name} is ready. It runs a newer Cavvy than this machine.` : `${e.name} is ready.`);
     out("Only put credentials on it that you'd accept an agent using.");
     let c = await check(e);
@@ -403,7 +475,7 @@ async function add(args: string[]): Promise<number> {
     if (c && (await offerSignIns(e, c))) c = await check(e);
     for (const line of c ? checkLines(e.name, c, setup.service) : serviceLines(e.name, setup.service)) out(line);
     out(`Work there: ${APP_NAME} --server ${e.name}   or   ${APP_NAME} gui --server ${e.name}`);
-    return 0;
+    return syncFailed ? 1 : 0;
 }
 
 async function checkCommand(names: string[]): Promise<number> {
@@ -588,6 +660,7 @@ export async function serversCommand(args: string[]): Promise<number> {
         }
         if (sub === "add") return await add(args.slice(1));
         if (sub === "check") return await checkCommand(args.slice(1).filter((a) => !a.startsWith("-")));
+        if (sub === "sync") return await syncCommand(args.slice(1));
         if (sub === "login") return await login(args.slice(1));
         if (sub === "update") return await update(args.slice(1));
         if (sub === "rollback") return await rollback(args.slice(1));

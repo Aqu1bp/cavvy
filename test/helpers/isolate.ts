@@ -55,9 +55,11 @@ export function isolate(): { home: string; cleanup: () => void } {
     process.env.CAVVY_SIMULATOR = "0";
     const claude = track(mkdtempSync(join(tmpdir(), "cavvy-test-claude-")));
     const codex = track(mkdtempSync(join(tmpdir(), "cavvy-test-codex-")));
+    const agents = track(mkdtempSync(join(tmpdir(), "cavvy-test-agents-")));
     process.env.CLAUDE_CONFIG_DIR = claude;
     process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR = claude;
     process.env.CODEX_HOME = codex;
+    process.env.CAVVY_AGENTS_HOME = agents;
     delete process.env.CLAUDE_CODE_PROJECT_DIR_NAME;
     for (const k of Object.keys(process.env)) {
         if (SECRETISH.test(k) || EXTRA.includes(k)) delete process.env[k];
@@ -65,7 +67,7 @@ export function isolate(): { home: string; cleanup: () => void } {
     return {
         home,
         cleanup: () => {
-            for (const d of [home, claude, codex]) rmSync(d, { recursive: true, force: true });
+            for (const d of [home, claude, codex, agents]) rmSync(d, { recursive: true, force: true });
         },
     };
 }
