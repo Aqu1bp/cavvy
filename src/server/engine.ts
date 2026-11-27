@@ -4478,8 +4478,11 @@ export class Engine {
                 this.branchMoved(cwd);
                 return info;
             }
-            case "git.branches":
-                return await gitBranches(this.gitFolder(p.cwd));
+            case "git.branches": {
+                const list = await gitBranches(this.gitFolder(p.cwd));
+                const suggested = typeof p.sessionId === "string" ? this.runtimes.get(p.sessionId)?.branchFromTitle() : undefined;
+                return suggested && !list.local.some((b) => b.name === suggested) ? { ...list, suggested } : list;
+            }
             case "git.fetch":
                 return await this.gitAction(p.cwd, false, (cwd) => gitFetch(cwd));
             case "git.pull":

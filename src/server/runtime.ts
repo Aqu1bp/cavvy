@@ -987,6 +987,11 @@ export class Runtime {
         return this.view.state.title;
     }
 
+    /** A new branch's name from the session's title, as Suggest in the commit dialog makes one. */
+    branchFromTitle(): string | undefined {
+        return this.title ? branchName(this.title, worktreeSettings(this.settings()).branchPrefix) : undefined;
+    }
+
     /** The first prompt, for sessions without a title. */
     firstPrompt(): string | undefined {
         // Its first turns not read from its store (yet, or ever: its index couldn't be read): the store says.

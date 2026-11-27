@@ -212,6 +212,8 @@ function BranchDialog(p: { cwd: string; sessionId?: string; query?: string }) {
         const when = (b: GitBranchEntry) => (b.at ? ago(b.at) : undefined);
         const out: Row[] = [];
         const pr = prRef(q());
+        // Nothing typed: a new branch named from the session's title comes first.
+        if (!query && l.suggested) out.push({ key: "suggest", verb: "Create branch", label: l.suggested, desc: `From ${l.current ?? "HEAD"}`, icon: "create", run: () => void create(l.suggested!) });
         if (pr) out.push({ key: "pr", label: `Work on pull request #${pr}`, desc: "In a new worktree", icon: "pr", run: () => setGitDialog({ kind: "pr", cwd: p.cwd, sessionId: p.sessionId, query: q().trim(), start: true }) });
         // Git can't switch to a branch another worktree has: those go to that worktree, after the ones it can switch to.
         const elsewhere: Row[] = [];

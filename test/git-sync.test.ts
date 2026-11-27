@@ -255,6 +255,28 @@ test("engine: switching waits for the folder's sessions, and the header's branch
     }
 });
 
+test("engine: the branch list suggests a new branch named from the session's title, until there's one", async () => {
+    const { Engine } = await import("../src/server/engine");
+    const { mine } = setup();
+    const engine = new Engine({ listModels: async () => [] });
+    const client = { subs: new Set<string>(), send() {} };
+    engine.clients.add(client);
+    try {
+        const snap = await engine.handle(client, "session.create", { cwd: mine });
+        await engine.runtimes.get(snap.state.id)!.ready;
+        // No title yet, or no session: none.
+        expect((await engine.handle(client, "git.branches", { cwd: mine, sessionId: snap.state.id })).suggested).toBeUndefined();
+        await engine.handle(client, "session.rename", { id: snap.state.id, title: "Fix the login redirect" });
+        expect((await engine.handle(client, "git.branches", { cwd: mine })).suggested).toBeUndefined();
+        const suggested = (await engine.handle(client, "git.branches", { cwd: mine, sessionId: snap.state.id })).suggested;
+        expect(suggested).toMatch(/(^|\/)fix-the-login-redirect$/);
+        git(mine, "branch", suggested!);
+        expect((await engine.handle(client, "git.branches", { cwd: mine, sessionId: snap.state.id })).suggested).toBeUndefined();
+    } finally {
+        await engine.stop();
+    }
+});
+
 test("engine: a branch change reaches every session in the folder, however it was made", async () => {
     const { Engine } = await import("../src/server/engine");
     const { mine } = setup();

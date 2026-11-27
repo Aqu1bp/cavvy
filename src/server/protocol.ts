@@ -1769,6 +1769,8 @@ export interface GitBranchList {
     current?: string;
     local: GitBranchEntry[];
     remote: GitBranchEntry[];
+    /** A new branch's name from the session's title (with the branch prefix), when no branch has it. */
+    suggested?: string;
 }
 /** A repository's open pull requests (git.pullRequests). */
 export interface GitPrListInfo {
