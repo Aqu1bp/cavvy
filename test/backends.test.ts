@@ -4760,6 +4760,9 @@ describe("where Cavvy's tools' instructions reach an agent CLI", () => {
         const served = (agent as any).orchestrator();
         expect(served.instructions).toContain("# Sign-ins (cavvy)");
         expect(await initialize(served)).toBeUndefined();
+        // A named copy of Claude Code gets them appended too (claudeArgs): none from the server.
+        (agent as any).model = { provider: "claude-code@router", id: "default" };
+        expect(await initialize(served)).toBeUndefined();
         // Another agent on the same server (an ACP one, after a model switch) still gets them from it.
         (agent as any).model = { provider: "opencode", id: "default" };
         expect(await initialize(served)).toContain("# Sign-ins (cavvy)");
