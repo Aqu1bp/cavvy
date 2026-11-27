@@ -52,7 +52,11 @@ export function keepSideChatLinks(dir: string) {
             // unreadable: nothing to keep
         }
     }
-    if (lines.size) appendFileSync(sideChatRecord(), `${[...lines].join("\n")}\n`, { mode: 0o600 });
+    try {
+        if (lines.size) appendFileSync(sideChatRecord(), `${[...lines].join("\n")}\n`, { mode: 0o600 });
+    } catch {
+        // Unsaved, it's listed under Continue again: not worth failing a discard or the server's start over.
+    }
 }
 
 /** CLI sessions Cavvy already has, from the session files of these folders. */
