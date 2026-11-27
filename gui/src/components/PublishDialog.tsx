@@ -78,7 +78,7 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
     const baseOr = () => base().trim() || view()?.base || "";
     const publish = async (action: "push" | "pr") => {
         const info = view(), id = p.id;
-        if (!info || !id || !ready() || (action === "pr" && (!info.gh || !title().trim() || !baseOr()))) return;
+        if (!info || !id || !ready() || (action === "pr" && (!prs() || !title().trim() || !baseOr()))) return;
         const version = revision;
         // A new pull request opens on GitHub: what comes next is looking at it. In a browser the tab is opened now,
         // while this is still the click (one opened after the answer would be a blocked pop-up); the desktop app
@@ -145,7 +145,9 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
     // two ways to go ahead, Cancel alone on the left; with Push alone, Cancel beside it at the right.
     const cancel = () => <button class="btn ghost" disabled={busy()} onClick={close}>Cancel</button>;
     // A pull request needs the GitHub CLI, and a base that isn't the branch itself (the default branch is only pushed).
-    const prs = () => Boolean(view()?.gh) && !(view()?.base && view()?.base === view()?.target);
+    // A branch with an open pull request already: pushing updates it, so there's nothing to fill in (its link is shown).
+    const openPr = () => view()?.pr?.state === "open" || view()?.pr?.state === "draft";
+    const prs = () => Boolean(view()?.gh) && !(view()?.base && view()?.base === view()?.target) && !openPr();
     const actions = () => (
         <div class="dialog-actions">
             {/* One Cancel, moved by the space around it as the form comes: the keyboard may be on it. */}

@@ -89,6 +89,16 @@ test("PR click uses edited title, body, base and draft without auto-publishing",
     expect(again.opened).toEqual(["https://github.com/example/project/pull/7"]);
 });
 
+test("a branch with an open pull request only pushes: no form for a title that wouldn't be used, no \"Created\"", async () => {
+    const d = dialog({ ...defaults, pr: { number: 3, url: "https://github.com/example/project/pull/3", title: "Old", state: "open", checks: 0 } } as typeof defaults);
+    await d.effects[0]!();
+    d.button("Open pull request").props.onClick(); await tick();
+    expect(d.calls.map((c) => c.method)).toEqual(["session.gitPublishInfo"]);
+    d.button("Push").props.onClick(); await tick();
+    expect(d.calls.at(-1)!.params).toMatchObject({ action: "push" });
+    expect(d.toasts.at(-1)![0]).toBe("Pushed origin/feature · PR #7");
+});
+
 test("in a browser the tab is opened during the click, then sent to the new PR, or closed if it fails", async () => {
     const tab = { closed: false, opener: {} as unknown, location: { href: "" }, close() { this.closed = true; } };
     browserTab.next = tab;

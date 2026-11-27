@@ -14,7 +14,9 @@ const RESERVED = new Set(["CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR"
  */
 export function envNameProblem(name: string, o?: { named?: boolean }): string | undefined {
     if (!ENV_NAME.test(name)) return `${o?.named ? `"${name}" isn't a variable name. ` : ""}Letters, digits and _ only, not starting with a digit.`;
-    if (RESERVED.has(name) || name.startsWith("CAVVY_")) return name.startsWith("CAVVY") ? (o?.named ? `${name} is reserved by Cavvy.` : "Reserved by Cavvy.") : (o?.named ? `${name} is set by the account: add an account instead.` : "Set by the account: add an account instead.");
+    // Cavvy's own, in any case: on Windows a name's case doesn't matter.
+    const cavvy = name.toUpperCase().startsWith("CAVVY");
+    if (RESERVED.has(name) || cavvy) return cavvy ? (o?.named ? `${name} is reserved by Cavvy.` : "Reserved by Cavvy.") : (o?.named ? `${name} is set by the account: add an account instead.` : "Set by the account: add an account instead.");
     return undefined;
 }
 

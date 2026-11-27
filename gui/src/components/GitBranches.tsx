@@ -270,7 +270,9 @@ function BranchDialog(p: { cwd: string; sessionId?: string; query?: string }) {
         const key = before && q() === lastQ ? before[sel()]?.key : undefined;
         lastQ = q();
         const kept = key === undefined ? -1 : r.findIndex((x) => x.key === key && !x.disabled);
-        setSel(kept >= 0 ? kept : Math.max(0, r.findIndex((x) => !x.disabled)));
+        // Not the pull request's page or the suggested new branch, offered only while nothing is typed: Enter right
+        // away mustn't open one or make the other. None at all when nothing else can be picked.
+        setSel(kept >= 0 ? kept : r.findIndex((x) => !x.disabled && x.key !== "openpr" && x.key !== "suggest"));
     }));
     const runAt = (i: number) => {
         const r = rows()[i];
@@ -282,9 +284,11 @@ function BranchDialog(p: { cwd: string; sessionId?: string; query?: string }) {
             e.preventDefault();
             if (!n) return;
             const step = e.key === "ArrowDown" ? 1 : -1;
-            setSel((s) => {
+            setSel((at) => {
+                // Nothing picked yet: down from before the first row, up from after the last.
+                const s = at < 0 ? (step > 0 ? -1 : n) : at;
                 for (let i = 1; i <= n; i++) if (!rows()[(s + step * i + n * i) % n]!.disabled) return (s + step * i + n * i) % n;
-                return s;
+                return at;
             });
             requestAnimationFrame(() => listEl?.querySelector(".pal-row.sel")?.scrollIntoView({ block: "nearest" }));
         } else if (e.key === "Enter") {
