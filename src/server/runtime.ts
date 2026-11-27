@@ -10,7 +10,7 @@ import type { ThemeEntry } from "../themes/format";
 import type { ThemeReplaced } from "./protocol";
 import { SESSION_TOOLS } from "../tools/session-tools";
 import { SUGGEST_TOOLS } from "../tools/suggest-tools";
-import { applyAction, pendingCount, refusal, shownSuggestions, SuggestionError, type SuggestionInput } from "../agent/suggestions";
+import { applyAction, pendingCount, refusal, shownSuggestions, SUGGEST_LIMITS, SuggestionError, type SuggestionInput } from "../agent/suggestions";
 import type { SuggestionAction, SuggestionState } from "./protocol";
 import { appPeers } from "./session-peers";
 import type { ScheduledJob } from "../agent/schedule";
@@ -4020,7 +4020,8 @@ export class Runtime {
     settleStarting(startedHere: (key: string) => { sessionId: string; title: string; cwd: string } | undefined) {
         let changed = false;
         for (const r of [...this.session.suggestions.values()]) {
-            if (r.state !== "starting") continue;
+            // A fresh claim's start may still be under way: only one gone quiet is settled (as claim takes it over then).
+            if (r.state !== "starting" || Date.now() - (r.claimedAt ?? 0) < SUGGEST_LIMITS.staleClaimMs) continue;
             const s = startedHere(`${this.id}#${r.id}`);
             this.session.setSuggestion(s ? { ...r, state: "started", started: { ...s, at: Date.now() } } : { ...r, state: "pending" });
             changed = true;

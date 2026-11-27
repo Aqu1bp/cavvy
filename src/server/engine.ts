@@ -72,7 +72,7 @@ import { askedModel, peerOps, type PeerHost } from "./session-peers";
 import { SUGGEST_LIMITS, taskSlug } from "../agent/suggestions";
 import { checkMessage, narrowerMode, PeerError, type FarPeers } from "../agent/peers";
 import { findMatch } from "../permissions/rules";
-import { listServers } from "../servers/store";
+import { listServers, SERVER_NAME } from "../servers/store";
 import type { WakeMemory } from "../agent/wakes";
 import { forkUiLogSoon, readSegments, readUiLogSoon, type UiLog } from "./history";
 import { CLI_SOURCES, findCliSession, listCliSessions, readCliTranscript, validCliId, type CliSource } from "./cli-sessions";
@@ -1887,12 +1887,14 @@ export class Engine {
 
     /** Starts under way, by origin key: a second call for the same one waits for the first's session. */
     private startingTasks = new Map<string, Promise<StartTaskResult>>();
+    /** Sessions a suggested task made whose first prompt a UserPromptSubmit hook refused: Start again makes another. */
+    private refusedTasks = new Set<string>();
 
     /** The session a suggested task was started as here (loaded, or saved), by its origin key. */
     taskStartedFor(key: string): { sessionId: string; title: string; cwd: string } | undefined {
         for (const rt of this.runtimes.values()) {
-            // One with nothing in it and nothing running (its first prompt blocked, held or stopped) doesn't count: Start again makes another.
-            if (rt.session.meta.suggestedBy?.key === key && (rt.session.messageCount || rt.busy)) return { sessionId: rt.id, title: rt.title ?? "", cwd: rt.ws.cwd };
+            // One whose first prompt a hook refused doesn't count: Start again makes another.
+            if (rt.session.meta.suggestedBy?.key === key && !this.refusedTasks.has(rt.id)) return { sessionId: rt.id, title: rt.title ?? "", cwd: rt.ws.cwd };
         }
         const known = readStore().suggestedTasks?.find((t) => t.key === key);
         const file = known && findSessionAnywhere(known.session);
@@ -1929,7 +1931,7 @@ export class Engine {
         const key = text(o.key, "origin.key", 400);
         if (!/^(?:[\w.-]{1,40}\/)?[\w.-]{1,120}$/.test(session) || !key.startsWith(`${session}#`) || !/^[\w.:-]{1,200}$/.test(key.slice(session.length + 1))) throw new RpcError("That names no suggestion to start.", "invalid");
         const machine = typeof o.machine === "string" ? o.machine.trim() : "";
-        if (machine && !/^[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}$/.test(machine)) throw new RpcError("That names no machine.", "invalid");
+        if (machine && !SERVER_NAME.test(machine)) throw new RpcError("That names no machine.", "invalid");
         const origin: SuggestedBy = {
             key,
             session,
@@ -2027,13 +2029,19 @@ export class Engine {
             this.watch(client, next.id);
             // The user's message as they sent it from the card; the agent is told where it came from, beside it (a
             // reminder: nothing in it is read as the user's, its @mentions included).
-            next.agent?.addReminder(`This task was suggested by the agent in session ${origin.session}${origin.machine ? ` on ${origin.machine}` : ""} (“${origin.title}”) while it worked on something else; the user started it. To ask that agent what it saw, send a message to session ${origin.session} (SendToSession, or send_to_session among Cavvy's tools).`);
-            // A UserPromptSubmit hook that blocks it: the prompt goes back to its composer (Esc, and a prompt held for an
-            // account, keep it their own way).
-            void next
-                .startTurn(prompt)
+            // As this machine names that session: on another one, by that machine's name.
+            const from = origin.machine && !origin.session.includes("/") ? `${origin.machine}/${origin.session}` : origin.session;
+            next.agent?.addReminder(`This task was suggested by the agent in session ${from} (“${origin.title}”) while it worked on something else; the user started it. To ask that agent what it saw, send a message to session ${from} (SendToSession, or send_to_session among Cavvy's tools).`);
+            const turn = next.startTurn(prompt);
+            // Not begun (a prompt held for the account the session needs is, its own way): what stopped it is the start's.
+            if (!next.busy) await turn;
+            // A UserPromptSubmit hook that refuses it, before it's kept: the prompt goes back to its composer (Esc keeps
+            // it its own way; a stop later in the turn leaves it where it was sent).
+            void turn
                 .then((reason) => {
-                    if (reason === "blocked") this.draft(next, prompt);
+                    if (reason !== "blocked" || next.session.messageCount) return;
+                    this.refusedTasks.add(next.id);
+                    this.draft(next, prompt);
                 })
                 .catch((e) => this.o.log?.(`suggested task ${next.id}: ${redact((e as Error).message)}`));
         } catch (e) {
