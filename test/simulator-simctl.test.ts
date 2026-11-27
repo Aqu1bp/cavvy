@@ -213,8 +213,12 @@ test("a lookup that never ends isn't every later session's answer: none found af
         return xcode(args);
     });
     const waiting = [simulatorsAvailable(), simulatorsAvailable()];
+    let answered = false;
+    void Promise.all(waiting).then(() => (answered = true));
+    // Not before its time, which is past a slow lookup's own limits: given every chance to have answered.
     jest.advanceTimersByTime(34_999);
-    expect(await Promise.race([...waiting, "waiting"])).toBe("waiting");
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    expect(answered).toBe(false);
     jest.advanceTimersByTime(1);
     expect(await Promise.all(waiting)).toEqual([{ ok: false, error: "Simulators need Xcode." }, { ok: false, error: "Simulators need Xcode." }]);
     expect(asked).toBe(1);
