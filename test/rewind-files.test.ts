@@ -179,6 +179,14 @@ describe("restoring files on rewind", () => {
         expect(second.undo).toBeTruthy();
         expect(canUndoRestore(again, first.undo!)).toBe(false);
         expect(lastUndo(again)).toBe(second.undo!);
+        // One that writes nothing (the file changed after the plan was shown) leaves it.
+        write(cwd, "a.txt", "by hand again\n");
+        const plan = await planFileRestore({ snapshots: again, history: s.history, checkpoint: cp });
+        write(cwd, "a.txt", "and again\n");
+        const none = await restoreFiles(plan);
+        expect(none.done).toEqual([]);
+        expect(lastUndo(again)).toBe(second.undo!);
+        write(cwd, "a.txt", "a\n");
         await again.stop();
 
         const third = new TurnSnapshots(s.dir, cwd);

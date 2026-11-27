@@ -351,8 +351,8 @@ export async function restoreFiles(plan: FileRestorePlan, o: { alongside?: strin
         }
     }
 
-    // An earlier restore can't be undone past this one.
-    if (snapshots && lastRecord(snapshots)) setRecord(snapshots, null);
+    // An earlier restore can't be undone past this one (callers without snapshots here: dropUndo).
+    if (done.length && snapshots && lastRecord(snapshots)) setRecord(snapshots, null);
     if (undo?.files.size) {
         try {
             // The versions Undo needs, kept apart from the repository's (its garbage collection can't lose them).
@@ -368,6 +368,11 @@ export async function restoreFiles(plan: FileRestorePlan, o: { alongside?: strin
 /** Whether `id` is the restore an Undo can still put back. */
 export function canUndoRestore(snapshots: TurnSnapshots | undefined, id: string): boolean {
     return lastRecord(snapshots)?.id === id;
+}
+
+/** A restore that wrote files without a record of its own (no snapshots to plan from): the earlier one's goes. */
+export function dropUndo(snapshots: TurnSnapshots | undefined) {
+    if (snapshots && lastRecord(snapshots)) setRecord(snapshots, null);
 }
 
 /** The session's last restore, if an Undo can still put it back (after a restart too). */

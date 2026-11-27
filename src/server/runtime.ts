@@ -23,7 +23,7 @@ import { basename, join } from "path";
 import { Agent, type Admission, type Admitted, type AgentEvent, type PermissionRequest, type PermissionResponse, type TurnEndReason } from "../agent/agent";
 import { digestToolState, lastPlanCall, latestCheckpointOf } from "../agent/history-digest";
 import { backendsIn, canonical, FileHistory, promptNotes, resetToolState, resetToolStateTo, rewindTargets, untrackedChangesNote } from "../agent/checkpoints";
-import { canUndoRestore, changedBy, lastUndo, planFileRestore, restoreFiles, undoRestore, type FileRestorePlan } from "../agent/rewind-files";
+import { canUndoRestore, changedBy, dropUndo, lastUndo, planFileRestore, restoreFiles, undoRestore, type FileRestorePlan } from "../agent/rewind-files";
 import { beforeFork, forkCut, isForkTarget } from "../agent/fork";
 import { sideChatReminder, type SideChatOrigin } from "../agent/side-chat";
 import { fireHooks, type HookEvent } from "../agent/hooks";
@@ -5235,6 +5235,7 @@ export class Runtime {
             restored = r.done.map(rel);
             failed = r.failed.map((f) => ({ path: rel(f.path), error: f.error }));
             undo = r.undo;
+            if (!undo && r.done.length) dropUndo(this.rewindSnapshots());
             this.forgetReads(r.done);
             if (conversation && failed.length) rewindConversation = false;
             if (!rewindConversation && r.done.length) this.agent?.addReminder(`The user restored these files to how they were before an earlier prompt (/rewind), undoing the changes made to them since. Read them again before editing them:\n${restored.map((p) => `- ${p}`).join("\n")}`);

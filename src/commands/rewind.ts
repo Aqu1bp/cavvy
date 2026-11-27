@@ -7,7 +7,7 @@ import type { App } from "../ui/app";
 import { SelectDialog } from "../ui/dialogs";
 import { theme, truncate } from "../ui/ansi";
 import { backendsIn, canonical, FileHistory, resetToolState, rewindTargets, untrackedChangesNote, type RewindTarget } from "../agent/checkpoints";
-import { changedBy, lastUndo, planFileRestore, restoreFiles, undoRestore, type FileRestoreItem } from "../agent/rewind-files";
+import { changedBy, dropUndo, lastUndo, planFileRestore, restoreFiles, undoRestore, type FileRestoreItem } from "../agent/rewind-files";
 import { TurnSnapshots } from "../agent/turn-snapshots";
 import { beforeFork } from "../agent/fork";
 import { APP_TITLE } from "../config/paths";
@@ -211,6 +211,7 @@ export async function rewindCommand(app: App, args = "") {
         if (done.length) app.print(["", `${theme.success("✔")} Restored ${plural(done.length, "file")} to how ${done.length === 1 ? "it was" : "they were"} before that prompt`, ...listed(done.map((p) => theme.muted(`  ${rel(p)}`)))]);
         for (const f of failed) app.notice(`Couldn't restore ${rel(f.path)}: ${f.error}`, "error");
         if (r.undo) app.notice("Undo it with /rewind undo");
+        else if (done.length) dropUndo(snapshotsOf(app));
         // Kept, so the prompt stays in /rewind to try again.
         if (conversation && failed.length) {
             rewindConversation = false;
