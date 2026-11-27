@@ -5260,11 +5260,13 @@ export class Runtime {
         for (const p of [...this.toolState.fileState.keys()]) if (changed.has(canonical(p))) this.toolState.fileState.delete(p);
     }
 
-    /** Put the files a rewind restored (`undo`, its result's) back as they were before it. */
-    async rewindUndo(undo: string): Promise<{ restored: string[]; failed: { path: string; error: string }[] }> {
+    /** Put the files a rewind restored (`undo`, its result's; without one, the session's last) back as they were before it. */
+    async rewindUndo(undo?: string): Promise<{ restored: string[]; failed: { path: string; error: string }[] }> {
         this.checkCommitting();
         if (this.busy) throw new Error("Wait for the current response to finish, or interrupt it first.");
-        if (this.rewindUndone !== undo || !canUndoRestore(this.rewindSnapshots(), undo)) throw new Error("That restore can't be undone any more.");
+        const last = !undo;
+        if (last) undo = this.rewindUndone;
+        if (!undo || this.rewindUndone !== undo || !canUndoRestore(this.rewindSnapshots(), undo)) throw new Error(last ? "There's no file restore to undo." : "That restore can't be undone any more.");
         this.rewindUndone = undefined;
         this.restoring = true;
         let r: Awaited<ReturnType<typeof undoRestore>>;

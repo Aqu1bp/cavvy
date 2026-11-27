@@ -3908,7 +3908,7 @@ export class Engine {
                 return rt.rewind(num(p.index, -1), str(p.planId, "planId"), Boolean(p.code), Boolean(p.conversation), this.workingFolders(rt));
             }
             case "session.rewindUndo":
-                return this.runtime(p.id).rewindUndo(str(p.undo, "undo"));
+                return this.runtime(p.id).rewindUndo(optStr(p.undo));
             case "session.fork": {
                 const original = this.runtime(p.id);
                 const text = str(p.text, "text");

@@ -4,15 +4,15 @@ import { componentCode, elements } from "./gui-component-harness";
 const node = (tag: string, props: object | null, ...children: unknown[]) => ({ tag, props: props ?? {}, children });
 const defaults = { fingerprint: "a".repeat(64), branch: "feature", remote: "origin", target: "feature", destination: "https://github.com/example/project.git", base: "main", protected: false, defaultUnknown: false, gh: true, title: "Prefilled", body: "Commits", hasUpstream: false };
 function dialog(info = defaults, read?: () => Promise<unknown>, prText?: () => Promise<unknown>) {
-    const effects: (() => unknown)[] = [], calls: { method: string; params: any }[] = [];
+    const effects: (() => unknown)[] = [], calls: { method: string; params: any }[] = [], toasts: any[][] = [], opened: string[] = [];
     let closed = false, result: unknown, blocked: string | undefined;
     const props = { id: "one" as string | undefined, onClose: () => { closed = true; }, onPublished: (pr: unknown) => { result = pr; } };
     const render = componentCode("PublishDialog", {
         createSignal: (initial: unknown) => { let value = initial; return [() => value, (next: unknown) => { value = next; }]; },
         createEffect: (effect: () => unknown) => effects.push(effect),
         on: (read: () => unknown, effect: (value: unknown) => unknown) => () => effect(read()),
-        rpc: { call: async (method: string, params: unknown) => { calls.push({ method, params }); return method === "session.gitPublishInfo" ? read ? read() : info : method === "session.gitPrText" ? prText!() : { pr: { number: 7 } }; } },
-        toast() {}, handleFor: () => ({}), commitUnavailable: () => blocked, refreshGitChanges() {}, openExternal() {}, takeFocus() {},
+        rpc: { call: async (method: string, params: unknown) => { calls.push({ method, params }); return method === "session.gitPublishInfo" ? read ? read() : info : method === "session.gitPrText" ? prText!() : { pr: { number: 7, url: "https://github.com/example/project/pull/7" } }; } },
+        toast(...args: any[]) { toasts.push(args); }, handleFor: () => ({}), commitUnavailable: () => blocked, refreshGitChanges() {}, openExternal(url: string) { opened.push(url); }, takeFocus() {},
         Dialog: "Dialog", Spinner: "Spinner", Show: "Show", React: { Fragment: "Fragment" }, node,
     });
     // The dialog and its footer, where the buttons are.
@@ -20,7 +20,7 @@ function dialog(info = defaults, read?: () => Promise<unknown>, prText?: () => P
     const tree = [shown, shown.props.footer];
     const button = (text: string) => elements(tree, "button").find((n) => n.children.flat(Infinity).some((s: unknown) => typeof s === "string" && s.includes(text)))!;
     const input = (id: string) => elements(tree, "input").find((n) => n.props.id === id)!;
-    return { effects, calls, props, tree, button, input, closed: () => closed, result: () => result, block: (s: string) => { blocked = s; } };
+    return { effects, calls, toasts, opened, props, tree, button, input, closed: () => closed, result: () => result, block: (s: string) => { blocked = s; } };
 }
 const tick = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
 
@@ -68,7 +68,13 @@ test("PR click uses edited title, body, base and draft without auto-publishing",
     expect(d.calls).toHaveLength(1);
     d.button("Open pull request").props.onClick(); await tick();
     expect(d.calls[1]!.params).toMatchObject({ action: "pr", title: "Edited", base: "release", body: "Description", draft: true, fingerprint: defaults.fingerprint });
-    expect(d.result()).toEqual({ number: 7 });
+    expect(d.result()).toEqual({ number: 7, url: "https://github.com/example/project/pull/7" });
+    // Not opened by itself: the toast offers it.
+    expect(d.opened).toEqual([]);
+    const [message, level, action] = d.toasts.at(-1)!;
+    expect([message, level, action.label]).toEqual(["Pushed origin/feature · PR #7", "success", "Open"]);
+    action.run();
+    expect(d.opened).toEqual(["https://github.com/example/project/pull/7"]);
 });
 
 test("Generate fills the title and description from the small model, for the base shown; a failure keeps the commits' text", async () => {

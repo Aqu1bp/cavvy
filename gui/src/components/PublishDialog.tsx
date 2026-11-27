@@ -84,7 +84,8 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
         try {
             const result = await rpc.call("session.gitPublish", { id, fingerprint: info.fingerprint, action, confirmProtected: confirmed(), base: baseOr(), title: title(), body: body(), draft: draft() });
             refreshGitChanges();
-            toast(result.pr ? `Pushed ${info.remote}/${info.target} · PR #${result.pr.number}` : `Pushed ${info.remote}/${info.target}`, "success");
+            const pr = result.pr;
+            toast(pr ? `Pushed ${info.remote}/${info.target} · PR #${pr.number}` : `Pushed ${info.remote}/${info.target}`, "success", pr ? { label: "Open", run: () => void openExternal(pr.url) } : undefined);
             if (revision !== version) return;
             p.onPublished(result.pr);
             p.onClose();

@@ -10,6 +10,7 @@ import { lstatSync, readdirSync, realpathSync, rmSync } from "fs";
 import { dirname, join, resolve } from "path";
 import { projectStateDir } from "../config/paths";
 import { cliLinks, Session, type CliLink } from "../agent/session";
+import { sideChatsDir } from "../agent/side-chat";
 import { defaultModelFrom, type ProviderListing } from "../providers/models";
 import { getProvider } from "../providers/registry";
 import { accountPlace } from "../providers/accounts";
@@ -28,7 +29,7 @@ const linkCache = new Map<string, { mtimeMs: number; size: number; links: CliLin
 export interface CavvyLinks {
     /** CLI sessions a Cavvy session holds (imported, or run on as its backend): to that session's id. The newest wins. */
     held: Map<string, string>;
-    /** Ones Cavvy's sub-agents ran on (Task, delegate): nobody's conversation to pick up. */
+    /** Ones Cavvy's sub-agents (Task, delegate) or open side chats ran on: nobody's conversation to pick up. */
     subagent: Set<string>;
 }
 
@@ -43,13 +44,13 @@ export function cavvyLinks(folders: string[]): CavvyLinks {
             // gone: its sessions are under the path as given
         }
     }
-    const files: { file: string; id: string; mtimeMs: number; size: number }[] = [];
-    for (const dir of dirs) {
+    const files: { file: string; id: string; mtimeMs: number; size: number; side?: boolean }[] = [];
+    const add = (dir: string, side?: boolean) => {
         let names: string[];
         try {
             names = readdirSync(dir);
         } catch {
-            continue;
+            return;
         }
         for (const n of names) {
             const m = /^([A-Za-z0-9_-]+)\.jsonl$/.exec(n);
@@ -57,12 +58,21 @@ export function cavvyLinks(folders: string[]): CavvyLinks {
             const file = join(dir, n);
             try {
                 const st = lstatSync(file);
-                if (st.isFile()) files.push({ file, id: m[1]!, mtimeMs: st.mtimeMs, size: st.size });
+                if (st.isFile()) files.push({ file, id: m[1]!, mtimeMs: st.mtimeMs, size: st.size, ...(side ? { side } : {}) });
             } catch {
                 // vanished
             }
         }
+    };
+    for (const dir of dirs) add(dir);
+    // Side chats keep their files apart (a folder each, while they're open), whatever their folder.
+    let sides: string[] = [];
+    try {
+        sides = readdirSync(sideChatsDir());
+    } catch {
+        // none open
     }
+    for (const s of sides) add(join(sideChatsDir(), s), true);
     files.sort((a, b) => b.mtimeMs - a.mtimeMs);
     const out: CavvyLinks = { held: new Map(), subagent: new Set() };
     for (const f of files) {
@@ -79,7 +89,7 @@ export function cavvyLinks(folders: string[]): CavvyLinks {
         }
         for (const l of cached.links) {
             const k = linkKey(l.provider, l.id);
-            if (l.kind === "subagent") out.subagent.add(k);
+            if (l.kind === "subagent" || f.side) out.subagent.add(k);
             else if (!out.held.has(k)) out.held.set(k, f.id);
         }
     }

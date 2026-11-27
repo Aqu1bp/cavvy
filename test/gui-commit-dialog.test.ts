@@ -23,7 +23,7 @@ function find(tree: unknown, match: (node: Node) => boolean): Node | undefined {
     }
 }
 
-async function mountDialog(branch: string | undefined, o: { paths?: string[]; files?: { path: string; pathToken?: string }[] } = {}) {
+async function mountDialog(branch: string | undefined, o: { paths?: string[]; files?: { path: string; pathToken?: string }[]; generated?: string } = {}) {
     const effects: (() => unknown)[] = [];
     const calls: unknown[][] = [];
     const sha = "1234567890abcdef1234567890abcdef12345678";
@@ -46,8 +46,9 @@ async function mountDialog(branch: string | undefined, o: { paths?: string[]; fi
         gitCommit: async (...args: unknown[]) => {
             calls.push(args);
         },
-        gitCommitMessage: () => {
-            throw new Error("Generating was not clicked");
+        gitCommitMessage: async () => {
+            if (o.generated === undefined) throw new Error("Generating was not clicked");
+            return { message: o.generated, model: "small" };
         },
         commitUnavailable: () => undefined,
         commitRequest: () => activeRequest,
@@ -103,6 +104,19 @@ test("⌘↵ in the message commits, as the button's key cap says; a plain Enter
     await Promise.resolve();
     expect(prevented).toBe(1);
     expect(d.calls).toEqual([[d.request.id, d.request.paths, "fix: the thing", { branch: "feature", detached: false }, []]]);
+});
+
+test("Generate replaces what was typed, and Undo puts it back", async () => {
+    for (const undo of [false, true]) {
+        const d = await mountDialog("feature", { generated: "feat: drafted" });
+        const tree = d.tree();
+        find(tree, (n) => n.tag === "textarea")!.props.onInput({ currentTarget: { value: "wip: my own words" } });
+        await find(tree, (n) => n.tag === "button" && n.props.class === "btn ghost")!.props.onClick();
+        if (undo) find(tree, (n) => n.tag === "button" && n.children.includes("Undo"))!.props.onClick();
+        find(tree, (n) => n.tag === "button" && n.props.class === "btn primary")!.props.onClick();
+        await Promise.resolve();
+        expect(d.calls[0]?.[2]).toBe(undo ? "wip: my own words" : "feat: drafted");
+    }
 });
 
 test("a file shown redacted is checked, and left out, by its handle, as the Review pane asks for it", async () => {

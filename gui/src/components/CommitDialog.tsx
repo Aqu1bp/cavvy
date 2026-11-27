@@ -19,6 +19,8 @@ export function CommitDialog() {
     const [paths, setPaths] = createSignal<string[]>([]);
     const [message, setMessage] = createSignal("");
     const [model, setModel] = createSignal<string>();
+    /** What the box held before Generate replaced it, for Undo; gone once the box is typed in. */
+    const [before, setBefore] = createSignal<string>();
     const [error, setError] = createSignal<string>();
     /** Why Generate couldn't draft a message: under its button, as Suggest's is under its own. */
     const [genError, setGenError] = createSignal<string>();
@@ -44,6 +46,7 @@ export function CommitDialog() {
             setPaths([]);
             setMessage("");
             setModel(undefined);
+            setBefore(undefined);
             setError(undefined);
             setGenError(undefined);
             setGenerating(false);
@@ -111,6 +114,8 @@ export function CommitDialog() {
                 setGenError("Changed while generating. Generate again.");
                 return;
             }
+            const typed = message();
+            setBefore(typed.trim() && typed !== result.message ? typed : undefined);
             setMessage(result.message);
             setModel(result.model);
         } catch (e) {
@@ -265,6 +270,7 @@ export function CommitDialog() {
                         onKeyDown={onMessageKey}
                         onInput={(e) => {
                             revision++;
+                            setBefore(undefined);
                             setMessage(e.currentTarget.value);
                         }}
                     />
@@ -272,6 +278,9 @@ export function CommitDialog() {
                         <button class="btn ghost" disabled={!ready() || generating() || committing()} title={model() ? `Drafted by ${draftedBy(model()!, commitRequest()?.id)}` : undefined} onClick={() => void generate()}>
                             {generating() ? "Generating…" : "Generate message"}
                         </button>
+                        <Show when={before() !== undefined && !generating()}>
+                            <button class="link-btn small" disabled={committing()} onClick={() => { revision++; setMessage(before()!); setBefore(undefined); messageEl?.focus(); }}>Undo</button>
+                        </Show>
                         <Show when={genError()}>{(m) => <span class="wt-error" role="status">{m()}</span>}</Show>
                     </div>
                 </Show>

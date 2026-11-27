@@ -2593,8 +2593,8 @@ export interface Methods {
     "session.rewindPlan": { params: { id: string; index: number }; result: RewindPlanInfo };
     /** `text` and what the prompt carried (images, files) go back to the input box, as with an edited queued message. */
     "session.rewind": { params: { id: string; index: number; planId: string; code: boolean; conversation: boolean }; result: RewindResult };
-    /** Put back the files a rewind restored (`undo` from its result), as they were before it. */
-    "session.rewindUndo": { params: { id: string; undo: string }; result: { restored: string[]; failed: { path: string; error: string }[] } };
+    /** Put back the files a rewind restored (`undo` from its result; without it, the session's last restore), as they were before it. */
+    "session.rewindUndo": { params: { id: string; undo?: string }; result: { restored: string[]; failed: { path: string; error: string }[] } };
     /** A new session with the conversation up to the end of the turn of the prompt at `index` (TurnPrompt.index, or Turn.pos.index for imported prompts), which the window showed as turn `turn` with `text`. */
     /**
      * `soon`: answer at once with how the fork will look (`making` set) while it's made, when the turn is in the
