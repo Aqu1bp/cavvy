@@ -1,7 +1,7 @@
 import { createEffect, createMemo, createSignal, createUniqueId, For, on, Show } from "solid-js";
 import { Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Layers, Plus, RefreshCw, Search, Settings2, Star, Zap } from "lucide-solid";
 import { planLimitKey, type AccountInfo, type EffortLevel, type ModelSummary, type ProviderModels } from "@shared/protocol";
-import { app, awayMachine, handleFor, limitsOn, modelsLoadingOn, modelsOn, noModel, providersOn, refreshModelsFor, refreshModelsOn, servedOn, toast } from "../state/app";
+import { app, awayMachine, handleFor, limitsFor, limitsOn, modelsFor, modelsLoadingOn, modelsOn, noModel, providersFor, providersOn, refreshModelsFor, refreshModelsOn, servedFor, servedOn, toast } from "../state/app";
 import { setEffort, setModel, setFastMode, setAccount } from "../state/actions";
 import { prefs, setPrefs } from "../state/prefs";
 import { comparePicks, setAddAccountFor, setComparePicks, setSettingsTab } from "../state/ui";
@@ -131,13 +131,14 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
     const currentRef = () => p.current?.ref ?? (noModel() && machineOn() === undefined ? undefined : p.currentRef);
     const isCurrent = (ref: string) => ref === currentRef();
     // The machine's that the session is on (one of another machine's, opened in this window, has its own).
-    const models = () => modelsOn(machineOn());
+    const models = () => (p.target ? modelsOn(p.target.machine) : modelsFor(p.sessionId));
+    const providers = () => (p.target ? providersOn(p.target.machine) : providersFor(p.sessionId));
     const currentModel = createMemo(() => resolve(p.current, currentRef(), models()));
     const currentProvider = () => currentModel()?.provider ?? currentRef()?.split(":")[0];
     const away = () => machineOn() !== undefined;
 
     // The accounts of the machine the session is on: another machine's session opened here has that machine's.
-    const accountInfo = (provider = currentProvider()) => providersOn(machineOn()).find((p) => p.id === provider)?.agentCli;
+    const accountInfo = (provider = currentProvider()) => providers().find((p) => p.id === provider)?.agentCli;
     const selectedAccount = (provider = currentProvider()) => p.sessionId ? handleFor(p.sessionId)?.view.state.accounts?.[provider ?? ""] ?? "default" : accountInfo(provider)?.defaultAccount ?? "default";
     const accountChoices = (provider = currentProvider()) => accountInfo(provider)?.accounts ?? [{ id: "default", name: "Default" }];
     const missingAccount = (provider = currentProvider()) => !accountChoices(provider).some((a) => a.id === selectedAccount(provider));
@@ -244,7 +245,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
     const acctProvider = () => (!p.target && !q() && filter() !== FAVORITES && accountInfo(filter()) && accountInfo(filter())!.multiAccount !== false ? filter() : undefined);
     /** A plan nearing or at its limit: its fullest window's percentage, from 80%; 100 once reached. */
     // The limits of the session's machine's accounts: another machine's "Default" isn't this computer's.
-    const limitOf = (provider: string, id: string) => limitsOn(machineOn())[planLimitKey(provider, id)];
+    const limitOf = (provider: string, id: string) => (p.target ? limitsOn(p.target.machine) : limitsFor(p.sessionId))[planLimitKey(provider, id)];
     const accountLimit = (provider: string, id: string) => {
         return nearLimit(meterOf(limitOf(provider, id), now()));
     };
@@ -252,7 +253,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
         const m = meterOf(limitOf(provider, a.id), now());
         const limits = m?.reached ? `Limit reached${m.resets ? `, resets ${m.resets}` : ""}` : m?.windows.map(windowShort).filter(Boolean).join(", ");
         // Named as every surface names a plan (planTitle), then its email and whether it can be used.
-        const title = planTitle(providersOn(machineOn()).find((x) => x.id === provider), a.id).title;
+        const title = planTitle(providers().find((x) => x.id === provider), a.id).title;
         return [[title, accountDetail({ ...a, plan: undefined })].filter(Boolean).join(" · "), limits].filter(Boolean).join(". ") || undefined;
     };
     const pickAccount = (provider: string, a: { id: string }) => {
@@ -332,7 +333,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
         return p.target ? text : withShortcut(text, "chat:modelPicker");
     };
     const refresh = (again = false) => (p.target ? refreshModelsOn(machineOn(), again) : refreshModelsFor(p.sessionId, again));
-    const loading = () => modelsLoadingOn(machineOn());
+    const loading = () => (p.target ? modelsLoadingOn(p.target.machine) : app.modelsLoading);
     const onKey = (e: KeyboardEvent) => {
         if (isMod(e) && /^[1-9]$/.test(e.key)) {
             const r = rows()[Number(e.key) - 1];
@@ -427,7 +428,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
         if (!accountInfo(m.provider)) return undefined;
         const meter = meterOf(limitOf(m.provider, selectedAccount(m.provider)), now());
         const account = selectedAccount(m.provider);
-        const served = (p.sessionId && isCurrent(m.ref) ? handleFor(p.sessionId)?.view.state.servedModel : undefined) ?? resolvedOn(m, account, servedOn(machineOn()));
+        const served = (p.sessionId && isCurrent(m.ref) ? handleFor(p.sessionId)?.view.state.servedModel : undefined) ?? resolvedOn(m, account, p.target ? servedOn(p.target.machine) : servedFor(p.sessionId));
         const model = { id: m.id, resolved: served };
         const stop = limitFor(meter, model);
         if (!stop || (!stop.window?.scope && acctProvider() === m.provider)) return undefined;
