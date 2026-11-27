@@ -233,7 +233,9 @@ export function syncedWatchTargets(): { recursive: string[]; shallow: { dir: str
 
 /**
  * What a server was given, by path under its home, with what each file held then (`given`); and what each computer
- * that syncs it last sent (`by`, by the id it signed in with). A record from before `by` is the one computer's.
+ * that syncs it last sent (`by`, by the id it signed in with). A record from before `by` says nobody's: which computer
+ * it was isn't known, and the one syncing first now may be another. Each sends all it has once, and has as its own
+ * what the server has as it does, so nothing is taken off for a computer that never had it.
  */
 const SYNCED_FILE = () => join(cavvyHome(), "synced-files.json");
 
@@ -270,14 +272,9 @@ export function readSynced(): Record<string, string> {
     return readRecord().given;
 }
 
-/**
- * What computer `from` last sent, which it compares with what it has. The first to sync after the record had no
- * computers takes what was given as its own: until now there was only one.
- */
+/** What computer `from` last sent, which it compares with what it has. */
 export function syncedFor(from = ""): Record<string, string> {
-    const r = readRecord();
-    if (r.by[from]) return r.by[from];
-    return Object.keys(r.by).length ? {} : r.given;
+    return readRecord().by[from] ?? {};
 }
 
 /** A computer signed out of this server for good: what it sent no longer keeps a file here. */
@@ -342,8 +339,6 @@ export interface ApplySyncResult {
 export function applySync(files: unknown, remove: unknown, home?: string, from = ""): ApplySyncResult {
     const record = readRecord();
     const given = record.given;
-    // Until now the record had no computers: the one there was is this one.
-    if (!Object.keys(record.by).length) record.by[from] = { ...given };
     const mine = (record.by[from] ??= {});
     const others = () => Object.entries(record.by).filter(([m]) => m !== from).map(([, r]) => r);
     let written = 0;

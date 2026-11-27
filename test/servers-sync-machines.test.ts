@@ -4,7 +4,7 @@
 
 import { afterAll, expect, test } from "bun:test";
 import { createHash } from "crypto";
-import { existsSync, readFileSync } from "fs";
+import { existsSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
@@ -83,20 +83,24 @@ test("a file goes from the server only once no computer has it, and one with its
         expect(existsSync(join(home, ".cavvy/commands/fix.md"))).toBe(false);
     }));
 
-test("a record from one computer before this is that computer's, and one signed out for good keeps nothing", () =>
+test("a record from before says nobody's: a computer added then takes nothing off, and one that had it all claims it", () =>
     onServer((home) => {
         // As a server synced by one computer kept it: what was given, and no computers.
-        applySync([file(SKILL, "old")], [], home);
+        applySync([file(SKILL, "old"), file(".cavvy/commands/fix.md", "fix")], [], home);
         const record = JSON.parse(readFileSync(join(home, ".cavvy", "synced-files.json"), "utf-8"));
-        Bun.write(join(home, ".cavvy", "synced-files.json"), JSON.stringify(record.given));
-        expect(syncedFor("a")).toEqual({ [SKILL]: sha("old") });
-        sync(home, "a", { [SKILL]: "old" });
-        sync(home, "b", { [SKILL]: "old" });
-        sync(home, "a", {});
+        writeFileSync(join(home, ".cavvy", "synced-files.json"), JSON.stringify(record.given));
+        // A new computer syncs first: it has neither, and neither goes.
+        expect(syncedFor("b")).toEqual({});
+        expect(sync(home, "b", { ".cavvy/skills/b/SKILL.md": "b" }).removed).toBe(0);
         expect(read(home, SKILL)).toBe("old");
+        // The one that had them sends them once: the same, so nothing's written, and they're its own now.
+        expect(sync(home, "a", { [SKILL]: "old", ".cavvy/commands/fix.md": "fix" }).written).toBe(0);
+        sync(home, "a", { [SKILL]: "old" });
+        expect(existsSync(join(home, ".cavvy/commands/fix.md"))).toBe(false);
+        // Signed out for good: what only it sent no longer keeps a file.
+        sync(home, "b", { ".cavvy/skills/b/SKILL.md": "b", [SKILL]: "old" });
         forgetSyncedFiles("b");
-        // Nobody else has it now: the next computer to drop it takes it off.
-        applySync([], [SKILL], home, "a");
+        sync(home, "a", {});
         expect(existsSync(join(home, SKILL))).toBe(false);
     }));
 

@@ -7,7 +7,7 @@ import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
 const iso = isolate();
-const { applySync, localSyncFiles, readSynced, syncablePath, syncedWatchTargets, syncTo } = await import("../src/servers/sync");
+const { applySync, localSyncFiles, readSynced, syncablePath, syncedFor, syncedWatchTargets, syncTo } = await import("../src/servers/sync");
 
 afterAll(() => iso.cleanup());
 
@@ -21,7 +21,7 @@ const server = tempDir("cavvy-sync-home-");
 const sent: { method: string; params: any }[] = [];
 const ask = async (method: string, params: any) => {
     sent.push({ method, params });
-    if (method === "sync.files") return readSynced();
+    if (method === "sync.files") return syncedFor();
     return applySync(params.files, params.remove, server);
 };
 
