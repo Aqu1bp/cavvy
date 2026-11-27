@@ -236,7 +236,8 @@ describe("a suggested task in a GUI session", () => {
         const rt = srv.engine.runtimes.get(made)!;
         for (let i = 0; i < 200 && !rt.session.messages.length; i++) await Bun.sleep(20);
         // Named as the server names the user's computer, so send_to_session reaches it from there.
-        expect(JSON.stringify(rt.session.messages[0]?.content)).toMatch(new RegExp(`session (mac|desktop)/${id} `));
+        const { HOME_NAME } = await import("../src/server/far-peers");
+        expect(JSON.stringify(rt.session.messages[0]?.content)).toContain(`session ${HOME_NAME}/${id} `);
         a.close();
     });
 
