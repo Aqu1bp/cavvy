@@ -4,7 +4,7 @@
 
 import { afterAll, describe, expect, test } from "bun:test";
 import { createHash } from "crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -37,11 +37,18 @@ describe("the code-signing certificate", () => {
         expect(cert.sha1).toMatch(/^[0-9A-F]{40}$/);
     });
 
-    test("isn't made over one that's there", () => {
-        const dir = join(cert.p12, "..");
-        const r = Bun.spawnSync([process.execPath, join(root, "scripts", "release-codesign-cert.ts"), dir], { stdout: "pipe", stderr: "pipe" });
-        expect(r.exitCode).toBe(1);
-        expect(r.stderr.toString()).toContain("already has a certificate");
+    test("goes only into a new folder that only its owner can open", () => {
+        const make = (dir: string) => Bun.spawnSync([process.execPath, join(root, "scripts", "release-codesign-cert.ts"), dir], { stdout: "pipe", stderr: "pipe" });
+        // There already, as a folder others may read would be: refused, and nothing is written into it.
+        const there = mkdtempSync(join(work, "there-"));
+        const r = make(there);
+        expect([r.exitCode, r.stderr.toString()]).toEqual([1, expect.stringContaining("is already there")]);
+        expect(readdirSync(there)).toEqual([]);
+        const fresh = join(work, "fresh", "cert");
+        expect(make(fresh).exitCode).toBe(0);
+        expect(statSync(fresh).mode & 0o777).toBe(0o700);
+        expect(statSync(join(fresh, "cavvy-codesign.p12")).mode & 0o777).toBe(0o600);
+        expect(statSync(join(fresh, "cavvy-codesign.p12.password")).mode & 0o777).toBe(0o600);
     });
 });
 

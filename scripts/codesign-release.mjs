@@ -185,12 +185,21 @@ function checkPacked(zip, dmg, requirement, tmp) {
     run("codesign", ["--verify", "--deep", "--strict", `-R=${requirement}`, join(unzipped, fromZip)]);
     const mount = mkdtempSync(join(tmp, "mount-"));
     run("hdiutil", ["attach", "-readonly", "-nobrowse", "-noautoopen", "-mountpoint", mount, dmg]);
+    let failed = false;
     try {
         const [fromDmg] = readdirSync(mount).filter((n) => n.endsWith(".app"));
         if (!fromDmg) stop(`${basename(dmg)} holds no app.`);
         run("codesign", ["--verify", "--deep", "--strict", `-R=${requirement}`, join(mount, fromDmg)]);
+    } catch (e) {
+        failed = true;
+        throw e;
     } finally {
-        run("hdiutil", ["detach", mount, "-force"]);
+        // A failed detach is reported only when it's the only failure: it mustn't hide why the check failed.
+        try {
+            run("hdiutil", ["detach", mount, "-force"]);
+        } catch (e) {
+            if (!failed) throw e;
+        }
     }
 }
 

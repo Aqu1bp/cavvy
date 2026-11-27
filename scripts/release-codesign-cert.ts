@@ -1,10 +1,10 @@
 // Makes the certificate Cavvy.app's releases are code-signed with: run once, by whoever publishes Cavvy.
 //
-//   bun scripts/release-codesign-cert.ts <folder to put it in>
+//   bun scripts/release-codesign-cert.ts <new folder to put it in>
 //
 // It's self-signed (there's no Apple Developer ID): it doesn't make macOS trust the app, but every release signed with
 // it is the same app to macOS, so the keychain access a person allowed carries over to each update, and the updater
-// accepts only an app signed with it (docs/releasing.md). It writes, only readable by you:
+// accepts only an app signed with it (docs/releasing.md). It makes the folder, which only you can open, and writes:
 //
 //   cavvy-codesign.p12            the certificate and its private key
 //   cavvy-codesign.p12.password   the .p12's password
@@ -61,8 +61,9 @@ export function makeCertificate(dir: string): { p12: string; password: string; s
 }
 
 if (import.meta.main) {
-    const dir = process.argv[2] ? resolve(process.argv[2]) : stop("Usage: bun scripts/release-codesign-cert.ts <folder to put it in>");
-    if (existsSync(join(dir, "cavvy-codesign.p12")) || existsSync(join(dir, "cavvy-codesign.p12.password"))) stop(`${dir} already has a certificate: it isn't overwritten.`);
+    const dir = process.argv[2] ? resolve(process.argv[2]) : stop("Usage: bun scripts/release-codesign-cert.ts <new folder to put it in>");
+    // A folder of its own that only you can open, so the private key is never where others can read it, even briefly.
+    if (existsSync(dir)) stop(`${dir} is already there: the certificate goes in a new folder.`);
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     const made = makeCertificate(dir);
     // Readable only by you, as the key's file is.
