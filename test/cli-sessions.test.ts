@@ -15,7 +15,7 @@ const iso = isolate();
 const { listCliSessions, readCliTranscript, findCliSession } = await import("../src/server/cli-sessions");
 const { Engine, RpcError } = await import("../src/server/engine");
 const { Session, cliLinks, findSessionAnywhere, listSessions } = await import("../src/agent/session");
-const { cavvyLinks, importModel, writeImportedSession } = await import("../src/server/cli-import");
+const { cavvyLinks, importModel, keepSideChatLinks, writeImportedSession } = await import("../src/server/cli-import");
 const { sideChatsDir } = await import("../src/agent/side-chat");
 const { rewindTargets } = await import("../src/agent/checkpoints");
 const { saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
@@ -703,9 +703,9 @@ describe("folders macOS guards", () => {
     });
 });
 
-test("an open side chat's CLI session isn't offered to continue from the terminal", () => {
+test("a side chat's CLI session isn't offered to continue from the terminal, open or discarded", () => {
     const cwd = tempDir("side-chat-links");
-    const id = randomUUID();
+    const id = randomUUID(), other = randomUUID();
     const dir = join(sideChatsDir(), "20261127-000000-abcdef");
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "20261127-000000-abcdef.jsonl"), `${JSON.stringify({ t: "backend", provider: "claude-code", id })}\n`);
@@ -713,9 +713,11 @@ test("an open side chat's CLI session isn't offered to continue from the termina
         const links = cavvyLinks([cwd]);
         expect(links.subagent.has(`claude-code:${id}`)).toBe(true);
         expect(links.held.size).toBe(0);
+        // Discarded (closed, or left by a server that stopped).
+        keepSideChatLinks(dir);
     } finally {
         rmSync(dir, { recursive: true, force: true });
     }
-    // Discarded with it: then it's like any other CLI session.
-    expect(cavvyLinks([cwd]).subagent.has(`claude-code:${id}`)).toBe(false);
+    expect(cavvyLinks([cwd]).subagent.has(`claude-code:${id}`)).toBe(true);
+    expect(cavvyLinks([cwd]).subagent.has(`claude-code:${other}`)).toBe(false);
 });

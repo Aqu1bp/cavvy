@@ -82,7 +82,7 @@ import { listServers } from "../servers/store";
 import type { WakeMemory } from "../agent/wakes";
 import { forkUiLogSoon, readSegments, readUiLogSoon, type UiLog } from "./history";
 import { CLI_SOURCES, findCliSession, listCliSessions, readCliTranscript, validCliId, type CliSource } from "./cli-sessions";
-import { cavvyLinks, importModel, linkKey, writeImportedSession, type CavvyLinks } from "./cli-import";
+import { cavvyLinks, importModel, keepSideChatLinks, linkKey, writeImportedSession, type CavvyLinks } from "./cli-import";
 import { CODEX_CLIENT_NAME } from "../backends/codex";
 import { checkId, claimForDelete, listTrash, locateSession, purgeTrash, restoreSession, trashSession, type SessionFlags } from "./session-delete";
 import { searchSessions, warmSearch } from "./search";
@@ -564,6 +564,13 @@ export class Engine {
         this.reopenScheduled();
         void this.resumeWorking();
         // Side chats left by a server that stopped: discarded with it.
+        let left: string[] = [];
+        try {
+            left = readdirSync(sideChatsDir());
+        } catch {
+            // none
+        }
+        for (const s of left) keepSideChatLinks(join(sideChatsDir(), s));
         rmSync(sideChatsDir(), { recursive: true, force: true });
         purgeTrash();
         // Snoozes that ran out while Cavvy was closed wake now.
@@ -1519,6 +1526,7 @@ export class Engine {
             rt.interrupt();
             await this.unload(rt);
         }
+        keepSideChatLinks(sideChatDir(rt.id));
         rmSync(sideChatDir(rt.id), { recursive: true, force: true });
         // What was attached to its messages, saved in the project.
         rmSync(join(attachmentsDir(rt.ws.cwd), rt.id), { recursive: true, force: true });
