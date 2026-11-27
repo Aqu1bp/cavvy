@@ -13,7 +13,7 @@ import { ServerLink, type LinkState } from "./connect";
 import { countCopied, describeCopy, describeLeft, planCopy, sendCopy } from "./copy";
 import type { HostCheck, HostStatus } from "./host";
 import { ensureBuildThere, ServerBusy, setUpServer, type SetupProgress, type SetupResult } from "./install";
-import { LOGIN_EXIT, probeServer, REMOTE_CURRENT, REMOTE_DIR, remoteBuildDir } from "./remote";
+import { LOGIN, LOGIN_EXIT, NOT_SET_UP, probeServer, REMOTE_CURRENT, REMOTE_DIR, remoteBuildDir } from "./remote";
 import { applyBuild, BOOT_TAKEN, bootCommand, NotSetUp, previousBuild, remoteCheck, remoteStatus, revokeOverSsh, serviceReport, stopRemote, UpdateFailed, type ServiceReport } from "./service";
 import { hostOf, offeredHostKey, printable, remoteSh, shQuote, ssh, sshCommandArgv, SshError, trustHostKey } from "./ssh";
 import { draftServer, listServers, removeServer, requireServer, saveServer, ServerError, setServerSyncSecrets, thisDesktop, type ServerEntry } from "./store";
@@ -279,14 +279,6 @@ async function offerCopy(e: ServerEntry, wanted: boolean | undefined) {
     }
 }
 
-/** Not set up there (exit ${NOT_SET_UP}), or `cavvy host login` for CLI $1 (optional account $2) with this terminal. */
-const NOT_SET_UP = 46;
-const LOGIN = `
-b="${REMOTE_CURRENT}"
-[ -x "$b" ] || exit ${NOT_SET_UP}
-if [ -n "$2" ]; then exec "$b" host login "$1" --account "$2"; fi
-exec "$b" host login "$1"
-`;
 
 /**
  * Signs a CLI in on the server and turns it on in the Cavvy there. The CLI's own sign-in has this terminal for as

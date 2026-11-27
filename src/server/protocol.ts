@@ -2096,6 +2096,8 @@ export interface TerminalLogin {
     provider: string;
     accountId: string;
     name: string;
+    /** One of the user's servers: the sign-in is the CLI's there, reached from this machine (not asked of a server). */
+    server?: string;
 }
 
 /** One of the window's terminals. `exitCode`: its shell has exited (it's kept, with its output, until closed). */
@@ -2266,7 +2268,7 @@ export interface Methods {
     "servers.mcpCallback": { params: { name: string; url: string }; result: null };
     /** What the page of an MCP sign-in under way here ended with, brought by the machine with the browser: how it was taken (an HTTP status; 404 when no sign-in waits for it). */
     "mcp.callback": { params: { query: string }; result: { status: number } };
-    "terminal.open": { params: { id: string; cwd: string; cols: number; rows: number; login?: { provider: string; accountId: string }; /** A sign-in card's command, typed into the new shell for the user to run. */ signIn?: { session: string; interaction: string } }; result: { id: string; cwd: string } };
+    "terminal.open": { params: { id: string; cwd: string; cols: number; rows: number; login?: { provider: string; accountId: string; /** One of the user's servers: that CLI's sign-in there, in this terminal. */ server?: string; name?: string }; /** A sign-in card's command, typed into the new shell for the user to run. */ signIn?: { session: string; interaction: string } }; result: { id: string; cwd: string } };
     "terminal.write": { params: { id: string; data: string }; result: null };
     /** The window has drawn this many characters of the terminal's output (flow control). */
     "terminal.ack": { params: { id: string; chars: number }; result: null };

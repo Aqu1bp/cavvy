@@ -2,7 +2,7 @@ import "../styles/accounts.css";
 import { createEffect, createSignal, createUniqueId, For, onMount, Show } from "solid-js";
 import { Check, ExternalLink, Info, MoreHorizontal } from "lucide-solid";
 import type { AccountInfo, ProviderInfo } from "@shared/protocol";
-import { refreshModels, refreshProviders, rpc } from "../state/app";
+import { useProvidersAt } from "../state/providers-at";
 import { addAccountFor, setAddAccountFor, terminalActions } from "../state/ui";
 import { openExternal } from "../lib/platform";
 import { Menu } from "./ui/Menu";
@@ -25,6 +25,10 @@ const accountStatus = (a: AccountInfo) => a.invalid ? "Unavailable" : a.signedIn
  */
 export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onConnect?: () => void; onTurnOff?: () => void }) {
     const uid = createUniqueId();
+    // The machine these are on: the window's own, or a server shown from here (state/providers-at.ts).
+    const at = useProvidersAt();
+    const rpc = at.link;
+    const refreshProviders = at.refresh;
     const [adding, setAdding] = createSignal(false);
     const [name, setName] = createSignal("");
     const [folder, setFolder] = createSignal("");
@@ -58,7 +62,7 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
     let section: HTMLElement | undefined;
     // "Add account…" in the model picker: open the form here, in view.
     createEffect(() => {
-        if (addAccountFor() !== p.provider.id) return;
+        if (at.server || addAccountFor() !== p.provider.id) return;
         setAddAccountFor(undefined);
         if (!installed()) return;
         setActionError(undefined);
@@ -74,7 +78,8 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
         setRefreshing(true);
         try { await refresh(); } finally { setRefreshing(false); }
     });
-    const login = (a: AccountInfo) => terminalActions.loginAccount?.(p.provider.id, a.id, `${p.provider.name} · ${a.name}`);
+    // A server's: the CLI's sign-in there, in a terminal here, where its link is opened.
+    const login = (a: AccountInfo) => terminalActions.loginAccount?.(p.provider.id, a.id, [p.provider.name, at.server && a.id === "default" ? undefined : a.name, at.server].filter(Boolean).join(" · "), at.server);
     const cancelAdd = () => {
         if (busy()) return;
         setAdding(false); setName(""); setFolder(""); setError(undefined); setAdvanced(false);
@@ -99,7 +104,7 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
             login(a);
             // Creation has succeeded: a refresh failure must not offer to create it again.
             await refreshProviders().catch((e) => setActionError(message(e)));
-            void refreshModels().catch((e) => setActionError(message(e)));
+            void at.changed().catch((e) => setActionError(message(e)));
         } catch (e) {
             const detail = message(e);
             const field = /name/i.test(detail) ? "name" : folder() && /folder|director|project|symlink/i.test(detail) ? "folder" : "form";
@@ -129,11 +134,13 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
             <Show when={renameError()}><span id={`${uid}-rename-error`} class="account-error" role="alert">{renameError()}</span></Show>
         </form>
     </Show>;
-    // Beside the name: a green dot while it's on, or what's wrong with its one account.
+    // Beside the name: a green dot once the account new sessions use is known to be signed in here, or what's wrong
+    // with its one account (several say theirs on their own rows). Not checked yet says nothing.
     const problem = () => {
         const a = single();
         return a?.invalid ? "Unavailable" : a?.signedIn === false ? "Not signed in" : undefined;
     };
+    const signedIn = () => { const a = main(); return !!a && !a.invalid && a.signedIn === true; };
     // Under the name: what's missing, or the one account's email.
     const sub = () => !installed() ? "Not installed" : !p.provider.configured ? "Not set up" : single()?.email;
     return <section ref={section} class="cli-prov" aria-label={p.provider.name}>
@@ -144,7 +151,7 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
                     <span class="truncate">{p.provider.name}</span>
                     <Show when={planLabel(main()?.plan)}>{(plan) => <span class="tag">{plan()}</span>}</Show>
                     <Show when={p.provider.configured}>
-                        <Show when={problem()} fallback={<span class="cli-dot" role="img" aria-label="Connected" title="Connected" />}>
+                        <Show when={problem()} fallback={<Show when={signedIn()}><span class="cli-dot" role="img" aria-label="Signed in" title="Signed in" /></Show>}>
                             <span class="cli-problem">{problem()}</span>
                         </Show>
                     </Show>
@@ -155,6 +162,9 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
                 <Show when={refreshing()}><Spinner size={12} /></Show>
                 <Show when={!installed() && p.provider.keyUrl}>
                     <button class="link-btn" onClick={() => void openExternal(p.provider.keyUrl!)}>Install <ExternalLink size={11} /></button>
+                </Show>
+                <Show when={installed() && p.provider.configured && single()?.signedIn === false && !single()?.invalid}>
+                    <button class="btn secondary sm" disabled={busy()} onClick={() => login(single()!)}>Sign in</button>
                 </Show>
                 <Show when={installed() && !p.provider.configured && p.onConnect}>
                     <button class="btn secondary sm" disabled={p.connecting} onClick={() => p.onConnect!()}>{p.connecting ? <Spinner size={12} /> : `Use my ${cli()?.plan ?? "plan"}`}</button>
@@ -193,6 +203,7 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
                             const said = () => `Some of your ${p.provider.name} setup isn't shared with this account.\n\n${why()}`;
                             return <span class="account-sharing" role="img" tabIndex={0} aria-label={said()} title={said()}><Info size={14} /></span>;
                         }}</Show>
+                        <Show when={a.signedIn === false && !a.invalid}><button class="btn secondary sm" disabled={busy()} aria-label={`Sign in to ${a.name}`} onClick={() => login(a)}>Sign in</button></Show>
                         <Show when={isDefault(a)}><span class="account-default" role="img" aria-label="Default" title="Used for new sessions"><Check size={14} /></span></Show>
                         <button ref={anchor} class="hb sm account-more" disabled={busy()} aria-label={`Actions for ${a.name}`} aria-haspopup="menu" aria-expanded={menu() === a.id} onClick={() => setMenu(menu() === a.id ? undefined : a.id)}><MoreHorizontal size={16} /></button>
                         <Menu open={menu() === a.id} anchor={() => anchor} onClose={() => setMenu(undefined)} label={`${a.name} account actions`} width={200} align="end">{accountItems(a)}</Menu>

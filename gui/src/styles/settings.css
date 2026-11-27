@@ -523,6 +523,30 @@
     padding: calc(12 * var(--sp)) calc(14 * var(--sp));
 }
 
+/* Settings → Providers: which machine's are shown, above its groups. */
+.prov-machines {
+    display: flex;
+    max-width: 100%;
+    margin-bottom: calc(16 * var(--sp));
+    overflow-x: auto;
+}
+
+/* On a machine's name: something isn't set up there. */
+.seg-mark {
+    display: inline-block;
+    width: calc(6 * var(--sp));
+    height: calc(6 * var(--sp));
+    margin-left: calc(6 * var(--sp));
+    border-radius: 50%;
+    background: var(--warn);
+    vertical-align: middle;
+}
+
+/* The key switch of a server, over the box that adds a key there. */
+.keys-sync {
+    border-bottom: 0.5px solid var(--line);
+}
+
 .settings-page .keyin .input,
 .settings-page .prov-add .input {
     flex: 1;

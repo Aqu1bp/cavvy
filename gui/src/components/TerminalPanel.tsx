@@ -128,11 +128,11 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean; on?: string; 
         setSelected(tab.id);
         setTerminalOpen(true);
     };
-    const loginAccount = (provider: string, accountId: string, name: string) => {
+    const loginAccount = (provider: string, accountId: string, name: string, server?: string) => {
         if (!restored()) return toast("Terminal tabs are reconnecting. Try again in a moment.");
         if (conn() !== "open" || full()) return toast("Connect and close a terminal before signing in", "warn");
         const id = crypto.randomUUID();
-        const tab: Tab = { id, terminal: id, cwd: app.hello?.homeDir ?? "/", number: next++, login: { provider, accountId, name } };
+        const tab: Tab = { id, terminal: id, cwd: app.hello?.homeDir ?? "/", number: next++, login: { provider, accountId, name, ...(server ? { server } : {}) } };
         terminalAsked();
         // Shown though a session of another machine is in view: the sign-in is this one's (App.tsx).
         setTerminalLogin(true);

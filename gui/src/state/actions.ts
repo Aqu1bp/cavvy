@@ -795,10 +795,10 @@ export function activeHandle() {
  * Turns on a CLI the user is signed in to. True once it's connected. `failed`: where a failure to connect goes, when
  * something on screen shows it (Settings' provider row) rather than an error card.
  */
-export async function connectCli(pr: ProviderInfo, failed: (e: unknown) => void = reportError): Promise<boolean> {
+export async function connectCli(pr: ProviderInfo, failed: (e: unknown) => void = reportError, at?: { link: Rpc; changed: () => Promise<void> }): Promise<boolean> {
     let r: Awaited<ReturnType<typeof rpc.call<"providers.connectCli">>>;
     try {
-        r = await rpc.call("providers.connectCli", { provider: pr.id });
+        r = await (at?.link ?? rpc).call("providers.connectCli", { provider: pr.id });
     } catch (e) {
         failed(e);
         return false;
@@ -807,7 +807,7 @@ export async function connectCli(pr: ProviderInfo, failed: (e: unknown) => void 
     // "Antigravity plan", not "Antigravity plan through Antigravity".
     toast(`Using your ${plan}${plan.startsWith(pr.name) ? "" : ` through ${pr.name}`} (${r.description})`, "success");
     if (r.warning) toast(r.warning, "warn");
-    await Promise.all([refreshProviders(), refreshModels(), refreshSettings()]).catch(reportError);
+    await (at ? at.changed() : Promise.all([refreshProviders(), refreshModels(), refreshSettings()])).catch(reportError);
     return true;
 }
 

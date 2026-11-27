@@ -10,7 +10,7 @@ import { answerPeers, homeFarPeers, peersDenied, PEERS_WAIT_MS, serverFarPeers }
 import { noteScheduleIndex, readScheduleIndex } from "../agent/schedule-host";
 import type { ServerSetup } from "../tools/server-tools";
 import { findRecipe, signInRecipes } from "../agent/sign-in-recipes";
-import { ACCOUNT_PROVIDERS, account, accountProvider, cliAccounts, accountSharingWarning, addAccount, defaultAccount, holdLogin, listAccounts, removeAccount, renameAccount, setDefaultAccount, registerAccountRoots } from "../providers/accounts";
+import { ACCOUNT_PROVIDERS, account, accountProvider, cliAccounts, accountSharingWarning, addAccount, defaultAccount, holdLogin, listAccounts, removeAccount, renameAccount, setDefaultAccount, registerAccountRoots, validAccountId } from "../providers/accounts";
 import { loginCommand } from "../backends/account-login";
 import { redactedError } from "./git-handles";
 import { sessionWorktree } from "./session-worktrees";
@@ -2960,6 +2960,17 @@ export class Engine {
                     if (!p.login || typeof p.login !== "object") throw new RpcError("Invalid login selector", "invalid");
                     const provider = str(p.login.provider, "provider");
                     const accountId = str(p.login.accountId, "accountId");
+                    // On one of the user's servers: the CLI's sign-in there has this terminal, over SSH, as `cavvy servers login` gives it.
+                    if (p.login.server !== undefined) {
+                        if (this.o.away) throw new RpcError("A server's sign-in is started from your own machine.", "unsupported");
+                        const def = agentCli(provider);
+                        if (!def || !validAccountId(accountId)) throw new RpcError("Invalid login selector", "invalid");
+                        const [{ requireServer }, { remoteSh, sshCommandArgv }, { LOGIN }] = await Promise.all([import("../servers/store"), import("../servers/ssh"), import("../servers/remote")]);
+                        const entry = requireServer(str(p.login.server, "server"));
+                        const argv = sshCommandArgv(entry, remoteSh(LOGIN, [def.id, accountId === "default" ? "" : accountId]), { tty: true });
+                        const name = typeof p.login.name === "string" ? cleanTitle(p.login.name) || def.name : def.name;
+                        return this.terminals.open(client, str(p.id, "id"), homedir(), p.cols, p.rows, { command: { argv, env: childEnv() }, login: { provider, accountId, name, server: entry.name } });
+                    }
                     // Seen by removals in other Cavvy processes too, until the login process exits.
                     const release = holdLogin(provider, accountId);
                     try {
