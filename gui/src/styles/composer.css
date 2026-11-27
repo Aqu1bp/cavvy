@@ -1127,6 +1127,13 @@ button.att-card:hover {
     color: var(--fg);
 }
 
+/* The message's field has that fade only while it's scrolled (Composer.tsx marks it): unscrolled there's nothing in
+   those 4px to fade, and the mask there all the time kept about 55 MB in the GPU process for as long as a session was
+   shown (the conversation's own mask doesn't, and why this one did isn't known). */
+.composer-field textarea:not([data-scrolled]) {
+    mask-image: none;
+}
+
 .composer.v-home textarea {
     min-height: calc(58 * var(--sp));
 }

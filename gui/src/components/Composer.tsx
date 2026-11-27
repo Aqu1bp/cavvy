@@ -149,20 +149,14 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         ta.style.height = `${ta.scrollHeight}px`;
         setOverflows(ta.scrollHeight > ta.clientHeight + 1);
     };
-    /** At its modest height's cap (a ResizeObserver says): only then can more text overflow it, and is it measured. */
+    /** At its modest height's cap (a ResizeObserver says, below): only then can more text overflow it, and is it measured. */
     let atMost = false;
-    onMount(() => {
-        if (!SIZED_BY_CSS || !ta || typeof ResizeObserver === "undefined") return;
-        const field = ta;
-        const ro = new ResizeObserver(() => {
-            if (expanded()) return;
-            const cap = parseFloat(getComputedStyle(field).maxHeight);
-            atMost = Number.isFinite(cap) && field.offsetHeight >= cap - 1;
-            setOverflows(atMost && field.scrollHeight > field.clientHeight + 1);
-        });
-        ro.observe(field);
-        onCleanup(() => ro.disconnect());
-    });
+    const atCap = (field: HTMLTextAreaElement) => {
+        if (!SIZED_BY_CSS || expanded()) return;
+        const cap = parseFloat(getComputedStyle(field).maxHeight);
+        atMost = Number.isFinite(cap) && field.offsetHeight >= cap - 1;
+        setOverflows(atMost && field.scrollHeight > field.clientHeight + 1);
+    };
     // What will run, in color: while the text has a /command or a $skill, a layer behind it draws the same lines with
     // them in the accent and what the command takes after it, and the textarea's own letters go clear. The caret,
     // selection, typing and spellcheck stay the textarea's.
@@ -179,11 +173,21 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         mirror.style.height = `${ta.clientHeight}px`;
         mirror.scrollTop = ta.scrollTop;
     };
-    createEffect(on(marked, () => syncMirror()));
+    createEffect(on(marked, syncMirror));
+    /** The field scrolled or changed size: the layer goes with it, and the field is marked while it's scrolled, since
+     *  only then is its top faded (composer.css). Where it's scrolled to is read first, while it's still laid out, and
+     *  the mark made last, after what else is measured here (`first`): it restyles the field. */
+    const fieldMoved = (first?: () => void) => {
+        const scrolled = ta!.scrollTop > 0;
+        first?.();
+        syncMirror();
+        ta!.toggleAttribute("data-scrolled", scrolled);
+    };
     onMount(() => {
         if (!ta || typeof ResizeObserver === "undefined") return;
-        const observer = new ResizeObserver(() => syncMirror());
-        observer.observe(ta);
+        const field = ta;
+        const observer = new ResizeObserver(() => fieldMoved(() => atCap(field)));
+        observer.observe(field);
         onCleanup(() => observer.disconnect());
     });
     /** Opens the large size or closes it: laid out at once, drawn growing from where it was (lib/composer-size), the conversation gliding with it. */
@@ -1022,7 +1026,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                             onBlur={() => setFlipped(false)}
                             onPaste={onPaste}
                             onClick={() => updateMenu()}
-                            onScroll={syncMirror}
+                            onScroll={() => fieldMoved()}
                             aria-label="Message"
                             role="combobox"
                             aria-autocomplete="list"
