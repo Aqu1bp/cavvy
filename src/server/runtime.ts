@@ -72,7 +72,7 @@ import { expandMcpMentions, findMcpMentions } from "../mcp/mentions";
 import type { McpAsker } from "../mcp/elicitation";
 import { notifyAfterMs } from "../ui/notify";
 import { displayPath } from "../util/files";
-import { gitBranch } from "../util/git";
+import { gitBranch, headBranch } from "../util/git";
 import { pathSettling } from "../util/env";
 import { redact, redactPrefix, lineRedactor } from "../util/redact";
 import { redactedReport } from "../lsp/diagnostics";
@@ -5508,10 +5508,12 @@ export class Runtime {
     private prRead?: { at: number; branch?: string; promise: Promise<{ pr?: GitPrInfo }> };
     gitPrState() {
         if (!this.ws.trusted || this.closed) return Promise.resolve({});
-        if (!this.prRead || Date.now() - this.prRead.at >= 60_000 || this.prRead.branch !== this.view.state.branch) {
+        // The branch checked out now, from the HEAD file (a terminal's checkout may not have reached the header yet).
+        const branch = headBranch(this.ws.cwd) ?? this.view.state.branch;
+        if (!this.prRead || Date.now() - this.prRead.at >= 60_000 || this.prRead.branch !== branch) {
             this.prRead = {
                 at: Date.now(),
-                branch: this.view.state.branch,
+                branch,
                 promise: gitPrState(this.ws.cwd).then((pr) => {
                     // Merged or closed: with auto-settle on, the session is done with (engine.ts prEnded).
                     if ((pr?.state === "merged" || pr?.state === "closed") && !this.closed) this.engine.prEnded(this);
@@ -5531,7 +5533,7 @@ export class Runtime {
         this.commitDone = done;
         try {
             const result = await done;
-            this.prRead = { at: Date.now(), branch: this.view.state.branch, promise: Promise.resolve(result) };
+            this.prRead = { at: Date.now(), branch: headBranch(this.ws.cwd) ?? this.view.state.branch, promise: Promise.resolve(result) };
             return result;
         } finally {
             this.committing = false;
