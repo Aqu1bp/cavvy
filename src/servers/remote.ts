@@ -206,17 +206,18 @@ export async function probeServer(e: ServerEntry, signal?: AbortSignal): Promise
     const r = await ssh(e, remoteSh(withMacPaths(PROBE)), { timeoutMs: 45_000, signal });
     // csh and tcsh can't take a quoted script of several lines, which is how every command is sent (ssh.ts remoteSh).
     if (r.code !== 0 && /Unmatched ['"]/.test(r.stderr)) throw new ServerError(`Cavvy can't run commands on ${hostOf(e)}: your login shell there is csh or tcsh. It needs sh, bash, zsh, dash or ksh.`);
-    if (r.code !== 0) {
-        // A Windows OpenSSH server runs cmd.exe or PowerShell and has no `sh`: probe with PowerShell before failing.
+    const facts = r.code === 0 ? parseFacts(r.stdout) : undefined;
+    // Windows OpenSSH runs cmd.exe or PowerShell: `sh -c` either fails, exits 0 with garbled output (cmd.exe doesn't
+    // quote `'...'` when Git Bash's sh.exe is on PATH), or reports MINGW/MSYS/CYGWIN from Git Bash's uname.
+    if (!facts || !facts.os || !facts.home || /^(MINGW|MSYS|CYGWIN)/i.test(facts.os)) {
         const w = await ssh(e, remotePs(PROBE_PS), { timeoutMs: 45_000, signal }).catch(() => undefined);
         if (w && w.code === 0) {
             const wfacts = parseFacts(w.stdout);
             if (wfacts.os === "Windows" && wfacts.home) return wfacts;
         }
-        throw new ServerError(`A command on ${hostOf(e)} failed (${r.code}): ${printable(r.stderr.trim().split("\n").at(-1) ?? "no output")}`);
+        if (r.code !== 0) throw new ServerError(`A command on ${hostOf(e)} failed (${r.code}): ${printable(r.stderr.trim().split("\n").at(-1) ?? "no output")}`);
+        if (!facts?.os || !facts.home) throw new ServerError(`${hostOf(e)} didn't answer as a server Cavvy can read (no \`sh\`, \`uname\` or home folder there).`);
     }
-    const facts = parseFacts(r.stdout);
-    if (!facts.os || !facts.home) throw new ServerError(`${hostOf(e)} didn't answer as a server Cavvy can read (no \`sh\`, \`uname\` or home folder there).`);
     return facts;
 }
 
