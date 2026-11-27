@@ -87,6 +87,11 @@ async function lookup(providerId: string): Promise<ResolvedKey | undefined> {
         const v = process.env[envVar]?.trim();
         if (v) return { value: v, source: "env", envVar };
     }
+    return storedKey(providerId);
+}
+
+/** The key Cavvy keeps for it, whatever the environment says: what sync compares with the one it put there. */
+export async function storedKey(providerId: string): Promise<ResolvedKey | undefined> {
     if (await keychainWorks()) {
         try {
             const v = (await Bun.secrets.get({ service: SERVICE, name: providerId })) ?? (await fromLegacyKeychain(Bun.secrets, providerId));

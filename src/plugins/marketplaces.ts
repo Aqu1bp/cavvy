@@ -12,7 +12,7 @@ import { ensureDir } from "../config/paths";
 import { writeJson } from "../config/settings";
 import { canonical, expandPath, isInside } from "../util/files";
 import { MANIFEST_DIRS, marketplaceFile, nameError, parseMarketplace, validName, type Marketplace } from "./manifest";
-import { fetchJson, gitClone, githubUrl, SourceError, swapIn } from "./sources";
+import { fetchJson, gitClone, githubUrl, pruneSymlinks, SourceError, swapIn } from "./sources";
 import { cachedJson, pluginPaths, readKnownMarketplaces, writeKnownMarketplaces, type KnownMarketplace, type MarketplaceSource } from "./store";
 
 export class PluginError extends Error {}
@@ -100,22 +100,24 @@ export function listMarketplaces(): LoadedMarketplace[] {
 const now = () => new Date().toISOString();
 
 /** Fetch a git or URL marketplace into a fresh folder. Returns the folder and the catalog it holds. */
-async function fetchMarketplace(src: MarketplaceSource): Promise<{ dir: string; marketplace: Marketplace; sha?: string }> {
+async function fetchMarketplace(src: MarketplaceSource, publicOnly = false): Promise<{ dir: string; marketplace: Marketplace; sha?: string }> {
     ensureDir(pluginPaths.marketplaces());
     const dir = mkdtempSync(join(pluginPaths.marketplaces(), ".fetch-"));
     try {
         if (src.source === "url") {
-            const j = await fetchJson(src.url);
+            const j = await fetchJson(src.url, { publicOnly });
             const m = parseMarketplace(j);
             writeJson(join(dir, ".cavvy-plugin", "marketplace.json"), j);
             return { dir, marketplace: m };
         }
         if (src.source !== "github" && src.source !== "git") throw new PluginError("not a remote marketplace");
         const repo = join(dir, "repo");
-        const sha = await gitClone(src.source === "github" ? githubUrl(src.repo) : src.url, repo, { ref: src.ref });
+        const sha = await gitClone(src.source === "github" ? githubUrl(src.repo) : src.url, repo, { ref: src.ref, publicOnly });
+        rmSync(join(repo, ".git"), { recursive: true, force: true });
+        // Prune escaping symlinks BEFORE locating or reading the catalog so a malicious repo can't read host files.
+        pruneSymlinks(repo);
         const f = marketplaceFile(repo);
         if (!f) throw new PluginError(`${describeMarketplaceSource(src)} has no .claude-plugin/marketplace.json or .cavvy-plugin/marketplace.json`);
-        rmSync(join(repo, ".git"), { recursive: true, force: true });
         return { dir: repo, marketplace: parseMarketplace(cachedJson(f)), sha };
     } catch (e) {
         rmSync(dir, { recursive: true, force: true });
@@ -133,10 +135,14 @@ function place(fetched: string, name: string): string {
     return dest;
 }
 
-/** Add a marketplace. Adding the same source again refreshes it. */
-export async function addMarketplace(input: string, cwd: string): Promise<LoadedMarketplace> {
-    const src = parseMarketplaceSource(input, cwd);
-    const known = readKnownMarketplaces();
+/** Add a marketplace (from a user string or a pre-validated MarketplaceSource). Adding the same source again refreshes it unless `expectedName` is set. */
+export async function addMarketplace(
+    input: string | MarketplaceSource,
+    cwd: string,
+    opts?: { expectedName?: string; publicOnly?: boolean },
+): Promise<LoadedMarketplace> {
+    const src = typeof input === "string" ? parseMarketplaceSource(input, cwd) : input;
+    let known = readKnownMarketplaces();
     let name: string;
     let location: string;
     let sha: string | undefined;
@@ -154,10 +160,18 @@ export async function addMarketplace(input: string, cwd: string): Promise<Loaded
         location = src.source === "file" ? fileRoot(src.path) : src.path;
         clash(known, name, src);
     } else {
-        const { dir, marketplace, sha: at } = await fetchMarketplace(src);
+        const { dir, marketplace, sha: at } = await fetchMarketplace(src, opts?.publicOnly === true);
         name = marketplace.name;
         sha = at;
+        // Re-read current manifest immediately before collision checks and placement so concurrent additions aren't lost.
+        known = readKnownMarketplaces();
         try {
+            if (opts?.expectedName && name !== opts.expectedName) {
+                throw new PluginError(`${describeMarketplaceSource(src)} resolved to "${name}", expected "${opts.expectedName}".`);
+            }
+            if (opts?.expectedName && Object.hasOwn(known, name)) {
+                throw new PluginError(`A marketplace named "${name}" is already added on this server.`);
+            }
             clash(known, name, src);
         } catch (e) {
             rmSync(basename(dirname(dir)).startsWith(".fetch-") ? dirname(dir) : dir, { recursive: true, force: true });
@@ -178,12 +192,12 @@ function clash(known: Record<string, KnownMarketplace>, name: string, src: Marke
 }
 
 /** Fetch a marketplace again (a folder on disk is just re-read). */
-export async function updateMarketplace(name: string): Promise<LoadedMarketplace> {
+export async function updateMarketplace(name: string, opts?: { publicOnly?: boolean }): Promise<LoadedMarketplace> {
     const known = readKnownMarketplaces();
     const k = Object.hasOwn(known, name) ? known[name] : undefined;
     if (!k) throw new PluginError(unknownMarketplace(name));
     if (k.source.source !== "directory" && k.source.source !== "file") {
-        const { dir, marketplace, sha } = await fetchMarketplace(k.source);
+        const { dir, marketplace, sha } = await fetchMarketplace(k.source, opts?.publicOnly === true);
         if (marketplace.name !== name) {
             rmSync(basename(dirname(dir)).startsWith(".fetch-") ? dirname(dir) : dir, { recursive: true, force: true });
             throw new PluginError(`${describeMarketplaceSource(k.source)} now calls itself "${marketplace.name}", not "${name}". Remove it and add it again.`);

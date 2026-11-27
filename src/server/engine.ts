@@ -3,13 +3,16 @@
 // once, in different projects; each project gets its own settings, trust
 // decision, MCP servers and file index, shared by its sessions.
 
-import { applySync, readSynced } from "../servers/sync";
+import { applySync, forgetSyncedFiles, syncedFor } from "../servers/sync";
+import { applyStateFrom, forgetSyncedState, syncedStateFor } from "../servers/sync-merge";
+import type { ApplyStateResult } from "../servers/sync-state";
+import { installState } from "../servers/sync-install";
 import { FAR_GRACE_MS, searchServers, withServers, trashOnServers } from "./far-search";
 import { answerPeers, homeFarPeers, peersDenied, PEERS_WAIT_MS, serverFarPeers } from "./far-peers";
 import { noteScheduleIndex, readScheduleIndex } from "../agent/schedule-host";
 import type { ServerSetup } from "../tools/server-tools";
 import { findRecipe, signInRecipes } from "../agent/sign-in-recipes";
-import { ACCOUNT_PROVIDERS, account, accountProvider, cliAccounts, accountSharingWarning, addAccount, defaultAccount, holdLogin, listAccounts, removeAccount, renameAccount, setDefaultAccount, registerAccountRoots } from "../providers/accounts";
+import { ACCOUNT_PROVIDERS, account, accountProvider, cliAccounts, accountSharingWarning, addAccount, defaultAccount, holdLogin, listAccounts, removeAccount, renameAccount, setDefaultAccount, registerAccountRoots, validAccountId } from "../providers/accounts";
 import { loginCommand } from "../backends/account-login";
 import { redactedError } from "./git-handles";
 import { sessionWorktree } from "./session-worktrees";
@@ -49,7 +52,7 @@ import { reportedOf } from "./plan-meter";
 import { AppUpdates } from "./app-update";
 import { findCli, stopTiming } from "../backends/cli";
 import { AGENT_CLIS, agentCli } from "../backends/defs";
-import { getKey, removeKey, setKey } from "../auth/credentials";
+import { forgetCachedKeys, getKey, removeKey, setKey } from "../auth/credentials";
 import { detectKeyProvider, validateKey } from "../auth/detect";
 import { FileIndex } from "../ui/mentions";
 import { gitRoot, gitBranch } from "../util/git";
@@ -237,6 +240,8 @@ export interface EngineClient {
     subs: Set<string>;
     /** The window's key, when its connection presented one: its terminals are the window's, not this connection's. */
     window?: string;
+    /** On a server: the computer its connection signed in as. Sync keeps what each one sent apart. */
+    signedInAs?: string;
     /** The session on its screen (null: none). Undefined until it says, and then all count. */
     shown?: string | null;
     /** The theme its window shows (null: none), as it last said, and when. */
@@ -811,6 +816,70 @@ export class Engine {
 
     /** Plugin changes run one at a time: two updates of one marketplace mustn't swap its folder at once. */
     private pluginQueue: Promise<unknown> = Promise.resolve();
+    /** Incoming sync applies run one at a time so concurrent RPCs cannot race ownership records or plugin installs. */
+    private syncQueue: Promise<unknown> = Promise.resolve();
+
+    /**
+     * Applies synced state (sync-merge.ts) after what's applied before it, and reloads what it changed: settings and
+     * MCP servers, plugins' commands, providers' clients and keys. Undefined from `apply`: nothing was.
+     */
+    private takeState(apply: () => Promise<ApplyStateResult | undefined>): Promise<ApplyStateResult | undefined> {
+        return this.enqueueSync(async () => {
+            const run = this.pluginQueue.then(apply, apply);
+            this.pluginQueue = run.catch(() => undefined);
+            let r: ApplyStateResult | undefined;
+            let nothing = false;
+            try {
+                r = await run;
+                nothing = r === undefined;
+                return r;
+            } finally {
+                // Reload even if applyStateSync threw after writing settings/providers so open sessions never stay stale.
+                // Nothing to apply (a computer forgotten that had sent nothing): nothing to reload.
+                if (!nothing && (!r || r.settingsChanged || r.pluginsChanged)) {
+                    const restart = r?.restartedPlugins?.length ? pluginServerMatch(r.restartedPlugins) : undefined;
+                    this.reloadSettings();
+                    await Promise.all(
+                        [...this.workspaces.values()].map((ws) =>
+                            ws.mcp
+                                .sync()
+                                .then(() => restart && ws.mcp.restartWhere(restart))
+                                .catch(() => undefined),
+                        ),
+                    );
+                    for (const [key, names] of this.cliCommandNames) {
+                        const ws = this.workspaces.get(key.slice(key.indexOf(":") + 1));
+                        if (ws) this.cliCommandNames.set(key, withPluginCommands(names, ws.commands));
+                    }
+                }
+                if (!nothing && (!r || r.providersChanged || r.keysChanged || r.accountsAdded)) {
+                    forgetCachedKeys();
+                    const ids = r ? r.changedProviders : allProviders().map((pr) => pr.id);
+                    for (const id of ids) forgetClient(id);
+                    for (const rt of this.runtimes.values()) rt.classifier.clearCache();
+                    await this.refreshListings(true);
+                    for (const id of ids) {
+                        await Promise.all([...this.runtimes.values()].map((rt) => rt.keyChanged(id).catch(() => undefined)));
+                    }
+                    this.broadcast({ type: "models.changed" });
+                }
+            }
+        });
+    }
+
+    /** A computer signed out of this server for good (host.ts): what only it synced is let go, and the others' applied again. */
+    async forgetSyncedMachine(id: string): Promise<void> {
+        await this.takeState(async () => {
+            forgetSyncedFiles(id);
+            return forgetSyncedState(id);
+        });
+    }
+
+    private enqueueSync<T>(fn: () => Promise<T>): Promise<T> {
+        const next = this.syncQueue.then(fn, fn);
+        this.syncQueue = next.catch(() => undefined);
+        return next;
+    }
 
     private pluginAction(p: PluginActionParams): Promise<PluginsInfo & { message: string }> {
         const run = this.pluginQueue.then(() => this.runPluginAction(p));
@@ -2254,6 +2323,9 @@ export class Engine {
                         installed: Boolean(findCli(p.id, cli)),
                         signIn: cli.signIn,
                         install: cli.install,
+                        ...(cli.installCommand ? { installable: true } : {}),
+                        // On a server whose sync installs it (servers/sync-install.ts).
+                        ...installState(p.id),
                         plan: def.planLabel,
                         multiAccount: Boolean(def.account),
                         planLimits: def.caps.planLimits !== "none",
@@ -2661,6 +2733,8 @@ export class Engine {
         for (const r of this.runtimes.values()) r.classifier.clearCache();
         await this.refreshListings(true);
         await Promise.all([...this.runtimes.values()].map((r) => r.keyChanged(id).catch(() => undefined)));
+        // Keychain API key changes don't touch a watched file, so notify connected servers directly.
+        this.serverLinks?.resyncAll();
     }
 
     // -----------------------------------------------------------------------
@@ -2949,11 +3023,46 @@ export class Engine {
                     if (!p.login || typeof p.login !== "object") throw new RpcError("Invalid login selector", "invalid");
                     const provider = str(p.login.provider, "provider");
                     const accountId = str(p.login.accountId, "accountId");
-                    // Seen by removals in other Cavvy processes too, until the login process exits.
-                    const release = holdLogin(provider, accountId);
+                    // On one of the user's servers: the CLI's sign-in there has this terminal, over SSH, as `cavvy servers login` gives it.
+                    // Its install, as the CLI's own installer has it (never a command the window sends).
+                    const install = p.login.install === true;
+                    const installCommand = install ? agentCli(provider)?.cli.installCommand : undefined;
+                    if (install && !installCommand) throw new RpcError("That can't be installed from here.", "unsupported");
+                    if (p.login.server !== undefined) {
+                        if (this.o.away) throw new RpcError("A server's sign-in is started from your own machine.", "unsupported");
+                        const def = agentCli(provider);
+                        if (!def || !validAccountId(accountId)) throw new RpcError("Invalid login selector", "invalid");
+                        const [{ requireServer }, { remoteSh, sshCommandArgv }, { LOGIN }] = await Promise.all([import("../servers/store"), import("../servers/ssh"), import("../servers/remote")]);
+                        const entry = requireServer(str(p.login.server, "server"));
+                        const script = installCommand ? remoteSh(installCommand) : remoteSh(LOGIN, [def.id, accountId === "default" ? "" : accountId]);
+                        const argv = sshCommandArgv(entry, script, { tty: true });
+                        const name = typeof p.login.name === "string" ? cleanTitle(p.login.name) || def.name : def.name;
+                        return this.terminals.open(client, str(p.id, "id"), homedir(), p.cols, p.rows, { command: { argv, env: childEnv() }, login: { provider, accountId, name, server: entry.name, ...(install ? { install } : {}) } });
+                    }
+                    if (installCommand) {
+                        const name = typeof p.login.name === "string" ? cleanTitle(p.login.name) || provider : provider;
+                        const onExit = () => void this.refreshListings(true).then(() => this.broadcast({ type: "models.changed" })).catch(() => undefined);
+                        return this.terminals.open(client, str(p.id, "id"), homedir(), p.cols, p.rows, { command: { argv: ["/bin/sh", "-c", installCommand], env: childEnv() }, login: { provider, accountId, name, install }, onExit });
+                    }
+                    // Seen by removals in other Cavvy processes too, until the login process exits. A CLI without
+                    // accounts (OpenCode, Grok, Antigravity) signs in its one, which nothing removes.
+                    const managed = (ACCOUNT_PROVIDERS as readonly string[]).includes(provider);
+                    if (!managed && (!agentCli(provider) || accountId !== "default")) throw new RpcError("Invalid login selector", "invalid");
+                    const release = managed ? holdLogin(provider, accountId) : () => {};
                     try {
                         const command = loginCommand(provider, accountId, { away: this.o.away });
-                        return this.terminals.open(client, str(p.id, "id"), homedir(), p.cols, p.rows, { command, login: { provider, accountId, name: account(provider, accountId).name }, onExit: () => { release(); void this.accountsList(provider, true).then(() => this.refreshListings(true)).then(() => this.broadcast({ type: "models.changed" })).catch(() => undefined); } });
+                        const name = managed ? account(provider, accountId).name : agentCli(provider)!.name;
+                        return this.terminals.open(client, str(p.id, "id"), homedir(), p.cols, p.rows, { command, login: { provider, accountId, name }, onExit: () => {
+                                release();
+                                // Signed in to a CLI that isn't turned on (Settings' "Add a subscription"): it is now, as a server's sign-in does.
+                                void this.accountsList(provider, true)
+                                    .then(async (accounts) => {
+                                        if (!readAgentConfig(provider) && accounts.find((a) => a.id === accountId)?.signedIn === true) await this.connectCli(provider).catch(() => undefined);
+                                    })
+                                    .then(() => this.refreshListings(true))
+                                    .then(() => this.broadcast({ type: "models.changed" }))
+                                    .catch(() => undefined);
+                            } });
                     } catch (e) {
                         release();
                         throw e;
@@ -3129,10 +3238,14 @@ export class Engine {
                 return { path: keybindingsPath(), ...readKeybindings() } satisfies KeybindingsFile;
             case "themes.list":
                 return listThemes();
-            case "themes.remove":
-                return { text: removeTheme(str(p.id, "id")) };
+            case "themes.remove": {
+                const r = { text: removeTheme(str(p.id, "id")) };
+                this.serverLinks?.resyncAll();
+                return r;
+            }
             case "themes.restore":
                 restoreTheme(str(p.id, "id"), str(p.text, "text"), undefined, p.replace === true);
+                this.serverLinks?.resyncAll();
                 return null;
             case "themes.report": {
                 const r = p as unknown as ThemeReport;
@@ -3575,16 +3688,19 @@ export class Engine {
                 forgetClient(provider);
                 await this.refreshListings(true);
                 this.broadcast({ type: "models.changed" });
+                this.serverLinks?.resyncAll();
                 return added;
             }
             case "accounts.rename":
                 renameAccount(str(p.provider, "provider"), str(p.id, "id"), str(p.name, "name"));
                 this.broadcast({ type: "models.changed" });
+                this.serverLinks?.resyncAll();
                 return null;
             case "accounts.setDefault":
                 setDefaultAccount(str(p.provider, "provider"), str(p.id, "id"));
                 await this.refreshListings(true);
                 this.broadcast({ type: "models.changed" });
+                this.serverLinks?.resyncAll();
                 return null;
             case "accounts.remove": {
                 const provider = str(p.provider, "provider");
@@ -3623,17 +3739,32 @@ export class Engine {
             }
             case "sync.files": {
                 if (!this.o.away) throw new RpcError("Only a server takes another machine's skills.", "unsupported");
-                return readSynced();
+                return syncedFor(client.signedInAs);
             }
             case "sync.apply": {
                 if (!this.o.away) throw new RpcError("Only a server takes another machine's skills.", "unsupported");
-                try {
-                    return applySync(p.files, p.remove);
-                } finally {
-                    // A command added or changed (some, before a failure) is one the / menu and a sent /name know at once.
-                    // Skills are read again by themselves.
-                    for (const ws of this.workspaces.values()) ws.commands = loadCustomCommands(ws.cwd, ws.trusted);
-                }
+                return await this.enqueueSync(async () => {
+                    let changed: string[] = [];
+                    try {
+                        const r = applySync(p.files, p.remove, undefined, client.signedInAs);
+                        changed = r.changed;
+                        return { written: r.written, removed: r.removed };
+                    } finally {
+                        // A command added or changed (some, before a failure) is one the / menu and a sent /name know at once.
+                        // Skills, agents and memory are read again by themselves.
+                        for (const ws of this.workspaces.values()) ws.commands = loadCustomCommands(ws.cwd, ws.trusted);
+                        if (changed.some((f) => f.startsWith(".cavvy/themes/"))) this.broadcast({ type: "themes.changed", themes: listThemes() });
+                        if (changed.includes(".cavvy/keybindings.json")) this.broadcast({ type: "keybindings.changed", keybindings: { path: keybindingsPath(), ...readKeybindings() } });
+                    }
+                });
+            }
+            case "sync.state": {
+                if (!this.o.away) throw new RpcError("Only a server takes another machine's state.", "unsupported");
+                return await syncedStateFor(client.signedInAs, p.signIns === true);
+            }
+            case "sync.applyState": {
+                if (!this.o.away) throw new RpcError("Only a server takes another machine's state.", "unsupported");
+                return await this.takeState(() => applyStateFrom(client.signedInAs ?? "", p.digest, p.payload, p.signIns === true));
             }
             case "offers.session": {
                 // Asked by this machine's own windows: a server's Cavvy lends nothing.
@@ -3735,12 +3866,18 @@ export class Engine {
             case "servers.add": {
                 const servers = await this.servers(client, str(p.name, "name"));
                 const name = str(p.name, "name");
-                const draft = { name, destination: str(p.destination, "destination"), ...(typeof p.port === "number" ? { port: p.port } : {}), ...(typeof p.identityFile === "string" && p.identityFile ? { identityFile: p.identityFile } : {}) };
+                const draft = { name, destination: str(p.destination, "destination"), ...(typeof p.port === "number" ? { port: p.port } : {}), ...(typeof p.identityFile === "string" && p.identityFile ? { identityFile: p.identityFile } : {}), ...(typeof p.sync === "boolean" ? { sync: p.sync } : {}) };
                 const trust = fingerprints(p.trust);
                 return await servers.add(draft, trust ? servers.trust(name, trust) : undefined);
             }
             case "servers.copy":
                 return await (await this.servers(client, str(p.name, "name"))).copy(str(p.name, "name"));
+            case "servers.sync":
+                return { results: await (await this.servers(client)).syncNow(optStr(p.name)) };
+            case "servers.setSync":
+                if (typeof p.on !== "boolean") throw new RpcError("Say on or off", "invalid");
+                (await this.servers(client)).setSync(str(p.name, "name"), p.on);
+                return null;
             case "servers.check":
                 return await (await this.servers(client, str(p.name, "name"))).check(str(p.name, "name"));
             case "servers.connect": {
@@ -3955,8 +4092,11 @@ export class Engine {
             }
             case "plugins.list":
                 return this.pluginsInfo(optStr(p.cwd));
-            case "plugins.action":
-                return this.pluginAction(p as PluginActionParams);
+            case "plugins.action": {
+                const r = await this.pluginAction(p as PluginActionParams);
+                this.serverLinks?.resyncAll();
+                return r;
+            }
             case "plugins.logo":
                 return pluginLogo(str(p.owner, "owner"));
             case "session.mcpSignIn": {
@@ -3991,8 +4131,11 @@ export class Engine {
             }
             case "settings.get":
                 return this.guiSettings(optStr(p.cwd));
-            case "settings.update":
-                return this.updateGuiSettings((p.patch ?? {}) as GuiSettings);
+            case "settings.update": {
+                const r = this.updateGuiSettings((p.patch ?? {}) as GuiSettings);
+                this.serverLinks?.resyncAll();
+                return r;
+            }
             case "limits.get":
                 return [...this.limits.values()];
             case "served.get":

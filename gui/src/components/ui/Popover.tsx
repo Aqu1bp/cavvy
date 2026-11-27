@@ -92,9 +92,9 @@ export function Popover(p: PopoverProps) {
     });
 
     // Settings hides what it covers without unmounting it (App.tsx): a menu there closes as Settings opens, as it did
-    // when that went, and one opened while it's covered (a shortcut, say) closes at once.
+    // when that went, and one opened while it's covered (a shortcut, say) closes at once. A dialog is over Settings.
     createEffect(() => {
-        if (settingsTab() && open() && !p.anchor()?.closest(".settings-page, .settings-nav")) p.onClose();
+        if (settingsTab() && open() && !p.anchor()?.closest(".settings-page, .settings-nav, .dialog")) p.onClose();
     });
     // Its session switched away from by a key, kept out of sight (Panes.tsx): closed as it would be with the session gone,
     // not left over the next one, acting on this one.
@@ -150,7 +150,7 @@ export function Popover(p: PopoverProps) {
                     role={p.role}
                     aria-label={p.label}
                     tabIndex={p.behavior ? -1 : undefined}
-                    class={`popover ${p.class ?? ""}`}
+                    class={`popover ${p.anchor()?.closest?.(".dialog") ? "over-dialog " : ""}${p.class ?? ""}`}
                     style={{
                         left: `${pos()?.left ?? -9999}px`,
                         top: pos()?.top !== undefined ? `${pos()!.top}px` : undefined,

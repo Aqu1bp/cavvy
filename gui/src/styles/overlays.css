@@ -34,6 +34,11 @@
     transform-origin: top left;
 }
 
+/* Opened from a dialog: over it, as one opened from the window is over the window. */
+.popover.over-dialog {
+    z-index: 75;
+}
+
 .popover[data-side="top"] {
     transform-origin: bottom left;
 }

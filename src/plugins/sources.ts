@@ -4,9 +4,11 @@
 // network step has a timeout.
 
 import { createHash } from "crypto";
+import { lookup } from "dns/promises";
 import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "fs";
 import { join, relative } from "path";
 import { gunzipSync } from "zlib";
+import { localHost } from "../servers/copy";
 import { isInside } from "../util/files";
 import { childEnv } from "../util/env";
 
@@ -56,11 +58,34 @@ async function run(cmd: string[], cwd?: string, timeout = GIT_TIMEOUT): Promise<
 /** The URL git clones for a source written as owner/repo. */
 export const githubUrl = (repo: string) => `https://github.com/${repo}.git`;
 
+/** Rejects non-public hosts, embedded credentials, and hostnames resolving to local/private IP addresses. */
+async function assertPublicUrl(raw: string, protocols: readonly string[]): Promise<void> {
+    let u: URL;
+    try {
+        u = new URL(raw);
+    } catch {
+        throw new SourceError(`${raw} isn't a valid URL`);
+    }
+    if (!protocols.includes(u.protocol) || u.username || u.password || localHost(u.hostname)) {
+        throw new SourceError(`${raw} isn't an allowed public remote address`);
+    }
+    let addrs: { address: string }[];
+    try {
+        addrs = await lookup(u.hostname, { all: true });
+    } catch (e) {
+        throw new SourceError(`couldn't resolve ${u.hostname}: ${(e as Error).message}`);
+    }
+    if (!addrs.length || addrs.some((a) => localHost(a.address))) {
+        throw new SourceError(`${u.hostname} resolves to a local or private address`);
+    }
+}
+
 /**
  * Clone `url` into `dest` (which mustn't exist): the tip of `ref` (or the
  * default branch), or exactly `sha`. Returns the commit it checked out.
  */
-export async function gitClone(url: string, dest: string, o: { ref?: string; sha?: string } = {}): Promise<string> {
+export async function gitClone(url: string, dest: string, o: { ref?: string; sha?: string; publicOnly?: boolean } = {}): Promise<string> {
+    if (o.publicOnly) await assertPublicUrl(url, ["https:", "http:"]);
     try {
         return await clone(url, dest, o);
     } catch (e) {
@@ -72,9 +97,22 @@ export async function gitClone(url: string, dest: string, o: { ref?: string; sha
     }
 }
 
-async function clone(url: string, dest: string, o: { ref?: string; sha?: string }): Promise<string> {
+async function clone(url: string, dest: string, o: { ref?: string; sha?: string; publicOnly?: boolean }): Promise<string> {
     // No transport that runs a command (ext::, fd::), whatever the user's gitconfig allows; "--" ends the options.
-    const base = ["git", "-c", "core.hooksPath=/dev/null", "-c", "advice.detachedHead=false", "-c", "protocol.ext.allow=never", "-c", "protocol.fd.allow=never", "-c", "core.fsmonitor="];
+    const base = [
+        "git",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "-c",
+        "advice.detachedHead=false",
+        "-c",
+        "protocol.ext.allow=never",
+        "-c",
+        "protocol.fd.allow=never",
+        "-c",
+        "core.fsmonitor=",
+        ...(o.publicOnly ? ["-c", "protocol.file.allow=never", "-c", "protocol.ssh.allow=never", "-c", "http.followRedirects=false"] : []),
+    ];
     if (o.sha) {
         mkdirSync(dest, { recursive: true });
         await run([...base, "init", "-q"], dest);
@@ -180,12 +218,13 @@ export function copyDir(src: string, dest: string) {
 
 const MAX_REDIRECTS = 5;
 
-/** Redirects are followed here, so one from https to plain http is refused rather than taken. */
-async function fetchWithTimeout(url: string, init?: RequestInit): Promise<Response> {
+/** Redirects are followed here, so one from https to plain http (or to a private host when `publicOnly`) is refused. */
+async function fetchWithTimeout(url: string, init?: RequestInit, publicOnly = false): Promise<Response> {
     const secure = secureUrl(url);
     const signal = AbortSignal.timeout(FETCH_TIMEOUT);
     let at = url;
     for (let hop = 0; ; hop++) {
+        if (publicOnly) await assertPublicUrl(at, ["https:"]);
         let r: Response;
         try {
             r = await fetch(at, { ...init, signal, redirect: "manual" });
@@ -197,13 +236,14 @@ async function fetchWithTimeout(url: string, init?: RequestInit): Promise<Respon
         if (hop >= MAX_REDIRECTS) throw new SourceError(`${url} redirected too many times`);
         const next = new URL(location, at).href;
         if (secure && !secureUrl(next)) throw new SourceError(`${new URL(at).host} redirected to ${new URL(next).origin}, which isn't https`);
+        if (publicOnly) await assertPublicUrl(next, ["https:"]);
         at = next;
     }
 }
 
 /** A JSON document over http(s). */
-export async function fetchJson(url: string): Promise<unknown> {
-    const r = await fetchWithTimeout(url, { headers: { Accept: "application/json" } });
+export async function fetchJson(url: string, o: { publicOnly?: boolean } = {}): Promise<unknown> {
+    const r = await fetchWithTimeout(url, { headers: { Accept: "application/json" } }, o.publicOnly === true);
     if (!r.ok) throw new SourceError(`${url} answered ${r.status} ${r.statusText}`);
     const text = await r.text();
     try {
@@ -258,10 +298,18 @@ export function checkIntegrity(data: Uint8Array, dist: NpmVersion["dist"]): void
  * folder holding the package (npm's "package/") and its version. Install
  * scripts never run: this only unpacks.
  */
-export async function fetchNpm(pkg: string, want: string | undefined, dest: string, registry = "https://registry.npmjs.org"): Promise<{ dir: string; version: string }> {
-    if (!secureUrl(registry)) throw new SourceError(`the registry ${registry} isn't https`);
+export async function fetchNpm(
+    pkg: string,
+    want: string | undefined,
+    dest: string,
+    registry = "https://registry.npmjs.org",
+    o: { publicOnly?: boolean } = {},
+): Promise<{ dir: string; version: string }> {
+    const publicOnly = o.publicOnly === true;
+    if (publicOnly) await assertPublicUrl(registry, ["https:"]);
+    else if (!secureUrl(registry)) throw new SourceError(`the registry ${registry} isn't https`);
     const docUrl = `${registry}/${pkg.replace("/", "%2f")}`;
-    const r = await fetchWithTimeout(docUrl, { headers: { Accept: "application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8" } });
+    const r = await fetchWithTimeout(docUrl, { headers: { Accept: "application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8" } }, publicOnly);
     if (r.status === 404) throw new SourceError(`npm package ${pkg} wasn't found${registry.includes("registry.npmjs.org") ? "" : ` on ${registry}`}`);
     if (!r.ok) throw new SourceError(`${docUrl} answered ${r.status}`);
     const doc = (await r.json()) as { "dist-tags"?: Record<string, string>; versions?: Record<string, NpmVersion> };
@@ -269,8 +317,9 @@ export async function fetchNpm(pkg: string, want: string | undefined, dest: stri
     if (!version) throw new SourceError(`npm package ${pkg} has no version matching ${want ?? "latest"}`);
     const meta = doc.versions![version]!;
     const tarball = meta.dist?.tarball;
-    if (!tarball || !secureUrl(tarball)) throw new SourceError(`npm package ${pkg}@${version} has no https tarball`);
-    const tr = await fetchWithTimeout(tarball);
+    if (!tarball || (!publicOnly && !secureUrl(tarball))) throw new SourceError(`npm package ${pkg}@${version} has no https tarball`);
+    if (publicOnly) await assertPublicUrl(tarball, ["https:"]);
+    const tr = await fetchWithTimeout(tarball, undefined, publicOnly);
     if (!tr.ok) throw new SourceError(`downloading ${pkg}@${version} failed: ${tr.status}`);
     const len = Number(tr.headers.get("content-length") ?? 0);
     if (len > MAX_TARBALL) throw new SourceError(`${pkg}@${version} is ${Math.round(len / 1e6)} MB, too big for a plugin`);

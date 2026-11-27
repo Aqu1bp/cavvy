@@ -16,18 +16,20 @@
 //
 // Nothing already on the server is replaced: a file that's there is kept.
 
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
 import { homedir, tmpdir } from "os";
-import { join, relative, sep } from "path";
+import { basename, join, relative, sep } from "path";
 import { cavvyHome, paths } from "../config/paths";
 import type { McpServerConfig, Settings } from "../config/settings";
+import { accountProtectedPaths } from "../providers/accounts";
 import { childEnv } from "../util/env";
+import { canonical, isInside } from "../util/files";
 import { matchesSecretPattern } from "../util/secret-patterns";
 import { hostOf, printable, remoteSh, ssh } from "./ssh";
 import { ServerError, type ServerEntry } from "./store";
 
 /** Settings that are a way of working, and can't hold a secret or run a command. */
-const SETTINGS_KEYS = [
+export const SETTINGS_KEYS = [
     "model",
     "smallModel",
     "reviewModel",
@@ -54,8 +56,8 @@ const SETTINGS_KEYS = [
 ] as const satisfies readonly (keyof Settings)[];
 
 /** A host only this machine, or its own network, can reach. */
-function localHost(host: string): boolean {
-    const h = host.toLowerCase().replace(/^\[|\]$/g, "");
+export function localHost(host: string): boolean {
+    const h = host.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.+$/, "");
     // An address written out in IPv6: loopback, the private and link-local ranges, and any IPv4 address in IPv6
     // clothes (`::ffff:…`), which could be a local one. (A name can start with these letters too, so only here.)
     if (h.includes(":")) return h === "::" || h === "::1" || /^f[cde]/.test(h) || h.startsWith("::ffff:");
@@ -117,7 +119,7 @@ function plainWord(s: string): boolean {
 }
 
 /** A package as a runner takes it: `name`, `@scope/name`, either with `@version`. */
-function packageSpec(s: string): boolean {
+export function packageSpec(s: string): boolean {
     const m = /^(@[a-z0-9][a-z0-9._-]*\/)?([a-z0-9][a-z0-9._-]*)(@[A-Za-z0-9][A-Za-z0-9._-]*)?$/.exec(s);
     return m !== null && plainWord(m[2]!.replace(/^[0-9]+/, "x")) && s.length <= 100;
 }
@@ -126,9 +128,18 @@ function packageSpec(s: string): boolean {
  * Programs that fetch a package and run it, and the word each needs first to do that. Only these: any other program
  * (`node server.js`, `docker run …`) runs what's on this machine, or takes arguments that can't be told from a key.
  */
-const RUNNERS: Record<string, string | undefined> = { npx: undefined, bunx: undefined, uvx: undefined, pnpm: "dlx", yarn: "dlx", pipx: "run" };
+export const RUNNERS: Record<string, string | undefined> = { npx: undefined, bunx: undefined, uvx: undefined, pnpm: "dlx", yarn: "dlx", pipx: "run" };
 /** Options a runner takes that say nothing but how to run: none of them has a value. */
-const RUNNER_FLAGS = new Set(["-y", "--yes", "-q", "--quiet", "--silent"]);
+export const RUNNER_FLAGS = new Set(["-y", "--yes", "-q", "--quiet", "--silent"]);
+
+/** A CLI's own sign-in token, told by its format (Claude's, Google's): never synced, in any field, key sync on or off. */
+export const CLI_SIGN_IN_TOKEN = /\bsk-ant-oat\d*-[A-Za-z0-9_-]{8,}|\bya29\.[A-Za-z0-9._-]{16,}/i;
+/**
+ * Those, and anything shaped like a JWT, which may be a sign-in or a key: what stays here while key sync is off.
+ * With it on, a JWT the user stored as a key or an MCP server's secret goes like any other: sync reads Cavvy's
+ * own key store and settings, never a CLI's sign-in files.
+ */
+export const SUBSCRIPTION_OAUTH_TOKEN = new RegExp(`${CLI_SIGN_IN_TOKEN.source}|\\beyJ[A-Za-z0-9_-]{10,}\\.eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}`, "i");
 
 /**
  * An MCP server as it can go to another machine: the entry made again from
@@ -144,7 +155,8 @@ const RUNNER_FLAGS = new Set(["-y", "--yes", "-q", "--quiet", "--silent"]);
  */
 export function portableMcpEntry(c: McpServerConfig): McpServerConfig | undefined {
     if (c.plugin || c.env || c.headers || c.cwd || c.oauth?.clientSecret) return undefined;
-    if (matchesSecretPattern(JSON.stringify(c))) return undefined;
+    const raw = JSON.stringify(c);
+    if (matchesSecretPattern(raw) || SUBSCRIPTION_OAUTH_TOKEN.test(raw)) return undefined;
     const kept: McpServerConfig = {};
     if (typeof c.type === "string" && ["stdio", "http", "streamable-http", "sse", "ws"].includes(c.type)) kept.type = c.type;
     if (c.disabled === true) kept.disabled = true;
@@ -243,8 +255,13 @@ export const MAX_FILES = 3000;
 /** Names that are keys, whatever is in them. */
 export const SECRET_NAME = /^(\.env(\..*)?|.*\.(pem|key|p12|pfx|keystore)|id_(rsa|dsa|ecdsa|ed25519)(\.pub)?|\.?credentials(\..*)?|\.netrc|\.npmrc|auth\.json)$/i;
 export const SKIP_DIR = new Set([".git", "node_modules", ".venv", "__pycache__", ".DS_Store"]);
-/** Claude Code's own: the skills it brings from the account it's signed in to, and keeps level itself on each machine. */
-export const CLI_SYNCED = ".claude/skills/synced";
+/**
+ * A CLI's own skills, which it keeps level itself on each machine: Claude Code's from the account it's signed in to,
+ * and the ones Codex ships with (a server's Codex has its own version's).
+ */
+const CLI_OWNED = [".claude/skills/synced", ".codex/skills/.system"];
+/** That folder, or something in it. */
+export const cliOwned = (path: string) => CLI_OWNED.some((p) => path === p || path.startsWith(`${p}/`));
 
 export interface CopyPlan {
     /** A folder laid out as the server's home is. */
@@ -255,6 +272,90 @@ export interface CopyPlan {
     left: LeftBehind;
     files: number;
     cleanup(): void;
+}
+
+function staticProtectedRoots(): string[] {
+    const home = homedir();
+    const claude = process.env.CLAUDE_CONFIG_DIR || join(home, ".claude");
+    const claudeSecure = process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR || claude;
+    const codex = process.env.CODEX_HOME || join(home, ".codex");
+    const xdgConfig = process.env.XDG_CONFIG_HOME || join(home, ".config");
+    const xdgData = process.env.XDG_DATA_HOME || join(home, ".local", "share");
+    const cavvy = cavvyHome();
+    return [
+        join(cavvy, "credentials.json"),
+        join(cavvy, "mcp-oauth.json"),
+        join(cavvy, "accounts"),
+        join(cavvy, "server"),
+        join(cavvy, "server-keys"),
+        join(claude, ".credentials.json"),
+        join(claude, ".claude.json"),
+        join(claudeSecure, ".credentials.json"),
+        join(codex, "auth.json"),
+        join(home, ".ssh"),
+        join(home, ".gnupg"),
+        join(home, ".aws"),
+        join(home, ".azure"),
+        join(home, ".kube"),
+        join(home, ".docker"),
+        join(home, ".config", "gcloud"),
+        join(xdgConfig, "gcloud"),
+        join(home, ".gemini", "antigravity-cli"),
+        join(home, ".grok"),
+        ...(process.env.GROK_HOME ? [process.env.GROK_HOME] : []),
+        join(home, ".local", "share", "opencode"),
+        join(xdgData, "opencode"),
+        join(home, ".config", "opencode"),
+        join(xdgConfig, "opencode"),
+        ...(process.env.OPENCODE_CONFIG_DIR ? [process.env.OPENCODE_CONFIG_DIR] : []),
+    ];
+}
+
+function isStaticProtectedPath(filePath: string): { protected: boolean; canonReal?: string } {
+    let real: string;
+    try {
+        real = realpathSync(filePath);
+    } catch {
+        return { protected: true };
+    }
+    // Reject hard-linked sync inputs BEFORE reading any file or config: a hard link has no target path
+    // and could alias a credential file nested inside a protected directory.
+    try {
+        const st = statSync(real);
+        if (st.isFile() && st.nlink > 1) return { protected: true };
+    } catch {
+        return { protected: true };
+    }
+    if (SECRET_NAME.test(basename(real))) return { protected: true };
+    const canonReal = canonical(real);
+    if (
+        staticProtectedRoots().some((root) => {
+            const cr = canonical(root);
+            return canonReal === cr || isInside(canonReal, cr);
+        })
+    ) {
+        return { protected: true };
+    }
+    return { protected: false, canonReal };
+}
+
+/**
+ * True when `filePath` is hard-linked or resolves (through symlinks) to a secret-named file or inside any
+ * protected credential directory/file (CLI auth files, Cavvy credential/account/server stores, SSH/cloud dirs).
+ * Must be checked BEFORE opening or reading the file so a symlink or hard link can never read a CLI credential.
+ */
+export function isProtectedCredentialPath(filePath: string): boolean {
+    const check = isStaticProtectedPath(filePath);
+    if (check.protected || !check.canonReal) return true;
+    // Guard external CLI account folders from providers.json only after verifying providers.json itself is not
+    // the file being checked and is not itself hard-linked/symlinked to a protected credential path.
+    const providersFile = paths.providers();
+    if (canonical(providersFile) === check.canonReal) return false;
+    if (existsSync(providersFile) && isStaticProtectedPath(providersFile).protected) return false;
+    return accountProtectedPaths().some((root) => {
+        const cr = canonical(root);
+        return check.canonReal === cr || isInside(check.canonReal!, cr);
+    });
 }
 
 class Stage {
@@ -275,6 +376,7 @@ class Stage {
         }
         const name = to.split("/").at(-1)!;
         if (size > MAX_FILE || this.bytes + size > MAX_TOTAL || SECRET_NAME.test(name)) return false;
+        if (isProtectedCredentialPath(from)) return false;
         let body: Buffer;
         try {
             body = readFileSync(from);
@@ -302,7 +404,7 @@ class Stage {
             return 0;
         }
         for (const name of names.sort()) {
-            if (SKIP_DIR.has(name) || `${to}/${name}` === CLI_SYNCED) continue;
+            if (SKIP_DIR.has(name) || cliOwned(`${to}/${name}`)) continue;
             const path = join(from, name);
             let dir: boolean;
             try {
@@ -344,6 +446,7 @@ export function planCopy(settings: Settings | undefined, o: { skills?: boolean }
     if (stage.file(join(claude, "CLAUDE.md"), ".claude/CLAUDE.md")) counts.memory++;
     counts.memory += stage.tree(join(claude, "rules"), ".claude/rules");
     if (stage.file(join(codex, "AGENTS.md"), ".codex/AGENTS.md")) counts.memory++;
+    if (stage.file(join(codex, "AGENTS.override.md"), ".codex/AGENTS.override.md")) counts.memory++;
 
     const skillsIn = (root: string) => {
         try {

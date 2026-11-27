@@ -321,7 +321,7 @@ export class Terminals {
 
     /** Is an account's sign-in still running: attached, in a window that went away, or closing until its process exits? */
     signingIn(provider: string, accountId: string): boolean {
-        return [...this.shells.values(), ...this.stoppingShells].some((s) => s.login?.provider === provider && s.login.accountId === accountId && s.exitCode === undefined);
+        return [...this.shells.values(), ...this.stoppingShells].some((s) => s.login?.provider === provider && s.login.accountId === accountId && !s.login.server && s.exitCode === undefined);
     }
 
     private shells = new Map<string, Shell>();
