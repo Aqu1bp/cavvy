@@ -12,6 +12,7 @@ import { dirname, join, normalize, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { BrowserHost } from "./browser-host";
 import { mark, startMetrics } from "./metrics";
+import { askInPage, type PageAsk, type QuitQuestion } from "./quit-ask";
 import { MIN_SIZE, restorable, type WindowState } from "./window-state";
 
 // The app's folder (desktop-electron, or the packaged app's archive), not __dirname: the bundler fixes that to the
@@ -67,6 +68,8 @@ let server: ChildProcessWithoutNullStreams | undefined;
 let info: SidecarInfo | undefined;
 let infoWaiters: ((i: SidecarInfo) => void)[] = [];
 let quitting = false;
+/** The user already chose to quit (the crash dialog's Quit): sessions that are working don't ask again. */
+let quitAsked = false;
 const starts: number[] = [];
 
 function startServer() {
@@ -128,40 +131,72 @@ function sidecarInfo(): Promise<SidecarInfo> {
 }
 
 /**
- * How many sessions have work the server couldn't save (server.unsaved). 0 when it can't say within a moment (not
- * started, or stuck): quitting isn't held up for it.
+ * What quitting now would cost (server.unsaved): sessions whose work couldn't be saved (a full disk), and this
+ * computer's sessions that are working. Nothing when the server can't say within a moment (not started, or stuck):
+ * quitting isn't held up for it.
  */
-function unsavedSessions(): Promise<number> {
+function quitCost(): Promise<{ unsaved: number; working: number }> {
+    const none = { unsaved: 0, working: 0 };
     const i = info;
-    if (!i) return Promise.resolve(0);
+    if (!i) return Promise.resolve(none);
     return new Promise((resolve) => {
         let ws: WebSocket | undefined;
-        const done = (n: number) => {
+        const done = (cost: { unsaved: number; working: number }) => {
             clearTimeout(timer);
             try {
                 ws?.close();
             } catch {
                 // already closed
             }
-            resolve(n);
+            resolve(cost);
         };
-        const timer = setTimeout(() => done(0), 1500);
+        const timer = setTimeout(() => done(none), 1500);
         try {
             ws = new WebSocket(`ws://127.0.0.1:${i.port}/ws`, ["cavvy.v1", `auth.${i.token}`]);
         } catch {
-            return done(0);
+            return done(none);
         }
         ws.onopen = () => ws!.send(JSON.stringify({ id: 1, method: "server.unsaved", params: {} }));
         ws.onmessage = (m) => {
             try {
-                const r = JSON.parse(String(m.data)) as { id?: number; result?: { sessions?: unknown[] } };
-                if (r.id === 1) done(r.result?.sessions?.length ?? 0);
+                const r = JSON.parse(String(m.data)) as { id?: number; result?: { sessions?: unknown[]; working?: unknown } };
+                if (r.id === 1) done({ unsaved: r.result?.sessions?.length ?? 0, working: typeof r.result?.working === "number" ? r.result.working : 0 });
             } catch {
                 // not the answer
             }
         };
-        ws.onerror = () => done(0);
+        ws.onerror = () => done(none);
     });
+}
+
+// ---------------------------------------------------------------------------
+// Asking before quitting
+
+/**
+ * How long the page has to say it has the question before the system's own box asks instead. It says so before loading
+ * or drawing anything, so only its current task delays it: under heavy load that was seen to reach 6 s, so a page stuck
+ * in a loop is given up on after 10 (sooner if Chromium finds it unresponsive, or as the person asks to quit again).
+ */
+const PAGE_ACK_MS = 10_000;
+/** Asked to quit again this long after the question with no word from the page: the system's box asks at once. */
+const PAGE_AGAIN_MS = 2000;
+let quitAsks = 0;
+/** The question being put to the window, while it is (asked to quit again meanwhile: PageAsk.recheck). */
+let pageAsking: PageAsk | undefined;
+
+/** Whether to quit: asked in the window, in Cavvy's own dialog (quit-ask.ts), or in the system's box where the page can't ask. */
+async function askToQuit(q: QuitQuestion): Promise<boolean> {
+    if (win && !win.isDestroyed()) {
+        pageAsking = askInPage(win, q, { ipc: ipcMain, fromPage: fromGui, ackMs: PAGE_ACK_MS, againMs: PAGE_AGAIN_MS, id: ++quitAsks });
+        const inPage = await pageAsking.answer;
+        pageAsking = undefined;
+        if (inPage !== undefined) return inPage;
+        console.error("[cavvy] the window can't ask before quitting; asking in a message box");
+    }
+    const w = win && !win.isDestroyed() ? win : undefined;
+    const o = { type: "warning" as const, message: q.title, detail: q.detail, buttons: ["Quit", "Cancel"], defaultId: 1, cancelId: 1 };
+    const { response } = await (w ? dialog.showMessageBox(w, o) : dialog.showMessageBox(o));
+    return response === 0;
 }
 
 async function stopServer() {
@@ -279,6 +314,12 @@ function createWindow() {
         console.error(`[cavvy] the window's page is gone (${reason})`);
         if (reason !== "clean-exit") void pageGone();
     });
+    // Closing it quits (window-all-closed): asked first as ⌘Q is, in the window, which stays until the answer is Quit.
+    win.on("close", (e) => {
+        if (quitting) return;
+        e.preventDefault();
+        app.quit();
+    });
     win.on("closed", () => {
         win = undefined;
         host.windowGone();
@@ -303,7 +344,12 @@ async function pageGone() {
     if (goneAt.length >= MAX_STARTS) {
         console.error("[cavvy] the window's page keeps crashing; asking");
         const { response } = await dialog.showMessageBox(w, { type: "warning", message: "Reload Cavvy's window?", detail: "It keeps crashing.", buttons: ["Reload", "Quit"], defaultId: 0, cancelId: 0 });
-        if (response === 1) { app.quit(); return; }
+        if (response === 1) {
+            // Asked already: quitting doesn't ask again about sessions that are working.
+            quitAsked = true;
+            app.quit();
+            return;
+        }
         goneAt.length = 0;
     }
     if (!w.isDestroyed() && !quitting) w.webContents.reload();
@@ -396,7 +442,7 @@ function liquidGlass(): LiquidGlass | undefined {
 
 /**
  * Checks only (with CAVVY_ELECTRON_METRICS): a line written to <metrics file>.cmd does to the window what a person's
- * use of their desktop does: minimize/restore, hide/show, cover/uncover (another window over it).
+ * use of their desktop does: minimize/restore, hide/show, cover/uncover (another window over it), and quit (as ⌘Q, wherever the window is).
  */
 function testWindowCommands() {
     const file = process.env.CAVVY_ELECTRON_METRICS;
@@ -415,6 +461,7 @@ function testWindowCommands() {
         else if (cmd === "restore") win.restore();
         else if (cmd === "hide") win.hide();
         else if (cmd === "show") win.show();
+        else if (cmd === "quit") app.quit();
         else if (cmd === "cover") {
             cover = new BrowserWindow({ ...win.getBounds(), backgroundColor: "#202020", show: true, focusable: true });
             cover.focus();
@@ -508,34 +555,60 @@ function bridge() {
     ipcMain.on("browser_back", (e, seen: unknown) => {
         if (fromGui(e)) host.back(typeof seen === "number" ? seen : undefined);
     });
+    ipcMain.on("browser_devtools", (e, key: unknown, pane: unknown) => {
+        const p = pane as Partial<Record<"x" | "y" | "width" | "height", unknown>> | undefined;
+        const rect = p && [p.x, p.y, p.width, p.height].every((n) => typeof n === "number" && Number.isFinite(n)) ? (p as { x: number; y: number; width: number; height: number }) : undefined;
+        if (fromGui(e) && typeof key === "string") host.devTools(key, rect);
+    });
+    ipcMain.handle("browser_painted", (e, key: unknown, size: { width: number; height: number }) => {
+        if (!fromGui(e) || typeof key !== "string" || !size || ![size.width, size.height].every((n) => Number.isFinite(n) && n > 0)) return false;
+        return host.painted(key, size);
+    });
+    ipcMain.on("browser_page_focus", (e, key: unknown, what: unknown) => {
+        if (fromGui(e) && typeof key === "string" && (what === "keep" || what === "restore")) host.pageFocus(key, what);
+    });
     ipcMain.on("browser_sized", (e, key: string, size: { width: number; height: number; scale: number }) => {
         if (fromGui(e) && typeof key === "string" && size && [size.width, size.height, size.scale].every((n) => Number.isFinite(n) && n > 0)) host.sized(key, size);
     });
 }
 
-/** The quit being asked about ("Quit without saving?" open): a second quit gets its answer. */
+/** The quit being decided (its cost being read, or a question up): a second quit gets its answer. */
 let asking: Promise<boolean> | undefined;
 
 /**
  * Quits, closing the sessions first; asked first only when work would be lost: a session whose latest work couldn't
- * be saved (a full disk). Whether it's quitting.
+ * be saved (a full disk), or sessions on this computer that are working (a server's carry on without the app). An
+ * update's restart asked about working sessions before it began (UpdateAction), so it asks only about unsaved work.
+ * Whether it's quitting.
  */
-function confirmQuit(): Promise<boolean> {
+function confirmQuit(forUpdate = false): Promise<boolean> {
     if (quitting) return Promise.resolve(true);
-    return (asking ??= askToQuit().finally(() => (asking = undefined)));
+    // Asked already (a second ⌘Q, the window closed meanwhile): the question that's up is the one answered, as long
+    // as the window still answers.
+    if (asking) {
+        if (win && !win.isDestroyed()) raiseWindow();
+        pageAsking?.recheck();
+        return asking;
+    }
+    return (asking = decideQuit(forUpdate).finally(() => (asking = undefined)));
 }
 
-async function askToQuit(): Promise<boolean> {
-    const n = await unsavedSessions();
-    const w = win && !win.isDestroyed() ? win : undefined;
-    if (n > 0) {
-        const detail = n === 1 ? "A session's latest work couldn't be saved." : `${n} sessions' latest work couldn't be saved.`;
-        const { response } = await (w ? dialog.showMessageBox(w, { type: "warning", message: "Quit without saving?", detail, buttons: ["Quit", "Cancel"], defaultId: 1, cancelId: 1 }) : dialog.showMessageBox({ type: "warning", message: "Quit without saving?", detail, buttons: ["Quit", "Cancel"], defaultId: 1, cancelId: 1 }));
-        if (response === 1) {
-            // Its last window closed to quit: it comes back, so the work can still be saved.
-            if (!win || win.isDestroyed()) createWindow();
-            return false;
+async function decideQuit(forUpdate: boolean): Promise<boolean> {
+    const { unsaved, working } = await quitCost();
+    const question: QuitQuestion | undefined =
+        unsaved > 0
+            ? { title: "Quit without saving?", detail: unsaved === 1 ? "A session's latest work couldn't be saved." : `${unsaved} sessions' latest work couldn't be saved.` }
+            : working > 0 && !quitAsked && !forUpdate
+              ? { title: working === 1 ? "Quit while a session is working?" : `Quit while ${working} sessions are working?`, detail: working === 1 ? "It stops where it is." : "They stop where they are." }
+              : undefined;
+    if (question && !(await askToQuit(question))) {
+        // Its last window closed to quit: it comes back, so the work can still be saved, or watched (shown once its
+        // page is ready, as at launch).
+        if (!win || win.isDestroyed()) {
+            shown = false;
+            createWindow();
         }
+        return false;
     }
     quitting = true;
     host.close();
@@ -545,7 +618,7 @@ async function askToQuit(): Promise<boolean> {
 
 async function quitForUpdate() {
     const child = server;
-    if (!(await confirmQuit())) child?.stdin.write("restart-cancelled\n");
+    if (!(await confirmQuit(true))) child?.stdin.write("restart-cancelled\n");
 }
 
 // ---------------------------------------------------------------------------

@@ -7,7 +7,7 @@
 | Mode | What runs without asking |
 |---|---|
 | **Manual** (default) | Reads, searches and read-only shell commands inside the workspace. Everything else asks. |
-| **Accept edits** | The above, plus file edits inside the workspace. |
+| **Accept edits** | The above, plus file edits inside the workspace. On Claude Code, its own accept-edits mode, which also runs file commands (`rm`, `mv`, `sed`) inside the workspace ([Claude Code and Codex](subscriptions.md)). |
 | **Plan** | Read-only research. Edits and state-changing commands are refused until you approve the plan the model presents. |
 | **Auto** | Edits in the workspace and temp directories, shell commands inside a sandbox, and anything else a reviewer model judges routine and asked for. Risky actions are turned back to the model with the reason; after repeated blocks, or when the reviewer can't decide, they're shown to you. See [Auto mode](#auto-mode). |
 | **Bypass permissions** | Everything. Only available when started with `--dangerously-skip-permissions` or `--permission-mode bypassPermissions`, or with `permissions.allowBypass` in your user settings. |
@@ -15,10 +15,25 @@
 Whatever the mode:
 
 - Deny rules always win. A deny or ask rule for a command also catches it given by path (`/bin/rm`), behind `env` (`env -S '…'` included), `exec`, `nohup`, `nice`, `command`, `timeout`, `xargs` or `sudo` with any of their options, inside `sh -c '…'`, `eval` and `$(…)`, and, on macOS and Windows, in another case (`RM`, `/BIN/RM`), since the shell finds `/bin/rm` for that name there. A program named by a variable (`$X`) isn't known to them. Allow rules match only the command as written, so `Bash(npm test:*)` doesn't allow `NPM test`.
-- Catastrophic commands (`rm -rf ~`, `mkfs`, writes to raw disks, fork bombs and similar) always ask, by any of those names (`SH -c 'rm -rf ~'` too), except in bypass mode: nothing is asked about there. What still stops a call in bypass is what refuses rather than asks: a deny rule, a hook of yours that denies, Cavvy's own credential files for the file tools, and the agent CLIs' account folders. A hook of yours that answers "ask" still asks. On one of your servers the list is shorter, and sessions start in Bypass: see [servers](servers.md#permissions-on-a-server).
-- Edits to Cavvy's own configuration, `.mcp.json`, `.git/`, or the agent CLIs' `.claude/`, `.codex/`, `.opencode/` (with `opencode.json` and `opencode.jsonc`), `.grok/` and OpenCode's global config (`$XDG_CONFIG_HOME/opencode`, `~/.config/opencode` by default) always ask, except in bypass mode. A git worktree Claude Code keeps in `.claude/worktrees/<name>/` counts as a project of its own: its files are ordinary edits, and only its own `.claude/`, `.codex/`, `.opencode/`, `opencode.json`, `opencode.jsonc`, `.grok/`, `.cavvy/`, `.mcp.json` and `.git` ask.
+- Catastrophic commands (`rm -rf ~`, `mkfs`, writes to raw disks, fork bombs and similar) always ask, by any of those names (`SH -c 'rm -rf ~'` too), except in bypass mode: nothing Cavvy's own models run is asked about there. What an agent CLI asks Cavvy about in bypass runs without asking you too, but a catastrophic command, which still asks. That holds for what reaches Cavvy: everything OpenCode and Grok Build run (Cavvy decides each of their calls), but almost nothing from Claude Code, Codex or Antigravity, which run in their own bypass modes and don't ask ([Claude Code and Codex](subscriptions.md)). What still stops a call in bypass is what refuses rather than asks: a deny rule, a hook of yours that denies, Cavvy's own credential files for the file tools, and the agent CLIs' account folders. A hook of yours that answers "ask" still asks. On one of your servers the list is shorter, and sessions start in Bypass: see [servers](servers.md#permissions-on-a-server).
+- Edits to Cavvy's own configuration, `.mcp.json`, `.git/`, or the agent CLIs' `.claude/`, `.codex/`, `.opencode/` (with `opencode.json` and `opencode.jsonc`), `.grok/` and OpenCode's global config (`$XDG_CONFIG_HOME/opencode`, `~/.config/opencode` by default) always ask, except in bypass mode. A git worktree Claude Code keeps in `.claude/worktrees/<name>/` counts as a project of its own: its files are ordinary edits, and only its own `.claude/`, `.codex/`, `.opencode/`, `opencode.json`, `opencode.jsonc`, `.grok/`, `.cavvy/`, `.mcp.json` and `.git` ask. On Claude Code in Accept edits or Auto, which run in Claude Code's own modes, only its edit tools ask, and only for Cavvy's configuration and `.mcp.json`; the rest, its file commands (`mv`, `sed`) included, is as Claude Code's mode decides.
 
-When a prompt appears you can allow once, allow and don't ask again (saved as a rule in `.cavvy/settings.local.json`), or decline and say what to do instead.
+### What each choice in a prompt does
+
+Each prompt offers the choices that fit what it asks about. The desktop app's labels come first, then the terminal's.
+
+- **Allow once** (**Yes**): runs this one call. The same command, edit, page or tool call asks again the next time, in every mode, unless a choice below already covers it. Going back with Rewind doesn't change that.
+- **Allow `<command>` for the session** / **Allow `<host>`, `<file>` or `<tool>` this session** (**Yes, and allow … for the session**): runs it and, until the session ends, runs what the label names without asking: commands starting the same way, that host, that file, that tool. Nothing is saved; a new or resumed session asks again.
+- **Allow edits in `<folder>` this session**, **Allow reading `<folder>` this session**: the same, for edits or reads in that folder.
+- **Allow all edits this session** (**Yes, allow all edits during this session**): switches the session to Accept edits.
+- **Always allow …** (**Yes, and don't ask again for …**): saves an allow rule in `.cavvy/settings.local.json` for this project, so it isn't asked about again here, in this session or later. Remove it with `/permissions` or by editing the file.
+- **Deny** (**No, and tell Cavvy what to do differently**): it doesn't run; you can say what to do instead.
+
+Some prompts offer only **Allow once** and **Deny** (a dangerous command, a change to Cavvy's own configuration). To be asked less elsewhere, choose **Always allow …** or a session choice where it's offered, or add a rule ([Rules](#rules)).
+
+The same choices answer what an agent CLI (Claude Code, Codex, OpenCode, Grok Build, Antigravity) asks about, and what sub-agents and delegated tasks ask about: Cavvy always answers the CLI with "once", and keeps any session or always choice itself.
+
+In Auto mode the reviewer is told what you said yes to earlier in the session, as context for its own decision, not as permission to repeat it: a yes to something it would otherwise block (deleting work, a push) covers that one run, and running it again needs your request again. Dangerous commands never go to the reviewer; they ask you each time.
 
 ## Auto mode
 
@@ -46,7 +61,7 @@ When a prompt appears you can allow once, allow and don't ask again (saved as a 
 
 ### What the sandbox doesn't cover
 
-- Changes inside the workspace itself. That's why deletions are reviewed. Git is the undo for shell changes; `/rewind` restores only what the edit tools changed.
+- Changes inside the workspace itself. That's why deletions are reviewed. In a trusted Git project `/rewind` restores what shell commands changed too ([Rewinding files](git.md#rewinding-files)); elsewhere Git is the undo for shell changes, and `/rewind` restores only what the edit tools changed.
 - Code a sandboxed command leaves behind runs with your full access when something unsandboxed runs it later. That includes scripts, `package.json` scripts on `npm install`, `.husky/` hooks, and a nested repo or submodule with its own git config when git runs inside it unsandboxed (your own `git status` in a terminal recurses into submodules).
 - Which commands need the network is a guess from the command text. One that fails in the sandbox is retried with the hosts it needs, or outside the sandbox, after review.
 - A listed host is open to the whole command. The proxy decides on the host name the client asks for and doesn't look inside TLS, so a host that fronts others (a CDN) reaches those too, and anything a listed host accepts (an upload, say) can carry data out. Tools that ignore the proxy variables (plain ssh, most database drivers) get no network at all.

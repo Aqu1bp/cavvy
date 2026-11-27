@@ -1,9 +1,9 @@
 import { createResource, createSignal, For, lazy, Show } from "solid-js";
-import { Check, ChevronDown, FolderGit2, GitBranch, Plus, Trash2 } from "lucide-solid";
+import { Check, ChevronDown, FolderGit2, GitBranch, GitPullRequest, Plus, Trash2 } from "lucide-solid";
 import type { WorktreeInfo } from "@shared/protocol";
 import { app, homeOn, rpcFor } from "../state/app";
 import { openProject } from "../state/actions";
-import { requestComposerFocus } from "../state/ui";
+import { openGit, requestComposerFocus } from "../state/ui";
 import { tildify } from "../lib/format";
 import { Popover } from "./ui/Popover";
 import type { NewWorktreeRequest, RemoveWorktreeRequest } from "./WorktreeDialogs";
@@ -92,10 +92,13 @@ export function WorktreePicker(p: { cwd: string; branch?: string }) {
                             <Plus size={15} />
                             <span class="menu-label">New worktree…</span>
                         </button>
+                        <button class="menu-item compact" onClick={() => (setOpen(false), openGit("openPullRequests"))}>
+                            <GitPullRequest size={15} />
+                            <span class="menu-label">Work on a pull request…</span>
+                        </button>
                     </Show>
                 </Show>
             </Show>
-            <div class="menu-note">New sessions run in the selected folder.</div>
         </Popover>
         <Show when={creating()}>{(r) => <NewWorktreeDialog request={r()} onClose={() => setCreating(undefined)} />}</Show>
         <Show when={removing()}>{(r) => <RemoveWorktreeDialog request={r()} onClose={() => setRemoving(undefined)} />}</Show>

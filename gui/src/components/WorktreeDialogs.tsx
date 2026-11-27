@@ -9,8 +9,10 @@ import { AlertTriangle } from "lucide-solid";
 import type { CreateWorktreeResult, SetupInfo, WorktreeInfo } from "@shared/protocol";
 import { RpcError } from "../lib/rpc";
 import { tildify } from "../lib/format";
+import { draftedBy } from "../lib/model-name";
 import { asksForSetup, setupNote, setupTabLabel } from "../lib/setup";
-import { app, homeOn, reportError, rpcFor, toast, trustRequest } from "../state/app";
+import { app, homeDraftKey, homeOn, reportError, rpcFor, toast, trustRequest } from "../state/app";
+import { composerStorage } from "../lib/drafts";
 import { chooseFolder, openProject } from "../state/actions";
 import { requestComposerFocus, setFolderPickerOpen, setupObscured, terminalActions } from "../state/ui";
 import { Dialog } from "./ui/Dialog";
@@ -64,6 +66,31 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
     const dir = () => parent() ?? `${r.main}/.claude/worktrees`;
     const target = () => `${dir().replace(/\/+$/, "")}/${name()}`;
     const errorFor = (f: Field) => (error()?.field === f ? error()!.message : undefined);
+    // Suggest: a name from what the new chat is about (Home's composer), else from what's typed in the field, by the
+    // project's small model, after its branch prefix. Only on a click.
+    const [suggesting, setSuggesting] = createSignal(false);
+    const [suggested, setSuggested] = createSignal<{ model: string; error?: undefined } | { error: string; model?: undefined }>();
+    const about = () => composerStorage.draft(homeDraftKey()).trim() || branch().trim();
+    /** Why Suggest couldn't name it, gone once the name is typed or Create pressed: one error under the field. */
+    const dropSuggestError = () => suggested()?.error && setSuggested(undefined);
+    const suggest = async () => {
+        const text = about();
+        if (!text || suggesting()) return;
+        setSuggesting(true);
+        setSuggested(undefined);
+        // What Create said about the name goes with it: the field shows one error, the latest.
+        if (error()?.field === "branch") setError(undefined);
+        try {
+            const got = await rpc.call("projects.suggestBranch", { path: r.cwd, text });
+            if (!open) return;
+            setBranch(got.branch);
+            setSuggested({ model: got.model });
+        } catch (e) {
+            if (open) setSuggested({ error: (e instanceof Error ? e.message : String(e)).split("\n")[0]!.slice(0, 200) });
+        } finally {
+            setSuggesting(false);
+        }
+    };
     const close = () => !busy() && p.onClose();
     let open = true;
     onCleanup(() => (open = false));
@@ -106,11 +133,10 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
 
     /** In the new worktree, now open: a tab of its own, with the command typed once its shell is reading. */
     const startSetup = (made: CreateWorktreeResult, setup: NonNullable<CreateWorktreeResult["setup"]>) => {
-        const didnt = (why: string) => toast(`Setup script “${setup.script.name}” didn't run: ${why} Run it from the project scripts menu.`, "warn");
-        // A tab outside the project on screen would run where nobody sees it.
-        if (app.homeCwd !== made.path) return didnt("the new worktree couldn't be opened.");
-        if (setupObscured() || trustRequest()) return didnt("Settings or another dialog is covering the new worktree.");
-        if (!terminalActions.runScript) return didnt("the terminal isn't available here.");
+        // Run tries it again as a plain script run, as the project scripts menu does.
+        const didnt = () => toast("Setup script didn't run", "warn", terminalActions.runScript ? { label: "Run", run: () => terminalActions.runScript?.(made.path, setup.script) } : undefined);
+        // A tab outside the project on screen would run where nobody sees it; so would one under Settings or a dialog.
+        if (app.homeCwd !== made.path || setupObscured() || trustRequest() || !terminalActions.runScript) return didnt();
         terminalActions.runScript(made.path, setup.script, { ticket: setup.ticket, label: setupTabLabel(made.path), command: setup.script.command });
     };
 
@@ -131,6 +157,7 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
         // Only request the setup already shown before the user clicked Create.
         const preview = note();
         const setup = asksForSetup(preview, skipSetup()) && preview.kind === "runs" ? { id: preview.script.id, command: preview.script.command } : undefined;
+        dropSuggestError();
         const b = branch().trim();
         if (!b) return setError({ field: "branch", message: "Enter a branch name." });
         setError(undefined);
@@ -141,7 +168,7 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
             const made = await rpc.call("projects.createWorktree", { path: r.cwd, branch: b, base: base().trim() || undefined, ...(parent() ? { location: target() } : { folder: name() }), ...(setup ? { setup: true, setupScript: setup } : {}) });
             setBusy(false);
             p.onClose();
-            if (made.setupError) toast(`Created worktree ${made.branch}. ${made.setupError} Run it from the project scripts menu.`, "warn");
+            if (made.setupError) toast(`Created worktree ${made.branch}; setup script didn't run`, "warn");
             else toast(`Created worktree ${made.branch}`, "success");
             // Home went to another machine meanwhile (a session opened from the palette): the path isn't that one's.
             if (homeOn() === on) {
@@ -158,7 +185,7 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
     };
 
     return (
-        <Dialog open onClose={close} title="New worktree" subtitle="A new branch, checked out in a folder of its own." width={540}>
+        <Dialog open onClose={close} title="New worktree" width={540}>
             <form
                 class="wt-form"
                 onSubmit={(e) => {
@@ -168,26 +195,26 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
             >
                 <label class="wt-field">
                     <span class="wt-label">Branch name</span>
-                    <input class="input mono" autofocus spellcheck={false} autocomplete="off" placeholder="feature/my-change" maxLength={200} disabled={busy()} value={branch()} onInput={(e) => setBranch(e.currentTarget.value)} aria-invalid={Boolean(errorFor("branch"))} />
+                    <input class="input mono" autofocus aria-label="Branch name" spellcheck={false} autocomplete="off" placeholder="feature/my-change" maxLength={200} disabled={busy() || suggesting()} value={branch()} onInput={(e) => { dropSuggestError(); setBranch(e.currentTarget.value); }} aria-invalid={Boolean(errorFor("branch"))} />
+                    <span class="wt-hint">
+                        <button type="button" class="link-btn" disabled={busy() || suggesting() || !about()} title={about() ? (suggested()?.model ? `Suggested by ${draftedBy(suggested()!.model!)}` : undefined) : "Describe the task first"} onClick={() => void suggest()}>
+                            {suggesting() ? "Suggesting…" : "Suggest a name"}
+                        </button>
+                    </span>
+                    <Show when={suggested()?.error}>{(m) => <span class="wt-error">{m()}</span>}</Show>
                     <Show when={errorFor("branch")}>{(m) => <span class="wt-error">{m()}</span>}</Show>
                 </label>
                 <label class="wt-field">
                     <span class="wt-label">Base</span>
                     <input class="input mono" spellcheck={false} autocomplete="off" placeholder="HEAD" maxLength={200} disabled={busy()} value={base()} onInput={(e) => setBase(e.currentTarget.value)} aria-invalid={Boolean(errorFor("base"))} />
-                    <span class="wt-hint">The branch or commit the new branch starts from.</span>
                     <Show when={errorFor("base")}>{(m) => <span class="wt-error">{m()}</span>}</Show>
                 </label>
                 <div class="wt-field">
                     <label class="wt-label" for="wt-folder">
                         Location
                     </label>
-                    <div class="wt-location">
-                        <span class="wt-dir mono" title={dir()}>
-                            <bdi>{tildify(dir().replace(/\/+$/, ""), app.hello?.homeDir)}</bdi>
-                        </span>
-                        <span class="wt-sep mono">/</span>
-                        <input id="wt-folder" class="input mono" spellcheck={false} autocomplete="off" maxLength={255} disabled={busy()} value={name()} onInput={(e) => setFolder(e.currentTarget.value)} aria-invalid={Boolean(errorFor("location"))} />
-                    </div>
+                    {/* The folder's name, in full; the whole path it makes is said once, below. */}
+                    <input id="wt-folder" class="input mono" spellcheck={false} autocomplete="off" maxLength={255} disabled={busy()} value={name()} onInput={(e) => setFolder(e.currentTarget.value)} aria-invalid={Boolean(errorFor("location"))} />
                     <span class="wt-path mono" title={target()}>
                         {target()}
                     </span>
@@ -262,7 +289,7 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
                 </Show>
                 <div class="dialog-actions">
                     <Show when={busy()}>
-                        <span class="muted small">Checking out files; a big repository takes a while…</span>
+                        <span class="muted small">Checking out files…</span>
                     </Show>
                     <span class="grow" />
                     <button type="button" class="btn ghost" disabled={busy()} onClick={close}>

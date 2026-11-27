@@ -24,7 +24,6 @@ import {
     readAgentConfig,
     readProvidersFileForUpdate,
     readVertexConfig,
-    removeAgentConfig,
     removeVertexConfig,
     resolveBaseUrl,
     saveAgentConfig,
@@ -38,9 +37,11 @@ import {
     type VertexConfig,
     type WireKind,
 } from "../providers/registry";
+import { turnOffAgent } from "../providers/agent-env";
 import { GcloudError } from "../providers/vertex";
 import { checkVertex, enableVertexApi, gcloudAccounts, gcloudProjects, type VertexCheck } from "../auth/gcloud";
 import { forgetClient, defaultModelFrom, type ProviderListing } from "../providers/models";
+import { forgetRemovedProvider, resetNote } from "../providers/model-refs";
 import { continuationGroups, modelRef, parseModelRef, textOf, type ModelInfo } from "../providers/types";
 import { formatCost, formatPrice, formatTokens, formatUsd } from "../providers/pricing";
 import { attachmentsNote } from "../providers/files";
@@ -69,7 +70,7 @@ import { rewindCommand } from "./rewind";
 import { GoalController, goalClearedNotice, goalSummary, parseGoalCommand } from "../agent/goal";
 import { checkAgentCli, vendorOf, type AgentCliStatus } from "../backends/index";
 import { findCli } from "../backends/cli";
-import { agentCli } from "../backends/defs";
+import { agentCli, baseCli } from "../backends/defs";
 import { acpAgent } from "../backends/acp/agents";
 import { account, accountSharingWarning, addAccount, holdLogin, listAccounts } from "../providers/accounts";
 import { loginCommand as accountLoginCommand } from "../backends/account-login";
@@ -453,7 +454,7 @@ async function agentLogin(app: App, providerId: string) {
     // How it's asked: its own status command, or (an ACP agent) whether it answers initialize.
     // An ACP agent with a status of its own (Grok: `grok models`) is asked that instead.
     const acpHow = agent.protocol === "acp" ? (acpAgent(providerId).status ? `${cli.command} models` : `${cli.command} ${(agent.acpArgs ?? []).join(" ")} · initialize`) : undefined;
-    const how = acpHow ?? (providerId === "codex" ? "codex app-server · account/read" : "claude auth status");
+    const how = acpHow ?? (baseCli(providerId) === "codex" ? "codex app-server · account/read" : "claude auth status");
     let st: AgentCliStatus | undefined;
     try {
         st = await withProgress(app, [theme.permission(bold(`Checking ${def.name}…`)), theme.muted(how)], (signal) => checkAgentCli(providerId, signal));
@@ -491,7 +492,7 @@ async function agentLogin(app: App, providerId: string) {
     ]);
     if (st.apiKey) app.notice(`${def.name} is signed in with an API key, so its usage is billed to that key, not a subscription. \`${st.signIn}\` switches it to your account.`, "warn");
     // It loads this folder's own configuration (hooks, skills, MCP servers) only if you trust the folder.
-    const projectConfig = [...agentProjectConfig(app.cwd, providerId), ...(providerId === "claude-code" && existsSync(paths.projectMcp(app.cwd)) ? [".mcp.json"] : [])];
+    const projectConfig = [...agentProjectConfig(app.cwd, providerId), ...(baseCli(providerId) === "claude-code" && existsSync(paths.projectMcp(app.cwd)) ? [".mcp.json"] : [])];
     if (projectConfig.length && !trustedByUser(app.cwd)) {
         const trust = await confirm(
             app,
@@ -560,7 +561,7 @@ async function addCliAccount(app: App, provider: string) {
     app.notice(`Created ${selected.name}: ${selected.folder}`);
     const sharing = accountSharingWarning(provider, selected.id);
     if (sharing) app.notice(sharing, "warn");
-    if (provider === "claude-code") app.notice("Claude Console sign-ins without an API key are stored outside the config folder and are not isolated per account.", "warn");
+    if (baseCli(provider) === "claude-code") app.notice("Claude Console sign-ins without an API key are stored outside the config folder and are not isolated per account.", "warn");
     await signInCliAccount(app, provider, selected.id);
 }
 
@@ -853,7 +854,7 @@ async function logoutCommand(app: App, args: string) {
     if (row.source === "gcloud" || row.source === "cli") {
         try {
             if (row.source === "gcloud") removeVertexConfig();
-            else removeAgentConfig(id);
+            else await turnOffAgent(id);
         } catch (e) {
             app.notice(redact((e as Error).message), "error");
             return;
@@ -869,6 +870,11 @@ async function logoutCommand(app: App, args: string) {
               ? `${theme.success("✔")} Turned off ${bold(row.name)} ${theme.muted(`(it stays signed in; ${signOut} signs it out)`)}`
               : `${theme.success("✔")} Removed the ${bold(row.name)} key`,
     ]);
+    const reset = await forgetRemovedProvider(app.cwd, id).catch(() => []);
+    if (reset.length) {
+        app.reloadSettings();
+        app.print([theme.muted(resetNote(reset))]);
+    }
     const current = app.model?.provider === id ? app.model.id : undefined;
     await app.keyChanged(id);
     if (current && !app.model) app.notice(`The current model (${current}) used ${row.source === "gcloud" || row.source === "cli" ? "this setup" : "this key"}; pick another with /model.`, "warn");
@@ -1781,7 +1787,7 @@ async function memoryCommand(app: App) {
 function agentsCommand(app: App) {
     const agents = loadAgents(app.cwd);
     // On Claude Code its own Agent tool runs them, except those on another provider's model (the delegate tool's).
-    const claude = app.model?.provider === "claude-code";
+    const claude = baseCli(app.model?.provider) === "claude-code";
     const lines = ["", heading("Sub-agents"), theme.muted(claude ? "  Claude Code runs these with its own Agent tool (built-in ones are its own)." : "  The model starts these with the Task tool.")];
     for (const a of agents) {
         const where = claude && a.source !== "builtin" && !claudeModel(a.model) ? "through delegate on Claude Code" : "";
@@ -2323,7 +2329,13 @@ export async function runCommand(app: App, text: string, draft?: Draft): Promise
         // One the session's agent CLI runs itself (Claude Code's /code-review, its skills and plugins).
         // Until it has listed them (before the first turn), let Claude Code resolve the name.
         const cli = app.cliCommands?.provider === app.model?.provider ? app.cliCommands?.names : undefined;
-        if (cli?.has(name) || (!cli && app.model?.provider === "claude-code")) return false;
+        if (cli?.has(name) || (!cli && baseCli(app.model?.provider) === "claude-code")) return false;
+        // The desktop app's side chat: not a command here, nor a message (it would join the session).
+        if (name === "btw") {
+            app.notice("Side chats are only in the desktop app.", "warn");
+            if (draft?.attachments.size) app.editor.restore([draft]);
+            return true;
+        }
         app.notice(`Unknown command /${name}. Type /help to see the commands${app.skills?.length ? " and /skills for skills" : ""}.`, "error");
         if (draft?.attachments.size) app.editor.restore([draft]);
         return true;

@@ -19,7 +19,7 @@ import { columnHeight, setPlanDialog, settingsTab } from "../state/ui";
 import { cardArrived } from "../lib/terminal-keys";
 import { Counts, DiffView } from "./blocks/DiffView";
 import { Markdown } from "./blocks/Markdown";
-import { usePane } from "../state/split";
+import { keysHere, usePane } from "../state/split";
 
 const typing = () => typingIn(document.activeElement as HTMLElement | null);
 
@@ -28,6 +28,8 @@ export const mayFocus = () => !typing() && !settingsTab();
 
 /** A sign-in's card, loaded with the first one. */
 const SignInCard = lazy(() => import("./SignInCard"));
+/** A question's card, loaded with the first one (with what attaching to an answer takes). */
+const QuestionCard = lazy(() => import("./QuestionCard"));
 /** The card that asks before money is spent or something is deleted: in the same chunk. */
 const ConfirmCard = lazy(() => import("./SignInCard").then((m) => ({ default: m.ConfirmCard })));
 
@@ -43,7 +45,7 @@ export function useKeys(handler: (key: string) => boolean) {
         const onKey = (e: KeyboardEvent) => {
             if (e.metaKey || e.ctrlKey || e.altKey || e.isComposing || !cardsKey(e.key, document.activeElement as HTMLElement | null) || document.querySelector(".dialog-backdrop, .popover")) return;
             // Nor while an edge is dragged (Esc is the drag's then: Panes.tsx).
-            if (performance.now() - shown < SETTLE_MS || !pane.focused() || document.body.classList.contains("resizing")) return;
+            if (performance.now() - shown < SETTLE_MS || !keysHere(pane) || document.body.classList.contains("resizing")) return;
             // Not while the card is out of sight: Settings over it (lib/cover.ts), or the terminal maximized
             // over the conversation (which hides it with visibility, seen by checkVisibility only when asked).
             // The one shown: not one kept out of sight (Panes.tsx), which can come first.
@@ -76,7 +78,9 @@ export function InteractionTab(p: { sessionId: string; items: Interaction[] }) {
                             <PermissionCard sessionId={p.sessionId} it={first() as PermissionInteraction} />
                         </Match>
                         <Match when={first()!.kind === "question"}>
-                            <QuestionCard sessionId={p.sessionId} it={first() as QuestionInteraction} />
+                            <Suspense>
+                                <QuestionCard sessionId={p.sessionId} it={first() as QuestionInteraction} />
+                            </Suspense>
                         </Match>
                         <Match when={first()!.kind === "plan"}>
                             <PlanCard sessionId={p.sessionId} it={first() as PlanInteraction} />
@@ -294,78 +298,6 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
             </div>
             <div class="itab-actions ask-row perm-row">
                 <For each={choices().row}>{Choice}</For>
-            </div>
-        </>
-    );
-}
-
-function QuestionCard(p: { sessionId: string; it: QuestionInteraction }) {
-    const [picked, setPicked] = createSignal<string[]>([]);
-    const [other, setOther] = createSignal("");
-    const submit = (answers: string[] | undefined) => respond(p.sessionId, p.it.id, { kind: "question", answers });
-    const toggle = (label: string) => {
-        if (!p.it.multi) return void submit([label]);
-        setPicked((l) => (l.includes(label) ? l.filter((x) => x !== label) : [...l, label]));
-    };
-    useKeys((k) => {
-        const i = Number(k);
-        const o = p.it.options[i - 1];
-        if (o) {
-            toggle(o.label);
-            return true;
-        }
-        if (k === "Escape") {
-            void submit(undefined);
-            return true;
-        }
-        return false;
-    });
-    return (
-        <>
-            <Head title={p.it.question} sub={!p.it.options.length ? "Type your answer" : p.it.multi ? "Pick any that apply" : "Pick one, or type your own answer"} />
-            <div class="itab-body">
-                <div class="q-options">
-                    <For each={p.it.options}>
-                        {(o, i) => (
-                            <button class={`q-option ${picked().includes(o.label) ? "on" : ""}`} onClick={() => toggle(o.label)}>
-                                <kbd>{i() + 1}</kbd>
-                                <span class="q-text">
-                                    <span class="q-label">{o.label}</span>
-                                    <Show when={o.description}>
-                                        <span class="q-desc">{o.description}</span>
-                                    </Show>
-                                </span>
-                            </button>
-                        )}
-                    </For>
-                </div>
-                <input
-                    class="itab-input"
-                    ref={(el) => {
-                        // Nothing to pick: the answer is typed, so the cursor goes there (unless it's in another field).
-                        const here = usePane().focused;
-                        if (!p.it.options.length) queueMicrotask(() => mayFocus() && here() && el.focus());
-                    }}
-                    value={other()}
-                    placeholder={p.it.options.length ? "Something else…" : "Your answer"}
-                    aria-label="Your own answer"
-                    onInput={(e) => setOther(e.currentTarget.value)}
-                    onKeyDown={(e) => {
-                        if (e.key === "Enter" && other().trim()) void submit([...picked(), other().trim()]);
-                        else if (e.key === "Escape" && !other()) void submit(undefined);
-                    }}
-                />
-            </div>
-            <div class="itab-actions ask-row">
-                <Show when={p.it.multi || other().trim()}>
-                    <button class="pbtn primary" disabled={!picked().length && !other().trim()} onClick={() => void submit([...picked(), ...(other().trim() ? [other().trim()] : [])])}>
-                        Answer
-                    </button>
-                </Show>
-                <span class="grow" />
-                <button class="pbtn quiet" onClick={() => void submit(undefined)}>
-                    Skip <kbd>Esc</kbd>
-                </button>
             </div>
         </>
     );

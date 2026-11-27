@@ -153,6 +153,25 @@
     color: var(--fg-3);
 }
 
+/* An item that opens a submenu (ui/Submenu.tsx): a chevron at its end, and filled while what it opened is out. */
+.menu-sub[aria-expanded="true"] {
+    background: var(--hover);
+}
+
+.menu-sub-chev {
+    margin-left: auto;
+    color: var(--fg-3) !important;
+}
+
+/* Beside its menu, springing out of the side it's on, over the menu's edge. */
+.popover.submenu {
+    z-index: 61;
+}
+
+.popover.submenu[data-side="left"] {
+    transform-origin: top right;
+}
+
 .menu-sep {
     height: 0.5px;
     margin: calc(4 * var(--sp)) calc(6 * var(--sp));
@@ -184,6 +203,18 @@
 
 .toggle.danger.on {
     background: var(--danger);
+}
+
+/* Can't be changed here. Off, faded whole it all but vanished on a light ground: the track stays and the knob greys,
+   flat. On, it's faded as a disabled button is. */
+.toggle:disabled:not(.on) .toggle-knob {
+    background: var(--fg-4);
+    box-shadow: none;
+    opacity: 0.6;
+}
+
+.toggle.on:disabled {
+    opacity: 0.45;
 }
 
 .toggle-knob {
@@ -243,7 +274,18 @@
 
 /* ---- Dialogs -------------------------------------------------------- */
 
-/* A light scrim with a blur; the dialog sits in the middle of the window, the palette near its top. */
+/* Under a dialog the window blurs: where you are still shows, in shapes and colours, but no text reads through it. A
+   filter on the app, not a backdrop-filter on the scrim: where the window is see-through (the sidebar, the chat) the
+   sharp page shows through a backdrop-filter's blurred copy. The dialog sits in the middle of the window, the palette
+   near its top. */
+.app {
+    transition: filter 200ms;
+}
+
+:root[data-dialog] .app {
+    filter: blur(14px);
+}
+
 .dialog-backdrop {
     position: fixed;
     inset: 0;
@@ -252,9 +294,7 @@
     align-items: center;
     justify-content: center;
     padding: calc(16 * var(--sp));
-    background: color-mix(in srgb, var(--sheet) 22%, transparent);
-    -webkit-backdrop-filter: blur(5px);
-    backdrop-filter: blur(5px);
+    background: color-mix(in srgb, var(--sheet) 34%, transparent);
     animation: ov-fade 200ms;
 }
 
@@ -269,7 +309,10 @@
     max-height: min(82vh, calc(100vh - 32 * var(--sp)));
     overflow: hidden;
     border-radius: calc(22 * var(--sp));
-    background: var(--sheen), var(--ctl-strong);
+    /* Opaque: --ctl-strong over the window's own colour, so nothing behind reads through the dialog itself. */
+    background: var(--sheen), linear-gradient(var(--ctl-strong) 0 0), var(--sheet);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
     box-shadow: var(--pop-shadow), inset 0 1px 0 var(--ctl-hi);
     color: var(--fg);
     animation: ov-pop 320ms var(--spring);
@@ -583,6 +626,12 @@
     white-space: nowrap;
     font-size: 0.857rem;
     color: var(--fg-3);
+}
+
+/* What the row does, when that isn't what the list's other rows do (the branch dialog's "New session there"). */
+.pal-act {
+    color: var(--fg-2);
+    font-weight: 500;
 }
 
 .pal-l mark {
@@ -1404,6 +1453,18 @@
     gap: calc(8 * var(--sp));
 }
 
+/* Commit to a new branch: its tick box, then its name and Suggest. */
+.commit-branch {
+    display: flex;
+    flex-direction: column;
+    gap: calc(6 * var(--sp));
+}
+
+.commit-branch .input.grow {
+    flex: 1;
+    min-width: 0;
+}
+
 .commit-warning {
     color: var(--warn);
 }
@@ -1420,6 +1481,22 @@
     box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--danger) 30%, transparent);
     color: var(--danger);
     font-size: 0.857rem;
+}
+
+/* A refused push: what to do, in the dialog's type, over git's output. */
+.publish-error {
+    display: flex;
+    flex-direction: column;
+    gap: calc(6 * var(--sp));
+}
+
+/* A draft that couldn't be made (Generate, Suggest): a field error's line, under its button. */
+.commit-generate > .pr-draft {
+    margin-left: auto;
+}
+
+.commit-generate > .wt-error {
+    flex-basis: 100%;
 }
 
 /* ---- Rewind, folder picker, trust ----------------------------------- */
@@ -1445,6 +1522,12 @@
     min-width: 0;
 }
 
+/* Inside the row: the list scrolls, and would clip a ring drawn outside it. */
+.rw-item:focus-visible {
+    outline-offset: -2px;
+    border-radius: calc(10 * var(--sp));
+}
+
 .rw-item > svg {
     color: var(--fg-3);
     flex: none;
@@ -1458,6 +1541,11 @@
     flex: none;
     font-size: 0.821rem;
     color: var(--fg-3);
+}
+
+/* When it was sent: the same prompt sent twice is told apart by it. */
+.rw-item .rw-when {
+    font-variant-numeric: tabular-nums;
 }
 
 .rw-item:hover {
@@ -1582,35 +1670,6 @@
 
 .dialog .wt-form .input[aria-invalid="true"] {
     box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 70%, transparent);
-}
-
-.wt-location {
-    display: flex;
-    align-items: center;
-    gap: calc(6 * var(--sp));
-    min-width: 0;
-}
-
-/* The folder it goes in, cut from the left so the end stays visible. */
-.wt-dir {
-    flex: 0 1 auto;
-    min-width: 0;
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
-    direction: rtl;
-    font-size: 0.857rem;
-    color: var(--fg-3);
-}
-
-.wt-sep {
-    margin-left: calc(-6 * var(--sp));
-    font-size: 0.857rem;
-    color: var(--fg-3);
-}
-
-.wt-location .input {
-    flex: 1 0 calc(140 * var(--sp));
 }
 
 .wt-path {
@@ -1850,7 +1909,6 @@
 }
 
 /* ---- Push and pull request dialog ------------------------------- */
-.publish-destination { overflow-wrap: anywhere; }
 
 /* ---- Plans: read, save, or implement in a worktree (PlanDialogs, ArchiveDialog) ---- */
 .plan-dialog-body {
@@ -2255,4 +2313,45 @@
     place-items: center;
     min-height: calc(96 * var(--sp));
     color: var(--fg-3);
+}
+
+/* The branch dialog's line under its search: the branch, its upstream counts, Fetch and Pull. */
+.br-sync {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    padding: calc(6 * var(--sp)) calc(12 * var(--sp));
+    border-top: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+    color: var(--fg-2);
+}
+
+.br-sync-t {
+    flex: 1;
+    min-width: 0;
+}
+
+.br-note {
+    padding: calc(7 * var(--sp)) calc(12 * var(--sp));
+    font-size: 0.893rem;
+    color: var(--fg-2);
+    border-bottom: 1px solid var(--line);
+}
+
+.br-note.warn {
+    color: var(--warn);
+}
+
+.br-note.error {
+    color: var(--danger);
+}
+
+.br-fail {
+    display: flex;
+    align-items: center;
+    gap: calc(10 * var(--sp));
+}
+
+.br-fail > span {
+    flex: 1;
 }

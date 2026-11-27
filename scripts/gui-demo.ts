@@ -8,6 +8,8 @@
 //   bun run gui:demo --update fail   the same, with a build that fails
 //   bun run gui:demo --update release            a downloaded app a release behind, from a stand-in release on 127.0.0.1
 //   bun run gui:demo --update release-tampered   the same, with a zip that isn't the one signed
+//   bun run gui:demo --fake-claude   Claude Code on, as a stand-in that echoes its environment (FAKE_ECHO_ENV)
+//   bun run gui:demo --fake-codex    Codex on, as a stand-in (test/fixtures/fake-codex.ts); both flags together work too
 //
 // Prompts with "sso" or "demo" walk through reading, editing (with approvals)
 // and running tests; "question", "plan" and "todo" show those flows; the
@@ -48,8 +50,26 @@ mkdirSync(project, { recursive: true });
 createDemoProject(project);
 
 const site = startDemoSite();
-const mock = startMockLlm({ port: Number(arg("--mock-port") ?? 0), delayMs: Number(arg("--delay") ?? 14), site: site.url });
-writeFileSync(join(home, "providers.json"), JSON.stringify({ custom: [{ id: "mock", name: "Mock (demo)", baseUrl: mock.url, requiresKey: false, modelEffortLevels: { "mock-opus": ["low", "medium", "high", "xhigh", "max"] } }] }, null, 2));
+// --dump-requests <file>: each request the mock model gets is added to the file, a line each (what a model is sent).
+const mock = startMockLlm({ port: Number(arg("--mock-port") ?? 0), delayMs: Number(arg("--delay") ?? 14), site: site.url, dumpTo: arg("--dump-requests") });
+// --fake-claude: Claude Code turned on, as a stand-in (test/fixtures/fake-claude.ts) that never reaches a model or this
+// machine's own Claude Code. Its environment variables (Settings → Providers) show in its replies: set FAKE_ECHO_ENV to
+// the names to see, as in FAKE_ECHO_ENV=ANTHROPIC_BASE_URL,ANTHROPIC_AUTH_TOKEN.
+// The stand-in is also first on PATH: turned off and on again in Settings, Claude Code loses its saved path and is
+// looked up there, where this machine's own would otherwise be found and asked who's signed in.
+const agents: Record<string, unknown> = {};
+// --fake-codex: the same for Codex (test/fixtures/fake-codex.ts), signed in as me@example.com. A one-off (a title, a commit
+// message) answers FAKE_ONEOFF_ANSWER, as Claude Code's stand-in does.
+const fakes = { "claude-code": args.includes("--fake-claude") && "claude", codex: args.includes("--fake-codex") && "codex" } as const;
+const fakeBin = fakes["claude-code"] || fakes.codex ? join(root, "fake-bin") : undefined;
+for (const [id, name] of Object.entries(fakes)) {
+    if (!fakeBin || !name) continue;
+    const bin = join(fakeBin, name);
+    mkdirSync(fakeBin, { recursive: true });
+    writeFileSync(bin, `#!/bin/sh\nexec "${process.execPath}" "${resolve(import.meta.dir, "..", "test", "fixtures", `fake-${name}.ts`)}" "$@"\n`, { mode: 0o755 });
+    agents[id] = { path: bin };
+}
+writeFileSync(join(home, "providers.json"), JSON.stringify({ custom: [{ id: "mock", name: "Mock (demo)", baseUrl: mock.url, requiresKey: false, modelEffortLevels: { "mock-opus": ["low", "medium", "high", "xhigh", "max"] } }], ...(Object.keys(agents).length ? { agents } : {}) }, null, 2));
 // Sign-ins to try ("signin gh", "signin aws", "signin gcloud", "signin docker", "signin fly: fly auth login"): a pretend
 // CLI stands in for each, so nothing of this machine's own is signed in or out. A waiting one finishes by itself.
 const acme = fakeSignInCli(root);
@@ -74,7 +94,9 @@ for (const [name, text] of Object.entries(demoSkills)) {
 
 const repo = resolve(import.meta.dir, "..");
 const port = arg("--port") ?? "4600";
-const env: Record<string, string> = { ...(process.env as Record<string, string>), CAVVY_HOME: home, CAVVY_NO_KEYCHAIN: "1", ACME_HOME: acme.home, PATH: `${acme.bin}:${process.env.PATH}` };
+const env: Record<string, string> = { ...(process.env as Record<string, string>), CAVVY_HOME: home, CAVVY_NO_KEYCHAIN: "1", ACME_HOME: acme.home, PATH: [fakeBin, acme.bin, process.env.PATH].filter(Boolean).join(":") };
+// The stand-in's own folder, not this machine's ~/.codex (its sessions, its sign-in).
+if (fakes.codex) mkdirSync((env.CODEX_HOME = join(root, "codex-home")), { recursive: true });
 const demoRelease = arg("--update")?.startsWith("release") ? createDemoRelease(root, arg("--update") === "release-tampered") : undefined;
 if (demoRelease) Object.assign(env, demoRelease.env);
 else if (args.includes("--update")) Object.assign(env, createDemoUpdate(root, home, arg("--update") === "fail"));

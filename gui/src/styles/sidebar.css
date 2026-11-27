@@ -789,6 +789,15 @@
     min-width: calc(44 * var(--sp));
 }
 
+/* Snoozed: when it wakes stays in sight, beside More (the one action over it). */
+.slim.snz:hover .t,
+.slim.snz:focus-within .t,
+.slim.snz.menu-open .t {
+    visibility: visible;
+    min-width: 0;
+    padding-right: calc(24 * var(--sp));
+}
+
 /* "Show 20 more": a row of the list, quieter. */
 .slim.more {
     display: flex;

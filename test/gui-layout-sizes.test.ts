@@ -47,7 +47,16 @@ const subject = (selector: string) => [...(selector.split(/\s*[\s>+~]\s*/).pop()
 
 test("these are the sizes registered as not inherited", () => {
     // A new one is audited here too; add it once its readers set it themselves.
-    expect(new Set(sizes)).toEqual(new Set(["--rail-w", "--insp-w", "--insp-col", "--insp-bottom", "--term-h", "--dock-h", "--home-h"]));
+    expect(new Set(sizes)).toEqual(new Set(["--rail-w", "--insp-w", "--insp-col", "--insp-bottom", "--term-h", "--dock-h", "--home-h", "--jump-room"]));
+});
+
+test("--jump-room is set on the conversation's scroller, the one box that reads it, while Latest shows", () => {
+    // Not from a component: a class Transcript.tsx puts on the scroller with the pill (stage.css), which its mask reads.
+    const stage = parseRules(read("styles/stage.css"));
+    const setting = stage.filter((r) => r.decls.has("--jump-room") && !r.selectors.some((sel) => sel.startsWith("@")));
+    expect(setting.map((r) => r.selectors.join())).toEqual([".stage .transcript.jump-shown"]);
+    expect(readers("--jump-room").map((r) => r.selector)).toEqual([".stage .transcript"]);
+    expect(read("components/Transcript.tsx")).toContain('classList={{ "jump-shown": !stick() && !scrolledDown() }}');
 });
 
 test("--home-h is set by the one rule that reads it, from the column's height set on that box", () => {

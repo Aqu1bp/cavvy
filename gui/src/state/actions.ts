@@ -12,9 +12,10 @@ import { toWire, type Attachment } from "../lib/attachments";
 import { activate, agentReady, app, awayMachine, awayUnopened, createSession, homeAt, type HomeAt, homeCwdAfter, homeHere, homeOn, homeOnMachine, machineFor, rpcFor, setHomeAwayMode, updateHomeSettings, revealBackground, dropHandle, forkMakingOf, forkSession, handleFor, importCliSession, markSeen, refreshModels, refreshProjects, refreshProviders, refreshSessions, refreshSettings, reportError, requestTrust, rpc, serversUi, setApp, toast } from "./app";
 import type { ReviewScope } from "./changes";
 import { refreshGitChanges } from "./changes";
+import { plural } from "../lib/format";
 import { keepSentImages } from "./images";
 import { prefs, setPrefs } from "./prefs";
-import { freeRail, railOpen, requestComposerFocus, setAgentFocus, setArchiveRequest, setContextCardOpen, setFolderPickerOpen, setMcpOpen, setModePickerOpen, setModelPickerOpen, setRailOpen, review, setReview, setRewindOpen, setSettingsTab, setTerminalMax, shellLayout, splitActions } from "./ui";
+import { freeRail, railOpen, requestComposerFocus, setAgentFocus, setArchiveRequest, setContextCardOpen, setFolderPickerOpen, setAskSideChat, setInspectorPane, setMcpOpen, setModePickerOpen, setModelPickerOpen, setRailOpen, review, setReview, setRewindOpen, setSettingsTab, setTerminalMax, shellLayout, splitActions } from "./ui";
 import { clientAction, slashName } from "../lib/commands";
 import { forkAnchor } from "../lib/fork";
 import { backgroundOf, stopOutcome, stopTasks } from "../lib/background";
@@ -124,6 +125,32 @@ export async function openProject(path: string, home?: boolean) {
     }
 }
 
+/** The session's side chat, in the side panel (/btw); `text` asked there (it opens with it if there's none). */
+export async function openSideChat(id: string, text?: string) {
+    batch(() => {
+        setReview(undefined);
+        setInspectorPane("sidechat");
+        setPrefs("panel", true);
+        setAskSideChat(id);
+    });
+    if (text?.trim()) await rpcFor(id).call("session.sideChat", { id, text }).catch(reportError);
+}
+
+/** Put back the files a rewind restored (`undo` from its result; without it, the session's last restore). */
+export async function undoRestore(sid: string, undo?: string): Promise<boolean> {
+    try {
+        const r = await rpcFor(sid).call("session.rewindUndo", { id: sid, ...(undo ? { undo } : {}) });
+        refreshGitChanges();
+        for (const f of r.failed) toast(`Couldn't put back ${f.path}: ${f.error}`, "error");
+        if (r.restored.length) toast(`Put back ${plural(r.restored.length, "file")}`, "success");
+    } catch (e) {
+        // Nothing to undo, or a response running: a note, not an error to copy.
+        toast(e instanceof Error ? e.message : String(e), "warn");
+    }
+    // A failure keeps the toast's Undo, to try again.
+    return true;
+}
+
 /** Run a slash command the GUI handles itself. Returns false when it's the server's (or a prompt). */
 function clientCommand(id: string | undefined, text: string): boolean {
     const c = clientAction(text);
@@ -140,11 +167,17 @@ function clientCommand(id: string | undefined, text: string): boolean {
             newSession(app.homeCwd);
             return true;
         case "rewind":
-            if (id) setRewindOpen(true);
+            // `/rewind undo`: the session's last file restore put back, as the toast's Undo does, after the toast has gone too.
+            if (id && args.trim() === "undo") void undoRestore(id);
+            else if (id) setRewindOpen(true);
             return true;
         case "fork":
             if (id) void fork(id);
             return true;
+        case "sidechat":
+            // On Home, the server's: in the session made for it (send).
+            if (id) void openSideChat(id, args);
+            return Boolean(id);
         case "mcp":
             if (id) setMcpOpen({ focus: args.trim() || undefined });
             return true;
@@ -292,6 +325,13 @@ export async function send(text: string, attachments: Attachment[] = [], opts: {
     let created = false;
     // Still on that Home (the same folder on the same machine): the session made from it is shown.
     const stillHome = () => app.activeId === undefined && app.homeCwd === cwd && homeOn() === at?.there?.on;
+    // A side chat is shown only for this window's own sessions (SideChatPane): another machine's would work there
+    // unseen. The message stays in the box.
+    const away = awayMachine(id);
+    if (!opts.literal && away !== undefined && clientAction(text)?.action === "sidechat") {
+        toast(`Side chats aren't available on ${away || "this computer"}.`, "warn");
+        return false;
+    }
     if (!opts.literal && text.startsWith("/") && clientCommand(id, text)) return "command";
     const unknown = (name: string) => {
         const to = { id, cwd, at };
@@ -334,6 +374,8 @@ export async function send(text: string, attachments: Attachment[] = [], opts: {
             return false;
         }
         opts.accepted?.(id);
+        // /btw from Home (the one client command that gets this far): asked in the new session's side chat, shown.
+        if (created && !opts.literal && clientAction(text)) void openSideChat(id);
         // A final server refusal leaves the original Home composer and its draft in place.
         if (created && stillHome()) setApp("activeId", id);
         return true;
@@ -396,8 +438,8 @@ export function respond(id: string, interactionId: string, response: Interaction
     );
 }
 
-export async function setModel(ref: string) {
-    const id = app.activeId;
+/** `id`: the session it's for (the one shown, or Home's when none); a side chat's isn't kept as the default (`persist`). */
+export async function setModel(ref: string, id = app.activeId, persist = true) {
     const st = id ? handleFor(id)?.view.state : undefined;
     // An idle compaction stops for a model switch.
     if (st?.busy && !st.activity?.idle) {
@@ -405,7 +447,7 @@ export async function setModel(ref: string) {
         return;
     }
     try {
-        if (id) await rpc.call("session.setModel", { id, ref, persist: true });
+        if (id) await rpc.call("session.setModel", { id, ref, persist });
         else if (!(await updateHomeSettings({ model: ref }))) {
             await rpc.call("settings.update", { patch: { model: ref } });
             setApp("settings", "model", ref);
@@ -415,18 +457,17 @@ export async function setModel(ref: string) {
     }
 }
 
-export async function setAccount(provider: string, accountId: string) {
+export async function setAccount(provider: string, accountId: string, id = app.activeId) {
     try {
         // A session's call goes to its machine by its id; Home's default is its machine's (rpcFor), not always this window's.
-        if (app.activeId) await rpc.call("session.setAccount", { id: app.activeId, provider, accountId });
+        if (id) await rpc.call("session.setAccount", { id, provider, accountId });
         else await rpcFor(undefined).call("accounts.setDefault", { provider, id: accountId });
         // Another machine says when its default changed (models.changed): its list is asked for again then.
-        if (awayMachine(app.activeId) === undefined) await refreshProviders();
+        if (awayMachine(id) === undefined) await refreshProviders();
     } catch (e) { reportError(e); }
 }
 
-export async function setMode(mode: PermissionModeId) {
-    const id = app.activeId;
+export async function setMode(mode: PermissionModeId, id = app.activeId) {
     if (!id) {
         // For the sessions started from the home screen (the saved default is in Settings).
         if (!setHomeAwayMode(mode)) setApp("homeMode", mode);
@@ -442,9 +483,9 @@ export async function setMode(mode: PermissionModeId) {
     });
 }
 
-export async function setFastMode(enabled: boolean) {
+export async function setFastMode(enabled: boolean, id = app.activeId) {
     try {
-        if (app.activeId) await rpc.call("session.setFastMode", { id: app.activeId, enabled });
+        if (id) await rpc.call("session.setFastMode", { id, enabled });
         else if (!(await updateHomeSettings({ fastMode: enabled }))) {
             const settings = await rpc.call("settings.update", { patch: { fastMode: enabled } });
             setApp("settings", settings);
@@ -453,8 +494,7 @@ export async function setFastMode(enabled: boolean) {
 }
 
 /** Whether the server took it (a failure is reported here). */
-export async function setEffort(effort: EffortLevel): Promise<boolean> {
-    const id = app.activeId;
+export async function setEffort(effort: EffortLevel, id = app.activeId): Promise<boolean> {
     const failed = (e: unknown) => {
         reportError(e);
         return false;
@@ -528,11 +568,17 @@ export async function settle(id: string, settled: boolean): Promise<boolean> {
 
 /** At once, without asking: the server moves its files to the trash, and the toast's Undo puts them back. Whether it was done. */
 export async function deleteSession(id: string): Promise<boolean> {
+    let r: Awaited<ReturnType<typeof rpc.call<"session.delete">>>;
     try {
-        await rpc.call("session.delete", { id });
+        r = await rpc.call("session.delete", { id });
     } catch (e) {
         reportError(e);
         return false;
+    }
+    // Never saved: nothing for Undo to bring back.
+    if (r?.unsaved) {
+        toast("Session deleted", "info");
+        return true;
     }
     toast(
         "Session deleted",
@@ -677,10 +723,11 @@ export async function deleteSessions(ids: readonly string[]): Promise<string[]> 
 
 /** Only the commit dialog's explicit Commit click calls this. Errors stay in the dialog. */
 /** `pathTokens`: files whose names were shown redacted (GitFileDiff.pathToken), beside `paths`. */
-export async function gitCommit(id: string, paths: string[], message: string, expectedHead?: GitCommitHead, pathTokens: string[] = []) {
+/** `newBranch`: commit on a new branch made where HEAD is, and switch to it. */
+export async function gitCommit(id: string, paths: string[], message: string, expectedHead?: GitCommitHead, pathTokens: string[] = [], newBranch?: string) {
     try {
-        const result = await rpc.call("session.gitCommit", { id, paths, message, expectedHead, ...(pathTokens.length ? { pathTokens } : {}) });
-        toast(`Committed ${result.hash.slice(0, 7)} ${result.subject}`, "success");
+        const result = await rpc.call("session.gitCommit", { id, paths, message, expectedHead, newBranch, ...(pathTokens.length ? { pathTokens } : {}) });
+        toast(`Committed ${result.hash.slice(0, 7)}${newBranch ? ` to ${result.branch}` : ""}`, "success");
         return result;
     } finally {
         // Failed hooks can still edit working files; a post-publication error
@@ -840,15 +887,16 @@ export function editorName(): string | undefined {
  * only what's inside its folders.
  */
 /** `gitToken`: a file a Git listing showed redacted (GitFileDiff.pathToken): the server opens it, `path` unused. `editor`: "finder" reveals it. */
-export async function openInEditor(path: string, line?: number, o: { col?: number; folder?: boolean; sessionId?: string; gitToken?: string; editor?: string } = {}) {
+/** `cwd`: a folder open in Cavvy (a terminal's) the path is in, instead of a session's. */
+export async function openInEditor(path: string, line?: number, o: { col?: number; folder?: boolean; sessionId?: string; cwd?: string; gitToken?: string; editor?: string } = {}) {
     const sessionId = o.sessionId ?? app.activeId;
-    if (!sessionId) return;
+    if (!sessionId && !o.cwd) return;
     try {
-        await rpc.call("fs.open", { sessionId, ...(o.gitToken !== undefined ? { gitToken: o.gitToken } : { path }), line, col: o.col, folder: o.folder, ...(o.editor ? { editor: o.editor } : {}) });
+        await rpc.call("fs.open", { ...(o.cwd ? { cwd: o.cwd } : { sessionId }), ...(o.gitToken !== undefined ? { gitToken: o.gitToken } : { path }), line, col: o.col, folder: o.folder, ...(o.editor ? { editor: o.editor } : {}) });
     } catch (e) {
         const code = e instanceof RpcError ? e.code : undefined;
         if (code === "no_editor" || code === "not_installed")
-            return toast(code === "no_editor" ? "No editor chosen yet. Pick one under Settings → General → Open files with." : (e as Error).message, "warn", {
+            return toast(code === "no_editor" ? "No editor chosen" : (e as Error).message, "warn", {
                 label: "Settings",
                 run: () => {
                     setSettingsTab("general");

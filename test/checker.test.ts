@@ -117,6 +117,22 @@ describe("deny rules win in every mode", () => {
     });
 });
 
+describe("Always allow offers only rules that apply", () => {
+    test("a rule that covers the whole line is offered, and saved, lets it through", () => {
+        settings.permissions!.allow = [];
+        expect(check(T("Bash"), bash("touch a; touch b"))).toMatchObject({ behavior: "ask", suggestions: ["Bash(touch:*)"] });
+        settings.permissions!.allow = ["Bash(touch:*)"];
+        expect(check(T("Bash"), bash("touch a; touch b")).behavior).toBe("allow");
+    });
+
+    test("none for shell syntax, or a line no one rule covers", () => {
+        settings.permissions!.allow = [];
+        for (const cmd of ["{ touch a; touch b; } > out.txt", "if [ -f x ]; then touch x; fi", "for f in a b; do touch $f; done", "! touch x", "cd sub && touch x", "touch a && mkdir b", "time -p touch a", 'time " -p" touch a', "noglob touch a", "nocorrect touch a"]) {
+            expect([cmd, check(T("Bash"), bash(cmd)).suggestions ?? []]).toEqual([cmd, []]);
+        }
+    });
+});
+
 describe("cavvy credential store is denied", () => {
     test.each(MODES)("Read credentials.json and providers.json (%s)", (mode) => {
         expect(check(T("Read"), { file_path: paths.credentialsFile() }, mode).behavior).toBe("deny");

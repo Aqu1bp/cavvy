@@ -231,8 +231,14 @@ export function endPaneOpen(id: string) {
     if (paneOpening[id]) setPaneOpening(id, undefined);
 }
 
-// Both stay open while they're on screen, the one not focused too.
-onScreen.beside = () => splitIds() ?? [];
+/** The side chat shown in the side panel (SideChatPane), while it is: on screen beside the session, streaming as it does. */
+let asideShown: string | undefined;
+export function showAside(id: string | undefined) {
+    asideShown = id;
+}
+
+// Both stay open while they're on screen, the one not focused too; and a side chat shown.
+onScreen.beside = () => (asideShown ? [...(splitIds() ?? []), asideShown] : splitIds() ?? []);
 
 const RATIO_KEY = "cavvy.splitRatio";
 /** How much of the column the left session takes: as the bar between them was left (kept on this device), else half. */
@@ -257,6 +263,11 @@ export const SESSION_DRAG = "application/x-cavvy-session";
  * Outside a split: the one, focused. `parked`: the one shown before, kept out of sight to be shown again as it was
  * (Panes.tsx); not focused.
  */
-export interface Pane { id?: string; focused: () => boolean; parked: () => boolean; split: () => boolean; rightmost: () => boolean; share: () => number; wasFocused: () => boolean }
+/** The keyboard is in the side panel's side chat (SideChatPane): its menus, cards and keys are its own, not the session's. */
+export const [asideFocused, setAsideFocused] = createSignal(false);
+/** What the keys and the composer's menus act on: the focused pane's, unless they're the side chat's (`aside`). */
+export const keysHere = (pane: Pane) => pane.focused() && (Boolean(pane.aside) || !asideFocused());
+
+export interface Pane { id?: string; /** The side chat's (SideChatPane). */ aside?: boolean; focused: () => boolean; parked: () => boolean; split: () => boolean; rightmost: () => boolean; share: () => number; wasFocused: () => boolean }
 export const PaneContext = createContext<Pane>({ focused: () => true, parked: () => false, split: () => false, rightmost: () => true, share: () => 1, wasFocused: () => true });
 export const usePane = () => useContext(PaneContext);

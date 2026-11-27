@@ -22,8 +22,10 @@ import { existsSync, readFileSync } from "fs";
 import { basename, join } from "path";
 import { Agent, type Admission, type Admitted, type AgentEvent, type PermissionRequest, type PermissionResponse, type TurnEndReason } from "../agent/agent";
 import { digestToolState, lastPlanCall, latestCheckpointOf } from "../agent/history-digest";
-import { backendsIn, canonical, FileHistory, promptNotes, resetToolState, resetToolStateTo, rewindTargets, untrackedChangesNote, type RestoreItem } from "../agent/checkpoints";
+import { backendsIn, canonical, FileHistory, promptNotes, resetToolState, resetToolStateTo, rewindTargets, untrackedChangesNote } from "../agent/checkpoints";
+import { canUndoRestore, changedBy, dropUndo, lastUndo, planFileRestore, restoreFiles, undoRestore, type FileRestorePlan } from "../agent/rewind-files";
 import { beforeFork, forkCut, isForkTarget } from "../agent/fork";
+import { sideChatReminder, type SideChatOrigin } from "../agent/side-chat";
 import { fireHooks, type HookEvent } from "../agent/hooks";
 import { backgroundWork, canAnswerOneOff, GoalController, goalClearedNotice, limitedCodexGoal, loopGoalDropped, nativeGoalBack, nativeGoalEnd, nativeGoalLeft, nativeGoals, nativeGoalStatus, nativeGoalView, parseGoalCommand, queuedGoalSet, sessionTokens, type NativeGoal } from "../agent/goal";
 import { sessionHookServices, sessionStartHooks } from "../agent/session-hooks";
@@ -31,7 +33,7 @@ import { Session, type TurnNotice } from "../agent/session";
 import { buildSystemPrompt } from "../agent/system-prompt";
 import { INIT_PROMPT, reviewPrompt } from "../commands/index";
 import { expandCommand, pluginCommandFor, slashCommand } from "../commands/custom";
-import { addPermissionRule, loadScopeChecked, updateSettings, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
+import { addPermissionRule, loadScopeChecked, updateSettings, worktreeSettings, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
 import { MODE_INFO, PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
 import { onServer } from "../servers/role";
 import { findRecipe, signInRecipes } from "../agent/sign-in-recipes";
@@ -53,12 +55,13 @@ import type { Sampler, Tool, ToolResult, ToolState } from "../tools/types";
 import { isShellTool } from "../tools/types";
 import { availableSearchBackend, formatHits, searchWeb } from "../tools/web-tools";
 import { clientFor, defaultModelFrom, lookupModel, resolveModelInfo, reviewTarget, smallModelFor } from "../providers/models";
+import { fallbackNotice, unavailableReason } from "../providers/model-refs";
 import { costOf } from "../providers/pricing";
 import { isAgentBackend, type BackendWake, type BackgroundStop } from "../backends/types";
 import { WholeTurnsOnly } from "../backends/one-off";
 import { SessionBackground } from "../agent/background";
-import { getProvider, resolveBaseUrl } from "../providers/registry";
-import { agentCli, steersMidTurn, type AttachmentKind } from "../backends/defs";
+import { getProvider, providerLabel, resolveBaseUrl } from "../providers/registry";
+import { agentCli, baseCli, steersMidTurn, type AttachmentKind } from "../backends/defs";
 import { IMAGE_KEY, imageKey, keepImages, readKept, toolImagesDir } from "./tool-images";
 import { claudeCompactAt, cliCompactSetting, cavvyCompactAt, modelKeys } from "../backends/compact-at";
 import { account, accountSwitch, removedAccount, removedAccountNote, switchHow } from "../providers/accounts";
@@ -69,21 +72,22 @@ import { expandMcpMentions, findMcpMentions } from "../mcp/mentions";
 import type { McpAsker } from "../mcp/elicitation";
 import { notifyAfterMs } from "../ui/notify";
 import { displayPath } from "../util/files";
-import { gitBranch } from "../util/git";
+import { gitBranch, headBranch } from "../util/git";
 import { pathSettling } from "../util/env";
 import { redact, redactPrefix, lineRedactor } from "../util/redact";
 import { redactedReport } from "../lsp/diagnostics";
 import { trustedByUser } from "../config/trust";
-import { attachedLabel, attachedPrompt, toWire } from "./attachments";
+import { answerAttachments, attachedLabel, attachedPrompt, fileSaver, toWire, type AnswerAttach } from "./attachments";
 import { followUpDefault, loadQueue, saveQueue, type FollowUp } from "../agent/queue-store";
 import { RpcError } from "./rpc-error";
 import { fileDiff, textOf as bufText, trimInput } from "./diffs";
-import { gitChanges } from "./git-changes";
+import { gitChanges, gitLog } from "./git-changes";
 import { GitHandles, redactedError } from "./git-handles";
 import { sessionWorktree, sessionWorktrees, workingWorktree } from "./session-worktrees";
 import { excludeManagedWorktrees, mainCheckoutOf } from "./worktrees";
 import { gitPublishInfo, gitPublish, gitPrState } from "./git-publish";
 import { COMMIT_MESSAGE_SYSTEM, gitCommit, gitCommitPrompt } from "./git-commit";
+import { BRANCH_NAME_SYSTEM, branchName, branchPrompt, DRAFT_FAILED, gitPrPrompt, parsePrText, PR_TEXT_SYSTEM, type DraftWhat } from "./git-generate";
 import { AGENT_KEPT, agentFromCall, agentHead, agentStep, agentsFromTurns, cutOffPrompt, INTERRUPTED, isPrompt, runsAgent, promptKey, promptText, liveNotice, noticeBlock, readSegments, replay, resultPatch, shownStep, STEERING, toolBlockFromCall, UiLog, uiLogFile, withoutActionsNote, type AgentHead, type Segment, type ToolMeta } from "./history";
 import { TurnSnapshots } from "../agent/turn-snapshots";
 import { IdleCompactTimer } from "../agent/idle-compact";
@@ -99,9 +103,12 @@ import type {
     GitCommitHead,
     GitCommitInfo,
     GitCommitMessageInfo,
+    GitPrTextInfo,
+    GitBranchNameInfo,
     GitPublishRequest,
     GitPrInfo,
     GitScope,
+    GitLogEntry,
     EffortLevel,
     Interaction,
     InteractionResponse,
@@ -111,12 +118,14 @@ import type {
     PlanRef,
     QueuedMode,
     RewindPlanInfo,
+    RewindResult,
     RewindTargetInfo,
     SessionOp,
     SessionSnapshot,
     SessionResumed,
     SessionTurnsPage,
     SessionState,
+    SessionStatus,
     WorkingIn,
     ToolBlock,
     ToolCategoryId,
@@ -338,6 +347,9 @@ const FIRST_KEPT = 4000;
  * this, a snapshot is as small (a window opens with 64 KB of turns: gui/src/state/app.ts OPEN_BYTES).
  */
 const RESUME_BYTES = 64 * 1024;
+/** Files a rewind lists, at most (the rest are counted). */
+const REWIND_LISTED = 300;
+
 /** A session's turns rebuilt (a rewind): the windows are sent this many of the latest, as a session opens with. */
 const RESET_TURNS = 100;
 /** How soon a change goes out to the GUI: a tool's start or end, a question, a status. */
@@ -361,7 +373,9 @@ const LIVE_STEP_MS = 2000;
 
 interface Pending {
     interaction: Interaction;
-    resolve: (r: InteractionResponse | undefined) => void;
+    resolve: (r: InteractionResponse | undefined, attached?: AttachedPart[]) => void;
+    /** A question whose answer can carry attachments, and how they reach the agent. */
+    attach?: AnswerAttach;
 }
 
 interface Queued {
@@ -411,11 +425,48 @@ function reportsAgent(name: string, isError: boolean | undefined): boolean {
 }
 
 /** The slash commands the server runs itself (the GUI runs the others). */
-const SERVER_COMMANDS = new Set(["compact", "init", "review", "loop", "schedules", "goal", "trust"]);
+const SERVER_COMMANDS = new Set(["compact", "init", "review", "loop", "schedules", "goal", "trust", "btw"]);
 
 /** A session title as it's stored: one line, 120 characters at most ("" if there's nothing left). */
 export function cleanTitle(title: string): string {
     return title.replace(/\s+/g, " ").trim().slice(0, 120);
+}
+
+/** What a session's title is asked to be. */
+const TITLE_RULES = "2 to 6 words, sentence case, no quotes, no trailing punctuation. Describe the task, not the user.";
+
+/** A model's answer as a title: its first line, without a label, quotes or marks; undefined when it's a paragraph. */
+export function modelTitle(raw: string | undefined): string | undefined {
+    const title = raw
+        ?.replace(/<[^>]*>/g, "")
+        .split("\n")
+        .map((l) => l.trim())
+        .find(Boolean)
+        ?.replace(/^(session\s+)?(title|name):\s*/i, "")
+        .replace(/^["'`*#\s]+|["'`*.\s]+$/g, "")
+        .slice(0, 60);
+    return title && title.split(/\s+/).length <= 10 ? title : undefined;
+}
+
+/**
+ * The conversation as a title is made from: its first request, then the latest of what was said (newest last), each
+ * line marked with who said it. Text only: no tool calls or results, no system reminders. Empty with nothing said.
+ */
+export function conversationGist(messages: readonly Message[], max = 4000): string {
+    const said = messages
+        .map((m) => ({ who: m.role === "user" ? "User" : "Assistant", text: m.content.map((p) => (p.type === "text" ? p.text : "")).join("\n").replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").replace(/\s+/g, " ").trim() }))
+        .filter((m) => m.text);
+    if (!said.length) return "";
+    const line = (m: (typeof said)[number], n: number) => `${m.who}: ${m.text.length > n ? `${m.text.slice(0, n)}…` : m.text}`;
+    const first = said[0]!.who === "User" ? line(said[0]!, 800) : "";
+    const latest: string[] = [];
+    let room = max - first.length;
+    for (let i = said.length - 1; i >= (first ? 1 : 0) && room > 100; i--) {
+        const l = line(said[i]!, Math.min(600, room - 20));
+        latest.unshift(l);
+        room -= l.length + 1;
+    }
+    return [first && `First request:\n${first}`, latest.length ? `Latest:\n${latest.join("\n")}` : ""].filter(Boolean).join("\n\n");
 }
 
 /** A first message that's only a greeting, a thanks, a yes or a test: nothing to name a session after. */
@@ -468,7 +519,9 @@ export function modelSummary(m: ModelInfo): ModelSummary {
     return {
         ref: modelRef(m),
         provider: m.provider,
-        providerName: p?.name,
+        // A removed instance by the name it had: the session still on it says whose it was.
+        providerName: providerLabel(m.provider),
+        ...(p ? {} : { unavailable: true as const }),
         id: m.id,
         name: m.name ?? m.id,
         ...(m.resolvedModel ? { resolvedModel: m.resolvedModel, resolvedFor: m.resolvedFor } : {}),
@@ -621,6 +674,8 @@ export class Runtime {
     private switching?: Promise<unknown>;
     /** Reserve this session while committing or publishing. */
     private committing = false;
+    /** Reserve it while a rewind puts files back (or an Undo does): no turn starts meanwhile. */
+    private restoring = false;
     private commitDone?: Promise<unknown>;
     private commitAbort?: AbortController;
     /** The title being asked for: closing the session stops it (on a CLI, its process). */
@@ -634,7 +689,8 @@ export class Runtime {
     /** The scheduled prompt starting is the resume after a usage limit (it picks a paused goal up again). */
     private scheduledResume = false;
     /** The rewind last shown: restoring does what it showed, or nothing if the conversation moved on. */
-    private rewindShown?: { id: string; index: number; message: Message; count: number; plan?: RestoreItem[] };
+    private rewindShown?: { id: string; index: number; message: Message; count: number; plan: FileRestorePlan };
+    /** What can put the files a rewind restored back as they were, by its id (rewindUndo). */
 
     // What the current turn is building
     private turnId?: string;
@@ -687,9 +743,10 @@ export class Runtime {
         private engine: Engine,
         readonly ws: Workspace,
         session: Session,
-        opts: { mode?: PermissionMode; resumed: boolean },
+        opts: { mode?: PermissionMode; resumed: boolean; side?: SideChatOrigin },
     ) {
         this.session = session;
+        this.side = opts.side;
         // Saving stopped working (a full disk): said once, and once more when it works again (what waited is saved then).
         session.onSaving = (error) => queueMicrotask(() => {
             if (!error) return this.notice("Saved again.", "info");
@@ -927,6 +984,11 @@ export class Runtime {
 
     get title(): string | undefined {
         return this.view.state.title;
+    }
+
+    /** A new branch's name from the session's title, as Suggest in the commit dialog makes one. */
+    branchFromTitle(): string | undefined {
+        return this.title ? branchName(this.title, worktreeSettings(this.settings()).branchPrefix) : undefined;
     }
 
     /** The first prompt, for sessions without a title. */
@@ -1329,6 +1391,7 @@ export class Runtime {
             plan: this.planRef(this.latestPlan()),
             planLinks: [...this.session.planLinks],
             ...(this.session.meta.forkOf ? { forkOf: { id: this.session.meta.forkOf.id, title: this.session.meta.forkOf.title } } : {}),
+            ...(this.side ? { sideOf: this.side.of } : {}),
             secrets: this.toolState.secrets?.names() ?? [],
             schedules: [],
         };
@@ -1444,6 +1507,24 @@ export class Runtime {
     /** Claude Code or Codex: an agent backend runs this session's turns. */
     private backendModel(): boolean {
         return getProvider(this.model?.provider ?? "")?.kind === "agent";
+    }
+
+    /**
+     * How full the context was, by how many messages the session had when it was measured (each reply's usage). A
+     * compaction makes those counts mean other messages: they're forgotten then.
+     */
+    private contextAt = new Map<number, number>();
+
+    /**
+     * How full the context is after a rewind to the messages there are now: as measured when the session last had
+     * that many (the reply before the prompt rewound to), else as the agent estimates its next request. Not 0, which
+     * read as an empty context with turns still showing until the next reply.
+     */
+    private contextRewound(): number {
+        const count = this.session.messageCount;
+        for (const at of [...this.contextAt.keys()]) if (at > count) this.contextAt.delete(at);
+        const s = this.ui.state;
+        return this.contextAt.get(count) ?? (s.messages === count && s.contextTokens ? s.contextTokens : undefined) ?? this.agent?.estimatedContext() ?? 0;
     }
 
     /** How full the context was when the session was left, if nothing has happened to it since (in a terminal, say). */
@@ -2009,9 +2090,9 @@ export class Runtime {
         // An agent that can't compact, or does by itself and on /compact only (an ACP agent's): never, here.
         const compact = agentCli(m.provider)?.caps.compact;
         if (compact === "none" || compact === "command") return undefined;
-        if (m.provider === "claude-code" || m.provider === "codex") {
+        if (baseCli(m.provider) === "claude-code" || baseCli(m.provider) === "codex") {
             const setting = cliCompactSetting(m.provider, this.session.accountId(m.provider), this.cliProject(), modelKeys(m, this.servedModel));
-            if (m.provider === "claude-code") return claudeCompactAt(window, setting, m.maxOutput);
+            if (baseCli(m.provider) === "claude-code") return claudeCompactAt(window, setting, m.maxOutput);
             return setting && window ? Math.min(setting, window) : setting;
         }
         const s = this.settings();
@@ -2096,11 +2177,18 @@ export class Runtime {
 
     private async initModel() {
         const candidates = [this.session.model, this.ws.settings.model ?? this.engine.fallbackModel].filter((r): r is string => Boolean(r && parseModelRef(r)));
+        // The first that couldn't be used (the session's own, else the default): said once, by name, with what's used instead.
+        let missed: string | undefined;
+        const tell = async () => {
+            if (!missed || !this.model) return;
+            const why = (await unavailableReason(missed)) ?? (missed === this.session.model ? "The model this session used isn't available" : "The default model isn't available");
+            this.notice(fallbackNotice(why, this.model), "warn");
+        };
         for (const ref of new Set(candidates)) {
-            if (await this.setModel(ref, { quiet: true })) {
-                if (this.session.model && ref !== this.session.model) this.notice(`This session used ${this.session.model}, which isn't available now; using ${ref}.`, "warn");
-                return;
-            }
+            if (await this.setModel(ref, { quiet: true })) return tell();
+            // The session's own model, or (a new session) the default it would have started on. An older session that
+            // never recorded one isn't told of a default it didn't use.
+            if (ref === this.session.model || this.session.messageCount === 0) missed ??= ref;
         }
         let listings = this.engine.listings;
         let pick = defaultModelFrom(listings);
@@ -2108,7 +2196,7 @@ export class Runtime {
             listings = await this.engine.refreshListings();
             pick = defaultModelFrom(listings);
         }
-        if (pick && (await this.setModel(modelRef(pick), { quiet: true }))) return;
+        if (pick && (await this.setModel(modelRef(pick), { quiet: true }))) return tell();
         this.setState({ model: undefined });
     }
 
@@ -2323,6 +2411,11 @@ export class Runtime {
         return true;
     }
 
+    /** A provider was removed or turned off: a session on it shows that its model can't run (its next message says why). */
+    providerGone(provider: string) {
+        if (this.model?.provider === provider) this.setState({ model: { ...modelSummary(this.model), unavailable: true } });
+    }
+
     /** The model's details arrived (listings refreshed). */
     refreshModelInfo() {
         if (!this.model) return;
@@ -2502,7 +2595,7 @@ export class Runtime {
     private nativeGoalCommand(text: string, args: string): boolean {
         const c = parseGoalCommand(args);
         if (c.kind === "invalid") throw new RpcError(c.message, "invalid");
-        const claude = this.nativeGoal?.provider === "claude-code" || (this.agent?.model.provider ?? this.model?.provider) === "claude-code";
+        const claude = baseCli(this.nativeGoal?.provider) === "claude-code" || baseCli(this.agent?.model.provider ?? this.model?.provider) === "claude-code";
         if (claude && (c.kind === "pause" || c.kind === "resume")) {
             this.notice(c.kind === "pause" ? "Claude Code's goals don't pause: stop the turn (it carries on with your next message), or /goal clear." : "Claude Code carries on with the goal when you send a message.");
             return true;
@@ -2572,25 +2665,24 @@ export class Runtime {
         };
     }
 
-    /** Who answers one-off requests (titles, summaries): smallModel, else a small model of the session's provider, else its own. */
+    /**
+     * Who answers one-off requests (titles, summaries, git drafts): smallModel on whichever provider (Claude Code and
+     * Codex answer them too, backends/one-off.ts), else a small model of the session's provider, else its own.
+     */
     private async smallTarget(): Promise<{ model: ModelInfo; client: ProviderClient }> {
+        const smallRef = this.settings().smallModel;
+        const set = smallRef ? resolveModelInfo(smallRef) : undefined;
+        if (set) {
+            try {
+                return { model: set, client: await clientFor(set.provider) };
+            } catch {
+                // Its provider was removed or turned off: as when none is set.
+            }
+        }
         let model = this.model!;
         let client = this.client!;
-        const smallRef = this.settings().smallModel;
-        if (smallRef) {
-            const p = parseModelRef(smallRef);
-            if (p) {
-                try {
-                    client = await clientFor(p.provider);
-                    model = resolveModelInfo(smallRef) ?? model;
-                } catch {
-                    // the main model it is
-                }
-            }
-        } else {
-            const small = smallModelFor(model.provider, this.engine.listings);
-            if (small) model = small;
-        }
+        const small = smallModelFor(model.provider, this.engine.listings);
+        if (small) model = small;
         return { model, client };
     }
 
@@ -2618,7 +2710,7 @@ export class Runtime {
      * other agent works in the folder Cavvy gives it: the worktree.
      */
     private placeAgent(provider: string | undefined) {
-        if (this.workingIn) this.toolState.cwd = provider === "claude-code" ? this.ws.cwd : this.workingIn.path;
+        if (this.workingIn) this.toolState.cwd = baseCli(provider) === "claude-code" ? this.ws.cwd : this.workingIn.path;
     }
 
     private makeAgent() {
@@ -2628,6 +2720,7 @@ export class Runtime {
         this.placeAgent(this.model.provider);
         this.agent = new Agent({
             session: this.session,
+            ...(this.side ? { context: () => this.side?.context ?? [] } : {}),
             trusted: () => this.ws.trusted,
             skills: () => this.ws.freshSkills(),
             model: this.model,
@@ -2656,6 +2749,7 @@ export class Runtime {
                 ui: {
                     onScreen: () => this.engine.sessionShown(this.id),
                     askQuestion: (q, options, multi) => this.askQuestion(q, options, multi),
+                    askQuestionAttaching: (q, options, multi, as) => this.askQuestionAttaching(q, options, multi, as),
                     approvePlan: (plan) => this.approvePlan(plan),
                     requestSecret: (name, purpose, signal) => this.requestSecret(name, purpose, signal),
                     requestSignIn: (req, signal) => this.requestSignIn(req, signal),
@@ -2696,6 +2790,8 @@ export class Runtime {
         if (this.session.model === undefined && this.model) this.session.setModel(modelRef(this.model));
         // Left in bypass, it opened in another mode: the model hears of it, as of any switch.
         if (this.leftIn) this.agent.noteModeChange(this.leftIn, this.mode);
+        // A side chat's model hears what it is with the first question (an agent made again before then too).
+        if (this.side && !this.session.messageCount) this.agent.addReminder(sideChatReminder(this.side.context));
         this.leftIn = undefined;
     }
 
@@ -3029,6 +3125,7 @@ export class Runtime {
                 // A backend says its context window with its usage (Claude Code's models list none): the ring can show now.
                 const window = this.model?.contextWindow !== this.view.state.model?.contextWindow && this.model ? { model: modelSummary(this.model) } : {};
                 this.setState({ contextTokens: e.contextTokens, cost: this.session.cost, costUnknown: this.session.costUnknown, ...this.tokenTotals(), ...window });
+                if (e.contextTokens) this.contextAt.set(this.session.messageCount, e.contextTokens);
                 break;
             }
             case "compact_start":
@@ -3068,7 +3165,8 @@ export class Runtime {
         this.closeOpen();
         const turnId = this.turnId;
         if (!turnId) return;
-        let texts = msg.content.filter((p) => p.type === "text").map((p) => p.text ?? "");
+        // Redacted as each streamed piece was: an agent CLI's message isn't (a secret variable it printed, say).
+        let texts = msg.content.filter((p) => p.type === "text").map((p) => redact(p.text ?? ""));
         if (this.continuationText) {
             this.patchBlock(this.continuationText.id, { text: this.continuationText.prefix + texts.join("") }, turnId);
             texts = [];
@@ -3201,6 +3299,7 @@ export class Runtime {
             this.op({ op: "turn", turn });
         }
         this.setState({ contextTokens: 0 });
+        this.contextAt.clear();
         this.recordState();
     }
 
@@ -3519,10 +3618,17 @@ export class Runtime {
     // -----------------------------------------------------------------------
     // Interactions
 
-    private interact(interaction: Interaction): Promise<InteractionResponse | undefined> {
+    private interact(interaction: Interaction, attach?: AnswerAttach, attached?: (parts: AttachedPart[]) => void): Promise<InteractionResponse | undefined> {
         interaction.since ??= Date.now();
         return new Promise((resolve) => {
-            this.pending.set(interaction.id, { interaction, resolve });
+            this.pending.set(interaction.id, {
+                interaction,
+                resolve: (r, parts) => {
+                    if (parts?.length) attached?.(parts);
+                    resolve(r);
+                },
+                ...(attach ? { attach } : {}),
+            });
             this.setState({ interactions: [...this.pendingList()] });
             this.setStatus("waiting");
             if (interaction.kind === "secret") return this.engine.notify(this, "question", `Asks you for ${interaction.name}`);
@@ -3567,19 +3673,25 @@ export class Runtime {
             if (bad) throw new RpcError(bad, "bad_secret");
             r = { kind: "secret", value: r.value };
         }
+        // What's attached to an answer is checked (and what's saved, saved) before the card goes: a refusal stays in it.
+        if (r.kind === "question" && (r.images !== undefined || r.files !== undefined)) {
+            if (!p.attach) throw new RpcError("Nothing can be attached to this answer.");
+            const parts = answerAttachments(r, fileSaver(this.ws.cwd, this.id), p.attach);
+            return this.settle(interactionId, { kind: "question", answers: Array.isArray(r.answers) ? r.answers : undefined }, parts);
+        }
         // Only what was offered: "always" isn't, for a dangerous command.
         if (p.interaction.kind === "permission" && r.kind === "permission" && !p.interaction.options.some((o) => o.id === r.choice)) throw new RpcError("That isn't one of the choices offered.");
         this.settle(interactionId, r);
     }
 
-    private settle(id: string, r: InteractionResponse | undefined) {
+    private settle(id: string, r: InteractionResponse | undefined, attached?: AttachedPart[]) {
         const p = this.pending.get(id);
         if (!p) return;
         this.pending.delete(id);
         this.setState({ interactions: this.pendingList() });
         if (!this.pending.size) this.setStatus(this.busy ? "running" : "idle");
         else this.engine.sessionChanged(this);
-        p.resolve(r);
+        p.resolve(r, attached);
         // A question answered between turns (a plan handed off, say) may leave it idle.
         if (!this.pending.size) queueMicrotask(() => this.schedules.poke());
     }
@@ -3655,7 +3767,9 @@ export class Runtime {
             it.heading = tool.name === "Write" ? (exists ? "Overwrite a file" : "Create a file") : tool.name === "NotebookEdit" ? "Edit a notebook" : "Edit a file";
             it.path = displayPath(abs, this.ws.cwd);
             const diff = req.preview?.diff;
-            if (diff) it.diff = fileDiff(it.path, diff.before === "" && !exists ? null : redact(diff.before), redact(diff.after));
+            const shown = diff && fileDiff(it.path, diff.before === "" && !exists ? null : redact(diff.before), redact(diff.after));
+            // Nothing that changes (a file written with what it already holds) leaves no empty diff in the card.
+            if (shown && (shown.hunks.length || shown.note)) it.diff = shown;
             if (decision.offerAcceptEdits) it.options.push({ id: "session-edits", label: "Allow all edits this session" });
             else if (suggestions.length) it.options.push({ id: "always", label: `Allow edits in ${suggestions[0]!.replace(/^Edit\(\/?(.*?)\/\*\*\)$/, "$1")} this session` });
         } else if (tool.category === "read") {
@@ -3762,11 +3876,23 @@ export class Runtime {
     }
 
     private async askQuestion(question: string, options: { label: string; description?: string }[], multi: boolean): Promise<string[] | undefined> {
+        const r = await this.askQuestionAttaching(question, options, multi);
+        return r?.answers.length ? r.answers : undefined;
+    }
+
+    /** `as`: what's attached to the answer comes with it, so; without it, nothing can be. */
+    private async askQuestionAttaching(question: string, options: { label: string; description?: string }[], multi: boolean, as?: AnswerAttach): Promise<{ answers: string[]; attached: AttachedPart[] } | undefined> {
         const toolId = this.runningTool("AskUserQuestion");
         if (toolId) this.patchBlock(toolId, { status: "awaiting" });
-        const r = await this.interact({ kind: "question", id: this.newId(), toolId, question: redact(question), options: options.map((o) => ({ label: redact(o.label), description: o.description && redact(o.description) })), multi });
+        let attached: AttachedPart[] = [];
+        const r = await this.interact(
+            { kind: "question", id: this.newId(), toolId, question: redact(question), options: options.map((o) => ({ label: redact(o.label), description: o.description && redact(o.description) })), multi, ...(as ? { attach: true } : {}) },
+            as,
+            (parts) => (attached = parts),
+        );
         if (toolId) this.patchBlock(toolId, { status: "running" });
-        return r?.kind === "question" && r.answers?.length ? r.answers : undefined;
+        const answers = r?.kind === "question" && Array.isArray(r.answers) ? r.answers.filter((a): a is string => typeof a === "string") : [];
+        return answers.length || attached.length ? { answers, attached } : undefined;
     }
 
     /** The value goes straight back to the tool, which keeps it in the session's store: nothing here holds on to it. */
@@ -4191,7 +4317,7 @@ export class Runtime {
         if (!trimmed && !attachments?.length) return { queued: false };
         this.toolState.wakes?.resume();
         // These answer here and send nothing to the model, so what's attached would be lost: the message stays in the box.
-        const bare = literal || !attachments?.length ? undefined : trimmed.match(/^\/(compact|loop|schedules|trust)(?=\s|$)/i)?.[1]?.toLowerCase();
+        const bare = literal || !attachments?.length ? undefined : trimmed.match(/^\/(compact|loop|schedules|trust|btw)(?=\s|$)/i)?.[1]?.toLowerCase();
         if (bare) throw new RpcError(`/${bare} doesn't take attachments. Send them in a message of their own.`, "no_attachments");
         // A mistyped command isn't sent to the model; the GUI offers to send it as a message.
         const unknown = literal ? undefined : this.unknownCommand(text);
@@ -4203,6 +4329,13 @@ export class Runtime {
             if (this.nativeGoalCommand(trimmed, goal[1] ?? "")) return { queued: false };
         } else if (goal && !(this.busy && parseGoalCommand(goal[1] ?? "").kind === "set")) {
             await this.goalCommand(goal[1] ?? "", attachments);
+            return { queued: false };
+        }
+        // /btw asks in the side chat, at once, even mid-turn: nothing of it comes here. Without a question, there's
+        // nothing to open one with: a window shows the side chat's tab, which asks for one.
+        const btw = literal || this.side ? undefined : trimmed.match(/^\/btw(?:\s+([\s\S]*))?$/i);
+        if (btw) {
+            if (btw[1]?.trim()) await this.engine.openSideChat(this, btw[1]);
             return { queued: false };
         }
         if (this.busy) {
@@ -4240,7 +4373,7 @@ export class Runtime {
         const provider = this.agent?.model.provider;
         const commands = this.engine.cliCommands(provider, this.ws.cwd);
         // Until this workspace has reported its skills, let Claude Code resolve them.
-        if ((provider === "claude-code" && commands === undefined) || commands?.has(c.name)) return undefined;
+        if ((baseCli(provider) === "claude-code" && commands === undefined) || commands?.has(c.name)) return undefined;
         return c.name;
     }
 
@@ -4780,7 +4913,7 @@ export class Runtime {
         // Redacted before it's cut or capitalized: then a key in it no longer looks like one.
         this.titleFrom ??= redact(prompt);
         let title: string | undefined;
-        const RULES = "2 to 6 words, sentence case, no quotes, no trailing punctuation. Describe the task, not the user.";
+        const RULES = TITLE_RULES;
         // Claude Code and Codex answer it as a one-off (backends/one-off.ts), on their light model: a CLI process of its
         // own each time. Sessions asking while one runs are asked about together after it (title-queue.ts).
         try {
@@ -4804,19 +4937,9 @@ export class Runtime {
                 return titlesByNumber(reply, prompts.length);
             });
             mine.throwIfAborted();
-            title = raw
-                ?.replace(/<[^>]*>/g, "")
-                .split("\n")
-                .map((l) => l.trim())
-                .find(Boolean)
-                ?.replace(/^(session\s+)?(title|name):\s*/i, "")
-                .replace(/^["'`*#\s]+|["'`*.\s]+$/g, "")
-                .slice(0, 60);
+            title = modelTitle(raw);
             // Not a title: the prompt said back, or a paragraph.
-            if (title && title.split(/\s+/).length > 10) {
-                this.engine.log(`session ${this.id}: the title it got was the prompt said back, or a paragraph`);
-                title = undefined;
-            }
+            if (raw && !title) this.engine.log(`session ${this.id}: the title it got was the prompt said back, or a paragraph`);
         } catch (e) {
             // Its model can't answer one at all (Antigravity, an ACP agent): the prompt names it now.
             if (e instanceof WholeTurnsOnly) this.titleTries = TITLE_TRIES;
@@ -4827,6 +4950,38 @@ export class Runtime {
         if (title && !this.session.title) this.rename(title);
         // Until one comes, the sidebar shows the first prompt; a later prompt asks again.
         else if (!title) this.titleAsked = false;
+    }
+
+    /**
+     * Named again from the conversation so far (the row's or the title bar's Regenerate title), by the model and rules
+     * the first title was made with. The new title, or an error: the old title stays.
+     */
+    async regenerateTitle(): Promise<string> {
+        await this.ready;
+        if (!this.client || this.closed) throw new RpcError("This session has no model to name it with.", "no_model");
+        const about = conversationGist(this.session.messages);
+        if (!about) throw new RpcError("Nothing to name it after yet.", "empty");
+        let raw: string;
+        let target: { model: ModelInfo; client: ProviderClient } | undefined;
+        try {
+            target = await this.smallTarget();
+            raw = await this.complete(`You name coding-assistant sessions for a sidebar, from the conversation so far: what it's about now, not only how it started. Reply with only the title: ${TITLE_RULES}`, redactPrefix(about, 4000), AbortSignal.timeout(60_000), { target });
+        } catch (e) {
+            const refused = target && this.oneOffRefused(e, target, "make a title");
+            if (refused) throw new RpcError(refused.message, "unsupported");
+            this.engine.log(`session ${this.id}: no new title: ${(e as Error).message}`);
+            // The provider's own words (a timeout's "aborted") are in the log, as git drafts have it.
+            throw new RpcError("Couldn't make a title.", "failed");
+        }
+        const title = modelTitle(raw);
+        if (!title) {
+            // The prompt said back, or a paragraph: to the user, as any other failure.
+            this.engine.log(`session ${this.id}: no new title: the answer wasn't a title`);
+            throw new RpcError("Couldn't make a title.", "failed");
+        }
+        if (this.closed) throw new RpcError("The session was closed.", "closed");
+        this.rename(title);
+        return title;
     }
 
     /** `!command` from the input box: the user runs it themselves; the model sees it with the next prompt. */
@@ -4933,11 +5088,29 @@ export class Runtime {
     // -----------------------------------------------------------------------
     // Rewind and changes
 
+    /** Whether the Rewind dialog offers to undo the last file restore. */
+    rewindCanUndo(): boolean {
+        return !!lastUndo(this.rewindSnapshots());
+    }
+
     rewindTargets(): RewindTargetInfo[] {
         const history = FileHistory.for(this.session);
+        const snapshots = this.rewindSnapshots();
+        // When each was sent, from its turn: the same prompt sent twice is told apart by it.
+        const sent = new Map<number, number>();
+        for (const turn of this.view.turns) if (turn.prompt?.index !== undefined && turn.startedAt) sent.set(turn.prompt.index, turn.startedAt);
         return rewindTargets(this.session.messages)
             .reverse()
-            .map((t) => ({ index: t.index, text: t.text, tracked: Boolean(history && t.checkpoint !== undefined), files: history && t.checkpoint !== undefined ? history.filesIn(t.checkpoint).length : 0, ...(t.backends.length ? { backends: t.backends } : {}), ...(this.beforeFork(t.index) ? { forked: true } : {}) }));
+            .map((t) => {
+                const { tracked, whole, files } = changedBy(snapshots, history, t.checkpoint);
+                const at = sent.get(t.index);
+                return { index: t.index, text: t.text, tracked, files, ...(whole ? { whole } : {}), ...(t.backends.length ? { backends: t.backends } : {}), ...(this.beforeFork(t.index) ? { forked: true } : {}), ...(at ? { at } : {}) };
+            });
+    }
+
+    /** The turn snapshots a rewind restores files from: only in a trusted folder, where they're recorded (they read the repository). */
+    private rewindSnapshots(): TurnSnapshots | undefined {
+        return this.ws.trusted ? TurnSnapshots.for(this.session, this.ws.cwd) : undefined;
     }
 
     /** A prompt this session was forked with: the files changed before the fork are in the original's history, not here. */
@@ -5000,23 +5173,29 @@ export class Runtime {
         return t;
     }
 
-    rewindPlan(index: number): RewindPlanInfo {
+    async rewindPlan(index: number, alongside: string[] = []): Promise<RewindPlanInfo> {
         const t = this.target(index);
-        const history = FileHistory.for(this.session);
-        const plan = history && t.checkpoint !== undefined ? history.plan(t.checkpoint) : undefined;
+        const message = this.session.messages[index]!, count = this.session.messageCount;
+        const plan = await planFileRestore({ snapshots: this.rewindSnapshots(), history: FileHistory.for(this.session), checkpoint: t.checkpoint, alongside });
         const root = canonical(this.ws.cwd);
         const rel = (p: string) => displayPath(p, root);
         const planId = this.newId();
-        this.rewindShown = { id: planId, index, message: this.session.messages[index]!, count: this.session.messageCount, plan };
+        // The conversation moved on while the files were read: what was planned is for another conversation.
+        if (this.session.messages[index] !== message || this.session.messageCount !== count) throw new Error("The conversation changed meanwhile. Open Rewind again.");
+        this.rewindShown = { id: planId, index, message, count, plan };
         const backends = backendsIn(this.session.messages, index);
         return {
             index,
             planId,
             ...(this.beforeFork(index) ? { forked: true } : {}),
             ...(backends.length ? { backends } : {}),
-            tracked: Boolean(plan),
-            restore: (plan ?? []).filter((i) => i.action !== "skip").map((i) => ({ path: rel(i.path), action: i.action as "write" | "delete", outside: Boolean(i.outside) })),
-            skipped: (plan ?? []).filter((i) => i.action === "skip").map((i) => ({ path: rel(i.path), reason: i.reason ?? "" })),
+            tracked: plan.whole || t.checkpoint !== undefined && !!FileHistory.for(this.session),
+            ...(plan.whole ? { whole: true } : {}),
+            ...(plan.refused ? { refused: plan.refused } : {}),
+            // A long list cut, outside changes first: they're the ones to look at.
+            restore: [...plan.items].sort((a, b) => Number(Boolean(b.outside && !b.undoable)) - Number(Boolean(a.outside && !a.undoable))).slice(0, REWIND_LISTED).map((i) => ({ path: rel(i.path), action: i.action, outside: Boolean(i.outside && !i.undoable) })),
+            ...(plan.items.length > REWIND_LISTED ? { more: plan.items.length - REWIND_LISTED } : {}),
+            skipped: plan.skipped.map((i) => ({ path: rel(i.path), reason: i.reason })),
         };
     }
 
@@ -5025,7 +5204,7 @@ export class Runtime {
      * a file changed since then is left alone (it fails, with the reason), and
      * nothing happens if the conversation moved on.
      */
-    rewind(index: number, planId: string, code: boolean, conversation: boolean): { restored: string[]; failed: { path: string; error: string }[]; text: string; images?: { mediaType: string; data: string }[]; files?: WireFile[] } {
+    async rewind(index: number, planId: string, code: boolean, conversation: boolean, alongside: string[] = []): Promise<RewindResult> {
         this.checkCommitting();
         if (this.busy) throw new Error("Wait for the current response to finish, or interrupt it first.");
         const t = this.target(index);
@@ -5037,43 +5216,81 @@ export class Runtime {
         this.rewindShown = undefined;
         // What the prompt carried goes back to the box with its text: a pasted text exists nowhere else.
         const attached = shown.message.role === "user" ? shown.message.content.filter((p): p is AttachedPart => p.type === "image" || p.type === "file") : [];
-        const history = FileHistory.for(this.session);
         const plan = shown.plan;
         const backends = backendsIn(this.session.messages, index);
-        const restore = plan?.filter((i) => i.action !== "skip") ?? [];
-        const skipped = plan?.filter((i) => i.action === "skip") ?? [];
         const root = canonical(this.ws.cwd);
         const rel = (p: string) => displayPath(p, root);
         let restored: string[] = [];
         let failed: { path: string; error: string }[] = [];
+        let undo: string | undefined;
         let rewindConversation = conversation;
-        if (code && restore.length) {
-            const r = history!.restore(restore);
+        if (code && plan.items.length) {
+            this.restoring = true;
+            let r: Awaited<ReturnType<typeof restoreFiles>>;
+            try {
+                r = await restoreFiles(plan, { alongside });
+            } finally {
+                this.restoring = false;
+            }
             restored = r.done.map(rel);
             failed = r.failed.map((f) => ({ path: rel(f.path), error: f.error }));
-            const done = new Set(r.done);
-            for (const p of [...this.toolState.fileState.keys()]) if (done.has(canonical(p))) this.toolState.fileState.delete(p);
+            undo = r.undo;
+            if (!undo && r.done.length) dropUndo(FileHistory.for(this.session)?.dir);
+            this.forgetReads(r.done);
             if (conversation && failed.length) rewindConversation = false;
             if (!rewindConversation && r.done.length) this.agent?.addReminder(`The user restored these files to how they were before an earlier prompt (/rewind), undoing the changes made to them since. Read them again before editing them:\n${restored.map((p) => `- ${p}`).join("\n")}`);
         }
         if (rewindConversation) {
+            // The turns from this prompt on leave the review pane's list with the conversation (checkpoints are increasing times).
+            const from = this.session.messages.slice(index).flatMap((m) => (m.role === "user" && m.meta?.checkpoint !== undefined ? [m.meta.checkpoint] : []))[0];
+            if (from !== undefined) this.rewindSnapshots()?.rewound(from);
             if (this.agent) this.agent.rewind(index);
             else {
                 this.session.rewind(index);
                 resetToolState(this.toolState, this.session.messages);
                 this.classifier.clearCache();
             }
-            const kept = [...(code ? [] : restore), ...skipped];
+            const kept = [...(code ? [] : plan.items), ...plan.skipped];
             if (kept.length) this.agent?.addReminder(`The user rewound the conversation to an earlier point (/rewind), but these files weren't restored and still have changes made after that point:\n${kept.map((it) => `- ${rel(it.path)}`).join("\n")}`);
-            // What a backend changed was never tracked: all of it is still there.
-            if (backends.length) this.agent?.addReminder(untrackedChangesNote(backends, restored));
+            // What a backend changed wasn't tracked: what wasn't restored is still there.
+            if (backends.length && !(code && plan.whole)) this.agent?.addReminder(untrackedChangesNote(backends, restored));
             this.rebuild();
         }
-        this.setState({ filesChanged: this.filesChanged(), todos: this.toolState.todos.map((x) => ({ ...x })), contextTokens: 0 });
+        // Only a conversation rewound has less in it: files restored alone leave the context as it was.
+        this.setState({ filesChanged: this.filesChanged(), todos: this.toolState.todos.map((x) => ({ ...x })), ...(rewindConversation ? { contextTokens: this.contextRewound() } : {}) });
         this.recordState();
         this.flush();
         this.engine.sessionChanged(this);
-        return { restored, failed, text: t.text, ...toWire(attached) };
+        return { restored, failed, text: t.text, ...toWire(attached), ...(undo ? { undo } : {}) };
+    }
+
+    /** Read state forgotten for files changed under the model: it must read them again before editing them. */
+    private forgetReads(paths: string[]) {
+        const changed = new Set(paths);
+        for (const p of [...this.toolState.fileState.keys()]) if (changed.has(canonical(p))) this.toolState.fileState.delete(p);
+    }
+
+    /** Put the files a rewind restored (`undo`, its result's; without one, the session's last) back as they were before it. */
+    async rewindUndo(undo?: string): Promise<{ restored: string[]; failed: { path: string; error: string }[] }> {
+        this.checkCommitting();
+        if (this.busy) throw new Error("Wait for the response to finish, or stop it.");
+        const last = !undo;
+        if (last) undo = lastUndo(this.rewindSnapshots());
+        if (!undo || !canUndoRestore(this.rewindSnapshots(), undo)) throw new Error(last ? "There's no file restore to undo." : "That restore can't be undone any more.");
+        this.restoring = true;
+        let r: Awaited<ReturnType<typeof undoRestore>>;
+        try {
+            r = await undoRestore(this.rewindSnapshots(), undo, FileHistory.for(this.session));
+        } finally {
+            this.restoring = false;
+        }
+        const root = canonical(this.ws.cwd);
+        const restored = r.done.map((p) => displayPath(p, root));
+        this.forgetReads(r.done);
+        if (restored.length) this.agent?.addReminder(`The user undid a file restore (/rewind): these files are back as they were before it. Read them again before editing them:\n${restored.map((p) => `- ${p}`).join("\n")}`);
+        this.setState({ filesChanged: this.filesChanged() });
+        this.engine.sessionChanged(this);
+        return { restored, failed: r.failed.map((f) => ({ path: displayPath(f.path, root), error: f.error })) };
     }
 
     /** The timeline again from the transcript (after a rewind). */
@@ -5167,7 +5384,7 @@ export class Runtime {
      * What git says changed in the session's folder, whoever changed it; or, with `worktree`, in another
      * worktree of its repository (only one `git worktree list` reports: never any other folder).
      */
-    async gitChanges(req: { scope: GitScope; base?: string; baseToken?: string; path?: string; pathToken?: string; turnId?: number; worktree?: string }): Promise<GitChangesInfo> {
+    async gitChanges(req: { scope: GitScope; base?: string; baseToken?: string; path?: string; pathToken?: string; turnId?: number; worktree?: string; commit?: string; ignoreWhitespace?: boolean; full?: boolean }): Promise<GitChangesInfo> {
         const { worktree, pathToken, baseToken, ...rest } = req;
         let other: { real: string; gitDir: string } | undefined;
         if (worktree !== undefined) {
@@ -5183,8 +5400,18 @@ export class Runtime {
         if (pathToken !== undefined) rest.path = this.gitHandles.resolve("path", root, pathToken);
         if (baseToken !== undefined) rest.base = this.gitHandles.resolve("ref", root, baseToken);
         try {
-            const info = other ? await gitChanges(other.real, { scope: rest.scope, base: rest.base, path: rest.path }, undefined, { gitDir: other.gitDir }) : await gitChanges(this.ws.cwd, rest, TurnSnapshots.for(this.session, this.ws.cwd));
+            const info = other ? await gitChanges(other.real, { scope: rest.scope, base: rest.base, path: rest.path, commit: rest.commit, ignoreWhitespace: rest.ignoreWhitespace, full: rest.full }, undefined, { gitDir: other.gitDir }) : await gitChanges(this.ws.cwd, rest, TurnSnapshots.for(this.session, this.ws.cwd));
             return this.gitHandles.shown(info, root);
+        } catch (e) {
+            throw redactedError(e);
+        }
+    }
+
+    /** HEAD's recent commits, in the session's folder or another worktree of its repository: when the review pane's commit list opens. */
+    async gitLog(worktree?: string): Promise<{ commits: GitLogEntry[]; more: boolean }> {
+        const w = worktree !== undefined ? await sessionWorktree(this.ws.cwd, worktree) : undefined;
+        try {
+            return w && !w.current ? await gitLog(w.real, { gitDir: w.gitDir }) : await gitLog(this.ws.cwd);
         } catch (e) {
             throw redactedError(e);
         }
@@ -5210,6 +5437,7 @@ export class Runtime {
 
     private checkCommitting() {
         if (this.committing) throw new RpcError("Wait for the commit to finish before starting more work.", "busy");
+        if (this.restoring) throw new RpcError("Wait for the files to be restored before starting more work.", "busy");
     }
 
     private checkGitCommit(action = "committing") {
@@ -5218,7 +5446,31 @@ export class Runtime {
         if (!this.settled(false)) throw new RpcError(`This session is still working. Wait for its responses, questions, shells, and tasks to finish before ${action}.`, "busy");
     }
 
-    async gitCommit(paths: string[], message: string, expectedHead?: GitCommitHead, pathTokens?: string[]): Promise<GitCommitInfo> {
+    /** Still at work (a turn, a question, a shell, a task): its folder's branch and files mustn't change under it. */
+    async workingForGit(): Promise<boolean> {
+        await this.yieldIdleCompaction();
+        return !this.closed && !this.settled(false);
+    }
+
+    /** Holds the session (no turn starts) while `work` changes its folder's branch or files; the header's branch after. */
+    async holdForGit<T>(work: Promise<T>): Promise<T> {
+        this.committing = true;
+        this.commitDone = work;
+        try {
+            return await work;
+        } finally {
+            this.committing = false;
+            this.commitDone = undefined;
+            if (!this.closed) this.showWorkingIn(this.workingIn);
+        }
+    }
+
+    /** The folder's branch may have moved (engine.branchMoved): the header shows the one it's on now. */
+    branchMoved() {
+        if (!this.closed) this.showWorkingIn(this.workingIn);
+    }
+
+    async gitCommit(paths: string[], message: string, expectedHead?: GitCommitHead, pathTokens?: string[], newBranch?: string): Promise<GitCommitInfo> {
         await this.yieldIdleCompaction();
         this.checkGitCommit();
         const files = this.gitPaths(paths, pathTokens);
@@ -5229,10 +5481,12 @@ export class Runtime {
         }
         this.committing = true;
         this.commitAbort = new AbortController();
-        const done = gitCommit(this.ws.cwd, files, message, { expectedHead: head, signal: this.commitAbort.signal });
+        const done = gitCommit(this.ws.cwd, files, message, { expectedHead: head, signal: this.commitAbort.signal, newBranch });
         this.commitDone = done;
         try {
             const info = await done;
+            // On a new branch: so is every session open in this folder.
+            if (newBranch) this.engine.branchMoved(this.ws.cwd);
             return { ...info, subject: redact(info.subject), ...(info.branch !== undefined ? { branch: redact(info.branch) } : {}) };
         } catch (e) {
             throw redactedError(e);
@@ -5250,11 +5504,26 @@ export class Runtime {
         return gitPublishInfo(this.ws.cwd);
     }
 
-    private prRead?: { at: number; promise: Promise<{ pr?: GitPrInfo }> };
+    /** The branch's pull request, read at most once a minute for the branch checked out then. */
+    private prRead?: { at: number; branch?: string; promise: Promise<{ pr?: GitPrInfo }> };
     gitPrState() {
         if (!this.ws.trusted || this.closed) return Promise.resolve({});
-        if (!this.prRead || Date.now() - this.prRead.at >= 60_000) {
-            this.prRead = { at: Date.now(), promise: gitPrState(this.ws.cwd).then((pr) => ({ pr })) };
+        // The branch checked out now, from the HEAD file (a terminal's checkout may not have reached the header yet).
+        // When that can't say (a reftable repository, say), nothing read before is trusted.
+        const branch = headBranch(this.ws.cwd);
+        if (branch === undefined || !this.prRead || Date.now() - this.prRead.at >= 60_000 || this.prRead.branch !== branch) {
+            const read = {
+                at: Date.now(),
+                branch,
+                promise: gitPrState(this.ws.cwd).then((pr) => {
+                    // Another branch checked out while it was read: it may be that one's, so it isn't kept.
+                    if (headBranch(this.ws.cwd) !== branch && this.prRead === read) this.prRead = undefined;
+                    // Merged or closed: with auto-settle on, the session is done with (engine.ts prEnded).
+                    if ((pr?.state === "merged" || pr?.state === "closed") && !this.closed) this.engine.prEnded(this);
+                    return { pr };
+                }),
+            };
+            this.prRead = read;
         }
         return this.prRead.promise;
     }
@@ -5264,11 +5533,14 @@ export class Runtime {
         this.checkGitCommit("publishing");
         this.committing = true;
         this.commitAbort = new AbortController();
+        const branch = headBranch(this.ws.cwd);
         const done = gitPublish(this.ws.cwd, request, this.commitAbort.signal);
         this.commitDone = done;
         try {
             const result = await done;
-            this.prRead = { at: Date.now(), promise: Promise.resolve(result) };
+            // Kept for the branch it was published from, unless another was checked out meanwhile (its PR is then
+            // looked up for whichever that is).
+            this.prRead = branch !== undefined && headBranch(this.ws.cwd) === branch ? { at: Date.now(), branch, promise: Promise.resolve(result) } : undefined;
             return result;
         } finally {
             this.committing = false;
@@ -5281,14 +5553,72 @@ export class Runtime {
         await this.ready;
         this.checkGitCommit();
         const files = this.gitPaths(paths, pathTokens);
-        if (!this.model || !this.client) throw new RpcError("Set a small model in Settings to generate messages.", "no_model");
-        const target = await this.smallTarget();
-        if (isAgentBackend(target.client)) throw new RpcError("Set a small model from another provider in Settings to generate messages.", "no_model");
+        const target = await this.draftTarget("generate messages");
         // The prompt redacts what it shows the model, names included.
         const prompt = await gitCommitPrompt(this.ws.cwd, files).catch((e) => { throw redactedError(e); });
-        const message = await this.complete(COMMIT_MESSAGE_SYSTEM, prompt, AbortSignal.timeout(30_000), { target });
-        if (!message.trim()) throw new RpcError("The model returned an empty commit message. Try again or write your own.");
+        const message = await this.draft(target, "generate messages", COMMIT_MESSAGE_SYSTEM, prompt, 30_000);
+        if (!message.trim()) throw new RpcError(DRAFT_FAILED["generate messages"]);
         return { message, model: modelRef(target.model) };
+    }
+
+    /**
+     * The model that drafts git text, as titles pick theirs (smallTarget): the small model set in Settings on whichever
+     * provider, else the session's provider's small default, else the session's own model. Only with none of those is
+     * there nothing to ask.
+     */
+    private async draftTarget(what: DraftWhat): Promise<{ model: ModelInfo; client: ProviderClient }> {
+        if ((!this.model || !this.client) && !this.settings().smallModel) throw new RpcError(`Set a small model in Settings to ${what}.`, "no_model");
+        try {
+            return await this.smallTarget();
+        } catch {
+            // Only a session without a model gets here (a set small model whose provider is gone falls back to it).
+            throw new RpcError(`Set a small model in Settings to ${what}.`, "no_model");
+        }
+    }
+
+    /**
+     * A git draft on `target`. A CLI starts a process of its own for it, so it gets longer. The provider's own failure
+     * (a timeout, "aborted", an HTTP error) is logged; the user is told only that there's no draft.
+     */
+    private async draft(target: { model: ModelInfo; client: ProviderClient }, what: DraftWhat, system: string, prompt: string, ms: number, maxTokens?: number): Promise<string> {
+        try {
+            return await this.complete(system, prompt, AbortSignal.timeout(isAgentBackend(target.client) ? Math.max(ms, 60_000) : ms), { target, ...(maxTokens ? { maxTokens } : {}) });
+        } catch (e) {
+            const refused = this.oneOffRefused(e, target, what);
+            if (refused) throw refused;
+            this.engine.log(`session ${this.id}: couldn't ${what}: ${(e as Error)?.message ?? e}`);
+            throw new RpcError(DRAFT_FAILED[what], "draft_failed");
+        }
+    }
+
+    /** A model that runs whole turns only (an ACP agent, Antigravity) can't answer one-off requests: what to change instead. */
+    private oneOffRefused(e: unknown, target: { model: ModelInfo }, what: string): RpcError | undefined {
+        if (!(e instanceof WholeTurnsOnly)) return undefined;
+        const set = this.settings().smallModel === modelRef(target.model);
+        return new RpcError(`${providerLabel(target.model.provider)} can't ${what}. Choose ${set ? "another" : "a"} small model in Settings.`, "no_model");
+    }
+
+    /** A pull request's title and description into `base`, from this branch's commits and diff and the repository's template. */
+    async gitPrText(base?: string): Promise<GitPrTextInfo> {
+        await this.ready;
+        this.checkGitCommit("publishing");
+        const target = await this.draftTarget("generate pull request text");
+        const prompt = await gitPrPrompt(this.ws.cwd, base).catch((e) => { throw redactedError(e); });
+        const reply = await this.draft(target, "generate pull request text", PR_TEXT_SYSTEM, prompt, 60_000, 2048);
+        const text = parsePrText(reply);
+        if (!text) throw new RpcError(DRAFT_FAILED["generate pull request text"]);
+        return { ...text, model: modelRef(target.model) };
+    }
+
+    /** A branch name for `text`, after the worktree.branchPrefix setting. */
+    async gitBranchName(text: string): Promise<GitBranchNameInfo> {
+        await this.ready;
+        if (!text.trim()) throw new RpcError("Write a commit message first.", "invalid");
+        const target = await this.draftTarget("suggest branch names");
+        const reply = await this.draft(target, "suggest branch names", BRANCH_NAME_SYSTEM, branchPrompt(text), 30_000, 100);
+        const branch = branchName(reply, worktreeSettings(this.settings()).branchPrefix);
+        if (!branch) throw new RpcError(DRAFT_FAILED["suggest branch names"]);
+        return { branch, model: modelRef(target.model) };
     }
 
     changes(): ChangesInfo {
@@ -5610,6 +5940,18 @@ export class Runtime {
     }
     get guest(): boolean {
         return this.lentTo !== undefined;
+    }
+
+    /** A side chat's: whose it is, and that session's conversation as it sees it (src/agent/side-chat.ts). */
+    side?: SideChatOrigin;
+    /** This session's side chat, while it has one open. */
+    sideChat?: string;
+
+    /** The side chat's state, as its parent shows it (its tab's dot): undefined once it's gone. */
+    sideChatChanged(id: string | undefined, status?: SessionStatus) {
+        this.sideChat = id;
+        const now = id ? { id, ...(status && status !== "idle" ? { status } : {}) } : undefined;
+        if (JSON.stringify(now) !== JSON.stringify(this.view.state.sideChat)) this.setState({ sideChat: now });
     }
     /** The session there this one lends to: its id, and its name in this machine's own words (Engine.guestFor). */
     guestSession?: { id: string; title: string };

@@ -5,6 +5,14 @@ import type { Credentials } from "./rpc";
 
 export const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
+export interface QuitAsk {
+    id: number;
+    title: string;
+    detail: string;
+    /** Put it up (the app says so once the page has said it has it, and only then). Without: just say it has it. */
+    show?: boolean;
+}
+
 /** The Electron desktop app's bridge (desktop-electron/src/preload.ts). */
 export interface ElectronBridge {
     sidecarInfo(): Promise<{ port: number; token: string }>;
@@ -22,15 +30,25 @@ export interface ElectronBridge {
      * (lib/page-focus.ts): `focused` when a tab's page holds the window's keyboard after something the agent did to
      * it, `person` when the person presses (`press`), types or scrolls in one. Returns how to stop.
      */
-    onBrowser(fn: (e: { type: "create"; key: string; partition: string } | { type: "ready"; key: string; targetId: string } | { type: "destroy"; key: string } | { type: "sleep"; key: string; asleep: boolean } | { type: "canvas"; key: string; color: string } | { type: "focused"; key: string } | { type: "person"; key: string; press: boolean; seq?: number } | { type: "framed"; key: string; framed: boolean } | { type: "left"; key: string } | { type: "refocus"; key: string }) => void): () => void;
+    onBrowser(fn: (e: { type: "create"; key: string; partition: string } | { type: "ready"; key: string; targetId: string } | { type: "destroy"; key: string } | { type: "sleep"; key: string; asleep: boolean } | { type: "canvas"; key: string; color: string } | { type: "focused"; key: string } | { type: "person"; key: string; press: boolean; seq?: number } | { type: "framed"; key: string; framed: boolean } | { type: "left"; key: string } | { type: "refocus"; key: string } | { type: "find"; key: string } | { type: "reload"; key: string }) => void): () => void;
+    /** Opens a tab's page's DevTools, in a window of their own placed clear of `pane` (the Browser pane's box) where it can be. */
+    browserDevTools?(key: string, pane?: { x: number; y: number; width: number; height: number }): void;
     /** The person is back in the window (a press or focus of theirs there): no page is theirs any more. */
     browserBack(seen: number): void;
     /** These tabs are on screen now (a pane, the floating view): the app keeps them awake (never frozen). */
     /** Whether the window can be seen (not minimized or hidden) and has the focus, each time either changes. */
     onWindowState?(fn: (s: { seen: boolean; focused: boolean }) => void): () => void;
+    /** The app asks whether to quit (sessions working, work unsaved): components/QuitDialog.tsx shows it when told to. `end`: drop it. */
+    onQuitAsk?(fn: (q: QuitAsk | { id: number; end: true }) => void): () => void;
+    /** The page has the question ("asked", at once), then its answer, or "unable": it couldn't put it up. */
+    quitReply?(id: number, answer: "asked" | "quit" | "cancel" | "unable"): void;
     browserShown(keys: string[]): void;
     /** A tab's webview has this size now: its page's real viewport. */
     browserSized(key: string, size: { width: number; height: number; scale: number }): void;
+    /** Resolves once a tab's page has laid itself out at its webview's size and drawn at it (false: not within a moment). */
+    browserPainted?(key: string, size: { width: number; height: number }): Promise<boolean>;
+    /** Where the person was in the tab's page, kept as its find bar opens and gone back to as it closes. */
+    browserPageFocus?(key: string, what: "keep" | "restore"): void;
 }
 
 export const electron: ElectronBridge | undefined = typeof window !== "undefined" ? (window as unknown as { cavvyDesktop?: ElectronBridge }).cavvyDesktop : undefined;

@@ -1,22 +1,21 @@
-// The side panel, in the sheet's inspector column: Changes | Agents | Commands | Browser
+// The side panel, in the sheet's inspector column: Changes | Agents | Commands | Side chat | Browser
 // at the top. Changes opens the diff reader, with its file count on the icon. Agents: every sub-agent once (a background one's
-// task and its run are one row), and tasks given to other models. Commands:
+// task and its run are one row), and tasks given to other models. Commands (CommandsPane):
 // background shells and monitors, watched pull requests, and the session's
-// secrets and MCP servers that failed or ask for approval. Browser: the session's
-// browser, watched and driven by hand (BrowserPane). Empty sections aren't
+// secrets and MCP servers that failed or ask for approval. Side chat (SideChatPane): questions about the session that
+// don't go into it. Browser: the session's browser, watched and driven by hand (BrowserPane). Empty sections aren't
 // drawn. The plan and its steps are in the conversation (Composer, Activity).
 
 import { batch, createEffect, createMemo, createResource, createSignal, For, Match, on, onCleanup, Show, Switch, lazy } from "solid-js";
-import { Bot, Copy, FileDiff, FolderGit2, FolderOpen, GitBranch, GitPullRequestArrow, Globe, KeyRound, Maximize2, Minimize2, Plug, Smartphone, SquarePen, Terminal, X } from "lucide-solid";
+import { Bot, Copy, FileDiff, FolderGit2, FolderOpen, GitBranch, Globe, Maximize2, MessageSquareText, Minimize2, Plug, Smartphone, SquarePen, Terminal } from "lucide-solid";
 import type { ChangesInfo, GitFileDiff } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
 import { app, awayMachine, machineFor, reportError, revealsIn, rpc, toast } from "../state/app";
 import { setPrefs } from "../state/prefs";
-import { inspectorPane, panelFull, setInspectorPane, setMcpOpen, setPanelFull, setReview } from "../state/ui";
+import { inspectorPane, panelFull, review, setInspectorPane, setMcpOpen, setPanelFull, setReview } from "../state/ui";
 import { newSession, openReview } from "../state/actions";
-import { needsAttention, shownName, statusLabel } from "../lib/mcp";
 import { sessionReadReady, useGitChanges } from "../state/changes";
-import { copyText, openExternal, revealPath } from "../lib/platform";
+import { copyText, revealPath } from "../lib/platform";
 import { tildify } from "../lib/format";
 import { workingBranch } from "../lib/worktree-work";
 import { agentRows, backgroundOf, commandRows, rowLive, type WorkRow } from "../lib/background";
@@ -24,7 +23,8 @@ import { tabName, type Change, type InspectorPane } from "../lib/inspector";
 import { Menu } from "./ui/Menu";
 import { Segmented } from "./ui/bits";
 import { uncleared, WorkList } from "./BackgroundTasks";
-import { BrowserPane } from "./BrowserPane";
+import { Transcript } from "./Transcript";
+import { Composer } from "./Composer";
 import { browserUnseen, loadBrowserState } from "../state/browser";
 import { loadSimulatorState, simulatorOffered, simulatorState, simulatorUnseen } from "../state/simulator";
 
@@ -116,90 +116,6 @@ type FolderChanges = ReturnType<ReturnType<typeof useFolderChanges>>;
 /** The diff reader on these changes: git's uncommitted view, or (outside a repository) Cavvy's own record. */
 const openChanges = (c: FolderChanges, path?: string, token?: string) => openReview(path, c?.repo === false ? "cavvy" : "uncommitted", undefined, token);
 
-/** Pull requests the agent watches: it's woken when checks fail or someone comments. A click opens the pull request. */
-function Watches(p: { handle: SessionHandle }) {
-    // Monitors are commands of their own (time left, from the shell list).
-    const watches = () => (p.handle.view.state.watches ?? []).filter((w) => w.kind !== "monitor" && w.kind !== "sign-in");
-    const tone = (detail?: string) => (/failing|conflicts|can't reach/.test(detail ?? "") ? "tone-err" : /passed/.test(detail ?? "") ? "tone-ok" : "");
-    return (
-        <Show when={watches().length}>
-            <div class="grp">
-                <div class="sh">Watching</div>
-                <For each={watches()}>
-                    {(w) => (
-                        <div class={`task swap ${w.url ? "click" : ""}`}>
-                            <Show when={w.url}>{(url) => <button class="task-hit" aria-label={`Open ${w.label}`} onClick={() => void openExternal(url())} />}</Show>
-                            <span class="ki watch">
-                                <GitPullRequestArrow size={14} />
-                            </span>
-                            <span class="tx">
-                                <b>{w.label.replace(/ in \S+$/, "")}</b>
-                                <span>Wakes the agent on news</span>
-                            </span>
-                            <span class={`meta ${tone(w.detail)}`}>{w.detail}</span>
-                            <button class="act" title="Stop watching" aria-label={`Stop watching ${w.label}`} onClick={() => void rpc.call("session.stopWatch", { id: p.handle.id, watchId: w.id }).catch(reportError)}>
-                                <X size={14} />
-                            </button>
-                        </div>
-                    )}
-                </For>
-            </div>
-        </Show>
-    );
-}
-
-/**
- * The session's own: the secrets the user gave it, by name (its shell commands see them until forgotten or the
- * session closes), and MCP servers that failed or ask for approval (healthy ones stay out of the way). A server
- * opens the MCP list on it.
- */
-function SessionGroup(p: { handle: SessionHandle }) {
-    const names = () => p.handle.view.state.secrets ?? [];
-    const flagged = () => p.handle.view.state.mcp.filter(needsAttention);
-    return (
-        <Show when={names().length || flagged().length}>
-            <div class="grp">
-                <div class="sh">Session</div>
-                <For each={names()}>
-                    {(name) => (
-                        <div class="task swap">
-                            <span class="ki">
-                                <KeyRound size={14} />
-                            </span>
-                            <span class="tx">
-                                <b class="mono">{name}</b>
-                                <span>New shell commands see ${name}</span>
-                            </span>
-                            <span class="meta" />
-                            <button class="act" title="Forget" aria-label={`Forget ${name}`} onClick={() => void rpc.call("session.forgetSecret", { id: p.handle.id, name }).catch(reportError)}>
-                                <X size={14} />
-                            </button>
-                        </div>
-                    )}
-                </For>
-                <For each={flagged()}>
-                    {(m) => (
-                        <div class="task click">
-                            <button class="task-hit" aria-label={`MCP server ${shownName(m.name)}: ${statusLabel(m).text}`} onClick={() => setMcpOpen({ focus: m.name })} />
-                            <span class="ki">
-                                <Plug size={14} />
-                                <span class={`nd ${m.status === "failed" ? "st-failed" : "st-waiting"}`} />
-                            </span>
-                            <span class="tx">
-                                <b>{shownName(m.name)}</b>
-                                <Show when={m.error} fallback={<span>Review what it runs</span>}>
-                                    <span class="err selectable">{m.error}</span>
-                                </Show>
-                            </span>
-                            <span class={`meta tone-${statusLabel(m).tone}`}>{statusLabel(m).text}</span>
-                        </div>
-                    )}
-                </For>
-            </div>
-        </Show>
-    );
-}
-
 /** The Agents tab: every sub-agent once, and tasks given to other models. */
 function AgentsPane(p: { handle: SessionHandle; rows: WorkRow[] }) {
     return (
@@ -214,24 +130,14 @@ function AgentsPane(p: { handle: SessionHandle; rows: WorkRow[] }) {
     );
 }
 
-/** The Commands tab: background shells and monitors, then watched pull requests, then the session's own. */
-function CommandsPane(p: { handle: SessionHandle; rows: WorkRow[] }) {
-    const st = () => p.handle.view.state;
-    const any = () => p.rows.length || (st().watches ?? []).some((w) => w.kind !== "monitor" && w.kind !== "sign-in") || (st().secrets ?? []).length || st().mcp.some(needsAttention);
-    return (
-        <Show
-            when={any()}
-            fallback={
-<div class="none">No commands running</div>
-            }
-        >
-            <WorkList handle={p.handle} tab="commands" rows={p.rows} />
-            <Watches handle={p.handle} />
-            <SessionGroup handle={p.handle} />
-        </Show>
-    );
-}
+/** The Commands tab (CommandsPane), loaded when it's first shown. */
+const CommandsPane = lazy(() => import("./CommandsPane"));
 
+/** The side chat (SideChatPane), loaded when it's first shown. */
+const SideChatPane = lazy(() => import("./SideChatPane"));
+
+/** The Browser pane is loaded when it's first shown, with its menu and bars (BrowserTools.tsx). */
+const BrowserPane = lazy(() => import("./BrowserPane").then((m) => ({ default: m.BrowserPane })));
 /** The Simulator pane is loaded when it's first shown: only a Mac with Xcode, or a server lent one's, ever shows it. */
 const SimulatorPane = lazy(() => import("./SimulatorPane").then((m) => ({ default: m.SimulatorPane })));
 
@@ -253,7 +159,7 @@ function usePanelWork(handle: () => SessionHandle) {
 /**
  * The panel's views, as icons down its outer edge (first for the keyboard; panel.css puts it there): one look at any
  * width. A view's name is its tooltip, and the title of its pane. It stays beside the diff reader too (`reviewing`:
- * Changes is the view the reader belongs to), so the reader reads as part of the panel: an icon leaves it for that view.
+ * Changes is the view the reader belongs to; none for the file viewer), so the reader reads as part of the panel: an icon leaves it for that view.
  */
 function PanelRail(p: { handle: SessionHandle; work: ReturnType<typeof usePanelWork>; reviewing?: boolean }) {
     const { changes, agents, commands } = p.work;
@@ -271,7 +177,7 @@ function PanelRail(p: { handle: SessionHandle; work: ReturnType<typeof usePanelW
         <div class="insp-rail">
             <Segmented
                 label="Side panel"
-                value={p.reviewing ? "changes" : inspectorPane()}
+                value={p.reviewing ? (review()?.file ? (undefined as never) : "changes") : inspectorPane()}
                 onChange={show}
                 options={[
                     {
@@ -319,6 +225,23 @@ function PanelRail(p: { handle: SessionHandle; work: ReturnType<typeof usePanelW
                                 <Terminal class="seg-i" />
                                 <Show when={running(commands())}>
                                     <span class="ct live">{running(commands())}</span>
+                                </Show>
+                            </>
+                        ),
+                    },
+                    {
+                        value: "sidechat",
+                        get name() {
+                            const status = p.handle.view.state.sideChat?.status;
+                            return tabName("Side chat", status === "waiting" ? "it needs you" : status === "running" ? "working" : status === "error" && "it stopped with an error");
+                        },
+                        title: "Side chat",
+                        label: (
+                            <>
+                                <MessageSquareText class="seg-i" />
+                                {/* Working: the sidebar's working colour; waiting on you: the usual dot; failed: the error's. */}
+                                <Show when={p.handle.view.state.sideChat?.status}>
+                                    {(status) => <span class={`ct-dot ${status()}`} title={status() === "running" ? "Working" : status() === "waiting" ? "Needs you" : "Stopped with an error"} />}
                                 </Show>
                             </>
                         ),
@@ -382,7 +305,7 @@ export function RightPanel(p: { handle: SessionHandle }) {
         if (inspectorPane() === "simulator" && simulatorState(p.handle.id)?.status === "unavailable") setInspectorPane("agents");
     });
     // The panes with a title line; the browser's and the simulator's own bars say what they are.
-    const titled = () => (inspectorPane() === "browser" || inspectorPane() === "simulator" ? undefined : inspectorPane());
+    const titled = () => (inspectorPane() === "browser" || inspectorPane() === "simulator" || inspectorPane() === "sidechat" ? undefined : inspectorPane());
     return (
         <aside class="panel" aria-label="Session details">
             {/* The folder's changes (the Changes icon's count) are the one thing here fetched once the session is open:
@@ -416,6 +339,11 @@ export function RightPanel(p: { handle: SessionHandle }) {
                     <Match when={inspectorPane() === "browser"}>
                         <div class="pane">
                             <BrowserPane handle={p.handle} />
+                        </div>
+                    </Match>
+                    <Match when={inspectorPane() === "sidechat"}>
+                        <div class="pane">
+                            <SideChatPane handle={p.handle} views={{ Transcript, Composer }} />
                         </div>
                     </Match>
                     <Match when={inspectorPane() === "simulator"}>

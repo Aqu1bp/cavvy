@@ -15,7 +15,8 @@ const iso = isolate();
 const { listCliSessions, readCliTranscript, findCliSession } = await import("../src/server/cli-sessions");
 const { Engine, RpcError } = await import("../src/server/engine");
 const { Session, cliLinks, findSessionAnywhere, listSessions } = await import("../src/agent/session");
-const { cavvyLinks, importModel, writeImportedSession } = await import("../src/server/cli-import");
+const { cavvyLinks, importModel, keepSideChatLinks, writeImportedSession } = await import("../src/server/cli-import");
+const { sideChatsDir } = await import("../src/agent/side-chat");
 const { rewindTargets } = await import("../src/agent/checkpoints");
 const { saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
 const { forgetClient } = await import("../src/providers/models");
@@ -478,6 +479,24 @@ describe("importing", () => {
         }
     });
 
+    test("one Cavvy ran itself isn't offered once that session is deleted, and is in Cavvy again on Undo", async () => {
+        turnOn();
+        const { id } = claudeSession(CLAUDE, { cwd: real, turns: TURNS });
+        const s = Session.create(real);
+        s.push({ role: "user", content: [{ type: "text", text: "hello" }], meta: { kind: "prompt" } });
+        s.setBackendSession("claude-code", id, 1);
+        s.release();
+        const { e, c } = await engine();
+        try {
+            expect(await e.handle(c, "session.delete", { id: s.meta.id })).toBeNull();
+            expect(e.cliSessionsList(cwd).sessions.find((x) => x.id === id)).toBeUndefined();
+            await e.handle(c, "session.restore", { id: s.meta.id });
+            expect(e.cliSessionsList(cwd).sessions.find((x) => x.id === id)?.cavvyId).toBe(s.meta.id);
+        } finally {
+            await e.stop();
+        }
+    });
+
     test("a Cavvy session kept under another path to the same folder counts too", async () => {
         turnOn();
         const { id } = claudeSession(CLAUDE, { cwd: real, turns: TURNS });
@@ -700,4 +719,23 @@ describe("folders macOS guards", () => {
             Object.defineProperty(process, "platform", platform);
         }
     });
+});
+
+test("a side chat's CLI session isn't offered to continue from the terminal, open or discarded", () => {
+    const cwd = tempDir("side-chat-links");
+    const id = randomUUID(), other = randomUUID();
+    const dir = join(sideChatsDir(), "20261127-000000-abcdef");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "20261127-000000-abcdef.jsonl"), `${JSON.stringify({ t: "backend", provider: "claude-code", id })}\n`);
+    try {
+        const links = cavvyLinks([cwd]);
+        expect(links.subagent.has(`claude-code:${id}`)).toBe(true);
+        expect(links.held.size).toBe(0);
+        // Discarded (closed, or left by a server that stopped).
+        keepSideChatLinks(dir);
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
+    expect(cavvyLinks([cwd]).subagent.has(`claude-code:${id}`)).toBe(true);
+    expect(cavvyLinks([cwd]).subagent.has(`claude-code:${other}`)).toBe(false);
 });

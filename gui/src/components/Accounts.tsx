@@ -1,7 +1,7 @@
 import "../styles/accounts.css";
 import { createEffect, createSignal, createUniqueId, For, onMount, Show } from "solid-js";
-import { Check, ExternalLink, Info, MoreHorizontal } from "lucide-solid";
-import type { AccountInfo, ProviderInfo } from "@shared/protocol";
+import { Check, ChevronRight, ExternalLink, Info, MoreHorizontal } from "lucide-solid";
+import type { AccountInfo, AgentInstanceInfo, ProviderInfo } from "@shared/protocol";
 import { useProvidersAt } from "../state/providers-at";
 import { addAccountFor, setAddAccountFor, terminalActions } from "../state/ui";
 import { openExternal } from "../lib/platform";
@@ -9,6 +9,8 @@ import { Menu } from "./ui/Menu";
 import { Dialog } from "./ui/Dialog";
 import { ProviderIcon } from "./ui/ProviderIcon";
 import { Spinner } from "./ui/bits";
+import { EnvDialog, InstanceDialog } from "./CliEnv";
+import { removedToast } from "../lib/reset-toast";
 
 const message = (e: unknown) => e instanceof Error ? e.message : String(e);
 const nameError = (name: string) => /^[a-zA-Z0-9][a-zA-Z0-9 _.-]{0,63}$/.test(name) && name === name.trim() && !name.includes("..") ? undefined : "Use 1–64 plain characters, starting with a letter or number, without '..'.";
@@ -45,6 +47,15 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
     const [renameError, setRenameError] = createSignal<string>();
     const [removing, setRemoving] = createSignal<AccountInfo>();
     const [removeError, setRemoveError] = createSignal<string>();
+    const [envOpen, setEnvOpen] = createSignal(false);
+    const env = () => cli()?.env ?? [];
+    const instances = () => cli()?.instances ?? [];
+    /** The instance dialog: "new" to add one, else the one being changed. */
+    const [instanceOpen, setInstanceOpen] = createSignal<AgentInstanceInfo | "new">();
+    const [removingInstance, setRemovingInstance] = createSignal<AgentInstanceInfo>();
+    const [removeInstanceError, setRemoveInstanceError] = createSignal<string>();
+    /** What an instance is set up with, beside its name. */
+    const instanceMeta = (i: AgentInstanceInfo) => [i.env.length ? (i.env.length === 1 ? "1 variable" : `${i.env.length} variables`) : "", i.models?.length ? (i.models.length === 1 ? "1 more model" : `${i.models.length} more models`) : ""].filter(Boolean).join(" · ");
     let providerMenu: HTMLButtonElement | undefined;
     const cli = () => p.provider.agentCli;
     const installed = () => cli()?.installed !== false;
@@ -132,7 +143,7 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
             void work(async () => { await rpc.call("accounts.rename", { provider: p.provider.id, id: a.id, name: newName() }); setEditing(undefined); await refreshProviders().catch((e) => setActionError(message(e))); }, setRenameError);
         }}>
             <input class="input" autofocus ref={(el) => queueMicrotask(() => { if (el.isConnected) el.focus(); })} aria-label="New account name" aria-invalid={!!renameError()} aria-describedby={renameError() ? `${uid}-rename-error` : undefined} maxLength={64} disabled={busy()} value={newName()} onInput={(e) => { setNewName(e.currentTarget.value); setRenameError(undefined); }} />
-            <button class="btn primary sm" disabled={busy()}>Save</button><button type="button" class="btn ghost sm" disabled={busy()} onClick={() => { setEditing(undefined); back()?.focus(); }}>Cancel</button>
+            <button type="button" class="btn ghost sm" disabled={busy()} onClick={() => { setEditing(undefined); back()?.focus(); }}>Cancel</button><button class="btn primary sm" disabled={busy()}>Save</button>
             <Show when={renameError()}><span id={`${uid}-rename-error`} class="account-error" role="alert">{renameError()}</span></Show>
         </form>
     </Show>;
@@ -151,7 +162,13 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
             <div class="prov-lab">
                 <div class="prov-name">
                     <span class="truncate">{p.provider.name}</span>
-                    <Show when={planLabel(main()?.plan)}>{(plan) => <span class="tag">{plan()}</span>}</Show>
+                    {/* Turned off (not set up), it has no plan in Cavvy: none is shown. */}
+                    <Show when={p.provider.configured && planLabel(main()?.plan)}>{(plan) => <span class="tag">{plan()}</span>}</Show>
+                    <Show when={p.provider.configured && env().length}>
+                        <button class="tag env-tag" title={env().map((v) => v.name).join(", ")} onClick={() => setEnvOpen(true)}>
+                            {env().length === 1 ? "1 variable" : `${env().length} variables`}
+                        </button>
+                    </Show>
                     <Show when={p.provider.configured}>
                         <Show when={problem()} fallback={<Show when={signedIn()}><span class="cli-dot" role="img" aria-label="Signed in" title="Signed in" /></Show>}>
                             <span class="cli-problem">{problem()}</span>
@@ -180,6 +197,10 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
                             <button class="menu-item" role="menuitem" disabled={busy() || adding()} onClick={() => choose(() => { setActionError(undefined); setAdding(true); })}>Add account…</button>
                         </Show>
                         <Show when={single()} keyed>{(a) => accountItems(a)}</Show>
+                        <Show when={p.provider.configured}>
+                            <button class="menu-item" role="menuitem" onClick={() => choose(() => setEnvOpen(true))}>Environment variables…</button>
+                        </Show>
+                        <button class="menu-item" role="menuitem" onClick={() => choose(() => setInstanceOpen("new"))}>Add another {p.provider.name}…</button>
                         <button class="menu-item" role="menuitem" disabled={busy()} onClick={() => choose(refreshNow)}>Refresh status</button>
                         <button class="menu-item" role="menuitem" onClick={() => choose(() => setHelp(true))}>Learn more…</button>
                         <Show when={p.provider.configured && p.onTurnOff}>
@@ -216,21 +237,41 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
                 }}</For>
             </div>
         </Show>
+        <Show when={installed() && instances().length}>
+            <div class="account-list" role="list" aria-label={`Other ${p.provider.name} setups`}>
+                <For each={instances()}>{(i) => {
+                    let anchor: HTMLButtonElement | undefined;
+                    const key = `instance:${i.id}`;
+                    return <div class="account-row" role="listitem" classList={{ open: menu() === key }}>
+                        <div class="account-identity">
+                            <span class="account-name truncate">{p.provider.name} · {i.name}</span>
+                            <Show when={instanceMeta(i)}><span class="account-meta truncate">{instanceMeta(i)}</span></Show>
+                        </div>
+                        <button ref={anchor} class="hb sm account-more" aria-label={`Actions for ${p.provider.name} · ${i.name}`} aria-haspopup="menu" aria-expanded={menu() === key} onClick={() => setMenu(menu() === key ? undefined : key)}><MoreHorizontal size={16} /></button>
+                        <Menu open={menu() === key} anchor={() => anchor} onClose={() => setMenu(undefined)} label={`${i.name} actions`} width={200} align="end">
+                            <button class="menu-item" role="menuitem" onClick={() => choose(() => setInstanceOpen(i))}>Edit…</button>
+                            <button class="menu-item danger" role="menuitem" onClick={() => choose(() => { setRemoveInstanceError(undefined); setRemovingInstance(i); })}>Remove…</button>
+                        </Menu>
+                    </div>;
+                }}</For>
+            </div>
+        </Show>
         <Show when={adding()}>
             <form id={`${uid}-add`} class="account-form" aria-label="Add account" noValidate aria-busy={busy()} onKeyDown={(e) => escape(e, cancelAdd)} onSubmit={(e) => { e.preventDefault(); void add(); }}>
                 <label for={`${uid}-name`}>New account</label>
                 <input id={`${uid}-name`} class="input" autofocus ref={(el) => queueMicrotask(() => { if (el.isConnected) el.focus(); })} aria-label="Account name" aria-invalid={error()?.field === "name"} aria-describedby={error()?.field === "name" ? `${uid}-name-error` : undefined} value={name()} maxLength={64} disabled={busy()} onInput={(e) => { setName(e.currentTarget.value); setError(undefined); }} placeholder="Work" />
                 <Show when={error()?.field === "name"}><span id={`${uid}-name-error`} class="account-error" role="alert">{error()?.message}</span></Show>
                 <details class="account-advanced" open={advanced()} onToggle={(e) => setAdvanced(e.currentTarget.open)}>
-                    <summary>Use an existing folder</summary>
+                    <summary><ChevronRight size={14} class="chev" />Use an existing folder</summary>
                     <input id={`${uid}-folder`} class="input mono" aria-label="Account folder" aria-invalid={error()?.field === "folder"} aria-describedby={`${uid}-folder-help${error()?.field === "folder" ? ` ${uid}-folder-error` : ""}`} value={folder()} maxLength={1024} disabled={busy()} onInput={(e) => { setFolder(e.currentTarget.value); setError(undefined); }} placeholder="/path/to/cli-home" />
                     <span id={`${uid}-folder-help`} class="account-hint">Used as it is, without Default's settings and history.</span>
                     <Show when={error()?.field === "folder"}><span id={`${uid}-folder-error`} class="account-error" role="alert">{error()?.message}</span></Show>
                 </details>
                 <Show when={error()?.field === "form"}><span class="account-error" role="alert">{error()?.message}</span></Show>
+                {/* Cancel, then the form's own action, at the trailing edge, as in the app's dialogs and Settings' other forms. */}
                 <div class="account-actions">
-                    <button class="btn primary sm" type="submit" disabled={busy()}>{busy() && <Spinner size={12} />}{busy() ? "Creating…" : "Create and sign in"}</button>
                     <button class="btn ghost sm" type="button" disabled={busy()} onClick={cancelAdd}>Cancel</button>
+                    <button class="btn primary sm" type="submit" disabled={busy()}>{busy() && <Spinner size={12} />}{busy() ? "Creating…" : "Create and sign in"}</button>
                 </div>
             </form>
         </Show>
@@ -242,11 +283,32 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
                 : "A new account shares Default's settings and history; only the sign-in differs."}</p>
             <p>A folder you choose is used as it is, with nothing shared.</p>
         </Dialog>
+        <Show when={envOpen()}><EnvDialog provider={p.provider} onClose={() => setEnvOpen(false)} /></Show>
+        <Show when={instanceOpen()} keyed>{(i) => <InstanceDialog provider={p.provider} instance={i === "new" ? undefined : i} onClose={() => setInstanceOpen(undefined)} />}</Show>
+        <Show when={removingInstance()}>{(i) => <Dialog open onClose={() => { if (!busy()) setRemovingInstance(undefined); }} title={`Remove ${i().name}?`} width={460}>
+            <p>Sessions using it will need another model.</p>
+            <Show when={removeInstanceError()}><p class="account-error" role="alert">{removeInstanceError()}</p></Show>
+            <div class="dialog-actions">
+                <span class="grow" />
+                <button class="btn ghost" autofocus disabled={busy()} onClick={() => setRemovingInstance(undefined)}>Cancel</button>
+                <button class="btn danger" disabled={busy()} aria-busy={busy()} onClick={() => void work(async () => {
+                    // Read before the dialog closes: its accessor goes with it.
+                    const { id, name } = i();
+                    const r = await rpc.call("providers.removeInstance", { id });
+                    setRemovingInstance(undefined);
+                    removedToast(name, r?.reset);
+                    // Its row is gone: back to the provider's menu button, not the page.
+                    providerMenu?.focus();
+                    await at.changed().catch((e) => setActionError(message(e)));
+                }, setRemoveInstanceError)}>{busy() ? "Removing…" : "Remove"}</button>
+            </div>
+        </Dialog>}</Show>
         <Show when={removing()}>{(a) => <Dialog open onClose={() => { if (!busy()) setRemoving(undefined); }} title={`Remove ${a().name}?`} width={460}>
             <p>{a().managed && !a().invalid ? "Deletes the folder Cavvy made" : "Leaves its folder untouched"}: <code class="account-path">{a().folder}</code></p>
             <p>This doesn't sign it out: run <code>{p.provider.id === "codex" ? "codex logout" : "claude auth logout"}</code> with its folder first.</p>
             <Show when={removeError()}><p class="account-error" role="alert">{removeError()}</p></Show>
             <div class="dialog-actions">
+                <span class="grow" />
                 <button class="btn ghost" autofocus disabled={busy()} onClick={() => setRemoving(undefined)}>Cancel</button>
                 <button class="btn danger" disabled={busy()} aria-busy={busy()} onClick={() => void work(async () => { await rpc.call("accounts.remove", { provider: p.provider.id, id: a().id, confirmedFolder: a().folder }); setRemoving(undefined); await refreshProviders().catch((e) => setActionError(message(e))); }, setRemoveError)}>{busy() ? "Removing…" : "Remove"}</button>
             </div>

@@ -23,9 +23,10 @@ function find(tree: unknown, match: (node: Node) => boolean): Node | undefined {
     }
 }
 
-async function mountDialog(branch: string | undefined, o: { paths?: string[]; files?: { path: string; pathToken?: string }[] } = {}) {
+async function mountDialog(branch: string | undefined, o: { paths?: string[]; files?: { path: string; pathToken?: string }[]; generated?: string } = {}) {
     const effects: (() => unknown)[] = [];
     const calls: unknown[][] = [];
+    let drafts = 0;
     const sha = "1234567890abcdef1234567890abcdef12345678";
     const request = { id: "session", paths: o.paths ?? ["selected.txt"] };
     let activeRequest: typeof request | undefined = request;
@@ -46,8 +47,9 @@ async function mountDialog(branch: string | undefined, o: { paths?: string[]; fi
         gitCommit: async (...args: unknown[]) => {
             calls.push(args);
         },
-        gitCommitMessage: () => {
-            throw new Error("Generating was not clicked");
+        gitCommitMessage: async () => {
+            if (o.generated === undefined) throw new Error("Generating was not clicked");
+            return { message: `${o.generated} ${++drafts}`, model: "small" };
         },
         commitUnavailable: () => undefined,
         commitRequest: () => activeRequest,
@@ -56,6 +58,7 @@ async function mountDialog(branch: string | undefined, o: { paths?: string[]; fi
         },
         Dialog: "Dialog",
         plural: (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`,
+        draftedBy: (ref: string) => ref,
         os: "macos",
         mod: "⌘",
         Spinner: "Spinner",
@@ -102,6 +105,23 @@ test("⌘↵ in the message commits, as the button's key cap says; a plain Enter
     await Promise.resolve();
     expect(prevented).toBe(1);
     expect(d.calls).toEqual([[d.request.id, d.request.paths, "fix: the thing", { branch: "feature", detached: false }, []]]);
+});
+
+test("Generate replaces what was typed, and Undo puts it back, after Generate again too", async () => {
+    for (const [times, undo] of [[1, false], [1, true], [2, false], [2, true]] as const) {
+        const d = await mountDialog("feature", { generated: "feat: drafted" });
+        const tree = d.tree();
+        find(tree, (n) => n.tag === "textarea")!.props.onInput({ currentTarget: { value: "wip: my own words" } });
+        const generate = find(tree, (n) => n.tag === "button" && n.props.class === "btn ghost")!;
+        for (let i = 0; i < times; i++) {
+            generate.props.onClick();
+            for (let j = 0; j < 8; j++) await Promise.resolve();
+        }
+        if (undo) find(tree, (n) => n.tag === "button" && n.children.includes("Undo"))!.props.onClick();
+        find(tree, (n) => n.tag === "button" && n.props.class === "btn primary")!.props.onClick();
+        await Promise.resolve();
+        expect(d.calls[0]?.[2]).toBe(undo ? "wip: my own words" : `feat: drafted ${times}`);
+    }
 });
 
 test("a file shown redacted is checked, and left out, by its handle, as the Review pane asks for it", async () => {

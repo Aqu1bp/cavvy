@@ -16,3 +16,21 @@ export function tabWrap<T>(items: readonly T[], at: T | null, inside: boolean, s
     if (shift ? at === first : at === last) return shift ? last : first;
     return undefined;
 }
+
+/** Dialogs whose keyboard the user has moved themselves (Tab, a click) since they opened: nothing moves it for them after that. */
+const moved = new WeakSet<Element>();
+export const focusMoved = (dialog: Element) => void moved.add(dialog);
+export const userMovedFocus = (dialog: Element) => moved.has(dialog);
+
+/**
+ * Gives `el` the keyboard if the user hasn't moved it since its dialog opened: it's on nothing, still outside the
+ * dialog (on what opened it), or on what the dialog gave it first (its buttons). For a field that comes once a dialog's
+ * content has loaded. `select`: its text too, so typing replaces what was filled in.
+ */
+export function takeFocus(el: HTMLElement | undefined, select = false): void {
+    const at = document.activeElement;
+    const dialog = el?.closest('[role="dialog"]');
+    if (!el?.isConnected || (dialog && moved.has(dialog)) || (at && at !== document.body && dialog?.contains(at) && !at.closest(".dialog-actions"))) return;
+    el.focus();
+    if (select && el instanceof HTMLInputElement) el.select();
+}

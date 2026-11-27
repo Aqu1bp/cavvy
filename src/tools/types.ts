@@ -1,7 +1,7 @@
 import type { ThemeEntry } from "../themes/format";
 import type { ThemeReplaced, ThemeReport } from "../server/protocol";
 import type { SecretStore } from "../agent/secrets";
-import type { ImagePart, TodoItem } from "../providers/types";
+import type { AttachedPart, ImagePart, TodoItem } from "../providers/types";
 import type { Settings } from "../config/settings";
 import type { PermissionMode } from "../permissions/modes";
 import type { Sandbox } from "../permissions/sandbox";
@@ -138,6 +138,12 @@ export interface UiBridge {
     onScreen?(): boolean;
     /** Ask the user a multiple-choice question (AskUserQuestion tool). */
     askQuestion?(question: string, options: { label: string; description?: string }[], multi: boolean): Promise<string[] | undefined>;
+    /**
+     * The same, where the user can attach images and files to the answer (`answers` can then be empty): as content
+     * for the model (`content`), or, for an answer that's text only, saved and named (`paths`: each a text or saved
+     * file). Missing where nothing can be attached: askQuestion then.
+     */
+    askQuestionAttaching?(question: string, options: { label: string; description?: string }[], multi: boolean, as: "content" | "paths"): Promise<{ answers: string[]; attached: AttachedPart[] } | undefined>;
     /**
      * Present a plan for approval (ExitPlanMode). Returns the chosen next mode or undefined if rejected.
      * `handoff`: not approved here because the user is carrying it out in another session; `feedback` says where.

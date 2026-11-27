@@ -194,10 +194,12 @@ test("a call from a session there is asked about there, under that session's mod
     await Bun.sleep(1500);
     const before = ran.filter((a) => a[2] === "bootstatus").length;
     await remote.call("session.send", { id, text: "simulator once again" });
+    // Allowed once the first time: asked again there; this machine still asks nothing of its own.
+    expect((await answer(remote, id, "yes")).kind).toBe("permission");
     await until("the second turn there to end", async () => (await remote.call("session.open", { id })).turns.length === 2 && (await lastTurn(remote, id)).status === "done");
-    // It ran here again (allowed for this session the first time, on both machines, as the tool is anywhere),
-    // and no second session was made here for it.
+    // It ran here again, and no second session was made here for it.
     expect(ran.filter((a) => a[2] === "bootstatus").length).toBe(before + 1);
+    expect(told(id)!.asks).toEqual([]);
     expect((await lentTo(id)).id).toBe(mineId);
 });
 

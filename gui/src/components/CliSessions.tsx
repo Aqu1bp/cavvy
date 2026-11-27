@@ -1,7 +1,7 @@
 // "Continue from your terminal": Claude Code and Codex conversations started in a
-// terminal in this project, to carry on here. Home lists the newest few not yet in
-// Cavvy; "Show all" lists every one, then those already here. Importing opens a
-// Cavvy session on the same backend; one already in Cavvy just opens.
+// terminal in this project, to carry on here. Home lists the newest few not already
+// in Cavvy; "Show all" lists every one of those. Importing opens a Cavvy session on
+// the same backend.
 
 import { createEffect, createResource, createSignal, For, Show } from "solid-js";
 import type { CliSessionInfo } from "@shared/protocol";
@@ -42,10 +42,8 @@ export function CliSessions(p: { cwd: string; rows?: number; onShown?: (rows: nu
         },
     );
     const sessions = () => list()?.sessions ?? [];
-    // Ones already in Cavvy aren't offered on Home: "Show all" lists them after the rest.
+    // Ones already in Cavvy aren't offered: they're in the sidebar.
     const fresh = () => sessions().filter((s) => !s.cavvyId).sort((a, b) => b.updatedAt - a.updatedAt);
-    const held = () => sessions().filter((s) => s.cavvyId);
-    const moreHeld = () => (list()?.sources ?? []).reduce((n, s) => n + s.moreInCavvy, 0);
     const source = (s: CliSessionInfo) => list()?.sources.find((x) => x.source === s.source);
     const name = (s: CliSessionInfo) => source(s)?.name ?? s.source;
     // Turned on in Settings → Providers: read from the providers, which follow a change made there while Home is up.
@@ -53,7 +51,7 @@ export function CliSessions(p: { cwd: string; rows?: number; onShown?: (rows: nu
     const more = () => (list()?.sources ?? []).filter((s) => s.more > 0);
     const shown = () => fresh().slice(0, Math.max(0, Math.min(3, p.rows ?? 3)));
     // Worth opening when it lists something these rows don't.
-    const hasMore = () => fresh().length > shown().length || held().length > 0 || moreHeld() > 0 || more().length > 0;
+    const hasMore = () => fresh().length > shown().length || more().length > 0;
     createEffect(() => p.onShown?.(shown().length, fresh().length > 0));
 
     const go = async (s: CliSessionInfo) => {
@@ -63,10 +61,10 @@ export function CliSessions(p: { cwd: string; rows?: number; onShown?: (rows: nu
         setBusy(undefined);
         if (!ok) void refetch();
     };
-    /** What a row does: import it, open the one already here, or (its CLI not turned on) go where it's turned on. */
+    /** What a row does: import it, or (its CLI not turned on) go where it's turned on. */
     const act = (s: CliSessionInfo) => {
         setAll(false);
-        if (!s.cavvyId && !enabled(s)) setSettingsTab("providers");
+        if (!enabled(s)) setSettingsTab("providers");
         else void go(s);
     };
     const count = (s: CliSessionInfo) => `${s.messages}${s.partial ? "+" : ""} ${s.messages === 1 && !s.partial ? "message" : "messages"}`;
@@ -101,18 +99,18 @@ export function CliSessions(p: { cwd: string; rows?: number; onShown?: (rows: nu
         </div>
     );
 
-    /** A row of "Show all": the ones to import, then the ones already here (Open). */
+    /** A row of "Show all". */
     const item = (s: CliSessionInfo) => (
-        <button class="cl-item" disabled={busy() === s.id} title={s.recent && !s.cavvyId ? STILL_OPEN : undefined} onClick={() => act(s)}>
+        <button class="cl-item" disabled={busy() === s.id} title={s.recent ? STILL_OPEN : undefined} onClick={() => act(s)}>
             <span class="cli-pv"><ProviderIcon id={s.source} name={name(s)} size={16} /></span>
             <span class="cl-main">
                 <span class="truncate">{s.title}</span>
                 <span class="cli-meta">
                     {name(s)} · {(now(), agoText(s.updatedAt))} · {count(s)}
-                    <Show when={s.recent && !s.cavvyId}> · <span class="cli-live">Still open in a terminal</span></Show>
+                    <Show when={s.recent}> · <span class="cli-live">Still open in a terminal</span></Show>
                 </span>
             </span>
-            <span class="cl-act">{s.cavvyId ? "Open" : enabled(s) ? "Import" : "Turn on in Settings"}</span>
+            <span class="cl-act">{enabled(s) ? "Import" : "Turn on in Settings"}</span>
         </button>
     );
     const sourceNames = () => [...new Set((list()?.sources ?? []).map((s) => s.name))].join(" and ") || "Claude Code and Codex";
@@ -144,13 +142,6 @@ export function CliSessions(p: { cwd: string; rows?: number; onShown?: (rows: nu
                     </Show>
                     <Show when={!list.loading && !sessions().length}>
                         <div class="cl-note">Couldn't list the sessions from your terminal just now.</div>
-                    </Show>
-                    <Show when={held().length || moreHeld()}>
-                        <div class="cl-sub">Already in Cavvy</div>
-                        <For each={held()}>{item}</For>
-                        <Show when={moreHeld()}>
-                            <div class="cl-note">{moreHeld()} more already in Cavvy not shown</div>
-                        </Show>
                     </Show>
                     <For each={more()}>{(m) => <div class="cl-note">{m.more} more {m.name} {m.more === 1 ? "session" : "sessions"} not shown</div>}</For>
                 </div>

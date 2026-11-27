@@ -5,6 +5,7 @@
 import { followBox, type Follow } from "./follow-box";
 import { pageSizer } from "./page-size";
 import { setShownBrowser, unshowBrowser } from "../state/browser-host";
+import { placeFrame } from "./browser";
 
 interface Edges { left: number; top: number; right: number; bottom: number }
 interface Size { width: number; height: number }
@@ -55,9 +56,11 @@ export function pageCorners(frame: Edges, within: readonly Rounded[]): string | 
 
 /**
  * Keeps the page over `box`. `target`: the tab's page to show, undefined while there's none to (no tab, the pane
- * hidden or covered); `sliding`: the panels are sliding. `kick` when either may have changed.
+ * hidden or covered); `sliding`: the panels are sliding; `device`: a size picked in the pane's menu, which the page is
+ * given and drawn scaled down to fit the box (centred, never larger than it is). `grow`: height the page is given beyond the box
+ * for now (it's cut to the box). `kick` when any may have changed.
  */
-export function followPage(box: HTMLElement, target: () => string | undefined, sliding: () => boolean): Follow {
+export function followPage(box: HTMLElement, target: () => string | undefined, sliding: () => boolean, device: () => Size | undefined = () => undefined, grow: () => number = () => 0): Follow {
     let placed = "";
     const sizer = pageSizer();
     const follow = followBox(box, () => {
@@ -75,7 +78,21 @@ export function followPage(box: HTMLElement, target: () => string | undefined, s
             return;
         }
         const { box: at, seen } = shown;
-        const page = sizer.frame(performance.now(), { width: at.width, height: at.height }, sliding());
+        const size = device();
+        if (size) {
+            // Drawn scaled (BrowserHostLayer's `fit`), in the middle of the box: the page keeps the device's size.
+            const p = placeFrame(at, size, 1);
+            const fitted = { x: Math.round(at.x + p.x), y: Math.round(at.y + p.y), width: Math.round(p.width), height: Math.round(p.height) };
+            const key = `${targetId} fit ${fitted.x} ${fitted.y} ${fitted.width} ${fitted.height} ${size.width} ${size.height}`;
+            if (key === placed) return;
+            placed = key;
+            sizer.reset();
+            setShownBrowser({ targetId: targetId!, box: fitted, by: "pane", page: size, fit: true });
+            return;
+        }
+        // `grow`: the page is given the height a bar over it is about to give back, before the bar goes (cut to the box
+        // meanwhile), so it has drawn at it by the time the box takes it (BrowserPane's giveBack).
+        const page = sizer.frame(performance.now(), { width: at.width, height: at.height + grow() }, sliding());
         const frame = pageFrame(seen, page);
         const corners = pageCorners({ left: at.x, top: at.y, right: at.x + frame.width, bottom: at.y + frame.height }, around.map(({ el, edges }) => {
             const style = getComputedStyle(el);

@@ -3,6 +3,7 @@ import type { ChangesInfo, GitChangesInfo, GitScope } from "@shared/protocol";
 import { coalesce, type Slot } from "@shared/coalesce";
 import type { SessionHandle } from "./app";
 import { app, connFor, reportError, rpc } from "./app";
+import { prefs } from "./prefs";
 
 /** The review pane's views: what git says changed, or only what Cavvy's edit tools did. */
 export type ReviewScope = GitScope | "cavvy";
@@ -46,10 +47,13 @@ const baseParam = (base: string) => (base.startsWith("git:") ? { baseToken: base
  * share it, and a refresh asked for mid-request (a turn ending during the scan its start
  * began) gets one more, after it.
  */
-export function fetchGitChanges(id: string, scope: GitScope, base?: string, path?: string, turnId?: number, worktree?: string, pathToken?: string): Promise<GitView> {
-    return coalesce(asked, JSON.stringify([id, scope, base, path, turnId, worktree, pathToken]), () =>
+/** `commit`: the Commit view's (HEAD when unset); `full`: one file with every line (its hidden lines). Whitespace is ignored as the review pane's toggle says, in every view alike. */
+export function fetchGitChanges(id: string, scope: GitScope, base?: string, path?: string, turnId?: number, worktree?: string, pathToken?: string, more: { commit?: string; full?: boolean } = {}): Promise<GitView> {
+    const ws = prefs.reviewIgnoreWhitespace;
+    return coalesce(asked, JSON.stringify([id, scope, base, path, turnId, worktree, pathToken, more.commit, more.full, ws]), () =>
         rpc
-            .call("session.gitChanges", { id, scope, ...(base ? baseParam(base) : {}), ...(pathToken !== undefined ? { pathToken } : path !== undefined ? { path } : {}), ...(turnId !== undefined ? { turnId } : {}), ...(worktree !== undefined ? { worktree } : {}) })
+            // Undefined ones aren't sent; the server takes a commit only for the Commit view.
+            .call("session.gitChanges", { id, scope, ...(base ? baseParam(base) : {}), ...(pathToken !== undefined ? { pathToken } : { path }), turnId, worktree, commit: more.commit, full: more.full, ignoreWhitespace: ws })
             .catch((e): GitView => ({ repo: true, scope, files: [], added: 0, removed: 0, tracked: true, bases: [], more: 0, error: e instanceof Error ? e.message : String(e) }))
             // Which folder the answer is of travels with it: a view switching folders shows the last answer until the next one comes.
             .then((v): GitView => (worktree !== undefined ? { ...v, worktree } : v)),
@@ -83,12 +87,13 @@ export function changedOutside(): number {
 
 /**
  * Git's view of a session's folder, or of another `worktree` of its repository; fetched again as edits land,
- * when a turn starts or ends, and on changedOutside().
+ * when a turn starts or ends (its side chat's too), and on changedOutside().
  */
-export function useGitChanges(handle: () => SessionHandle, scope: () => GitScope = () => "uncommitted", base: () => string | undefined = () => undefined, turnId: () => number | undefined = () => undefined, worktree: () => string | undefined = () => undefined) {
+export function useGitChanges(handle: () => SessionHandle, scope: () => GitScope = () => "uncommitted", base: () => string | undefined = () => undefined, turnId: () => number | undefined = () => undefined, worktree: () => string | undefined = () => undefined, commit: () => string | undefined = () => undefined) {
     return createResource(
-        () => sessionReadReady(handle()) && { id: handle().id, scope: scope(), base: base(), turnId: turnId(), worktree: worktree(), n: handle().view.state.filesChanged, busy: handle().view.state.busy, outside: changedOutside() },
-        ({ id, scope, base, turnId, worktree }) => fetchGitChanges(id, scope, base, undefined, turnId, worktree),
+        // `side`: its side chat's turns change the same folder (and it needn't be on screen): read again as one starts and ends.
+        () => sessionReadReady(handle()) && { id: handle().id, scope: scope(), base: base(), turnId: turnId(), worktree: worktree(), commit: commit(), ws: prefs.reviewIgnoreWhitespace, n: handle().view.state.filesChanged, busy: handle().view.state.busy, side: handle().view.state.sideChat?.status, outside: changedOutside() },
+        ({ id, scope, base, turnId, worktree, commit }) => fetchGitChanges(id, scope, base, undefined, turnId, worktree, undefined, { commit }),
     );
 }
 
@@ -96,4 +101,4 @@ export function useGitChanges(handle: () => SessionHandle, scope: () => GitScope
  * The view last used per session, so the pane reopens the way it was left; for as long as the app runs.
  * `worktree`: another worktree being looked at (the session's own folder when unset), and the view it had.
  */
-export const lastView = new Map<string, { scope?: ReviewScope; base?: string; turnId?: number; worktree?: string; own?: { scope: ReviewScope; base?: string } }>();
+export const lastView = new Map<string, { scope?: ReviewScope; base?: string; turnId?: number; commit?: string; worktree?: string; own?: { scope: ReviewScope; base?: string } }>();

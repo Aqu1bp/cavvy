@@ -56,7 +56,7 @@ function fixture(count = 60, o: { actionOf?: (e: KeyboardEvent, contexts: readon
                 querySelector: () => descendants(node).find((n) => ["card-hit", "slim-hit"].includes(n.props?.class)),
                 getBoundingClientRect: () => ({ top: ids.indexOf(node.dataset.sessionRow) * 100 }),
                 querySelectorAll: () => ids.map((id) => nodes.findLast((n) => n.dataset.sessionRow === id)).filter(Boolean),
-                animate: () => { const a = { paused: false, cancelled: false, pause() { this.paused = true; }, play() { this.paused = false; }, cancel() { this.cancelled = true; } }; animations.push(a); return a; },
+                animate: () => { const a = { paused: false, cancelled: false, finished: false, pause() { this.paused = true; }, play() { this.paused = false; }, cancel() { this.cancelled = true; }, finish() { this.finished = true; } }; animations.push(a); return a; },
             };
             nodes.push(node); return node;
         },
@@ -68,14 +68,17 @@ function fixture(count = 60, o: { actionOf?: (e: KeyboardEvent, contexts: readon
             solid.createRenderEffect(() => { slot.content = node.content = resolve(value); });
         },
     };
-    // The plans' footer is loaded lazily (PlanFooter.tsx, its own tests): not part of these.
-    const source = readFileSync(new URL("../gui/src/components/Sidebar.tsx", import.meta.url), "utf8").replace(/^import .*;\r?\n/gm, "").replace(/^export /gm, "").replace(/lazy\(\(\) => import\("\.\/PlanFooter"\)[^;]*;/, "() => null;");
+    // The lazy menu items (RowExtras.tsx): a stand-in that records what each menu hands it. The plans' footer is
+    // loaded lazily too (PlanFooter.tsx, its own tests): not part of these.
+    const source = readFileSync(new URL("../gui/src/components/Sidebar.tsx", import.meta.url), "utf8").replace(/^import .*;\r?\n/gm, "").replace(/^export /gm, "").replace(/^const RowExtras = lazy\(.*\);\r?\n/m, "").replace(/lazy\(\(\) => import\("\.\/PlanFooter"\)[^;]*;/, "() => null;");
     const compiled = transformSync(source, { filename: "Sidebar.tsx", parserOpts: { plugins: ["typescript", "jsx"] },
         presets: [[solidPreset, { generate: "universal", moduleName: "test-renderer" }]], configFile: false, babelrc: false })!.code!;
     const js = new Bun.Transpiler({ loader: "ts" }).transformSync(compiled)
         .replace(/import \{ ([\w$]+) as ([\w$]+) \} from "test-renderer";/g, "const $2 = renderer.$1;");
     const icons = Object.fromEntries(["Archive", "ArchiveRestore", "Check", "CheckCheck", "ChevronRight", "ChevronsDownUp", "ChevronsUpDown", "CircleAlert", "Download", "Folder", "FolderOpen", "FolderPlus", "Hand", "Layers", "ListFilter", "MessageSquareText", "MoreHorizontal", "PanelLeft", "Pencil", "Pin", "PinOff", "Plus", "Search", "Settings", "SquarePen", "Trash2", "Undo2", "X", "ProviderIcon", "Logo", "Spinner"].map((name) => [name, () => null]));
-    const scope = { renderer, ...solid, ...order, ...format, ...rail, ...railSelect, ...icons, sessionStatus, rowMenuKey, updateView, createUpdateAction: () => ({ request() {}, pending: () => false, Confirm: () => null }), app, prefs,
+    const extras: { ids: readonly string[]; plan?: railSelect.BulkPlan; clear?: () => void }[] = [];
+    const RowExtras = Object.assign((p: (typeof extras)[number]) => (extras.push(p), null), { preload() {} });
+    const scope = { renderer, RowExtras, ...solid, ...order, ...format, ...rail, ...railSelect, ...icons, sessionStatus, rowMenuKey, updateView, createUpdateAction: () => ({ request() {}, pending: () => false, Confirm: () => null }), app, prefs,
         railSelection, setRailSelection, actionOf: o.actionOf ?? (() => undefined),
         settleSessions: bulk.settle, archiveSessions: bulk.archive, deleteSessions: bulk.deleteSessions,
         // Count work against layout keys, rather than timing a machine-dependent render.
@@ -101,7 +104,7 @@ function fixture(count = 60, o: { actionOf?: (e: KeyboardEvent, contexts: readon
     const update = (id: string, patch: Partial<SessionSummary>) => setSessions((list) => list.map((s) => s.id === id ? { ...s, ...patch } : s));
     const flushFrames = () => { for (const [id, fn] of [...frames]) { frames.delete(id); fn(); } };
     const contextMenu = (row: any) => row.props.onContextMenu({ target: row.querySelector(), currentTarget: row, button: 2, clientX: 40, clientY: 60, preventDefault() {} });
-    return { railSelection, setRailSelection, bulk, setSettingsTab, setAgentFocus, collapsedProjects, setCollapsedProjects, foldedDays, setFoldedDays, setSessionsError, refreshSessions, reportError, setSessionsLoaded, setConn, nodes, menus, descendants, contextMenu, nav, update, setGroupBy, setSettledOpen, setActiveId, setSessions, sessions, archived, setArchived, setMotion, animations,
+    return { extras, railSelection, setRailSelection, bulk, setSettingsTab, setAgentFocus, collapsedProjects, setCollapsedProjects, foldedDays, setFoldedDays, setSessionsError, refreshSessions, reportError, setSessionsLoaded, setConn, nodes, menus, descendants, contextMenu, nav, update, setGroupBy, setSettledOpen, setActiveId, setSessions, sessions, archived, setArchived, setMotion, animations,
         resetEntryKeyReads: () => { entryKeyReads = 0; }, get entryKeyReads() { return entryKeyReads; },
         setReduced: (value: boolean) => { reduced = value; }, flushFrames, dispose, get ids() { return [...ids]; } };
 }
@@ -329,6 +332,37 @@ test("FLIP respects instant/reduced motion and pauses under hover without snappi
 });
 
 
+test("a snoozed session waking leaves Snoozed at once, the one on screen too, with the pointer on the rail; its slide isn't stopped half way", async () => {
+    const f = fixture(6);
+    try {
+        f.update("2", { snoozedUntil: 5_000_000 });
+        f.setActiveId("2");
+        // On screen, it shows under the folded Snoozed.
+        expect(f.ids).toEqual(["0", "1", "3", "4", "5", "2"]);
+        f.setMotion("quick");
+        f.flushFrames();
+        f.nav.props.onPointerEnter();
+        // Something else changing under the pointer still waits.
+        f.update("5", { updatedAt: 1000 });
+        expect(f.ids).toEqual(["0", "1", "3", "4", "5", "2"]);
+        // Its time comes: it goes back to its place.
+        f.update("2", { snoozedUntil: undefined });
+        expect(f.ids).toEqual(["5", "0", "1", "2", "3", "4"]);
+        await Promise.resolve();
+        f.flushFrames();
+        const moving = f.animations.filter((a) => !a.cancelled);
+        expect(moving.length).toBeGreaterThan(0);
+        // The pointer moving on the rail holds it again: what was moving gets where it was going, not left with a gap.
+        f.nav.props.onPointerLeave();
+        f.nav.props.onPointerEnter();
+        expect(moving.some((a) => a.paused)).toBe(false);
+        expect(moving.every((a) => a.finished)).toBe(true);
+        // And it holds still again.
+        f.update("4", { updatedAt: 2000 });
+        expect(f.ids).toEqual(["5", "0", "1", "2", "3", "4"]);
+    } finally { f.dispose(); }
+});
+
 test("deleting a held row releases its lock without reading a removed summary", () => {
     const f = fixture();
     try {
@@ -467,7 +501,8 @@ for (const layout of ["card", "settled", "archived"] as const) {
                 expect(menu.returnFocus()).toBe(more);
                 expect(menu.point).toBeUndefined();
                 const actions = f.descendants({ content: menu.children }).filter((n) => n.tag === "button");
-                expect(actions.length).toBeGreaterThanOrEqual(5);
+                // Rename, Pin, (Settle,) Archive or Restore, Delete: the rest are RowExtras' (Snooze ▸, More ▸).
+                expect(actions.length).toBeGreaterThanOrEqual(4);
                 expect(actions.every((n) => n.props.role === "menuitem")).toBe(true);
                 menu.onClose();
                 expect(f.ids[0]).not.toBe("0");
@@ -632,11 +667,11 @@ test("the selection bar and a selected row's menu act on the whole selection", (
         f.contextMenu(rowOf(f, order[1]!));
         const menu = f.menus.findLast((p) => p.open);
         expect(menu.label).toBe("Selected sessions actions");
-        const items = f.descendants({ content: menu.children }).filter((n) => n.tag === "button");
-        const labels = items.map((n) => f.descendants(n).map((c) => c.text ?? (typeof c.content === "string" || typeof c.content === "number" ? c.content : "")).join(""));
-        expect(labels.some((l) => l.includes("Delete") && l.includes("3 sessions"))).toBe(true);
-        items.find((n) => n.props.onClick?.toString().includes("settleSessions")).props.onClick();
-        expect(f.bulk.settle).toHaveBeenLastCalledWith(picked, true);
+        // Its items (RowExtras.tsx BulkItems) are handed the whole selection.
+        f.descendants({ content: menu.children });
+        const given = f.extras.findLast((p) => p.plan)!;
+        expect([...given.ids]).toEqual(picked);
+        expect(given.plan).toMatchObject({ settle: picked, archive: picked, delete: picked });
         // An unselected row keeps its own menu.
         f.contextMenu(rowOf(f, order[4]!));
         expect(f.menus.findLast((p) => p.open).label).toBe("Session actions");

@@ -2,11 +2,11 @@
 // (src/browser); the page arrives as frames drawn on a canvas, and clicks, keys and scrolls on the canvas go back to
 // it. A person using the page takes the tab from the agent (until they hand it back). The page is sized to the pane.
 
-import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
+import { batch, createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
 import { ArrowLeft, ArrowRight, Globe, Plus, RotateCw, X } from "lucide-solid";
 import type { BrowserCommand, BrowserInput } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
-import { awayMachine, connOn, reportError, rpcFor } from "../state/app";
+import { app, awayMachine, connOn, reportError, rpcFor } from "../state/app";
 import { adoptBrowserState, browserState, loadBrowserState, setBrowserShown, type BrowserFrame } from "../state/browser";
 import { panelHold, settingsTab } from "../state/ui";
 import { electron, machine } from "../lib/platform";
@@ -14,6 +14,9 @@ import type { Follow } from "../lib/follow-box";
 import { addressOf, currentTab, isPasteKey, isReleaseKey, keyInput, mouseInput, pagePoint, paneSize, paneStatus, placeFrame, resized, tabLabel, wheelInput, wheelPixels, type Point, type Size } from "../lib/browser";
 import type { BrowserImageFrame } from "@shared/browser-wire";
 import { Spinner } from "./ui/bits";
+import { pageTarget, type PageView } from "../lib/browser-view";
+import { paneTools, savedView } from "./BrowserTools";
+import { hostedTargets } from "../state/browser-host";
 
 /**
  * In the Electron desktop app the page isn't pictures: the tab is a real Chromium view in the window, which the app
@@ -42,6 +45,8 @@ export function BrowserPane(p: { handle: SessionHandle }) {
     const state = () => browserState(id());
     const tab = () => currentTab(state());
     const status = () => paneStatus(state());
+    /** The agent drove the tab last and its turn is still going: what's said beside the tabs. */
+    const agentUsing = createMemo(() => status() === "agent" && app.sessions.find((s) => s.id === id())?.status === "running");
     let box: HTMLDivElement | undefined;
     let canvas: HTMLCanvasElement | undefined;
     let address: HTMLInputElement | undefined;
@@ -61,11 +66,18 @@ export function BrowserPane(p: { handle: SessionHandle }) {
     const [hasPicture, setHasPicture] = createSignal(false);
     const [dialogText, setDialogText] = createSignal("");
     const [visible, setVisible] = createSignal(document.visibilityState === "visible");
+    /** A device size or zoom picked in the pane's menu (BrowserTools.tsx); none: the page fills the pane. */
+    const [view, setView] = createSignal<PageView | undefined>(savedView(id()));
+    let root: HTMLDivElement | undefined;
 
     // -----------------------------------------------------------------------
     // The page's picture
 
     const boxSize = (): Size => ({ width: box?.clientWidth ?? 0, height: box?.clientHeight ?? 0 });
+    /** The box's size as last seen, for what the strip says of it (BrowserTools.tsx). */
+    const [paneBox, setPaneBox] = createSignal<Size>({ width: 0, height: 0 });
+    /** Where a frame is drawn: a device's page no larger than it is (at its zoom). */
+    const placed = (f: Size) => placeFrame(boxSize(), f, view()?.device ? view()!.zoom : undefined);
 
     const draw = () => {
         const ctx = canvas?.getContext("2d");
@@ -74,7 +86,7 @@ export function BrowserPane(p: { handle: SessionHandle }) {
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         if (!bitmap || !frame) return;
-        const at = placeFrame(boxSize(), frame);
+        const at = placed(frame);
         ctx.drawImage(bitmap, at.x, at.y, at.width, at.height);
     };
 
@@ -133,7 +145,7 @@ export function BrowserPane(p: { handle: SessionHandle }) {
         const size = paneSize(boxSize());
         if (size.width < 1 || size.height < 1) return;
         sized = size;
-        void stream.call("browser.watch", { id: id(), ...size, scale: window.devicePixelRatio || 1 }).then((s) => adoptBrowserState(id(), s), reportError);
+        void stream.call("browser.watch", { id: id(), ...pageTarget(size, window.devicePixelRatio || 1, view()) }).then((s) => adoptBrowserState(id(), s), reportError);
     };
 
     onMount(() => {
@@ -148,6 +160,7 @@ export function BrowserPane(p: { handle: SessionHandle }) {
         void loadBrowserState(id()).catch(() => undefined);
         const observer = new ResizeObserver(() => {
             fit();
+            setPaneBox(boxSize());
             if (!watching()) return;
             clearTimeout(resizeTimer);
             resizeTimer = setTimeout(() => resized(sized, paneSize(boxSize())) && watch(), RESIZE_MS);
@@ -197,19 +210,53 @@ export function BrowserPane(p: { handle: SessionHandle }) {
         }),
     );
 
+    // Another size or zoom from the menu: the page is asked for it, and what's drawn is placed for it.
+    createEffect(on(view, () => {
+        draw();
+        if (!native && watching()) watch();
+    }, { defer: true }));
+
     // The tab's own page (BrowserHostLayer) is kept over the page box (lib/page-follow.ts, loaded here: only the
     // desktop app has such a page). What moves or hides it besides the box itself: a panel's slide beginning or
     // ending, another tab, the pane covered or uncovered.
+    // `grow`: height a bar over the page is about to give back, which the page takes first (giveBack).
+    const [grow, setGrow] = createSignal(0);
+    let follow: Follow | undefined;
     if (native) {
         onMount(() => {
-            let follow: Follow | undefined;
             void import("../lib/page-follow").then((m) => {
-                if (!disposed) follow = m.followPage(box!, () => (watching() ? tab()?.targetId : undefined), () => !!panelHold()?.slide);
+                if (!disposed) follow = m.followPage(box!, () => (watching() ? tab()?.targetId : undefined), () => !!panelHold()?.slide, () => view()?.device, grow);
             }, reportError);
-            createEffect(on([() => panelHold()?.slide, () => tab()?.targetId, watching], () => follow?.kick()));
+            createEffect(on([() => panelHold()?.slide, () => tab()?.targetId, watching, view, grow], () => follow?.kick()));
             onCleanup(() => follow?.stop());
         });
     }
+    /**
+     * A bar over the page (find) closes, giving back `px` of height: in the desktop app the page is given that height
+     * first, under the bar, and the bar goes once it has drawn at it. Closed at once, the page drew at the new height a
+     * moment after the box had it, and that strip of the box was blank meanwhile. `close` is the bar going.
+     */
+    let giving = 0;
+    const giveBack = (px: number, close: () => void) => {
+        const target = tab()?.targetId;
+        const mine = ++giving;
+        // A device's page keeps its size (drawn a little larger): nothing to wait for. Nor on a headless page's frames.
+        if (!native || !target || !watching() || view()?.device || px <= 0) return close();
+        setGrow(px);
+        // The follow places it on the next frame, at that height; then it's drawn at it.
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+            void import("../lib/page-painted").then((m) => m.pagePainted(target)).finally(() => {
+                if (mine !== giving || disposed) return;
+                follow?.kick();
+                batch(() => {
+                    close();
+                    setGrow(0);
+                });
+            });
+        }));
+    };
+
+    const tools = paneTools({ id, native, tab, view, setView, box: paneBox, giveBack, root: () => root, address: () => address, keyboard: () => keyboard, status, reload: () => command("reload", { tab: tab()?.id }), dropDraft: () => setDraft(undefined) });
 
     // The tab changed: what was drawn belongs to the one before. Its id alone, kept: `on` runs again whenever what it
     // read changes, and finding the tab reads the whole list, so another tab opening or closing would clear this one's
@@ -252,7 +299,7 @@ export function BrowserPane(p: { handle: SessionHandle }) {
     };
     const pointOf = (e: MouseEvent): Point | undefined => {
         const rect = canvas!.getBoundingClientRect();
-        return frame ? pagePoint({ x: e.clientX - rect.left, y: e.clientY - rect.top }, placeFrame(boxSize(), frame), frame) : undefined;
+        return frame ? pagePoint({ x: e.clientX - rect.left, y: e.clientY - rect.top }, placed(frame), frame) : undefined;
     };
 
     // Pointer moves come faster than frames: the latest goes once a frame.
@@ -336,13 +383,27 @@ export function BrowserPane(p: { handle: SessionHandle }) {
     // -----------------------------------------------------------------------
     // The address bar and the tabs
 
-    const command = (c: BrowserCommand, extra: { url?: string; tab?: number } = {}) => void stream.call("browser.command", { id: id(), command: c, ...extra }).then((s) => adoptBrowserState(id(), s), reportError);
+    const call = (c: BrowserCommand, extra: { url?: string; tab?: number } = {}) => stream.call("browser.command", { id: id(), command: c, ...extra }).then((s) => adoptBrowserState(id(), s), reportError);
+    const command = (c: BrowserCommand, extra: { url?: string; tab?: number } = {}) => void call(c, extra);
+    /** A new tab, the address bar ready for where it goes (as a browser's own new tab is). */
+    const newTab = () => {
+        address?.focus();
+        void call("new_tab").then(() => requestAnimationFrame(() => address?.focus()));
+    };
+    /** The desktop app's own view of the current tab's page (BrowserHostLayer). */
+    const pageView = () => {
+        const target = tab()?.targetId;
+        const key = target ? Object.entries(hostedTargets()).find(([, t]) => t === target)?.[0] : undefined;
+        return (key ? document.querySelector<HTMLElement>(`webview[data-key="${key}"]`) : null) ?? undefined;
+    };
     const go = (e: SubmitEvent) => {
         e.preventDefault();
         const url = draft();
         setDraft(undefined);
         if (url?.trim()) command("goto", { url, tab: tab()?.id });
-        keyboard?.focus({ preventScroll: true });
+        // The keyboard to the page, as a browser's address bar gives it: in the desktop app that's the page's own view.
+        if (native) pageView()?.focus();
+        else keyboard?.focus({ preventScroll: true });
     };
     // `list`: the list the person picked in, as this pane had it (another may have been opened since, from elsewhere).
     const choose = (list: number, index?: number) => void stream.call("browser.choose", { id: id(), index, tab: tab()?.id, list }).catch(reportError);
@@ -353,7 +414,7 @@ export function BrowserPane(p: { handle: SessionHandle }) {
     };
 
     return (
-        <div class="browser-pane">
+        <div class="browser-pane" ref={root}>
             <div class="br-bar">
                 <button class="hb sm" aria-label="Back" title="Back" disabled={!tab()?.canGoBack} onClick={() => command("back", { tab: tab()?.id })}>
                     <ArrowLeft size={14} />
@@ -380,7 +441,8 @@ export function BrowserPane(p: { handle: SessionHandle }) {
                         disabled={status() === "unavailable"}
                         onFocus={(e) => e.currentTarget.select()}
                         onInput={(e) => setDraft(e.currentTarget.value)}
-                        onBlur={() => setDraft(undefined)}
+                        // Left, what was typed goes; to Find in page (Ctrl+F) it stays, and the keyboard comes back to it.
+                        onBlur={(e) => tools.keepsDraft(e.relatedTarget) || setDraft(undefined)}
                         onKeyDown={(e) => {
                             if (e.key !== "Escape") return;
                             e.stopPropagation();
@@ -389,6 +451,7 @@ export function BrowserPane(p: { handle: SessionHandle }) {
                         }}
                     />
                 </form>
+                {tools.menu()}
             </div>
             <div class="br-tabs" role="tablist" aria-label="Browser tabs">
                 <For each={state()?.tabs}>
@@ -403,17 +466,18 @@ export function BrowserPane(p: { handle: SessionHandle }) {
                         </div>
                     )}
                 </For>
-                <button class="hb sm" aria-label="New tab" title="New tab" disabled={status() === "unavailable"} onClick={() => command("new_tab")}>
+                <button class="hb sm" aria-label="New tab" title="New tab" disabled={status() === "unavailable"} onClick={newTab}>
                     <Plus size={14} />
                 </button>
                 <span class="grow" />
-                <Show when={status() === "agent"}>
-                    <span class="br-who" title="You can use the page too: the agent is told when you have">
+                <Show when={agentUsing()}>
+                    <span class="br-who" title="The agent is using this tab. You can too.">
                         <span class="br-dot" />
                         <span class="truncate">Agent is using this tab</span>
                     </span>
                 </Show>
             </div>
+            {tools.bars()}
             <div class="br-view" ref={box}>
                 <Show when={!native}>
                     <canvas

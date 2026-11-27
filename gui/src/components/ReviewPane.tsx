@@ -10,33 +10,41 @@
 // committing, pushing and opening in the editor stay with the session's own folder. Only the files
 // near the view have their diff drawn (lib/review-stack.ts), so a 300-file view opens like one file.
 
-import { batch, createEffect, createMemo, createResource, createSignal, For, on, onCleanup, onMount, Show, untrack } from "solid-js";
-import { Check, ChevronDown, ChevronLeft, ChevronRight, Columns2, FolderGit2, FolderOpen, GitCommitHorizontal, GitPullRequestArrow, MessageSquare, RefreshCw, SquareArrowOutUpRight, X } from "lucide-solid";
+import { batch, createEffect, createMemo, createResource, createSignal, For, lazy, on, onCleanup, onMount, Show, untrack } from "solid-js";
+import { Check, ChevronDown, ChevronLeft, ChevronRight, Columns2, Copy, FileText, FolderGit2, FolderOpen, GitCommitHorizontal, GitPullRequestArrow, MessageSquare, RefreshCw, Space, SquareArrowOutUpRight, X } from "lucide-solid";
 import type { FileDiff, GitFileDiff, GitScope, SessionWorktreeInfo } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
-import { app, reportError, revealsIn, rpc } from "../state/app";
+import { app, reportError, revealsIn, rpc, toast } from "../state/app";
 import { prefs, setPrefs } from "../state/prefs";
 import { review, reviewSplit, setCommitRequest, setReview, setReviewDrag, setReviewSplit, shellLayout } from "../state/ui";
 import { frameDrag } from "../lib/drag";
+import { viewFile } from "../lib/file-view";
 import { changedOutside, commitUnavailable, fetchGitChanges, lastView, refreshGitChanges, sessionReadReady, useGitChanges, type ReviewScope } from "../state/changes";
 import { editorName, openInEditor } from "../state/actions";
-import { revealPath } from "../lib/platform";
+import { copyText, revealPath } from "../lib/platform";
 import { plural, since } from "../lib/format";
 import { incompleteLine } from "../lib/turn-places";
 import { CHANGE_WORD, dirOf, nameOf, REVIEW_DEFAULT, REVIEW_STEP, reviewDragWidth, reviewWidthRange } from "../lib/inspector";
 import { Counts, DiffView, type DiffComments } from "./blocks/DiffView";
+import { expand, gaps, shapeOf } from "../lib/diff-expand";
 import { buildComment } from "../lib/review-comments";
 import { findPick, pickGone, pickHeld, pickKey, pickParams, type ReviewPick } from "../lib/review-pick";
 import { anchorShift, cardAt, foldsSmoothly, oneSided, stackRows, viewLabel, viewMenu, type TurnItem, type ViewItem } from "../lib/review-stack";
 import { newCommentId, reviewComments } from "../state/review-comments";
 import { PublishStatus } from "./PublishStatus";
-import { BasePicker } from "./BasePicker";
+import { BasePicker, CommitPicker } from "./BasePicker";
 import { facts, rankedWorktrees, ReviewWorktreePicker, usable, workNamed, worktreeLabel } from "./ReviewWorktreePicker";
 import { followAgent, keepWorktree, ownOnScreen, pickScope, pickWorktree, requestWorktree, worktreeWork, type ReviewPlace, type WorktreeWork } from "../lib/worktree-work";
 import { Spinner } from "./ui/bits";
 import { Menu } from "./ui/Menu";
 
-type Row = FileDiff & Partial<Pick<GitFileDiff, "change" | "from" | "kind" | "deferred" | "filter" | "pathToken">>;
+/** Go to file and Search in project come with the reader (App.tsx loads this chunk at idle). */
+export { openFinder } from "./FileFinder";
+
+/** The file viewer (Go to file, Search in project): in the diff reader's place, its own chunk. */
+const FileViewer = lazy(() => import("./FileViewer").then((m) => ({ default: m.FileViewer })));
+
+type Row = FileDiff & Partial<Pick<GitFileDiff, "change" | "from" | "kind" | "deferred" | "filter" | "pathToken" | "lines">>;
 /** A file here: by its handle when its name was shown redacted (two can show the same name), else by name. */
 const key = (f: Row) => f.pathToken ?? f.path;
 
@@ -62,11 +70,20 @@ function SplitToggle() {
     );
 }
 
+/** Lines that differ only in whitespace shown as unchanged, or not: remembered as a preference. */
+function WhitespaceToggle() {
+    return (
+        <button class="hb" aria-pressed={prefs.reviewIgnoreWhitespace} aria-label="Ignore whitespace" title={prefs.reviewIgnoreWhitespace ? "Ignoring whitespace. Show whitespace changes" : "Ignore whitespace"} onClick={() => setPrefs("reviewIgnoreWhitespace", !prefs.reviewIgnoreWhitespace)}>
+            <Space size={15} />
+        </button>
+    );
+}
+
 /**
  * The reader's left edge, while it docks: drag (or arrow keys) to widen it; double-click for
  * the default. It starts from the width shown, which the layout may have widened past the saved one.
  */
-function ReviewResizer() {
+export function ReviewResizer() {
     const [dragging, setDragging] = createSignal(false);
     const shown = () => shellLayout().inspector.width;
     const set = (w: number) => setPrefs("reviewWidth", w);
@@ -464,9 +481,15 @@ function FileCard(p: {
     flash: number;
     onToggle: (all: boolean) => void;
     onOpen?: () => void;
+    /** The whole file in the file viewer, at its first change. */
+    onView?: () => void;
     onReveal?: () => void;
+    /** Its path to the clipboard: as listed, or (`absolute`) in full. */
+    onCopy: (absolute: boolean) => void;
     /** A file whose hunks didn't fit in the list's reply: fetched by itself once drawn. */
     full: (f: Row) => Promise<{ file?: Row; error?: string }>;
+    /** The file with every line, for the lines its diff leaves out (lib/diff-expand.ts); not in Cavvy edits. */
+    whole?: (f: Row) => Promise<{ file?: Row; error?: string }>;
     /** In view as the reader opens: drawn at once, not a frame later when the stack sees it near. */
     eager?: boolean;
 }) {
@@ -529,8 +552,52 @@ function FileCard(p: {
         if (r?.file) setGot(r.file);
     });
     const shown = (): Row => (p.file.deferred ? (got() ?? p.file) : p.file);
+    // The lines its diff leaves out, opened run by run: the whole file is fetched at the first, and kept while the diff
+    // keeps its shape. One fetched again with other hunks starts closed.
+    const [opened, setOpened] = createSignal<ReadonlySet<number>>(new Set());
+    const [whole, setWhole] = createSignal<Row>();
+    const [fetching, setFetching] = createSignal(false);
+    const shape = createMemo(() => shapeOf(shown()));
+    createEffect(on(shape, () => batch(() => {
+        setOpened(new Set<number>());
+        setWhole(undefined);
+    }), { defer: true }));
+    const expanded = createMemo(() => expand(shown(), whole(), opened()));
+    const drawnDiff = (): Row => (opened().size && whole() ? { ...shown(), hunks: expanded().hunks } : shown());
+    const openGap = async (at: number) => {
+        let all = whole();
+        if (!all) {
+            setFetching(true);
+            const was = shape();
+            const r = await p.whole!(shown()).finally(() => setFetching(false));
+            if (!r.file) return void toast(r.error ?? "Couldn't load the file", "warn");
+            if (shape() !== was) return;
+            setWhole((all = r.file));
+        }
+        const next = new Set(opened()).add(at);
+        if (expand(shown(), all, next).stale.includes(at)) {
+            // The whole file was cut short before this gap's end: it's too long, not changed.
+            const g = gaps(shown()).find((x) => x.at === at);
+            const reached = Math.max(0, ...all.hunks.flatMap((h) => h.lines.map((l) => l.b ?? 0)));
+            return void toast(all.truncated && g && g.newFrom + g.count - 1 > reached ? "Too long to show here." : "The file changed. Refresh to see it.", "warn");
+        }
+        setOpened(next);
+    };
+    /** A hunk header's button for the lines hidden before hunk `h` (the number of hunks: after the last). */
+    const gap = (h: number) => {
+        const g = () => expanded().before[h];
+        return (
+            <Show when={g()}>
+                {(x) => (
+                    <button class="dv-gapbtn" disabled={fetching()} onClick={() => void openGap(x().at)}>
+                        {fetching() ? "Loading…" : x().count === 1 ? "Show 1 hidden line" : `Show ${x().count.toLocaleString()} hidden lines`}
+                    </button>
+                )}
+            </Show>
+        );
+    };
     const one = createMemo(() => oneSided(shown()));
-    const rows = () => stackRows(shown());
+    const rows = () => stackRows(drawnDiff());
     const ch = () => changeOf(p.file);
     const tag = () => fileTag(p.file);
     const toggle = (e: MouseEvent) => {
@@ -571,6 +638,14 @@ function FileCard(p: {
                     )}
                 </Show>
                 <Stat added={shown().added} removed={shown().removed} />
+                <Show when={p.onView}>
+                    <button class="open rf-act" title="View file" aria-label={`View ${p.file.path}`} onClick={() => p.onView!()}>
+                        <FileText size={14} />
+                    </button>
+                </Show>
+                <button class="open rf-act" title="Copy path (⌥-click: full path)" aria-label={`Copy the path of ${p.file.path}`} onClick={(e) => p.onCopy(e.altKey)}>
+                    <Copy size={13} />
+                </button>
                 <Show when={p.onOpen}>
                     <button class="open rf-act" title={`Open in ${editorName() ?? "your editor"}`} aria-label={`Open ${p.file.path} in editor`} onClick={() => p.onOpen!()}>
                         <SquareArrowOutUpRight size={14} />
@@ -598,7 +673,7 @@ function FileCard(p: {
                                 </div>
                             }
                         >
-                            <DiffView diff={shown()} split={p.split && !one()} oneSide={one()} windowed comments={p.comments} />
+                            <DiffView diff={drawnDiff()} split={p.split && !one()} oneSide={one()} windowed comments={p.comments} gap={p.whole ? gap : undefined} tail={!!p.whole && expanded().before.at(-1) !== undefined} />
                         </Show>
                     </Show>
                 </div>
@@ -607,7 +682,16 @@ function FileCard(p: {
     );
 }
 
+/** The diff reader, or the file viewer when a file is open in its place (review().file). */
 export function ReviewPane(p: { handle: SessionHandle }) {
+    return (
+        <Show when={review()?.file} fallback={<DiffReader handle={p.handle} />}>
+            <FileViewer handle={p.handle} />
+        </Show>
+    );
+}
+
+function DiffReader(p: { handle: SessionHandle }) {
     const id = () => p.handle.id;
     const [publishRequest, setPublishRequest] = createSignal<string>();
     createEffect(on(id, () => setPublishRequest(undefined)));
@@ -634,6 +718,8 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     const away = () => worktree() !== undefined;
     const setBase = (b: string | undefined) => setPlace((c) => ({ ...c, base: b }));
     const [turnId, setTurnId] = createSignal<number | undefined>(review()?.turnId ?? saved?.turnId);
+    /** The Commit view's commit: the last one, until another is picked. */
+    const [commitSha, setCommitSha] = createSignal<string | undefined>(saved?.commit);
     /** The file asked for (the side panel's row, a turn's card): scrolled to once it's listed, or fetched by itself. */
     const [picked, setPicked] = createSignal<ReviewPick>();
     /** A pick still to scroll to. */
@@ -656,10 +742,11 @@ export function ReviewPane(p: { handle: SessionHandle }) {
         ),
     );
     ask(asPick(review()));
-    createEffect(() => lastView.set(id(), { scope: scope(), base: base(), turnId: turnId(), worktree: worktree(), own: place().own }));
+    createEffect(() => lastView.set(id(), { scope: scope(), base: base(), turnId: turnId(), commit: commitSha(), worktree: worktree(), own: place().own }));
 
     const gitScope = (): GitScope => (scope() === "cavvy" ? "uncommitted" : (scope() as GitScope));
-    const [git] = useGitChanges(() => p.handle, gitScope, () => (gitScope() === "branch" ? base() : undefined), () => (gitScope() === "turn" ? turnId() : undefined), worktree);
+    const commitOf = () => (gitScope() === "commit" ? commitSha() : undefined);
+    const [git] = useGitChanges(() => p.handle, gitScope, () => (gitScope() === "branch" ? base() : undefined), () => (gitScope() === "turn" ? turnId() : undefined), worktree, commitOf);
 
     // The repository's worktrees: listed once, and again each time the view menu opens, on Refresh, and when the
     // worktree looked at fails to load, so one that's been removed falls back to the session's folder.
@@ -755,7 +842,7 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     /** The pick in the view it's asked for in, as a key. */
     const pickView = () => {
         const want = picked();
-        return want && JSON.stringify([id(), gitScope(), base(), turnId(), worktree(), pickKey(want)]);
+        return want && JSON.stringify([id(), gitScope(), base(), turnId(), commitOf(), worktree(), pickKey(want)]);
     };
     const unlistedKey = () => (shownScope() !== "cavvy" && view() && !listedPick() ? pickView() : undefined);
     // Once the list has held the pick, its leaving the list (a commit, say) ends the asking (lib/review-pick.ts).
@@ -772,12 +859,12 @@ export function ReviewPane(p: { handle: SessionHandle }) {
         () => {
             if (!sessionReadReady(p.handle)) return false;
             const key = unlistedKey();
-            return key ? { key, id: id(), scope: gitScope(), base: base(), turnId: turnId(), worktree: worktree(), pick: picked()! } : false;
+            return key ? { key, id: id(), scope: gitScope(), base: base(), turnId: turnId(), commit: commitOf(), worktree: worktree(), pick: picked()! } : false;
         },
         async (k) => {
             // A handle goes as one, never as a file's name.
             const q = pickParams(k.pick);
-            const r = await fetchGitChanges(k.id, k.scope, k.base, q.path, k.turnId, k.worktree, q.pathToken);
+            const r = await fetchGitChanges(k.id, k.scope, k.base, q.path, k.turnId, k.worktree, q.pathToken, { commit: k.commit });
             const f = r.files[0];
             return { key: k.key, file: f, error: r.error ?? (f ? undefined : "No changes in this view") };
         },
@@ -789,12 +876,21 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     /** The requested file isn't in the list: it's shown on its own, or why it can't be. */
     const askedFor = () => unlistedKey() !== undefined;
     // A file whose hunks didn't fit in the list's reply, fetched on its own (for the card that draws it).
-    const fetchFull = (f: Row) => {
-        const k = { id: id(), scope: gitScope(), base: base(), turnId: turnId(), worktree: worktree() };
-        return fetchGitChanges(k.id, k.scope, k.base, f.path, k.turnId, k.worktree, f.pathToken).then((r) => {
+    // `whole`: with every line as context, for the lines its diff leaves out.
+    const fetchFull = (f: Row, whole = false) => {
+        const k = { id: id(), scope: gitScope(), base: base(), turnId: turnId(), worktree: worktree(), commit: commitOf() };
+        return fetchGitChanges(k.id, k.scope, k.base, f.path, k.turnId, k.worktree, f.pathToken, { commit: k.commit, full: whole }).then((r) => {
             const got = r.files[0];
             return { file: got && !got.deferred ? got : undefined, error: r.error ?? (got ? "Couldn't load this diff." : "No longer changed. Refresh.") };
         });
+    };
+    const loadLog = () => rpc.call("session.gitLog", { id: id(), ...(worktree() !== undefined ? { worktree: worktree() } : {}) });
+    const chooseCommit = (sha: string) => batch(() => {
+        ask(undefined);
+        setCommitSha(sha);
+    });
+    const copyPath = async (f: Row, full: boolean) => {
+        if (await copyText(full ? absolute(f.path) : f.path)) toast(full ? "Full path copied" : "Path copied", "success");
     };
     // A failed Branch view (no main branch to default to) still needs branches to pick from.
     const [fallback] = createResource(
@@ -854,10 +950,17 @@ export function ReviewPane(p: { handle: SessionHandle }) {
         if (!v) return undefined;
         if (shownScope() === "cavvy") return v.tracked === false ? "Not saved yet" : "No changes yet";
         if (shownScope() === "branch") return `No changes vs ${git()?.base?.ref ?? "its base"}`;
+        if (shownScope() === "commit") return git()?.repo === false ? undefined : "No changes in this commit";
         if (shownScope() === "turn" || shownScope() === "last-turn") return git()?.incomplete ? "Snapshot incomplete" : "No changes in this turn";
         return "Nothing to commit";
     };
-    const menu = createMemo(() => viewMenu({ place: place(), turnId: turnId(), repo: !noRepo(), reason: git()?.reason, turns: git()?.turns, busy: p.handle.view.state.busy, branch: git()?.head ? branchLabel() : undefined, base: git()?.base?.ref ?? baseLabel() ?? git()?.defaultBase }));
+    // The Branch view's base as last read: another view's answer (a commit's) doesn't carry one, and the menu keeps saying it.
+    const [seenBase, setSeenBase] = createSignal<string>();
+    createEffect(() => {
+        const b = git()?.base?.ref ?? git()?.defaultBase;
+        if (b) setSeenBase(b);
+    });
+    const menu = createMemo(() => viewMenu({ place: place(), turnId: turnId(), repo: !noRepo(), reason: git()?.reason, turns: git()?.turns, busy: p.handle.view.state.busy, branch: git()?.head ? branchLabel() : undefined, base: git()?.base?.ref ?? baseLabel() ?? git()?.defaultBase ?? seenBase(), commit: git()?.commit }));
     /** The branch of the worktree looked at, for the chip and the notice. */
     const awayBranch = () => {
         const w = worktree();
@@ -899,7 +1002,7 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     // view opens like a one-file one. Another view starts over (keeping the cards it still lists).
     const [made, setMade] = createSignal(0);
     const first = () => untrack(eager).size + FIRST_CARDS;
-    createEffect(on(() => [shownScope(), base(), turnId(), worktree()], () => setMade(0), { defer: true }));
+    createEffect(on(() => [shownScope(), base(), turnId(), commitOf(), worktree()], () => setMade(0), { defer: true }));
     createEffect(on(() => keys().length > 0 && made() === 0, (start) => start && setMade(first())));
     createEffect(() => {
         const m = made();
@@ -965,8 +1068,12 @@ export function ReviewPane(p: { handle: SessionHandle }) {
             onToggle={(all) => toggle(k, all)}
             // The editor opens files in the session's folders only (fs.open confines it); another worktree's file can be revealed in Finder.
             onOpen={own() && changeOf(f()) !== "deleted" && f().kind !== "repo" && f().kind !== "submodule" ? () => void openInEditor(absolute(f().path), undefined, { gitToken: f().pathToken }) : undefined}
+            // The viewer reads the session's folder as it is now: not another worktree's file, a deleted one, or a commit's.
+            onView={own() && !commitOf() && !f().pathToken && changeOf(f()) !== "deleted" && f().kind !== "repo" && f().kind !== "submodule" ? () => viewFile(f().path, f().hunks[0]?.newStart) : undefined}
             onReveal={revealsIn(id()) ? () => void (f().pathToken ? openInEditor("", undefined, { gitToken: f().pathToken, editor: "finder" }) : revealPath(absolute(f().path))).catch(reportError) : undefined}
             full={fetchFull}
+            whole={shownScope() !== "cavvy" ? (x) => fetchFull(x, true) : undefined}
+            onCopy={(abs) => void copyPath(f(), abs)}
             eager={eager().has(k) || (jump() !== undefined && listedPick() !== undefined && cardKey(listedPick()!) === k)}
         />
     );
@@ -997,6 +1104,9 @@ export function ReviewPane(p: { handle: SessionHandle }) {
                     onTurn={chooseTurn}
                     onWorktree={chooseWorktree}
                 />
+                <Show when={shownScope() === "commit"}>
+                    <CommitPicker value={git()?.commit} load={loadLog} onPick={chooseCommit} />
+                </Show>
                 <Show when={shownScope() === "branch"}>
                     <BasePicker value={git()?.base?.ref ?? baseLabel() ?? git()?.defaultBase} current={git()?.base ? (git()!.base!.refToken ?? git()!.base!.ref) : (base() ?? git()?.defaultBaseToken ?? git()?.defaultBase)} bases={bases()} tokens={git()?.bases.length ? git()!.baseTokens : fallback()?.baseTokens} onPick={setBase} />
                 </Show>
@@ -1011,6 +1121,9 @@ export function ReviewPane(p: { handle: SessionHandle }) {
                         <Counts added={view()?.added} removed={view()?.removed} />
                     </span>
                     <span class="sep" />
+                </Show>
+                <Show when={shownScope() !== "cavvy"}>
+                    <WhitespaceToggle />
                 </Show>
                 <SplitToggle />
                 <button class="hb" title="Refresh" aria-label="Refresh" disabled={loading()} onClick={refresh}>

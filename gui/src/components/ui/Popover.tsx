@@ -1,7 +1,7 @@
 import { createEffect, createMemo, createSignal, onCleanup, onMount, Show, type JSX } from "solid-js";
 import { Portal } from "solid-js/web";
-import { mountMenu, type MenuBehavior } from "../../lib/menu";
-import { placePopover, type PopoverPlace } from "../../lib/popover";
+import { menuOf, mountMenu, type MenuBehavior } from "../../lib/menu";
+import { outOfSight, placePopover, type PopoverPlace } from "../../lib/popover";
 import { sp } from "../../state/prefs";
 import { settingsTab } from "../../state/ui";
 import { usePane } from "../../state/split";
@@ -107,7 +107,8 @@ export function Popover(p: PopoverProps) {
         const onDown = (e: PointerEvent) => {
             if (!open()) return;
             const t = e.target as Node;
-            if (el?.contains(t) || p.anchor()?.contains(t)) return;
+            // A submenu of it is in it too.
+            if ((el && menuOf(el, t)) || p.anchor()?.contains(t)) return;
             p.onClose();
         };
         const onKey = (e: KeyboardEvent) => {
@@ -116,7 +117,14 @@ export function Popover(p: PopoverProps) {
                 p.onClose();
             }
         };
-        const onResize = () => open() && place();
+        // The window resized: it moves with its anchor, or closes when that's gone out of sight (a row the shorter
+        // window hides), rather than hang off the window's edge.
+        const onResize = () => {
+            if (!open()) return;
+            const a = p.anchor();
+            if (a && outOfSight(a)) p.onClose();
+            else place();
+        };
         document.addEventListener("pointerdown", onDown, true);
         document.addEventListener("keydown", onKey, true);
         window.addEventListener("resize", onResize);

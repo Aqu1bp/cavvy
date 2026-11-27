@@ -6,10 +6,10 @@ import { ErrorCards } from "./components/ErrorCards";
 import { activate, app, attentionCount, awayUnopened, themeEvents, connFor, connNote, handleFor, homeOn, linkedMachine, machineLink, problemFor, reportError, restoreActiveSession, rpc, rpcFor, serversUi, type SessionHandle } from "./state/app";
 import { tabMachines } from "./lib/terminal";
 import type { Rpc } from "./lib/rpc";
-import { cycleSession, far, interrupt, newSession, togglePanel, toggleSidebar } from "./state/actions";
+import { cycleSession, far, interrupt, newSession, openReview, togglePanel, toggleSidebar } from "./state/actions";
 import { prefs, setPrefs } from "./state/prefs";
-import { agentFocus, dockHeight, inspectorDrag, inspectorWidth, paletteOpen, railDrag, railOpen, requestComposerFocus, review, reviewDrag, panelFull, setPanelFull, setAgentFocus, setInspectorDrag, setInspectorWidth, setModelPickerOpen, setPaletteOpen, setRailOpen, setReview, setSettingsTab, setShellLayout, settingsTab, shellLayout, terminalDrag, terminalMax, terminalShown, setTerminalShown, panelHold, setPanelHold, inspectorDocking, setInspectorDocking, tracksSliding, setTracksSliding } from "./state/ui";
-import { isDesktop, isElectron, isTauri, machine, os, windowCommand } from "./lib/platform";
+import { agentFocus, closeReview, dockHeight, inspectorDrag, inspectorWidth, paletteOpen, railDrag, railOpen, requestComposerFocus, review, reviewDrag, panelFull, setPanelFull, setAgentFocus, setInspectorDrag, setInspectorWidth, setModelPickerOpen, setPaletteOpen, setRailOpen, setReview, setSettingsTab, setShellLayout, settingsTab, shellLayout, terminalDrag, terminalMax, terminalShown, setTerminalShown, panelHold, setPanelHold, inspectorDocking, setInspectorDocking, tracksSliding, setTracksSliding } from "./state/ui";
+import { electron, isDesktop, isElectron, isTauri, machine, os, windowCommand, type QuitAsk } from "./lib/platform";
 import { installWindowDrag } from "./lib/window-drag";
 
 /** Loaded with the first theme chosen: a window with none carries none of it. */
@@ -17,7 +17,7 @@ const ThemeBackdrop = lazy(themeEvents);
 import { canStop } from "./lib/session-status";
 import { actionOf, setEnterSends } from "./state/keybindings";
 import { clampInspectorWidth, closesOnShrink, columnSteps, conversationLeast, docksInPlace, heldSizes, requestCloses, tracks, COLUMN_NARROW, COLUMN_SHORT, INSPECTOR_DEFAULT, INSPECTOR_MOVES, windowLayout } from "./lib/layout";
-import { besideReads, focusMoved, prune, restoreSplit, split } from "./state/split";
+import { asideFocused, besideReads, focusMoved, prune, restoreSplit, split } from "./state/split";
 import { warmUp } from "./lib/highlight";
 import { warmMarkdown } from "./lib/markdown";
 import { frameDrag } from "./lib/drag";
@@ -28,11 +28,10 @@ import { Panes } from "./components/Panes";
 import { AgentView } from "./components/Agents";
 import { ReviewRail, RightPanel } from "./components/RightPanel";
 import { preloadTerminal, TerminalPanel, terminalOpenedEarly } from "./components/TerminalPanel";
-import { openFind, terminalLogin, setTerminalLogin, terminalOpen, setTerminalOpen, mcpOpen, planDialog, rewindOpen, viewedImage, commitRequest, archiveRequest, folderPickerOpen } from "./state/ui";
+import { openFind, terminalLogin, setTerminalLogin, terminalOpen, setTerminalOpen, mcpOpen, planDialog, rewindOpen, viewedImage, commitRequest, archiveRequest, folderPickerOpen, deletedOpen, gitDialog, gitModule, openGit } from "./state/ui";
 import { Home } from "./components/Home";
 import { CommandPalette } from "./components/CommandPalette";
 import { TrustDialog } from "./components/TrustDialog";
-import { RecentlyDeleted } from "./components/RecentlyDeleted";
 import { RunSheet } from "./components/RunSheet";
 import { Logo, Spinner } from "./components/ui/bits";
 
@@ -318,9 +317,15 @@ const ArchiveDialog = lazy(() => import("./components/ArchiveDialog").then((m) =
 const RewindDialog = lazy(() => import("./components/RewindDialog").then((m) => ({ default: m.RewindDialog })));
 const ImageViewer = lazy(() => import("./components/ImageViewer").then((m) => ({ default: m.ImageViewer })));
 const CommitDialog = lazy(() => import("./components/CommitDialog").then((m) => ({ default: m.CommitDialog })));
+const RecentlyDeleted = lazy(() => import("./components/RecentlyDeleted").then((m) => ({ default: m.RecentlyDeleted })));
+const GitDialogs = lazy(() => gitModule().then((m) => ({ default: m.GitDialogs })));
 const FolderPicker = lazy(() => import("./components/FolderPicker").then((m) => ({ default: m.FolderPicker })));
+const QuitDialog = lazy(() => import("./components/QuitDialog").then((m) => ({ default: m.QuitDialog })));
 
 export function App() {
+    /** Go to file or Search in project (FileFinder.tsx, in the reader's chunk); the same again closes it. */
+    const openFinder = (mode: "files" | "search") => void reviewModule().then((m) => m.openFinder(mode));
+
     // A terminal panel for each machine whose sessions the window has shown, each with its own shells there: a session
     // of another machine's opens its terminal on that machine, over the connection its session is shown over.
     /** The machine of what's in view and the connection to it; "pending" while another machine's session is opening. */
@@ -365,7 +370,7 @@ export function App() {
     onMount(() => {
         const fetch = () => {
             // Each lazy component's own preload: fetched by it, it's drawn in the same frame when first shown, not one later.
-            for (const c of [SettingsNav, SettingsPage, ReviewPane, McpDialog, PlanDialogs, RewindDialog, ImageViewer, CommitDialog, ArchiveDialog, FolderPicker]) void c.preload().catch(() => undefined);
+            for (const c of [SettingsNav, SettingsPage, ReviewPane, McpDialog, PlanDialogs, RewindDialog, ImageViewer, CommitDialog, ArchiveDialog, FolderPicker, RecentlyDeleted, ...(isElectron ? [QuitDialog] : [])]) void c.preload().catch(() => undefined);
             void preloadTerminal().catch(() => undefined);
         };
         if (typeof requestIdleCallback === "function") {
@@ -387,6 +392,7 @@ export function App() {
     let themed = false;
     const sceneWanted = () => (themed ||= Boolean(prefs.themeId));
     const folderShown = createMemo<boolean>((was) => was || Boolean(folderPickerOpen()), false);
+    const deletedShown = createMemo<boolean>((was) => was || deletedOpen(), false);
     const active = () => handleFor(app.activeId);
     const agent = () => {
         const id = agentFocus();
@@ -447,6 +453,30 @@ export function App() {
         if (focused?.closest?.("[data-covered], .keep.covered")) focused.blur();
     }, { defer: true }));
 
+    // The desktop app's question before it quits, in the window rather than the system's box (QuitDialog.tsx).
+    const [quitAsk, setQuitAsk] = createSignal<QuitAsk>();
+    onMount(() => {
+        if (!isElectron) return;
+        /** The question being put up (its code loading), until it's up or taken down. */
+        let coming: number | undefined;
+        const off = electron?.onQuitAsk?.((q) => {
+            if ("end" in q) {
+                if (coming === q.id) coming = undefined;
+                return void (quitAsk()?.id === q.id && setQuitAsk(undefined));
+            }
+            // Asked: said at once, before loading or drawing anything, and nothing shown. The app tells it to show the
+            // question only while nothing else asks it (desktop-electron/src/quit-ask.ts): one question up at a time.
+            if (!q.show) return void electron?.quitReply?.(q.id, "asked");
+            if (quitAsk()?.id === q.id || coming === q.id) return;
+            coming = q.id;
+            QuitDialog.preload().then(
+                () => coming === q.id && (coming = undefined, setQuitAsk(q)),
+                () => coming === q.id && (coming = undefined, electron?.quitReply?.(q.id, "unable")),
+            );
+        });
+        if (off) onCleanup(off);
+    });
+
     // The window moves from its top strip and its edges (lib/window-drag.ts).
     onMount(() => {
         if (isTauri) onCleanup(installWindowDrag({ invoke: windowCommand, mac: os === "macos" }));
@@ -461,14 +491,20 @@ export function App() {
             "app:newSession": () => void (setSettingsTab(undefined), newSession(app.homeCwd)),
             "app:toggleSidebar": () => void toggleSidebar(),
             "app:togglePanel": () => void togglePanel(),
+            // The pane opens where the title bar's Changes would: on the worktree the agent works in, if another. Over the
+            // file viewer (in the same place), it shows the diffs.
+            "app:toggleReview": () => (review() && !review()!.file ? void setReview(undefined) : active() ? void openReview() : false),
             // Not while Settings covers the session (it stays mounted under it): they'd act on it out of sight.
             "chat:modelPicker": () => void (!settingsTab() && setModelPickerOpen(true)),
             "chat:focusInput": () => void (!settingsTab() && requestComposerFocus()),
             // Find in the conversation in view (pages not drawn yet included), rather than the page's own find.
             // Nothing under Settings: the page's own find would match the conversation it covers (kept mounted).
             "app:find": () => (active() && !agent() && !settingsTab() ? void openFind() : false),
+            "app:goToFile": () => openFinder("files"),
+            "app:searchFiles": () => openFinder("search"),
             "app:previousSession": () => void cycleSession(-1),
             "app:nextSession": () => void cycleSession(1),
+            "app:switchBranch": () => void (!settingsTab() && openGit("openBranches")),
         };
         /** Those that work with a dialog open (nothing behind one changes otherwise: it may be about the session in view). */
         const overDialogs = new Set(["app:commandPalette", "app:settings"]);
@@ -501,12 +537,13 @@ export function App() {
                 if (agent()) return typing ? undefined : (e.preventDefault(), setAgentFocus(agent()!.parentId));
                 // Full screen first, then the reader.
                 if (panelFull() && shellLayout().inspector.open) return e.preventDefault(), setPanelFull(false);
-                if (review()) return e.preventDefault(), setReview(undefined);
+                if (review()) return e.preventDefault(), closeReview();
             }
             // And otherwise interrupts a working session.
             // Not while it asks something, its own or what this computer asks for it (a session on a server: lib/lent.ts):
             // Esc is the card's then.
-            if (action === "app:interrupt" && canStop(active()?.view.state) && !active()?.view.state.interactions.length && !(app.activeId && far.asks?.(app.activeId))) {
+            // Nor from the side chat: its Esc is its own (Composer).
+            if (action === "app:interrupt" && !asideFocused() && canStop(active()?.view.state) && !active()?.view.state.interactions.length && !(app.activeId && far.asks?.(app.activeId))) {
                 e.preventDefault();
                 interrupt();
             }
@@ -717,17 +754,21 @@ export function App() {
                 </div>
                 <LayoutKeeper panel={panelShown()} review={reviewing() || heldOpen()} />
             </Show>
-            <CommandPalette />
+            <CommandPalette files={openFinder} />
             <Show when={rewindShown()}><RewindDialog /></Show>
             <Show when={mcpShown()}><McpDialog /></Show>
             <Show when={folderShown()}><FolderPicker /></Show>
             <TrustDialog />
             <Show when={planShown()}><PlanDialogs /></Show>
             <Show when={archiveShown()}><ArchiveDialog /></Show>
-            <RecentlyDeleted />
+            <Show when={deletedShown()}><RecentlyDeleted /></Show>
             <RunSheet />
             <Show when={commitShown()}><CommitDialog /></Show>
+            <Show when={gitDialog()}><GitDialogs /></Show>
             <Show when={imageShown()}><ImageViewer /></Show>
+            <Show when={quitAsk()} keyed>
+                {(q) => <QuitDialog ask={q} onDone={() => quitAsk() === q && setQuitAsk(undefined)} />}
+            </Show>
             <Show when={isElectron && !machine && HostLayer()} keyed>
                 {(Layer) => <Layer />}
             </Show>

@@ -26,17 +26,27 @@ test("push creates upstream, updates only the selected branch, and reports ahead
     expect(git(remote, "rev-parse", "feature")).toBe(git(cwd, "rev-parse", "HEAD"));
 });
 
+test("a branch with no upstream set is counted against the remote's branch of that name, if it has one", async () => {
+    const { cwd } = repo();
+    // A new branch: nothing to count against.
+    expect((await gitPublishInfo(cwd)).ahead).toBeUndefined();
+    // The remote has it (as last fetched), but this branch doesn't track it: counted, not called new.
+    git(cwd, "update-ref", "refs/remotes/origin/feature", "HEAD");
+    git(cwd, "commit", "--allow-empty", "-qm", "one more");
+    expect(await gitPublishInfo(cwd)).toMatchObject({ hasUpstream: false, ahead: 1, behind: 0 });
+});
+
 test("no remote, ambiguous remotes, detached HEAD and changed confirmation cannot push", async () => {
     const { cwd, state } = repo();
     const preview = await gitPublishInfo(cwd);
     git(cwd, "commit", "--allow-empty", "-qm", "changed");
     await expect(gitPublish(cwd, { fingerprint: preview.fingerprint, action: "push" })).rejects.toMatchObject({ code: "stale" });
     git(cwd, "remote", "add", "other", "/tmp/nonexistent");
-    await expect(gitPublishInfo(cwd)).rejects.toThrow("unambiguous");
+    await expect(gitPublishInfo(cwd)).rejects.toMatchObject({ code: "no_remote", message: "Set an upstream for this branch to choose which remote to push to." });
     git(cwd, "remote", "remove", "origin"); git(cwd, "remote", "remove", "other");
-    await expect(gitPublishInfo(cwd)).rejects.toThrow("unambiguous");
+    await expect(gitPublishInfo(cwd)).rejects.toMatchObject({ code: "no_remote", message: "This repository has no remote." });
     git(cwd, "checkout", "--detach");
-    await expect(gitPublishInfo(cwd)).rejects.toThrow("detached HEAD");
+    await expect(gitPublishInfo(cwd)).rejects.toThrow("Check out a branch to push");
     expect(calls(state, ".git-calls").some((args) => args.includes("push"))).toBe(false);
 });
 
@@ -67,8 +77,19 @@ test("non-fast-forward is visible, never forced even with mirror and force refsp
     git(cwd, "reset", "--hard", "HEAD~1"); git(cwd, "commit", "--allow-empty", "-qm", "local version");
     git(cwd, "config", "remote.origin.mirror", "true"); git(cwd, "config", "remote.origin.push", "+refs/heads/*:refs/heads/*");
     const preview = await gitPublishInfo(cwd);
-    await expect(gitPublish(cwd, { fingerprint: preview.fingerprint, action: "push" })).rejects.toThrow("No force push was attempted");
+    await expect(gitPublish(cwd, { fingerprint: preview.fingerprint, action: "push" })).rejects.toThrow("The remote has commits this branch doesn't. Pull, then push again.");
+    await expect(gitPublish(cwd, { fingerprint: preview.fingerprint, action: "push" })).rejects.toMatchObject({ code: "push_failed" });
     expect(git(remote, "rev-parse", "feature")).toBe(remoteHead);
+});
+
+test("a push the remote declines for another reason says only that it failed, over git's words", async () => {
+    const { cwd, remote } = repo();
+    writeFileSync(join(remote, "hooks", "pre-receive"), "#!/bin/sh\necho 'branch is frozen' >&2\nexit 1\n", { mode: 0o755 });
+    const err = await gitPublish(cwd, { fingerprint: (await gitPublishInfo(cwd)).fingerprint, action: "push" }).then(() => undefined, (e: Error) => e);
+    expect(err?.message).toStartWith("Push failed.\n");
+    expect(err).toMatchObject({ code: "push_failed" });
+    expect(err?.message).toContain("branch is frozen");
+    expect(err?.message).not.toContain("Pull, then push again");
 });
 
 test("unsafe remote and branch inputs, multiple push URLs and destination changes are refused", async () => {
@@ -121,7 +142,7 @@ test("existing PR and concurrent creation return the PR without duplicate creati
 test("PR failure reports that push succeeded; errors are redacted and bounded", async () => {
     const { cwd, remote } = repo(true);
     const preview = await gitPublishInfo(cwd); process.env.FAKE_PUBLISH_MODE = "create-error";
-    await expect(gitPublish(cwd, { fingerprint: preview.fingerprint, action: "pr", base: "main", title: "Title" })).rejects.toThrow("Branch pushed, but pull request creation failed");
+    await expect(gitPublish(cwd, { fingerprint: preview.fingerprint, action: "pr", base: "main", title: "Title" })).rejects.toThrow("Pushed, but couldn't open the pull request.\n");
     expect(git(remote, "rev-parse", "feature")).toBe(git(cwd, "rev-parse", "HEAD"));
     process.env.FAKE_PUBLISH_MODE = "error";
     try { await gitPrState(cwd); throw new Error("expected failure"); } catch (e) {
@@ -176,17 +197,26 @@ test("PR state lookup failure leaves the push preview usable", async () => {
     expect(preview.prError).toContain("REDACTED");
 });
 
-test("an unknown remote default requires explicit confirmation and cancellation starts no processes", async () => {
+test("an unknown remote default guards main and master, not a new feature branch; cancellation starts no processes", async () => {
     const { cwd, remote, state } = repo();
+    // The remote's HEAD on a branch not made yet (a new bare repository's): it doesn't say which is its default.
     git(remote, "symbolic-ref", "HEAD", "refs/heads/unborn-default");
     const preview = await gitPublishInfo(cwd);
-    expect(preview.defaultUnknown).toBe(true);
-    await expect(gitPublish(cwd, { fingerprint: preview.fingerprint, action: "push" })).rejects.toMatchObject({ code: "protected_branch" });
+    expect(preview).toMatchObject({ branch: "feature", defaultUnknown: true, protected: false });
     const before = calls(state, ".git-calls").length;
-    await expect(gitPublish(cwd, { fingerprint: preview.fingerprint, action: "push", confirmProtected: true }, AbortSignal.abort())).rejects.toMatchObject({ code: "git_cancelled" });
+    await expect(gitPublish(cwd, { fingerprint: preview.fingerprint, action: "push" }, AbortSignal.abort())).rejects.toMatchObject({ code: "git_cancelled" });
     expect(calls(state, ".git-calls")).toHaveLength(before);
-    await gitPublish(cwd, { fingerprint: preview.fingerprint, action: "push", confirmProtected: true });
+    await gitPublish(cwd, { fingerprint: preview.fingerprint, action: "push" });
     expect(git(remote, "rev-parse", "feature")).toBe(git(cwd, "rev-parse", "HEAD"));
+    for (const branch of ["main", "master"]) {
+        if (branch === "main") git(cwd, "checkout", "-q", "main");
+        else git(cwd, "checkout", "-q", "-b", "master");
+        const held = await gitPublishInfo(cwd);
+        expect(held).toMatchObject({ branch, defaultUnknown: true, protected: true });
+        await expect(gitPublish(cwd, { fingerprint: held.fingerprint, action: "push" })).rejects.toMatchObject({ code: "protected_branch" });
+        await gitPublish(cwd, { fingerprint: held.fingerprint, action: "push", confirmProtected: true });
+        expect(git(remote, "rev-parse", branch)).toBe(git(cwd, "rev-parse", "HEAD"));
+    }
 });
 
 
@@ -292,8 +322,8 @@ for (const scope of ["local", "global", "included-global"]) test(`${scope} chain
             git(cwd, "config", ...options, `url.${remote}.${rule}`, "publish:fixture");
             git(cwd, "config", ...options, "url./tmp/other-destination.insteadOf", remote);
             expect(git(cwd, "remote", "get-url", "--push", "origin")).toBe(remote);
-            await expect(gitPublishInfo(cwd)).rejects.toThrow("URL rewrite applies");
-            await expect(gitPublish(cwd, { fingerprint: "a".repeat(64), action: "push", confirmProtected: true })).rejects.toThrow("URL rewrite applies");
+            await expect(gitPublishInfo(cwd)).rejects.toThrow("Git rewrites this remote");
+            await expect(gitPublish(cwd, { fingerprint: "a".repeat(64), action: "push", confirmProtected: true })).rejects.toThrow("Git rewrites this remote");
             expect(calls(state, ".git-calls")).toHaveLength(0);
             git(cwd, "config", ...options, "--remove-section", `url.${remote}`);
             git(cwd, "config", ...options, "--remove-section", "url./tmp/other-destination");
@@ -306,7 +336,7 @@ test("push URLs are audited for rewrites; unrelated rewrites do not block publis
     const { cwd, remote, state } = repo(); trustFolder(cwd);
     git(cwd, "config", "remote.origin.pushurl", "publish:fixture");
     git(cwd, "config", `url.${remote}.insteadOf`, "publish:");
-    await expect(gitPublishInfo(cwd)).rejects.toThrow("URL rewrite applies");
+    await expect(gitPublishInfo(cwd)).rejects.toThrow("Git rewrites this remote");
     expect(calls(state, ".git-calls")).toHaveLength(0);
     git(cwd, "config", "--unset-all", "remote.origin.pushurl");
     expect((await gitPublishInfo(cwd)).destination).toBe(remote);

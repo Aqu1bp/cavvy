@@ -23,9 +23,13 @@ export function oneSided(f: { status: "added" | "modified" | "deleted"; change?:
 export const VIEWS: Record<Exclude<ReviewScope, "turn">, { label: string }> = {
     uncommitted: { label: "Uncommitted" },
     branch: { label: "Branch" },
+    commit: { label: "Commit" },
     "last-turn": { label: "Last turn" },
     cavvy: { label: "Cavvy edits" },
 };
+
+/** The Commit view's second line in the menu: the commit shown ("a1b2c3d Fix the build"); none before one is. */
+export const commitDesc = (c?: { sha: string; subject: string }) => (c ? `${c.sha.slice(0, 7)} ${c.subject}` : undefined);
 
 /** A recorded turn as git's answer lists it, oldest first. */
 export type RecordedTurn = { id: number; prompt: string; startedAt: number; endedAt?: number };
@@ -61,13 +65,13 @@ export interface TurnItem {
  * edits are the session's own folder's); outside a Git repository Cavvy edits is all there is. The
  * turn under way (the last, not ended, while the session works) shows its changes once it ends.
  */
-export function viewMenu(o: { place: ReviewPlace; turnId?: number; repo: boolean; reason?: string; turns?: readonly RecordedTurn[]; busy: boolean; branch?: string; base?: string }): { views: ViewItem[]; turns: TurnItem[] } {
+export function viewMenu(o: { place: ReviewPlace; turnId?: number; repo: boolean; reason?: string; turns?: readonly RecordedTurn[]; busy: boolean; branch?: string; base?: string; commit?: { sha: string; subject: string } }): { views: ViewItem[]; turns: TurnItem[] } {
     const away = o.place.worktree !== undefined;
     const shown: ReviewScope = !o.repo && !away ? "cavvy" : o.place.scope;
     const views = (Object.keys(VIEWS) as ViewItem["scope"][]).map((scope): ViewItem => {
         const v = VIEWS[scope];
         const disabled = away && !OTHER_WORKTREE_SCOPES.has(scope) ? "Only in this session's folder" : !o.repo && !away && scope !== "cavvy" ? (o.reason ?? "Not a Git repository") : undefined;
-        const desc = disabled ?? (scope === "branch" && o.base ? `vs ${o.base}` : undefined);
+        const desc = disabled ?? (scope === "branch" && o.base ? `vs ${o.base}` : scope === "commit" ? commitDesc(o.commit) : undefined);
         return { scope, label: v.label, ...(desc ? { desc } : {}), on: shown === scope, ...(disabled ? { disabled } : {}) };
     });
     const list = !o.repo || away ? [] : (o.turns ?? []);

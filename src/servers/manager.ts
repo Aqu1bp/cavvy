@@ -183,7 +183,7 @@ export class ServerLinks {
      * Asks a server's Cavvy for something a session's row offers (rename, pin, archive, delete and the like), for a
      * window that isn't on that server. Only those: anything else is done in a window that's on it.
      */
-    async relay(name: string, method: string, params: Record<string, unknown>): Promise<{ worktree: true } | null> {
+    async relay(name: string, method: string, params: Record<string, unknown>): Promise<{ worktree: true } | { unsaved: true } | { title: string } | null> {
         const known = method === RELAYED_ARCHIVE_OFFER ? RELAYED_ARCHIVE_OFFER : RELAYED_SESSION_METHODS.find((m) => m === method);
         if (!known) throw new Error("Open the session to do that.");
         const id = params.id;
@@ -191,16 +191,25 @@ export class ServerLinks {
         const w = this.watches.get(name);
         if (!w) throw new Error(`${name} isn't one of this Cavvy's servers.`);
         // Each with what it takes and nothing else (archiving never removes a worktree from here), and nothing of
-        // what the server answers is passed on: these answer nothing.
+        // what the server answers is passed on, but the two flags and the new title below.
         const sent =
             known === "session.rename" ? { id, title: typeof params.title === "string" ? params.title.slice(0, 300) : "" }
             : known === "session.pin" ? { id, pinned: params.pinned === true }
             : known === "session.settle" ? { id, settled: params.settled === true }
             : known === "session.archive" ? { id, archived: params.archived === true }
+            : known === "session.neverSettle" ? { id, on: params.on === true }
+            : known === "session.snooze" ? { id, until: typeof params.until === "number" && Number.isFinite(params.until) ? params.until : null }
             : { id };
         const answer = await w.call(known, sent);
         // Only that it has one: where it is and what removing it would take are that machine's to ask about.
         if (known === RELAYED_ARCHIVE_OFFER) return answer && typeof answer === "object" && (answer as { worktree?: unknown }).worktree ? { worktree: true } : null;
+        // A delete there that had nothing to put in its trash: no Undo here either.
+        if (known === "session.delete") return answer && typeof answer === "object" && (answer as { unsaved?: unknown }).unsaved === true ? { unsaved: true } : null;
+        // The title it was given there, for the row's toast and its Undo here.
+        if (known === "session.regenerateTitle") {
+            const title = answer && typeof answer === "object" ? (answer as { title?: unknown }).title : undefined;
+            return typeof title === "string" ? { title: title.slice(0, 300) } : null;
+        }
         return null;
     }
 

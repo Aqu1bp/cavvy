@@ -21,7 +21,7 @@ import { LiveLine, motionMs } from "./LiveLine";
 import { CardFoldsProvider } from "./blocks/Activity";
 import { Spinner } from "./ui/bits";
 import { BAR_ROOM, FindBar, type FindAnchor } from "./FindBar";
-import { usePane } from "../state/split";
+import { keysHere, usePane } from "../state/split";
 
 /** How long new content takes to glide into place at the end, before Settings → Motion scales it. */
 const GLIDE_MS = 240;
@@ -90,21 +90,22 @@ function relay(to: { fn?: IntersectionObserverCallback }): IntersectionObserverC
  * on that turn, found by its place in the session (its id may be another turn's now); if the session didn't come with
  * it this time (new turns pushed it out), the turns back to it come first, in one request. Not there: at the end.
  */
-export function Transcript(p: { handle: SessionHandle; dock?: number }) {
+/** `aside`: a side chat's (SideChatPane), in the side panel: nothing to rewind or fork, and not held while the panels slide. */
+export function Transcript(p: { handle: SessionHandle; dock?: number; aside?: boolean }) {
     const saved = transcriptPositions.get(p.handle.id);
     const key = !saved?.bottom ? saved?.keys?.anchor : undefined;
     const loading = key && loadEarlierTo(p.handle, key);
-    if (!loading) return <TranscriptView handle={p.handle} dock={p.dock} saved={saved && placedAgain(p.handle.view.turns, saved)} />;
+    if (!loading) return <TranscriptView handle={p.handle} dock={p.dock} aside={p.aside} saved={saved && placedAgain(p.handle.view.turns, saved)} />;
     const [placed, setPlaced] = createSignal<TranscriptPosition>();
     void loading.finally(() => setPlaced(placedAgain(p.handle.view.turns, saved!)));
-    return <Show when={placed()} keyed>{(s) => <TranscriptView handle={p.handle} dock={p.dock} saved={s} />}</Show>;
+    return <Show when={placed()} keyed>{(s) => <TranscriptView handle={p.handle} dock={p.dock} aside={p.aside} saved={s} />}</Show>;
 }
 
-function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: TranscriptPosition }) {
+function TranscriptView(p: { handle: SessionHandle; dock?: number; aside?: boolean; saved?: TranscriptPosition }) {
     // In a split (state/split.ts): Find is the focused pane's, a floating inspector is over the rightmost, and each
     // pane is half the conversation column.
     const pane = usePane();
-    const finding = () => findOpen() && pane.focused();
+    const finding = () => findOpen() && keysHere(pane);
     const share = pane.share;
     // --dock-h goes on each box that reads it (stage.css): not inherited, and not passed down with `inherit`.
     const dock = () => (p.dock === undefined ? undefined : `${p.dock}px`);
@@ -1519,20 +1520,20 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
     let fromEnd = false;
     const atEnd = createMemo(on(() => panelHold()?.slide, (slide) => !!slide && untrack(stick)));
     const hold = () => {
-        const held = panelHold();
+        const held = p.aside ? undefined : panelHold();
         return held && { width: `${held.column.w * share()}px`, height: `${held.column.h}px`, top: `${atEnd() ? held.to.h - held.column.h : 0}px` };
     };
     // The hold ending puts the box back at the column's top. Held from the end and scrolled up meanwhile (not
     // following the end any more), it's scrolled by as much, so what's read stays where it is.
     createEffect(on(panelHold, (held, before) => {
-        if (held || !before || !scroller || !fromEnd || stick()) return;
+        if (p.aside || held || !before || !scroller || !fromEnd || stick()) return;
         const top = before.to.h - before.column.h;
         if (!top) return;
         scroller.scrollTop -= top;
         wrote();
         reading = capture();
     }, { defer: true }));
-    createEffect(on(() => panelHold()?.slide, (slide) => {
+    createEffect(on(() => (p.aside ? undefined : panelHold()?.slide), (slide) => {
         // A slide that cuts another short starts from where that one had drawn the column, not from where it was going.
         const drawn = slide && box && moving?.playState === "running" ? new DOMMatrixReadOnly(getComputedStyle(box).transform).m41 : 0;
         moving?.cancel();
@@ -1561,7 +1562,7 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         <div class="transcript-wrap">
             {/* Keeps one size while the panels slide (lib/layout.ts heldSizes): the conversation is laid out once, not every frame. */}
             <div class="transcript-hold" ref={box} classList={{ held: !!hold() }} style={hold()}>
-            <div class="transcript" ref={scroller} style={{ "--dock-h": dock() }} onScroll={onScroll} onWheel={onWheel} onTouchStart={press} onPointerDown={press} onKeyDown={onKey} onClick={toggledRow} aria-label="Conversation">
+            <div class="transcript" ref={scroller} style={{ "--dock-h": dock() }} classList={{ "jump-shown": !stick() && !scrolledDown() }} onScroll={onScroll} onWheel={onWheel} onTouchStart={press} onPointerDown={press} onKeyDown={onKey} onClick={toggledRow} aria-label="Conversation">
                 {/* Clips the column's glide, so a translate never adds to what the conversation scrolls through. */}
                 <div class="transcript-glide">
                 <div class="transcript-col" ref={content}>
@@ -1590,7 +1591,7 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
                     <CardFoldsProvider sessionId={id}>
                         {/* As <For>, without keeping turns let go of (lib/keyed-list.ts). */}
                         <KeyedList each={visible()}>{(t) => <>
-                            <TurnView turn={t} state={p.handle.view.state} agents={p.handle.view.agents} last={t === turns()[turns().length - 1]} onRewind={rewind} onFork={() => forkFrom(t)}
+                            <TurnView turn={t} state={p.handle.view.state} agents={p.handle.view.agents} last={t === turns()[turns().length - 1]} onRewind={p.aside ? undefined : rewind} onFork={p.aside ? undefined : () => forkFrom(t)}
                                 workOpen={openWork.has(t.id)} keepWorkOpen={() => !stick()} onWorkOpen={(open) => open ? openWork.add(t.id) : openWork.delete(t.id)} onToggleWork={toggleWork} held={held().has(t.id)} onElement={track} onFold={fold} gone={goneFlag(t.id)[0]} />
                             <Show when={p.handle.view.gap?.after === t.id && p.handle.view.gap}>{(g) => <LaterTurns count={g().count} fill={() => fillGap(p.handle, PAGE, (n) => setShown((s) => s + n)).then((r) => (trimAbove(), r))} root={() => scroller} />}</Show>
                         </>}</KeyedList>

@@ -66,7 +66,7 @@ export interface BackendPermission {
     /** What PreToolUse hooks said of it (the backend ran them before asking): allow approves it unless a rule denies it. */
     hookDecision?: "allow" | "ask";
     /**
-     * A command the backend runs in this folder, outside the session's (Grok, Antigravity; Codex's come as `cd <folder> && …`):
+     * A command the backend runs in this folder, outside the session's (Grok; Codex's come as `cd <folder> && …`):
      * asked about, whatever the rules say, but in Bypass, where it's checked as run there.
      */
     elsewhere?: string;
@@ -77,6 +77,14 @@ export interface BackendPermission {
     ownBypassAsk?: boolean;
     /** The backend asked only because PreToolUse hooks needed to see it: approve what the mode allows. */
     hooksOnly?: boolean;
+    /**
+     * The agent CLI runs in its own counterpart of the session's mode (Claude Code in every mode, Codex's and Grok's
+     * own reviewers in auto), which decided this needs the user: Cavvy adds nothing of its own mode. Its deny rules
+     * and protections refuse, its allow rules and session choices approve, hooks have their say, and otherwise the
+     * user is asked. (In bypass, whatever any backend asks about runs but a catastrophic command: see
+     * Agent.backendPermission.)
+     */
+    ownMode?: boolean;
     /**
      * One of the backend's own the mode doesn't decide (Grok's bookkeeping, its plan file in plan mode): deny
      * rules and Cavvy's protections refuse it, as in bypass; otherwise it's approved without asking. A change to
@@ -90,6 +98,11 @@ export interface BackendPermission {
     planFile?: string;
     /** The backend's sub-agent asking, by its type (a Cavvy agent Claude Code runs natively): its own mode applies. */
     agentType?: string;
+    /**
+     * Which of the backend's own sub-agents asks, by its task ("Map auth"), where the backend says (Claude Code's
+     * agent_id): the prompt says so, as it does for Cavvy's. Unlike agentLabel, what a no does is the backend's.
+     */
+    asker?: string;
     /**
      * The CLI's own ask, from a CLI that runs as it does on its own (Antigravity): the user's to answer, with Allow and
      * Deny. Cavvy's rules, mode and hooks decide none of it; the rest of this is only how it's shown.
@@ -123,6 +136,8 @@ export interface BackendQuestion {
     header?: string;
     options: { label: string; description?: string }[];
     multiSelect?: boolean;
+    /** Its answer can carry what the user attached (the agent's own question, not an MCP server's form): named in it as text. */
+    attach?: boolean;
 }
 
 /** A queued message as a prompt of its own: its text (attached text files framed in), its images, and PDFs for a backend that reads them. */

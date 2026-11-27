@@ -801,6 +801,11 @@
     object-fit: cover;
 }
 
+/* An image smaller than the chip: at its own size in the middle, not blown up into a blur. */
+.att-image.small .att-open img {
+    object-fit: scale-down;
+}
+
 /* Its edge over the picture, as the cards have theirs. */
 .att-image::after {
     content: "";
@@ -975,6 +980,16 @@ button.att-card:hover {
     font-size: 0.786rem;
     line-height: 1.5;
     white-space: pre;
+}
+
+/* A side chat's answer: drawn as the conversation draws it (markdown.css .md.small), a little taller before it scrolls. */
+.attachment-preview.prose {
+    max-height: calc(240 * var(--sp));
+    padding: calc(10 * var(--sp)) calc(14 * var(--sp));
+    font-family: inherit;
+    font-size: inherit;
+    line-height: inherit;
+    white-space: normal;
 }
 
 .attachments-note {
@@ -1322,15 +1337,15 @@ button.att-card:hover {
     margin-right: calc(2 * var(--sp));
 }
 
-.composer-bar[data-fit~="3"] .pick.model > :is(svg:not(.chev), .provider-mono) {
+.composer-bar[data-fit~="4"] .pick.model > :is(svg:not(.chev), .provider-mono) {
     display: inline-flex;
 }
 
 /* Tight, what's on the row gives way a step at a time (lib/composer-fit.ts says the steps). Out of sight,
    still named for assistive tech; the model's name only while the provider's mark (or Compare's) is there. */
 .composer-bar[data-fit~="1"] .pick .lbl,
-.composer-bar[data-fit~="3"] .pick-acct,
-.composer-bar[data-fit~="3"] .pick.model:has(> svg:not(.chev), > .provider-mono) > .truncate {
+.composer-bar[data-fit~="4"] .pick-acct,
+.composer-bar[data-fit~="4"] .pick.model:has(> svg:not(.chev), > .provider-mono) > .truncate {
     position: absolute;
     width: 1px;
     height: 1px;
@@ -1341,7 +1356,8 @@ button.att-card:hover {
 
 .composer-bar[data-fit~="1"] .ctx-limit .lbl,
 .composer-bar[data-fit~="2"] .pick .chev,
-.composer-bar[data-fit~="4"] .ctx-btn {
+.composer-bar[data-fit~="3"] > .cb:first-of-type,
+.composer-bar[data-fit~="5"] .ctx-btn {
     display: none;
 }
 
@@ -1686,6 +1702,95 @@ button.att-card:hover {
     color: var(--fg-2);
 }
 
+/* A question's card: the whole of it, to its edges, takes files dropped on it (for the answer, not the message). */
+.q-card {
+    display: flex;
+    flex-direction: column;
+    flex: 0 1 auto;
+    min-height: 0;
+    margin: calc(-16 * var(--sp)) calc(-16 * var(--sp)) calc(-14 * var(--sp)) calc(-18 * var(--sp));
+    padding: calc(16 * var(--sp)) calc(16 * var(--sp)) calc(14 * var(--sp)) calc(18 * var(--sp));
+    border-radius: inherit;
+}
+
+/* With files or images attached to the answer, the card may be taller, so its options keep their room. */
+.ask:has(.q-attached) {
+    max-height: min(calc(var(--column-h, 100vh) * 0.7), 760 * var(--sp));
+}
+
+/* Options that still don't fit scroll; while there are more below, the list's bottom edge fades (as base.css's lists
+   with more below, here a mask: the card's fill is see-through). The second layer covers the fade, grown over it as the
+   list reaches its end, driven by its scroll position. A list that fits, or no scroll timelines: it covers it all.
+   The same for the field and what's attached, when they scroll too (.q-mid). */
+.q-card .itab-body,
+.q-mid {
+    mask-image: linear-gradient(#000 calc(100% - 28 * var(--sp)), rgb(0 0 0 / 0.08)), linear-gradient(#000, #000);
+    mask-size: 100% 100%, 100% 100%;
+    mask-repeat: no-repeat;
+    animation: q-more-below linear both;
+    animation-timeline: scroll(self block);
+    animation-range: calc(100% - 24px) 100%;
+}
+
+@keyframes q-more-below {
+    from {
+        mask-size: 100% 100%, 100% 0%;
+    }
+    to {
+        mask-size: 100% 100%, 100% 100%;
+    }
+}
+
+/* Between the question and the Answer row, which stay in sight: when the card is held to the room under the title
+   bar (stage.css .composer-dock), the options give way first (as they do to the field alone); with something
+   attached, down to one and the top of the next, then the options, the field and what's attached scroll together. */
+.q-mid {
+    display: flex;
+    flex-direction: column;
+    flex: 0 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+}
+
+.q-mid:has(.q-attached) .itab-body:has(.q-option:nth-child(2), .q-desc) {
+    min-height: calc(76 * var(--sp));
+}
+
+.itab-count + .q-card {
+    margin-top: 0;
+    padding-top: 0;
+}
+
+.q-card.dragging {
+    box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 70%, transparent);
+}
+
+.q-field {
+    display: flex;
+    flex: none;
+    align-items: center;
+    margin-top: calc(12 * var(--sp));
+    gap: calc(6 * var(--sp));
+}
+
+.itab-body + .q-field {
+    margin-top: calc(8 * var(--sp));
+}
+
+.q-field .hb.sm {
+    flex: none;
+    border-radius: 50%;
+}
+
+.q-attached {
+    flex: none;
+    margin-top: calc(4 * var(--sp));
+}
+
+.q-attached .attachments-wrap {
+    margin-bottom: 0;
+}
+
 /* Questions: numbered options, then a field for your own answer. */
 .q-options {
     display: flex;
@@ -1708,9 +1813,14 @@ button.att-card:hover {
     background: var(--hover);
 }
 
+/* Picked, to go with Answer: tinted with the accent as a picked session in the list is, apart from a pointer's fill. */
 .q-option.on {
-    background: var(--press);
-    box-shadow: inset 0 0 0 0.5px var(--line-strong);
+    background: var(--accent-soft);
+    box-shadow: inset 0 0 0 0.5px var(--accent-border);
+}
+
+.q-option.on:hover {
+    background: color-mix(in srgb, var(--accent) 17%, transparent);
 }
 
 .q-option kbd {
@@ -1898,6 +2008,11 @@ button.att-card:hover {
     border-radius: calc(5 * var(--sp));
     text-align: center;
     background: var(--press);
+}
+
+.q-option.on kbd {
+    background: var(--accent);
+    color: var(--accent-ink);
 }
 
 /* ---- / commands, @ files and $ skills ------------------------------------- */
@@ -2445,7 +2560,8 @@ button.att-card:hover {
     flex-direction: column;
     flex: 0 1 auto;
     width: 100%;
-    height: calc(var(--mp-fit, 380) * var(--sp));
+    /* With the tabs on more than one row, taller by those rows (--mp-more), so the list keeps its room. */
+    height: calc(var(--mp-fit, 380) * var(--sp) + var(--mp-more, 0px));
     min-height: 0;
 }
 
@@ -2525,32 +2641,15 @@ button.att-card:hover {
     border-bottom: 0.5px solid var(--line);
 }
 
-/* The filters: one row of words that scrolls sideways, faded at an edge with more past it. */
+/* The filters: a row of words, each whole; more than a row holds wrap to another (cut at the panel's edges, a
+   provider's name was half gone, and those past it hidden). */
 .mp-filters {
     display: flex;
+    flex-wrap: wrap;
     flex: 1 1 auto;
     min-width: 0;
     gap: calc(2 * var(--sp));
     padding: calc(2 * var(--sp)) 0 calc(6 * var(--sp));
-    overflow-x: auto;
-    scrollbar-width: none;
-    scroll-padding: 0 calc(28 * var(--sp));
-}
-
-.mp-filters::-webkit-scrollbar {
-    display: none;
-}
-
-.mp-filters.more-r {
-    mask-image: linear-gradient(90deg, #000 calc(100% - 36px), transparent);
-}
-
-.mp-filters.more-l {
-    mask-image: linear-gradient(90deg, transparent, #000 36px);
-}
-
-.mp-filters.more-l.more-r {
-    mask-image: linear-gradient(90deg, transparent, #000 36px, #000 calc(100% - 36px), transparent);
 }
 
 .mp-f {
@@ -2559,6 +2658,7 @@ button.att-card:hover {
     align-items: center;
     gap: calc(6 * var(--sp));
     flex: none;
+    max-width: 100%;
     height: calc(26 * var(--sp));
     padding: 0 calc(8 * var(--sp));
     border-radius: calc(7 * var(--sp));
@@ -3229,6 +3329,12 @@ button.att-card:hover {
     .ask-row .pbtn.primary {
         grid-column: 1 / -1;
         order: -1;
+    }
+
+    /* A button left alone in its row (a question's Skip, with or without Answer above it) takes the row. */
+    .ask-row .pbtn:only-of-type,
+    .ask-row .pbtn.primary + .grow + .pbtn:last-child {
+        grid-column: 1 / -1;
     }
 
     .schedule-when,

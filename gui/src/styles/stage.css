@@ -22,6 +22,14 @@
     initial-value: 140px;
 }
 
+/* How much higher the conversation fades out while "Latest" shows over its end (.jump-shown): set on the scroller
+   alone, so its turns aren't restyled when it changes. */
+@property --jump-room {
+    syntax: "<length>";
+    inherits: false;
+    initial-value: 0px;
+}
+
 .stage {
     position: absolute;
     inset: 0;
@@ -41,12 +49,18 @@
     mask-image: linear-gradient(
         transparent calc(var(--bar-h, 52px) - 6px),
         #000 calc(var(--bar-h, 52px) + 18px),
-        #000 calc(100% - var(--dock-h) - 24 * var(--sp)),
-        transparent calc(100% - var(--dock-h) + 2 * var(--sp))
+        #000 calc(100% - var(--dock-h) - 24 * var(--sp) - var(--jump-room)),
+        transparent calc(100% - var(--dock-h) + 2 * var(--sp) - var(--jump-room))
     ), linear-gradient(#000, #000);
     mask-size: 100% 100%, var(--scrollbar-w) 100%;
     mask-position: 0 0, right 0 top 0;
     mask-repeat: no-repeat;
+}
+
+/* "Latest" floats over the end (Transcript.tsx): what's under it fades out first, so it sits in the clear and
+   doesn't cover the last lines in view (opening a turn's work at the end leaves its last words right there). */
+.stage .transcript.jump-shown {
+    --jump-room: calc(34 * var(--sp));
 }
 
 .stage .transcript-col {
@@ -62,11 +76,18 @@
     z-index: 30;
     padding: 0 var(--stage-x) calc(12 * var(--sp));
     pointer-events: none;
+    /* Never above the conversation: in a short window a request card gets what's left under the title bar, and
+       what it holds scrolls (composer.css .ask, .q-mid). */
+    display: flex;
+    flex-direction: column;
+    max-height: calc(100% - var(--bar-h, 52px) - 8 * var(--sp));
 }
 
 .composer-col {
     position: relative;
+    width: 100%;
     max-width: var(--dock-w);
+    min-height: 0;
     margin: 0 auto;
     display: flex;
     flex-direction: column;

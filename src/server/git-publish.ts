@@ -90,6 +90,12 @@ export function runGh(cwd: string, args: string[], signal?: AbortSignal): Promis
     return run(cwd, ["gh", ...args], true, signal);
 }
 
+/** One `git` call with the publish rules (run()): a `network` one needs the folder's network trust and runs away from it. */
+export function runGit(cwd: string, args: string[], network: boolean, signal?: AbortSignal): Promise<{ out: string; err: string; code: number }> {
+    return run(cwd, ["git", ...args], network, signal);
+}
+export { clean as cleanGitText };
+
 /** The GitHub repository ("owner/name") the current branch pushes to. */
 export async function currentGithubRepo(cwd: string, signal?: AbortSignal): Promise<string | undefined> {
     return githubRepo((await local(cwd, signal)).url);
@@ -121,7 +127,7 @@ async function local(cwd: string, signal?: AbortSignal) {
         git(cwd, ["rev-parse", "--verify", "HEAD"], signal),
         git(cwd, ["remote"], signal),
     ]);
-    if (!branch) throw fail("Cannot push a detached HEAD. Check out a branch first.", "invalid");
+    if (!branch) throw fail("Check out a branch to push.", "invalid");
     const [, upstreamRemote, merge] = await Promise.all([
         branchName(cwd, branch, signal),
         git(cwd, ["config", "--get", `branch.${branch}.remote`], signal, false, true),
@@ -130,14 +136,37 @@ async function local(cwd: string, signal?: AbortSignal) {
     const remotes = remoteNames.split("\n").filter(Boolean);
     const hasUpstream = Boolean(upstreamRemote && merge);
     const remote = hasUpstream ? upstreamRemote : remotes.length === 1 && remotes[0] === "origin" ? "origin" : "";
-    if (!remote || !remotes.includes(remote) || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(remote)) throw fail("No unambiguous push remote. Configure an upstream, or a single origin remote, in a terminal.", "invalid");
+    // Said as fetching says it (git-sync.ts fetchRemote): the GUI puts "Can't push:" before it.
+    if (!remote) throw fail(remotes.length ? "Set an upstream for this branch to choose which remote to push to." : "This repository has no remote.", "no_remote");
+    if (!remotes.includes(remote)) throw fail(`This branch's upstream remote ${remote} doesn't exist.`, "no_remote");
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(remote)) throw fail("Use a remote with a plain name.", "invalid");
     if (hasUpstream && !merge.startsWith("refs/heads/")) throw fail("The upstream is not a branch.", "invalid");
-    const [target, configuredPushUrls, configuredUrls, rewrites, tracking] = await Promise.all([
+    const [target, url, tracking] = await Promise.all([
         branchName(cwd, hasUpstream ? merge.slice(11) : branch, signal),
-        git(cwd, ["config", "--includes", "-z", "--get-all", `remote.${remote}.pushurl`], signal, false, true),
+        remoteUrl(cwd, remote, true, signal),
+        git(cwd, ["rev-parse", "--symbolic-full-name", "@{upstream}"], signal, false, true),
+    ]);
+    let ahead: number | undefined, behind: number | undefined;
+    // No upstream set, but the remote has the branch already (as last fetched): counted against it, so it isn't called
+    // a new branch.
+    const against = tracking || (!hasUpstream && (await git(cwd, ["rev-parse", "--verify", "--quiet", `refs/remotes/${remote}/${target}`], signal, false, true)) ? `refs/remotes/${remote}/${target}` : "");
+    if (against) {
+        const counts = await git(cwd, ["rev-list", "--left-right", "--count", `${sha}...${against}`, "--"], signal, false, true);
+        if (/^\d+\s+\d+$/.test(counts)) [ahead, behind] = counts.split(/\s+/).map(Number);
+    }
+    const fingerprint = createHash("sha256").update(JSON.stringify({ branch, sha, remote, target, url, hasUpstream })).digest("hex");
+    return { branch, sha, remote, target, url, hasUpstream, ahead, behind, fingerprint };
+}
+/**
+ * The one URL git uses for `remote` (its push URL when `push`), checked as publishing checks it: no URL rewrite
+ * applies, one ordinary URL, and a relative folder path made absolute (network calls run elsewhere: run()).
+ */
+export async function remoteUrl(cwd: string, remote: string, push: boolean, signal?: AbortSignal): Promise<string> {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(remote)) throw fail("Use a remote with a plain name.", "invalid");
+    const [configuredPushUrls, configuredUrls, rewrites] = await Promise.all([
+        push ? git(cwd, ["config", "--includes", "-z", "--get-all", `remote.${remote}.pushurl`], signal, false, true) : "",
         git(cwd, ["config", "--includes", "-z", "--get-all", `remote.${remote}.url`], signal, false, true),
         git(cwd, ["config", "--includes", "-z", "--get-regexp", "^url\\..*\\.(insteadof|pushinsteadof)$"], signal, false, true),
-        git(cwd, ["rev-parse", "--symbolic-full-name", "@{upstream}"], signal, false, true),
     ]);
     const configValues = (value: string) => value ? value.split("\0").slice(0, -1) : [];
     const fetchUrls = configValues(configuredUrls);
@@ -150,11 +179,11 @@ async function local(cwd: string, signal?: AbortSignal) {
         if (newline < 0) throw fail("Cannot verify Git URL rewrite configuration.", "invalid");
         const prefix = entry.slice(newline + 1);
         if ([...fetchUrls, ...pushUrls].some((url) => url.startsWith(prefix))) {
-            throw fail("A Git URL rewrite applies to this remote. Configure its literal destination URL without insteadOf/pushInsteadOf before publishing.", "invalid");
+            throw fail(`Git rewrites this remote's URL (insteadOf). ${push ? "Push" : "Fetch"} from a terminal.`, "invalid");
         }
     }
     const urls = pushUrls.length ? pushUrls : fetchUrls;
-    if (urls.length !== 1 || !urls[0] || /[\x00-\x20\x7f]/.test(urls[0]) || urls[0].startsWith("-") || urls[0].includes("::")) throw fail("Use one ordinary push URL for this remote.", "invalid");
+    if (urls.length !== 1 || !urls[0] || /[\x00-\x20\x7f]/.test(urls[0]) || urls[0].startsWith("-") || urls[0].includes("::")) throw fail(`Use one ordinary ${push ? "push " : ""}URL for this remote.`, "invalid");
     // A relative folder path, from the work tree's top, where git read it: the network calls run elsewhere (run()). Not
     // normalized, so the system follows links before a `..` as it did there. Git reads ~ as home wherever it runs.
     let url = urls[0];
@@ -164,13 +193,7 @@ async function local(cwd: string, signal?: AbortSignal) {
         throw fail("Use a full path for this remote, with its drive.", "invalid");
     }
     if (localPath(url) && !isAbsolute(url) && !url.startsWith("~")) url = `${await git(cwd, ["rev-parse", "--show-toplevel"], signal)}${sep}${url}`;
-    let ahead: number | undefined, behind: number | undefined;
-    if (tracking) {
-        const counts = await git(cwd, ["rev-list", "--left-right", "--count", `${sha}...${tracking}`, "--"], signal, false, true);
-        if (/^\d+\s+\d+$/.test(counts)) [ahead, behind] = counts.split(/\s+/).map(Number);
-    }
-    const fingerprint = createHash("sha256").update(JSON.stringify({ branch, sha, remote, target, url, hasUpstream })).digest("hex");
-    return { branch, sha, remote, target, url, hasUpstream, ahead, behind, fingerprint };
+    return url;
 }
 /** Whether a remote URL is a folder's path, as git tells: no scheme://, and no host: before a slash (scp-like ssh). */
 function localPath(url: string): boolean {
@@ -185,6 +208,16 @@ export async function gitPushTarget(cwd: string, signal?: AbortSignal) {
     return { branch: clean(t.branch), sha: t.sha, remote: clean(t.remote), target: clean(t.target), url: clean(t.url), fingerprint: t.fingerprint };
 }
 
+/**
+ * A push that needs the user's explicit go-ahead: to the remote's default branch, or to main or master, from a local
+ * branch of one of those names or not. A remote that doesn't say which is its default (no HEAD, or one on a branch
+ * not made yet) leaves main and master: a new feature branch isn't held up by it.
+ */
+export function guarded(info: { branch: string; target: string }, base: string | undefined): boolean {
+    const names = ["main", "master", ...(base ? [base] : [])];
+    return names.includes(info.branch) || names.includes(info.target);
+}
+
 async function defaultBranch(cwd: string, url: string, signal?: AbortSignal) {
     // Query the actual push destination, not a potentially stale origin/HEAD.
     const refs = await git(cwd, ["ls-remote", "--symref", "--", url, "HEAD"], signal, true);
@@ -192,7 +225,7 @@ async function defaultBranch(cwd: string, url: string, signal?: AbortSignal) {
     return name ? branchName(cwd, name, signal) : undefined;
 }
 /** How the GitHub CLI stands here: usable, installed but signed out (a sign-in is all that's missing), or not installed. */
-async function ghState(cwd: string, signal?: AbortSignal): Promise<"ready" | "signed-out" | "missing"> {
+export async function ghState(cwd: string, signal?: AbortSignal): Promise<"ready" | "signed-out" | "missing"> {
     try { return (await run(cwd, ["gh", "auth", "status", "--hostname", "github.com"], true, signal)).code === 0 ? "ready" : "signed-out"; }
     catch (e) { if (e instanceof RpcError && e.code === "unavailable") return "missing"; throw e; }
 }
@@ -262,8 +295,7 @@ export async function gitPublishInfo(cwd: string, signal?: AbortSignal): Promise
     return {
         fingerprint: info.fingerprint, branch: clean(info.branch), remote: clean(info.remote), target: clean(info.target), destination: clean(info.url),
         ahead: info.ahead, behind: info.behind, hasUpstream: info.hasUpstream, base: base && clean(base),
-        protected: ["main", "master", base].includes(info.branch) || ["main", "master", base].includes(info.target),
-        // If a remote has no symbolic HEAD, require acknowledgement for every branch.
+        protected: guarded(info, base),
         defaultUnknown: !base, gh, ...(state === "signed-out" ? { ghSignedOut: true } : {}), pr, prError, title: text.split("\n")[0]?.slice(0, 250) || clean(info.branch), body: text,
         compareUrl: repo && redact(info.target) === info.target && (!base || redact(base) === base) ? `https://github.com/${repo}/compare/${base ? `${encodeURIComponent(base)}...` : ""}${encodeURIComponent(info.target)}?expand=1` : undefined,
     };
@@ -325,11 +357,11 @@ async function pushTo(cwd: string, info: { remote: string; target: string; url: 
     }
 }
 
-export async function gitPublish(cwd: string, request: GitPublishRequest, signal?: AbortSignal): Promise<{ pr?: GitPrInfo }> {
+export async function gitPublish(cwd: string, request: GitPublishRequest, signal?: AbortSignal): Promise<{ pr?: GitPrInfo; created?: true }> {
     const info = await local(cwd, signal);
-    if (info.fingerprint !== request.fingerprint) throw fail("The branch, commit or destination changed. Reopen the dialog before publishing.", "stale");
+    if (info.fingerprint !== request.fingerprint) throw fail("The branch, commit or destination changed. Reopen the dialog.", "stale");
     const base = await defaultBranch(cwd, info.url, signal);
-    if ((!base || ["main", "master", base].includes(info.branch) || ["main", "master", base].includes(info.target)) && request.confirmProtected !== true) throw fail("Explicit confirmation is required to push a protected branch (or a remote with unknown default branch).", "protected_branch");
+    if (guarded(info, base) && request.confirmProtected !== true) throw fail("Confirm pushing to the protected branch.", "protected_branch");
     const repo = githubRepo(info.url);
     let existing: GitPrInfo | undefined;
     if (request.action === "pr") {
@@ -348,7 +380,9 @@ export async function gitPublish(cwd: string, request: GitPublishRequest, signal
     if ((await local(cwd, signal)).fingerprint !== info.fingerprint) throw fail("The branch or destination changed. Reopen the dialog.", "stale");
     const needsPush = !info.hasUpstream || remoteRef.split("\t")[0] !== info.sha;
     const result = needsPush ? await pushTo(cwd, info, signal) : { code: 0, out: "", err: "" };
-    if (result.code) throw fail(`Push failed. ${/non-fast-forward|fetch first|rejected/i.test(result.out + result.err) ? "The remote rejected the update; fetch and reconcile the branch in a terminal. No force push was attempted.\n" : ""}${result.err}${result.out}`);
+    // Behind the remote (git's "non-fast-forward", "fetch first"): what to do about it, over git's own words. Its own
+    // code: the dialog shows the first line as its error and git's words below it, as git printed them.
+    if (result.code) throw fail(`${/non-fast-forward|\(fetch first\)/i.test(result.out + result.err) ? "The remote has commits this branch doesn't. Pull, then push again." : "Push failed."}\n${result.err}${result.out}`, "push_failed");
     if (!info.hasUpstream) {
         // A SHA source cannot set upstream via push -u. Name the reviewed local
         // branch explicitly, even if another client checked out/moved HEAD.
@@ -365,7 +399,8 @@ export async function gitPublish(cwd: string, request: GitPublishRequest, signal
     if (created.code) {
         const existing = await prView(cwd, repo!, info.target, signal).catch(() => undefined);
         if (existing?.state === "open" || existing?.state === "draft") return { pr: existing };
-        throw fail(`Branch pushed, but pull request creation failed. ${created.err}${created.out}`, "gh");
+        throw fail(`Pushed, but couldn't open the pull request.\n${created.err}${created.out}`, "pr_failed");
     }
-    return { pr: await prView(cwd, repo!, info.target, signal) };
+    // Made now: the others above were there already (opened since the dialog read the branch, say).
+    return { pr: await prView(cwd, repo!, info.target, signal), created: true };
 }

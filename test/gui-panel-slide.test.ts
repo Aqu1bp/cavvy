@@ -192,7 +192,7 @@ test("the Browser pane's page keeps its size while the panels slide, and takes i
     expect(pageFrame(box(354, 502), box(354, 746))).toEqual(box(354, 502));
     expect(pageFrame(box(110, 762), box(354, 762))).toEqual(box(110, 762));
     const host = read("components/BrowserHostLayer.tsx");
-    expect(host).toContain("const size = box && !shown.fit ? (shown.page ?? { width: box.width, height: box.height }) : AGENT_SIZE;");
+    expect(host).toContain("const size = box ? (shown.page ?? (shown.fit ? AGENT_SIZE : { width: box.width, height: box.height })) : AGENT_SIZE;");
     expect(host).toContain("const frame = shown?.frame ?? box;");
 });
 

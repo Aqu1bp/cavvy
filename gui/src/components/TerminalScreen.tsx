@@ -1,20 +1,27 @@
 // One terminal tab's screen: the emulator (xterm) and its shell. Its own chunk, loaded once a terminal is opened
 // (TerminalPanel): the emulator was a quarter of what the window loaded before anything showed.
 
-import { createEffect, createSignal, on, onCleanup, onMount, Show } from "solid-js";
-import { RotateCw } from "lucide-solid";
+import { createEffect, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
+import { ClipboardPaste, Copy, Eraser, MessageSquarePlus, RotateCw, TextSelect } from "lucide-solid";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { app, refreshProviders, reportError, rpc, toast, trustRequest } from "../state/app";
+import { app, awayMachine, handleFor, refreshProviders, reportError, rpc, toast, trustRequest } from "../state/app";
+import { openInEditor } from "../state/actions";
+import { adoptBrowserState, browserState, loadBrowserState, showBrowser } from "../state/browser";
 import { RpcError, type ConnectionState, type Rpc } from "../lib/rpc";
 import { prefs } from "../state/prefs";
 import { terminalFontSize } from "../lib/text-size";
-import { setupObscured, terminalActions } from "../state/ui";
+import { setComposerAdd, setupObscured, terminalActions } from "../state/ui";
 import { EarlyInput, terminalInputChunks } from "../lib/terminal";
 import { isTerminalReply } from "@shared/terminal-reply";
-import { copyText, isMod } from "../lib/platform";
+import { copyText, isMod, mod, openExternal } from "../lib/platform";
+import { isLongPaste, pastedText, type Attachment } from "../lib/attachments";
+import { linkProvider } from "../lib/terminal-link-provider";
+import { isLocalUrl } from "../lib/terminal-links";
+import { Menu } from "./ui/Menu";
 import { terminalKey } from "../state/keybindings";
+import { quitsApp } from "../lib/quit-key";
 import { terminalTakesKeys, terminalUsed } from "../lib/terminal-keys";
 import { setupTickets, signInTabs, type Tab } from "../lib/terminal-tabs";
 
@@ -219,11 +226,81 @@ export default function TerminalScreen(p: { tab: Tab; visible: boolean; onClose:
             setEnded(run ? failed((e as Error).message) : (e as Error).message);
         }
     };
+    // -----------------------------------------------------------------------
+    // Links and the context menu
+
+    /** Its shell runs on another machine (that machine's terminal panel): its paths aren't files here, so they aren't links. */
+    const elsewhere = link !== rpc;
+    /** The session this terminal's folder is, when it's the one in view here (paths are then its: its other folders too). */
+    const session = () => {
+        const id = app.activeId;
+        return !elsewhere && id && awayMachine(id) === undefined && handleFor(id)?.view.state.cwd === p.tab.cwd ? id : undefined;
+    };
+    const scope = () => (session() ? { sessionId: session() } : { cwd: p.tab.cwd });
+    /** A server on this machine (localhost) in the session's Browser pane, where there is one; anything else in the system's browser. */
+    const openUrl = async (url: string) => {
+        const id = session();
+        if (id && isLocalUrl(url)) {
+            if (!browserState(id)) await loadBrowserState(id).catch(() => undefined);
+            const status = browserState(id)?.status;
+            if (status && status !== "unavailable") {
+                try {
+                    adoptBrowserState(id, await rpc.call("browser.command", { id, command: "new_tab", url }));
+                    showBrowser();
+                } catch (e) {
+                    reportError(e);
+                }
+                return;
+            }
+        }
+        void openExternal(url);
+    };
+    const [menuAt, setMenuAt] = createSignal<{ x: number; y: number }>();
+    const [selected, setSelected] = createSignal(false);
+    const closeMenu = () => setMenuAt(undefined);
+    /** The selection, into the session's message: inline as a code block, or past the composer's paste limits as an attachment. */
+    const addToChat = () => {
+        const text = term.getSelection().replace(/[ \t]+$/gm, "").replace(/^\n+|\s+$/g, "");
+        if (!text) return;
+        const fence = "`".repeat(Math.max(3, ...[...text.matchAll(/`{3,}/g)].map((m) => m[0].length + 1)));
+        setComposerAdd({ sessionId: app.activeId, ...(isLongPaste(text) ? { attach: (list: readonly Attachment[]) => pastedText(text, list, "Terminal output") } : { text: `${fence}\n${text}\n${fence}\n` }) });
+    };
+    const paste = async () => {
+        try {
+            const text = await navigator.clipboard.readText();
+            if (text) term.paste(text);
+        } catch {
+            toast(`Press ${mod}+V to paste here`);
+        }
+        term.focus();
+    };
+    const contextMenu = (e: MouseEvent) => {
+        e.preventDefault();
+        setSelected(term.hasSelection());
+        setMenuAt({ x: e.clientX, y: e.clientY });
+    };
+    const menuItems = () => [
+        { icon: MessageSquarePlus, label: "Add to chat", off: !selected(), run: addToChat },
+        { icon: Copy, label: "Copy", off: !selected(), run: () => void copyText(term.getSelection()) },
+        { icon: ClipboardPaste, label: "Paste", off: !opened || !!ended(), run: () => void paste() },
+        { icon: TextSelect, label: "Select all", run: () => term.selectAll() },
+        { icon: Eraser, label: "Clear", run: () => (term.clear(), term.clearSelection()) },
+    ];
+
     onMount(() => {
         term = new Terminal({ fontFamily: '"JetBrains Mono Variable", monospace', fontSize: terminalFontSize(prefs.fontSize), cursorBlink: true, scrollback: 5000, allowProposedApi: false, allowTransparency: true });
         fit = new FitAddon();
         term.loadAddon(fit);
         term.open(container);
+        // Asked for by xterm only for the line under the pointer, as it moves there: nothing per chunk of output.
+        term.registerLinkProvider(linkProvider(term, {
+            exists: (paths) => (elsewhere ? Promise.resolve(paths.map(() => null)) : rpc.call("fs.exists", { ...scope(), paths })),
+            openUrl: (url) => void openUrl(url),
+            openFile: (path, line, col) => void openInEditor(path, line, { col, ...scope() }),
+            hint: (l, on) => {
+                container.title = !on ? "" : l.kind === "path" ? "Open in editor" : session() && isLocalUrl(l.url) && browserState(session()!)?.status !== "unavailable" ? "Open in the Browser pane" : "Open in your browser";
+            },
+        }));
         const theme = () => {
             const style = getComputedStyle(container);
             // No ground of its own: the panel's tint over the window's glass shows through (terminal.css).
@@ -233,8 +310,8 @@ export default function TerminalScreen(p: { tab: Tab; visible: boolean; onClose:
         const themeObserver = new MutationObserver(theme);
         themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
         term.attachCustomKeyEventHandler((e) => {
-            // Leave the app's toggle (and its chords) and clipboard shortcuts to their owners.
-            if (terminalKey(e) === "app") return false;
+            // Leave the app's toggle (and its chords), Quit and clipboard shortcuts to their owners.
+            if (quitsApp(e) || terminalKey(e) === "app") return false;
             if (isMod(e) && e.key.toLowerCase() === "c" && term.hasSelection()) {
                 if (e.type === "keydown") void copyText(term.getSelection());
                 return false;
@@ -306,7 +383,14 @@ export default function TerminalScreen(p: { tab: Tab; visible: boolean; onClose:
     // Settings → Appearance → Text size: the cells follow it, and the shell gets the new size.
     createEffect(on(() => prefs.fontSize, (size) => { if (term && !disposed) { term.options.fontSize = terminalFontSize(size); fitNow(true); } }, { defer: true }));
     return <div class="terminal-screen" style={{ display: p.visible ? "flex" : "none" }}>
-        <div class="terminal-emulator" ref={container} on:keydown={used} on:pointerdown={used} on:wheel={used} on:focusout={used} />
+        <div class="terminal-emulator" ref={container} on:keydown={used} on:pointerdown={used} on:wheel={used} on:focusout={used} onContextMenu={contextMenu} />
+        <Menu label="Terminal actions" open={!!menuAt()} point={menuAt()} anchor={() => container} returnFocus={() => term.textarea} onClose={closeMenu} width={200}>
+            <For each={menuItems()}>{(it) => (
+                <button role="menuitem" class="menu-item compact" disabled={it.off} onClick={() => (closeMenu(), it.run())}>
+                    <it.icon size={14} /> <span class="menu-label">{it.label}</span>
+                </button>
+            )}</For>
+        </Menu>
         <Show when={loginOutputLost()}><div class="terminal-message">
             <span>Login output isn't kept. Restart login for a new sign-in prompt.</span>
             <Show when={!away() && !ended()}><button class="btn secondary sm" disabled={conn() !== "open" || restarting()} onClick={restart}><RotateCw size={12} /> Restart login</button></Show>

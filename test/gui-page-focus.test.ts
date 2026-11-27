@@ -4,7 +4,7 @@
 // the window doesn't even show it: the message box keeps its caret.
 // The app says when a page holds the keyboard after the agent acted on it, and keeps the person's keys out of the page
 // meanwhile (desktop-electron/src/browser-host.ts); gui/src/lib/page-focus.ts takes the keyboard back.
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { afterAll, beforeAll, expect, mock, test } from "bun:test";
 import { readFileSync } from "fs";
 import { join } from "path";
 import { AGAIN_MS, keepFocus, LEFT_MS, nextStep } from "../gui/src/lib/page-focus";
@@ -601,7 +601,7 @@ test("the app looks at who holds the keyboard as each thing the agent does goes 
     expect(host).toContain("const agentAt = Math.max(tab.agentAt, tab.heldAt ?? 0);");
     // A key reaching the page: the window's if it strayed there, else the person using the page. A press makes the page
     // theirs, and so does Tab into it from the window; the GUI is told either way.
-    expect(host).toMatch(/wc\.on\("before-input-event", \(e, input\) => \{[^}]*if \(this\.strayKey\(tab, input\)\) return e\.preventDefault\(\);\s*person\(input\.type\);\s*if \(tab\.agentInputs === 0\) this\.tabKey\(input\);/);
+    expect(host).toMatch(/wc\.on\("before-input-event", \(e, input\) => \{[^}]*if \(this\.strayKey\(tab, input\)\) return e\.preventDefault\(\);(?:\s*\/\/[^\n]*)*\s*if \(findKey\(input\) && !tab\.agentKeys\)[^\n]*(?:\s*\/\/[^\n]*)*\s*if \(reloadKey\(input\) && !tab\.agentKeys\)[^\n]*\s*person\(input\.type\);\s*if \(tab\.agentInputs === 0\) this\.tabKey\(input\);/);
     expect(host).toMatch(/if \(type === "mouseDown"\) \{\s*this\.theirs\(tab\);/);
     expect(host).toContain('gui.on("before-input-event", (_e, input) => this.tabKey(input));');
     expect(host).toMatch(/private theirs\(tab: Tab\) \{[^]*?tab\.theirs = true;[^]*?this\.toGui\(\{ type: "person", key: tab\.key, press: true, seq: tab\.theirsSeq \}\);/);
@@ -658,4 +658,44 @@ test("Tab from the window into a page makes it the person's, unless the agent to
     expect(tabbedIn({ ...tab, agentAt: 940 })).toBe(false);
     expect(tabbedIn({ ...tab, agentAt: 500 })).toBe(false);
     expect(tabbedIn({ ...tab, agentAt: 499 })).toBe(true);
+});
+
+test("closing Find in page gives the keyboard back to where the person was in the page, and an address typed gives it to the page", async () => {
+    // Ctrl+F in a field, a search, Esc, then typing: the search had moved the page's focus to what it found, so given
+    // the keyboard back the page had it on nothing and the typing was lost (6 of 6 before). Its field has it again.
+    mock.module("electron", () => ({ BrowserWindow: class {}, nativeTheme: {}, screen: {}, app: { getAppMetrics: () => [], getName: () => "Cavvy" }, session: {} }));
+    const { BrowserHost } = await import("../desktop-electron/src/browser-host");
+    const ran: string[] = [];
+    const tab = { closed: false, wc: { isDestroyed: () => false, executeJavaScriptInIsolatedWorld: async (_w: number, [s]: { code: string }[]) => void ran.push(s!.code) } };
+    const host = Object.assign(Object.create(BrowserHost.prototype), { tabsByKey: new Map([["tab-1", tab]]) });
+    const field = { isConnected: true, focused: 0, focus() { this.focused++; } };
+    const body = { isConnected: true, focus() {} };
+    const page = { document: { activeElement: field as unknown, body }, __cavvyFocus: undefined as unknown };
+    const run = (code: string) => new Function("document", "globalThis", code.startsWith("(") ? `return ${code}` : code)(page.document, page);
+    host.pageFocus("tab-1", "keep");
+    run(ran.at(-1)!);
+    expect(page.__cavvyFocus).toBe(field);
+    // The search takes the page's focus off the field.
+    page.document.activeElement = body;
+    host.pageFocus("tab-1", "restore");
+    run(ran.at(-1)!);
+    expect(field.focused).toBe(1);
+    // Kept only once: closed again, nothing's focused.
+    run(ran.at(-1)!);
+    expect(field.focused).toBe(1);
+    // Nowhere in the page as it opened: nothing to go back to.
+    page.document.activeElement = body;
+    host.pageFocus("tab-1", "keep");
+    run(ran.at(-1)!);
+    expect(page.__cavvyFocus).toBe(null);
+
+    // The pane keeps it as the bar opens and goes back as it closes; an address typed gives the page the keyboard.
+    const tools = readFileSync(join(import.meta.dir, "../gui/src/components/BrowserTools.tsx"), "utf8");
+    const open = tools.slice(tools.indexOf("const openFind = () => {"), tools.indexOf("const closeFind = () => {"));
+    expect(open.indexOf('electron?.browserPageFocus?.(key, "keep")')).toBeGreaterThan(0);
+    expect(open.indexOf('electron?.browserPageFocus?.(key, "keep")')).toBeLessThan(open.indexOf("findInput?.focus()"));
+    const close = tools.slice(tools.indexOf("const closeFind = () => {"));
+    expect(close.indexOf('electron?.browserPageFocus?.(key, "restore")')).toBeGreaterThan(close.indexOf("webview()?.focus();"));
+    const pane = readFileSync(join(import.meta.dir, "../gui/src/components/BrowserPane.tsx"), "utf8");
+    expect(pane).toMatch(/command\("goto", \{ url, tab: tab\(\)\?\.id \}\);(?:\s*\/\/[^\n]*)*\s*if \(native\) pageView\(\)\?\.focus\(\);\s*else keyboard\?\.focus/);
 });

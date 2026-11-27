@@ -55,6 +55,8 @@ export interface ProviderDef {
     /** The base64 of all of a request's images together must stay within this (its docs give a per-request total). */
     imageBase64PerRequest?: number;
     custom?: boolean;
+    /** A named instance of this agent CLI (src/providers/instances.ts): the CLI it runs. */
+    instanceOf?: string;
 }
 
 const NON_CHAT = /embed|embedding|whisper|tts|dall-e|davinci|babbage|moderation|text-search|similarity|audio|transcribe|realtime|image|imagen|veo|rerank|guard|aqa|bison|gecko|lyria|search-preview|computer-use/i;
@@ -372,16 +374,34 @@ export interface VertexConfig {
 
 /**
  * An agent CLI turned on with /login claude-code or /login codex. Nothing
- * secret: the CLI keeps its own sign-in.
+ * secret: the CLI keeps its own sign-in, and a secret environment variable's
+ * value is in the credential store (src/providers/agent-env.ts).
  */
 export interface AgentCliConfig {
     /** The CLI's path, when it isn't the one on PATH. */
     path?: string;
     /** Extra arguments, placed before Cavvy's own. */
     args?: string[];
+    /** Environment variables it's started with, over Cavvy's own environment (agent-env.ts). */
+    env?: Record<string, string>;
+    /** Variables it's started with whose values are secret: kept in the credential store, never here. */
+    secretEnv?: string[];
+    /** A named instance's own name ("OpenRouter"), shown after the CLI's. */
+    name?: string;
+    /** Model ids to offer besides those the CLI lists (a router's names for its models). */
+    models?: string[];
     accounts?: CliAccount[];
     defaultAccount?: string;
 }
+
+/** A model id as a CLI takes it on its command line: no spaces or control characters, not an option. */
+export const validModelId = (id: unknown): id is string => typeof id === "string" && /^[^\s\x00-\x1f\x7f-][^\s\x00-\x1f\x7f]{0,199}$/.test(id);
+
+/** An instance's provider id: the CLI's, @, its own (claude-code@openrouter). */
+export const INSTANCE_ID = /^([a-z][a-z-]*)@([a-z0-9][a-z0-9-]{0,39})$/;
+
+/** An environment variable's name, as a shell writes one. */
+export const validEnvName = (name: unknown): name is string => typeof name === "string" && /^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(name);
 
 /** Metadata only; sign-in data belongs exclusively to the CLI. */
 export interface CliAccount {
@@ -399,6 +419,8 @@ interface ProvidersFile {
     keychain?: string[];
     vertex?: VertexConfig;
     agents?: Record<string, AgentCliConfig>;
+    /** The names of removed instances ("OpenRouter" for claude-code@openrouter), for what still names one: a session that was on it. */
+    removedInstances?: Record<string, string>;
 }
 
 /** As it is on disk, read again only once it's changed (readJsonCached): frozen, so change a copy (readProvidersFileForUpdate). */
@@ -458,6 +480,19 @@ export function readAgentConfig(id: string): AgentCliConfig | undefined {
     const out: AgentCliConfig = {};
     if (typeof a.path === "string" && a.path.trim()) out.path = a.path.trim();
     if (Array.isArray(a.args)) out.args = a.args.filter((x): x is string => typeof x === "string");
+    if (a.env && typeof a.env === "object" && !Array.isArray(a.env)) {
+        const env = Object.entries(a.env).filter((e): e is [string, string] => validEnvName(e[0]) && typeof e[1] === "string" && !e[1].includes("\0"));
+        if (env.length) out.env = Object.fromEntries(env);
+    }
+    if (Array.isArray(a.secretEnv)) {
+        const names = [...new Set(a.secretEnv.filter(validEnvName))];
+        if (names.length) out.secretEnv = names;
+    }
+    if (typeof a.name === "string" && a.name.trim()) out.name = a.name.trim().slice(0, 64);
+    if (Array.isArray(a.models)) {
+        const models = [...new Set(a.models.filter(validModelId))];
+        if (models.length) out.models = models;
+    }
     if (Array.isArray(a.accounts)) {
         out.accounts = a.accounts.filter((x) => x && typeof x.id === "string" && typeof x.name === "string").map((x) => ({
             ...x,
@@ -502,9 +537,21 @@ function providersNow() {
     const file = readProvidersFile();
     if (listed?.file !== file) {
         const custom = Object.freeze(customProvidersOf(file));
-        listed = { file, custom, all: Object.freeze([...BUILTIN_PROVIDERS, ...custom]) };
+        // Each CLI's named instances right after it.
+        const builtin = BUILTIN_PROVIDERS.flatMap((p) => (p.kind === "agent" ? [p, ...instancesOf(file, p)] : [p]));
+        listed = { file, custom, all: Object.freeze([...builtin, ...custom]) };
     }
     return listed;
+}
+
+/** A CLI's named instances in the providers file, as providers of their own (src/providers/instances.ts). */
+function instancesOf(file: ProvidersFile, base: ProviderDef): ProviderDef[] {
+    return Object.entries(file.agents ?? {}).flatMap(([id, cfg]) => {
+        const m = INSTANCE_ID.exec(id);
+        if (!m || m[1] !== base.id || !cfg || typeof cfg !== "object") return [];
+        const name = typeof cfg.name === "string" && cfg.name.trim() ? cfg.name.trim().slice(0, 64) : m[2]!;
+        return [{ ...base, id, name: `${base.name} · ${name}`, instanceOf: base.id }];
+    });
 }
 
 /** Worked out again only once the providers file has changed: every process Cavvy starts asks (secretEnvVarNames). */
@@ -543,6 +590,34 @@ export function allProviders(): readonly ProviderDef[] {
 
 export function getProvider(id: string): ProviderDef | undefined {
     return allProviders().find((p) => p.id === id);
+}
+
+/** At most this many removed instances' names are kept. */
+const REMOVED_NAMES = 50;
+
+/** Keep a removed instance's name (its sessions still say whose it was), or forget it (an instance is added under its id again). */
+export function rememberRemovedInstance(pf: ProvidersFile, id: string, name: string | undefined) {
+    const kept = { ...(pf.removedInstances ?? {}) };
+    delete kept[id];
+    if (name) kept[id] = name;
+    const ids = Object.keys(kept);
+    for (const old of ids.slice(0, Math.max(0, ids.length - REMOVED_NAMES))) delete kept[old];
+    if (Object.keys(kept).length) pf.removedInstances = kept;
+    else delete pf.removedInstances;
+}
+
+/**
+ * A provider's name as the user knows it: "Claude Code · OpenRouter", even once that instance was removed (by the
+ * name it had), never its id where there's a name to show.
+ */
+export function providerLabel(id: string): string {
+    const p = getProvider(id);
+    if (p) return p.name;
+    const m = INSTANCE_ID.exec(id);
+    const base = m ? BUILTIN_PROVIDERS.find((b) => b.id === m[1] && b.kind === "agent") : undefined;
+    if (!m || !base) return id;
+    const saved = readProvidersFile().removedInstances?.[id];
+    return `${base.name} · ${typeof saved === "string" && saved.trim() ? saved.trim().slice(0, 64) : m[2]}`;
 }
 
 /**

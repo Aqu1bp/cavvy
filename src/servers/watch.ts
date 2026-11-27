@@ -97,6 +97,9 @@ export function heardSession(v: unknown): SessionSummary | undefined {
         archived: s.archived === true,
         settled: s.settled === true,
         live: s.live === true,
+        ...(typeof s.snoozedUntil === "number" && Number.isFinite(s.snoozedUntil) ? { snoozedUntil: s.snoozedUntil } : {}),
+        ...(s.woke === true ? { woke: true as const } : {}),
+        ...(s.neverSettle === true ? { neverSettle: true as const } : {}),
         ...(typeof s.model === "string" && s.model ? { model: cut(s.model, 100) } : {}),
         ...(status === "waiting" && (s.waitingKind === "permission" || s.waitingKind === "question" || s.waitingKind === "plan" || s.waitingKind === "secret" || s.waitingKind === "signin" || s.waitingKind === "confirm") ? { waitingKind: s.waitingKind } : {}),
         ...(typeof s.turnStartedAt === "number" && Number.isFinite(s.turnStartedAt) ? { turnStartedAt: s.turnStartedAt } : {}),
@@ -282,7 +285,8 @@ export class MachineWatch {
      * that server. Its answer is passed on only if it's small; what went wrong, in a few of its words.
      */
     call(method: (typeof RELAYED_SESSION_METHODS)[number] | typeof RELAYED_ARCHIVE_OFFER, params: Record<string, unknown>): Promise<unknown> {
-        return this.request(method, params, MAX_ANSWER);
+        // A title is a model's answer there: it can take a CLI's start and a reply.
+        return this.request(method, params, MAX_ANSWER, method === "session.regenerateTitle" ? 75_000 : undefined);
     }
 
     /** Asks the server's Cavvy about its sessions, for an agent on another of the user's machines (src/server/far-peers.ts), or for a search here. */

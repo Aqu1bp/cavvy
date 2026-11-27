@@ -123,6 +123,8 @@ interface Opts {
     /** A wake queue, as the TUI and the app give a session. */
     wakes?: InstanceType<typeof WakeQueue>;
     skills?: () => import("../src/agent/skills").Skill[];
+    /** A side chat's: another session's conversation, sent before this one's (AgentOptions.context). */
+    context?: () => readonly import("../src/providers/types").Message[];
 }
 
 async function makeAgent(o: Opts) {
@@ -144,6 +146,7 @@ async function makeAgent(o: Opts) {
         approvedMcpServers: o.approvedMcpServers,
         readOnly: o.readOnly,
         ...(o.skills ? { skills: o.skills } : {}),
+        ...(o.context ? { context: o.context } : {}),
         checker,
         tools: BUILTIN_TOOLS,
         mode: { get: () => mode, set: (m) => (mode = m) },
@@ -491,6 +494,41 @@ describe("Claude Code backend", () => {
         expect(permissionReplies()[0]).toMatchObject({ behavior: "allow", updatedInput: { answers: { "Which color?": "Blue" } } });
     });
 
+    test("a side chat on Claude Code joins with the other session's conversation, once", async () => {
+        const context = [
+            { role: "user" as const, content: [{ type: "text" as const, text: "rename the auth module" }] },
+            { role: "assistant" as const, content: [{ type: "text" as const, text: "Renamed it to identity." }] },
+        ];
+        const { run } = await makeAgent({ provider: "claude-code", context: () => context });
+        await run("why that name?");
+        const first = userTexts().at(-1)!;
+        expect(first).toContain("<conversation-so-far>");
+        expect(first).toContain("rename the auth module");
+        expect(first).toContain("Renamed it to identity.");
+        expect(first.endsWith("why that name?")).toBe(true);
+        // Its CLI has it from then on: not sent again.
+        await run("and before?");
+        expect(userTexts().at(-1)).not.toContain("rename the auth module");
+    });
+
+    test("AskUserQuestion: what's attached to the answer goes in it as text, each saved file by its path", async () => {
+        process.env.FAKE_SCENARIO = "ask";
+        let as: string | undefined;
+        const ui = {
+            askQuestion: async () => ["Blue"],
+            askQuestionAttaching: async (_q: string, _o: unknown, _m: boolean, a: string) => (
+                (as = a),
+                { answers: ["Blue"], attached: [{ type: "file", kind: "saved", name: "image-1.png", size: 70, path: "/p/.cavvy/attachments/s/1/image-1.png" }, { type: "file", kind: "text", name: "a.txt", size: 3, lines: 1, text: "hi\n" }] }
+            ),
+        };
+        const { run } = await makeAgent({ provider: "claude-code", ui: ui as never });
+        await run("pick");
+        expect(as).toBe("paths");
+        const answer: string = permissionReplies()[0].updatedInput.answers["Which color?"];
+        expect(answer.startsWith("Blue, [The user attached \"image-1.png\" (70 B). It's saved at /p/.cavvy/attachments/s/1/image-1.png;")).toBe(true);
+        expect(answer).toMatch(/<attached-file name="a\.txt"[^>]*>\nhi\n/);
+    });
+
     test("ExitPlanMode: approving the plan switches the mode, here and in Claude Code", async () => {
         process.env.FAKE_SCENARIO = "plan";
         let plan = "";
@@ -498,8 +536,8 @@ describe("Claude Code backend", () => {
         await a.run("plan it");
         expect(plan).toBe("1. Do the thing");
         expect(a.mode()).toBe("acceptEdits");
-        // Cavvy's accept-edits runs Claude Code in its default mode (Cavvy approves the edits).
-        expect(permissionReplies()[0]).toMatchObject({ behavior: "allow", updatedPermissions: [{ type: "setMode", mode: "default", destination: "session" }] });
+        // Cavvy's accept-edits is Claude Code's own.
+        expect(permissionReplies()[0]).toMatchObject({ behavior: "allow", updatedPermissions: [{ type: "setMode", mode: "acceptEdits", destination: "session" }] });
     });
 
     test("ExitPlanMode: a plan taken to another session stops Claude Code's turn, still in plan mode", async () => {
@@ -1554,7 +1592,21 @@ describe("Codex: its own sub-agents, usage, MCP questions, what a turn did (tran
     const streamed = (events: AgentEvent[]) => events.flatMap((e) => (e.type === "text" ? [e.text] : [])).join("");
     const subEvents = (events: AgentEvent[], parentId: string) => events.flatMap((e) => (e.type === "subagent" && e.parentId === parentId ? [e] : []));
     const elicitations = () => logLines().flatMap((l) => (l.elicitation !== undefined ? [l.elicitation] : []));
+    const userInputs = () => logLines().flatMap((l) => (l.userInput !== undefined ? [l.userInput] : []));
     const usageOf = (session: InstanceType<typeof Session>) => session.usageByModel.get("codex:default")!.usage;
+
+    test("requestUserInput: what's attached to the answer goes in its answers as text, each saved file by its path", async () => {
+        process.env.FAKE_SCENARIO = "ask";
+        let as: string | undefined;
+        const ui = {
+            askQuestion: async () => ["Red"],
+            askQuestionAttaching: async (_q: string, _o: unknown, _m: boolean, a: string) => ((as = a), { answers: ["Blue"], attached: [{ type: "file", kind: "saved", name: "spec.pdf", size: 2048, path: "/p/.cavvy/attachments/s/1/spec.pdf" }] }),
+        };
+        const a = await makeAgent({ provider: "codex", ui: ui as never });
+        expect(await a.run("go")).toBe("done");
+        expect(as).toBe("paths");
+        expect(userInputs()).toEqual([{ answers: { color: { answers: ["Blue", `[The user attached "spec.pdf" (2.0 KB). It's saved at /p/.cavvy/attachments/s/1/spec.pdf; open it with your tools if you need what's in it.]`] } } }]);
+    });
 
     test("a sub-agent Codex starts: its words aren't the reply, its tokens aren't the context, and its work shows under the spawn", async () => {
         process.env.FAKE_SCENARIO = "subagent";
@@ -1972,14 +2024,21 @@ describe("review findings (PR #1)", () => {
         expect(p.deny.some((r) => r.includes("credentials.json"))).toBe(true);
     });
 
-    test("3. accept edits: Claude Code's file commands still ask; edits in the workspace don't", async () => {
+    test("3. accept edits is Claude Code's own: its file commands and edits in the workspace run unasked; other commands ask", async () => {
         writeFileSync(join(cwd, "victim.txt"), "v\n");
         process.env.FAKE_SCENARIO = "rm";
-        const rm = await makeAgent({ provider: "claude-code", mode: "acceptEdits" });
+        const rm = await makeAgent({ provider: "claude-code", mode: "acceptEdits", ask: () => ({ allow: false }) });
         await rm.run("delete it");
-        expect(existsSync(join(cwd, "victim.txt"))).toBe(true);
-        expect(toolEnds(rm.events)[0]!.result.content).toMatch(/not granted/);
-        expect(claudeArgs()[claudeArgs().indexOf("--permission-mode") + 1]).toBe("default");
+        expect(existsSync(join(cwd, "victim.txt"))).toBe(false);
+        expect(rm.asked).toHaveLength(0);
+        expect(claudeArgs()[claudeArgs().indexOf("--permission-mode") + 1]).toBe("acceptEdits");
+        rmSync(LOG, { force: true });
+        process.env.FAKE_SCENARIO = "bash";
+        process.env.FAKE_COMMAND = "npm test";
+        const bash = await makeAgent({ provider: "claude-code", mode: "acceptEdits", ask: () => ({ allow: false }) });
+        await bash.run("test it");
+        delete process.env.FAKE_COMMAND;
+        expect(bash.asked.map((r) => r.tool.name)).toEqual(["Bash"]);
         rmSync(LOG, { force: true });
         process.env.FAKE_SCENARIO = "write";
         const write = await makeAgent({ provider: "claude-code", mode: "acceptEdits", ask: () => ({ allow: false }) });
@@ -1995,6 +2054,23 @@ describe("review findings (PR #1)", () => {
         await a.run("go");
         expect(a.asked.map((r) => r.tool.name)).toEqual(["Write"]);
         expect(existsSync(join(cwd, ".claude", "settings.json"))).toBe(false);
+    });
+
+    test("3. Cavvy's own config: Claude Code is told to ask, so accept edits and auto ask about it", async () => {
+        process.env.FAKE_SCENARIO = "write-config";
+        process.env.FAKE_CONFIG_FILE = ".cavvy/settings.json";
+        try {
+            for (const mode of ["acceptEdits", "auto"] as const) {
+                rmSync(LOG, { force: true });
+                Bun.spawnSync(["mkdir", "-p", join(cwd, ".cavvy")]);
+                const a = await makeAgent({ provider: "claude-code", mode, ask: () => ({ allow: false }) });
+                await a.run("go");
+                expect([mode, a.asked.map((r) => r.tool.name)]).toEqual([mode, ["Write"]]);
+                expect(existsSync(join(cwd, ".cavvy", "settings.json"))).toBe(false);
+            }
+        } finally {
+            delete process.env.FAKE_CONFIG_FILE;
+        }
     });
 
     test("4. a Codex rename into a denied path is refused without asking", async () => {
@@ -4194,7 +4270,7 @@ describe("Cavvy's agents on Claude Code", () => {
         expect(starts()[0].argv).not.toContain("--agents");
     });
 
-    test("each agent's own permissionMode decides its asks, as when Cavvy runs it", async () => {
+    test("what a sub-agent asks about: the session's mode, or the agent's own where stricter; a card whenever Claude Code asks, in its own bypass mode too", async () => {
         mkdirSync(paths.userAgents(), { recursive: true });
         writeFileSync(join(paths.userAgents(), "writer.md"), "---\nname: writer\ndescription: Writes\npermissionMode: acceptEdits\n---\nWrite.\n");
         writeFileSync(join(paths.userAgents(), "careful.md"), "---\nname: careful\ndescription: Asks\npermissionMode: default\n---\nWrite.\n");
@@ -4205,15 +4281,19 @@ describe("Cavvy's agents on Claude Code", () => {
             rmSync(LOG, { force: true });
             const a = await makeAgent({ provider: "claude-code", mode, ask: () => ({ allow: false }) });
             await a.run("go");
+            // Each card says which sub-agent asks: by its task.
+            for (const r of a.asked) expect(r.agentLabel).toBe("Write it");
             return { asked: a.asked.length, answer: answers()[0] };
         };
-        // An acceptEdits agent in a default session: its edit in the workspace goes through, as Cavvy's own run would.
-        expect(await run("writer", "default")).toEqual({ asked: 0, answer: "allow" });
-        // The reverse: a default agent in an acceptEdits session is asked.
+        // Claude Code decided in its own mode that the user should see it: the card, in every mode but bypass.
+        expect(await run("writer", "default")).toEqual({ asked: 1, answer: "deny" });
         expect(await run("careful", "acceptEdits")).toEqual({ asked: 1, answer: "deny" });
-        // Claude Code's own agents (and any it doesn't name) are under the session's mode.
         expect(await run("general-purpose", "default")).toEqual({ asked: 1, answer: "deny" });
-        expect(await run("general-purpose", "acceptEdits")).toEqual({ asked: 0, answer: "allow" });
+        expect(await run("general-purpose", "acceptEdits")).toEqual({ asked: 1, answer: "deny" });
+        // Bypass: Claude Code runs in its own bypass mode, where it asks only what a hook of the user's says to ask
+        // about (BackendPermission.ownBypassAsk): that's the user's, a card. An agent stricter than that (careful) asks too.
+        expect(await run("general-purpose", "bypassPermissions")).toEqual({ asked: 1, answer: "deny" });
+        expect(await run("careful", "bypassPermissions")).toEqual({ asked: 1, answer: "deny" });
         // Plan mode in the session wins over the agent's own.
         expect((await run("writer", "plan")).answer).toBe("deny");
     });
@@ -4679,6 +4759,9 @@ describe("where Cavvy's tools' instructions reach an agent CLI", () => {
         expect(argv[argv.indexOf("--append-system-prompt") + 1]).toContain("# Sign-ins (cavvy)");
         const served = (agent as any).orchestrator();
         expect(served.instructions).toContain("# Sign-ins (cavvy)");
+        expect(await initialize(served)).toBeUndefined();
+        // A named copy of Claude Code gets them appended too (claudeArgs): none from the server.
+        (agent as any).model = { provider: "claude-code@router", id: "default" };
         expect(await initialize(served)).toBeUndefined();
         // Another agent on the same server (an ACP one, after a model switch) still gets them from it.
         (agent as any).model = { provider: "opencode", id: "default" };

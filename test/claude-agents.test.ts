@@ -82,11 +82,13 @@ memory: project`);
         expect(Object.keys(claudeAgents(defs, { ...opts, trusted: false }))).toEqual(["mine"]);
     });
 
-    test("the session's plan, auto and bypass modes win over an agent's own; acceptEdits runs as default, as the session's does", () => {
+    test("an agent's own mode only where it's stricter than the session's, as Claude Code's own (acceptEdits too)", () => {
         const def = user("name: e\ndescription: d\npermissionMode: acceptEdits");
-        expect(claudeAgents([def], opts).e!.permissionMode).toBe("default");
-        for (const mode of ["plan", "auto", "bypassPermissions"] as const) expect(claudeAgents([def], { ...opts, mode }).e!.permissionMode).toBeUndefined();
-        expect(claudeAgents([user("name: p\ndescription: d\npermissionMode: plan")], { ...opts, mode: "acceptEdits" }).p!.permissionMode).toBe("plan");
+        // Looser than the session (or the same): the session's, which Claude Code's sub-agents take.
+        for (const mode of ["default", "acceptEdits", "plan"] as const) expect(claudeAgents([def], { ...opts, mode }).e!.permissionMode).toBeUndefined();
+        for (const mode of ["auto", "bypassPermissions"] as const) expect(claudeAgents([def], { ...opts, mode }).e!.permissionMode).toBe("acceptEdits");
+        const plan = user("name: p\ndescription: d\npermissionMode: plan");
+        for (const mode of ["default", "acceptEdits", "auto", "bypassPermissions"] as const) expect(claudeAgents([plan], { ...opts, mode }).p!.permissionMode).toBe("plan");
         // A project agent's bypass was already dropped when it was read.
         expect(claudeAgents([project("name: b\ndescription: d\npermissionMode: bypassPermissions")], opts).b!.permissionMode).toBeUndefined();
     });

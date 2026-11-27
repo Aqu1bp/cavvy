@@ -2,7 +2,7 @@ import { createEffect, createMemo, createSignal, createUniqueId, For, on, onClea
 import { planLimitKey, type AccountInfo } from "@shared/protocol";
 import { app, handleFor, limitsFor, providersFor, reportError, rpc, rpcFor, servedFor, toast } from "../state/app";
 import { contextCardOpen, setContextCardOpen } from "../state/ui";
-import { usePane } from "../state/split";
+import { keysHere, usePane } from "../state/split";
 import { now } from "../lib/clock";
 import { Gauge, Shrink } from "lucide-solid";
 import { limitAlternatives, limitFor, limitName, meterOf, nearLimit, planTitle, resolvedOn } from "../lib/limits";
@@ -10,11 +10,11 @@ import { contextView } from "../lib/context";
 import { tokens } from "../lib/format";
 import { Popover } from "./ui/Popover";
 /** `home`: a new session's composer, which shows the limit pill (nearLimit) in place of the ring. */
-export function ComposerMeter(p: { provider?: string; sessionId?: string; home?: boolean; /** The model a turn would use (Home's chosen one): a model's limit counts only for the models it covers. */ model?: { id: string; resolvedModel?: string; resolvedFor?: string } }) {
+export function ComposerMeter(p: { provider?: string; sessionId?: string; home?: boolean; /** A side chat: nothing until there's a figure (no lone "Context"). */ aside?: boolean; /** The model a turn would use (Home's chosen one): a model's limit counts only for the models it covers. */ model?: { id: string; resolvedModel?: string; resolvedFor?: string } }) {
     let btn: HTMLButtonElement | undefined;
     // The focused pane's in a split (/context opens it).
     const pane = usePane();
-    const [open, setOpen] = [() => contextCardOpen() && pane.focused(), setContextCardOpen];
+    const [open, setOpen] = [() => contextCardOpen() && keysHere(pane), setContextCardOpen];
     // Another session picked (by a key, say: a click elsewhere already closes it): the card was this one's.
     createEffect(on(() => app.activeId, () => setOpen(false), { defer: true }));
     const panelId = `composer-usage-${createUniqueId()}`;
@@ -158,7 +158,7 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
             </Show>
         );
     return (
-        <Show when={state() || meter()}>
+        <Show when={(state() || meter()) && !(p.aside && shownPct() === undefined)}>
             <button
                 ref={btn}
                 type="button"

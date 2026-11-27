@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
-import { menuIndex, menuTypeahead, mountMenu, rowMenuKey } from "../gui/src/lib/menu";
+import { menuIndex, menuOf, menuTypeahead, mountMenu, ownSubmenu, rowMenuKey } from "../gui/src/lib/menu";
+import { escapeToItem, placeSubmenu } from "../gui/src/lib/submenu";
 import { os } from "../gui/src/lib/platform";
 
 const paletteModifier = os === "macos" ? { metaKey: true } : { ctrlKey: true };
@@ -244,4 +245,111 @@ for (const key of ["ContextMenu", "F10"]) test(`${key} opens a row menu but pres
     expect(opens).toBe(1);
     rowMenuKey({ ...e, key: "F10", shiftKey: false } as any, () => opens++);
     expect(opens).toBe(1);
+});
+
+// A menu with an item that opens a submenu (components/ui/Submenu.tsx), the submenu's panel outside the menu's (a portal):
+// the item hears "submenu" events, as the component does, and opens or closes it.
+function submenuFixture() {
+    const f = fixture();
+    const more = f.node("More", {
+        getAttribute(name: string) { return name === "aria-haspopup" ? "menu" : null; },
+        heard: [] as { open: boolean; focus?: boolean }[],
+        dispatchEvent(e: CustomEvent<{ open: boolean; focus?: boolean }>) {
+            this.heard.push(e.detail);
+            if (e.detail.open) {
+                release = ownSubmenu(sub as any, more as any);
+                subItems[0]!.focus();
+            } else release();
+            return true;
+        },
+    });
+    let release = () => {};
+    const sub: any = f.node("Sub", { querySelectorAll: () => subItems, contains: (el: any) => subItems.includes(el) });
+    const subItems = [f.node("One"), f.node("Two")].map((n) => Object.assign(n, { closest: (sel: string) => (sel === "[data-submenu]" ? sub : null) }));
+    f.items.push(more);
+    const contains = f.panel.contains;
+    f.panel.contains = (el: any) => el === more || contains(el);
+    return Object.assign(f, { more, sub, subItems });
+}
+
+test("a submenu: Right or Enter opens it on its first item, its keys move in it, Left and Escape go back to its item", () => {
+    for (const open of ["ArrowRight", "Enter", " "]) {
+        const f = submenuFixture(); f.tick();
+        f.key("End");
+        expect(f.doc.activeElement).toBe(f.more);
+        f.key(open);
+        expect(f.more.heard.at(-1)).toEqual({ open: true, focus: true });
+        expect(f.more.clicks).toBe(0);
+        expect(f.doc.activeElement).toBe(f.subItems[0]);
+        expect(menuOf(f.panel as any, f.subItems[1])).toBe(f.sub);
+        f.key("ArrowDown"); expect(f.doc.activeElement).toBe(f.subItems[1]);
+        f.key("ArrowDown"); expect(f.doc.activeElement).toBe(f.subItems[0]);
+        f.key("t"); expect(f.doc.activeElement).toBe(f.subItems[1]);
+        f.key("Enter"); expect(f.subItems[1]!.clicks).toBe(1);
+        // Back to the item that opened it, the menu still open.
+        f.key(open === "ArrowRight" ? "ArrowLeft" : "Escape");
+        expect(f.more.heard.at(-1)).toEqual({ open: false, focus: false });
+        expect(f.doc.activeElement).toBe(f.more);
+        expect(f.closes).toBe(0);
+        expect(menuOf(f.panel as any, f.subItems[1])).toBeUndefined();
+        // Then Escape closes the menu.
+        f.key("Escape");
+        expect(f.closes).toBe(1);
+        f.dispose();
+    }
+});
+
+test("Left and Right do nothing on an item without a submenu; Tab from a submenu closes the whole menu", () => {
+    const f = submenuFixture(); f.tick();
+    f.key("ArrowRight"); f.key("ArrowLeft");
+    expect(f.doc.activeElement).toBe(f.items[2]);
+    expect(f.closes).toBe(0);
+    f.key("End"); f.key("ArrowRight");
+    expect(f.doc.activeElement).toBe(f.subItems[0]);
+    f.key("Tab");
+    expect(f.closes).toBe(1);
+});
+
+test("a submenu goes beside its menu: on the right, on the left where the right has no room, inside the window", () => {
+    const o = { width: 200, height: 180, pad: 5, vw: 1280, vh: 800 };
+    // The sidebar's menu, at the window's left edge: on its right, level with its item.
+    expect(placeSubmenu({ top: 300 }, { left: 10, right: 250 }, o)).toEqual({ left: 252, top: 295, width: 200, maxHeight: 784, side: "right" });
+    // At the right edge: on the left.
+    expect(placeSubmenu({ top: 300 }, { left: 1000, right: 1240 }, o)).toMatchObject({ left: 798, side: "left" });
+    // Near the bottom: up so it's all in the window.
+    expect(placeSubmenu({ top: 760 }, { left: 10, right: 250 }, o).top).toBe(800 - 8 - 180);
+    // A window too narrow for either side: inside it all the same.
+    const narrow = placeSubmenu({ top: 10 }, { left: 8, right: 300 }, { ...o, vw: 400 });
+    expect(narrow.left).toBeGreaterThanOrEqual(8);
+    expect(narrow.left + narrow.width).toBeLessThanOrEqual(392);
+    // Taller than the window: it scrolls inside, from the top.
+    expect(placeSubmenu({ top: 300 }, { left: 10, right: 250 }, { ...o, height: 2000 })).toMatchObject({ top: 8, maxHeight: 784 });
+});
+
+test("a submenu the pointer opened (the keys still on its menu): Escape closes just it and focuses its item; not when the keys are in it", () => {
+    let heard: ((e: any) => void) | undefined;
+    const win = { addEventListener: (_: string, h: any) => { heard = h; }, removeEventListener: (_: string, h: any) => { if (heard === h) heard = undefined; } };
+    const doc = { activeElement: undefined as any };
+    const menu = { contains: (el: any) => el === item || el === other };
+    const item: any = { ownerDocument: doc, closest: (sel: string) => (sel === '[role="menu"]' ? menu : null), focus() { doc.activeElement = item; } };
+    const other = {};
+    const inside = {};
+    const panel = { contains: (el: any) => el === inside };
+    let hidden = 0;
+    const stop = escapeToItem(win as any, item, () => panel as any, () => hidden++);
+    const key = (k: string) => {
+        const e = { key: k, isComposing: false, prevented: false, stopped: false, preventDefault() { this.prevented = true; }, stopPropagation() { this.stopped = true; } };
+        heard?.(e);
+        return e;
+    };
+    // The keys in the submenu: lib/menu.ts takes Escape (back to its item), not this.
+    doc.activeElement = inside;
+    expect(key("Escape").stopped).toBe(false);
+    // The pointer opened it, the keys on another item of its menu: Escape closes just it, before the menu hears it.
+    doc.activeElement = other;
+    expect(key("ArrowDown").stopped).toBe(false);
+    const e = key("Escape");
+    expect([e.prevented, e.stopped, hidden, doc.activeElement === item]).toEqual([true, true, 1, true]);
+    stop();
+    expect(heard).toBeUndefined();
 });

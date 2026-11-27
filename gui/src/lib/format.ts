@@ -4,6 +4,7 @@
 const build = () => ({
     clock: new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }),
     day: new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }),
+    weekday: new Intl.DateTimeFormat(undefined, { weekday: "short" }),
     dayYear: new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" }),
     dayTime: new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }),
     dayYearTime: new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" }),
@@ -33,6 +34,20 @@ export function ago(ms: number, now = Date.now()): string {
 
 export function clock(ms: number): string {
     return formats().clock.format(ms);
+}
+
+/**
+ * When a snoozed session wakes, said one way wherever it shows (its row, its tooltip, the menu, the toast): "6:00 PM"
+ * today, "Tomorrow 9:00 AM", "Mon 9:00 AM" within the week, else "Nov 25, 9:00 AM". `inSentence`: "tomorrow".
+ */
+export function wakeTime(at: number, now = Date.now(), inSentence = false): string {
+    const t = clock(at);
+    const midnight = (ms: number) => new Date(ms).setHours(0, 0, 0, 0);
+    const days = Math.round((midnight(at) - midnight(now)) / 86_400_000);
+    if (days === 0) return t;
+    if (days === 1) return `${inSentence ? "tomorrow" : "Tomorrow"} ${t}`;
+    const f = formats();
+    return days > 1 && days < 7 ? `${f.weekday.format(at)} ${t}` : `${f.day.format(at)}, ${t}`;
 }
 
 /** When a prompt was sent, under it: the time today, with the day before that (and the year before this one). */

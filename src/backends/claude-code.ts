@@ -39,6 +39,7 @@ import type { PlanLimits } from "../server/protocol";
 import { cliNotice } from "./notice-data";
 import { creditsNote, limitAccountLabel, limitNews, limitNotice, limitStopOf, limitStopReport, mergeLimits, nearLimitWords, parseClaudeRateLimit, parseClaudeUsage, resetPhrase, resetSentence } from "./limits";
 import { accountEnv, defaultAccount } from "../providers/accounts";
+import { cliEnv } from "../providers/agent-env";
 import { claudeCodeWindow } from "../providers/anthropic-models";
 import { signInAdvice } from "./account-login";
 import { accountProtectionFolders } from "./account-permissions";
@@ -191,14 +192,13 @@ export const CLAUDE_SCHEDULE_TOOLS = ["CronCreate", "CronDelete", "CronList", "S
 const STREAM_ARGS = ["-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose"];
 
 /**
- * Claude Code's modes for Cavvy's. Not acceptEdits for acceptEdits:
- * Claude Code's own also runs file commands (rm, mv, sed) without asking,
- * where Cavvy's still asks for shell commands. It runs in default mode
- * instead, and Cavvy approves its edits inside the workspace itself.
+ * Claude Code's modes for Cavvy's: each its own counterpart, which decides
+ * what it asks the user about (its acceptEdits also runs file commands such
+ * as rm, mv and sed without asking).
  */
 export const MODES: Record<PermissionMode, string> = {
     default: "default",
-    acceptEdits: "default",
+    acceptEdits: "acceptEdits",
     plan: "plan",
     auto: "auto",
     bypassPermissions: "bypassPermissions",
@@ -218,7 +218,7 @@ export interface ClaudeStatus {
 /** `claude auth status --json`: Claude Code's own report of its sign-in. */
 export async function claudeStatus(providerId = "claude-code", signal?: AbortSignal, accountId?: string): Promise<ClaudeStatus> {
     const bin = requireCli(providerId, CLAUDE_CLI);
-    const r = await runCli(bin, ["auth", "status", "--json"], { signal, timeoutMs: 20_000, env: accountEnv(providerId, accountId) });
+    const r = await runCli(bin, ["auth", "status", "--json"], { signal, timeoutMs: 20_000, env: cliEnv(providerId, accountId) });
     // Stopped before it finished: it didn't say, whatever it had written.
     if (r.stopped) throw new ProviderError(`claude auth status didn't answer (${r.stopped === "timeout" ? "out of time" : "cancelled"})`);
     let j: Record<string, unknown> | undefined;
@@ -361,7 +361,7 @@ export class ClaudeCodeBackend implements AgentBackendClient {
         const args = [...extraArgs(this.def.id), ...STREAM_ARGS, "--tools", "", "--disable-slash-commands", "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence", "--system-prompt", req.system, ...model];
         // Without the CLI's own telemetry, update and flag requests: a title cost 0.77 -> 0.42 CPU-s to its answer (measured,
         // Linux, the bench's stand-in API), the same model answering. Only here: a session's CLI and the model list keep them.
-        const env = { ...accountEnv(this.def.id, req.account ?? defaultAccount(this.def.id)), CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" };
+        const env = { ...cliEnv(this.def.id, req.account ?? defaultAccount(this.def.id)), CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" };
         const proc = new JsonLinesProcess(bin, args, { cwd: homedir(), env });
         const kill = () => void proc.kill();
         req.signal?.addEventListener("abort", kill, { once: true });
@@ -389,7 +389,7 @@ export class ClaudeCodeBackend implements AgentBackendClient {
     async listModels(signal?: AbortSignal): Promise<ModelInfo[]> {
         const bin = requireCli(this.def.id, CLAUDE_CLI);
         // No settings, MCP servers or session file: this only asks for the list.
-        const proc = new JsonLinesProcess(bin, [...extraArgs(this.def.id), ...STREAM_ARGS, "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence"], { cwd: homedir(), env: accountEnv(this.def.id, defaultAccount(this.def.id)) });
+        const proc = new JsonLinesProcess(bin, [...extraArgs(this.def.id), ...STREAM_ARGS, "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence"], { cwd: homedir(), env: cliEnv(this.def.id, defaultAccount(this.def.id)) });
         const kill = () => void proc.kill();
         signal?.addEventListener("abort", kill, { once: true });
         const timer = setTimeout(kill, 30_000);
@@ -1384,7 +1384,7 @@ class ClaudeTurn {
         if (signal.aborted) return { reason: "aborted", text: "", actions: [], refused: true };
         let env: ReturnType<typeof accountEnv>;
         try {
-            env = accountEnv(this.def.id, this.t.accountId, this.t.cwd);
+            env = cliEnv(this.def.id, this.t.accountId, this.t.cwd);
             // Marked as its session's, as a live process is (LiveCliSession.start): a sub-agent's turns run here.
             this.proc = new JsonLinesProcess(this.bin, this.args(), { cwd: this.t.cwd, env: this.t.processMark ? { ...env, [SESSION_VAR]: this.t.processMark } : env });
         } catch (e) {
@@ -2107,6 +2107,7 @@ class ClaudeTurn {
                 header: typeof q?.header === "string" ? q.header : undefined,
                 options: (Array.isArray(q?.options) ? q.options : []).map((o: any) => ({ label: String(o?.label ?? ""), description: typeof o?.description === "string" ? o.description : undefined })),
                 multiSelect: Boolean(q?.multiSelect),
+                attach: true,
             }));
             const answers = await this.cliSession.askQuestions(questions);
             if (!answers) return { behavior: "deny", message: "The user dismissed the question without answering.", interrupt: true };
@@ -2130,9 +2131,13 @@ class ClaudeTurn {
         const { name, input } = toCavvy(String(req.tool_name ?? ""), raw);
         const reason = typeof req.decision_reason === "string" && req.decision_reason.trim() ? req.decision_reason : undefined;
         const agentType = typeof req.agent_id === "string" ? this.agentTypes.get(req.agent_id) : undefined;
+        // Its sub-agent asks (agent_id, its task's id): by its task, as the sub-agent's card names it.
+        const call = typeof req.agent_id === "string" ? [...this.agentTasks].find(([, task]) => task === req.agent_id)?.[0] : undefined;
+        const asker = typeof req.agent_id === "string" ? ((call && this.agentLabels.get(call)) || agentType) : undefined;
         // Asked while it runs in its own bypass mode: not Cavvy's to wave through (a hook of the user's said to ask).
         const ownBypassAsk = MODES[this.cliSession.mode()] === "bypassPermissions";
-        const a = await this.cliSession.permission({ toolName: name, input, title: titleFor(name, input), reason, callId: typeof req.tool_use_id === "string" ? req.tool_use_id : undefined, ...(agentType ? { agentType } : {}), ...(ownBypassAsk ? { ownBypassAsk } : {}) });
+        // Asked in its own mode, which decided this needs the user (BackendPermission.ownMode).
+        const a = await this.cliSession.permission({ toolName: name, input, title: titleFor(name, input), reason, callId: typeof req.tool_use_id === "string" ? req.tool_use_id : undefined, ownMode: true, ...(agentType ? { agentType } : {}), ...(asker ? { asker } : {}), ...(ownBypassAsk ? { ownBypassAsk } : {}) });
         if (a.allow) return { behavior: "allow", updatedInput: a.updatedInput ?? raw, ...(a.mode ? { updatedPermissions: [{ type: "setMode", mode: MODES[a.mode], destination: "session" }] } : {}) };
         return { behavior: "deny", message: a.message, interrupt: a.stop };
     }
@@ -2185,6 +2190,9 @@ export function claudeArgs(defId: string, t: ClaudeSpawnSettings, o: { pluginDir
     // Cavvy's deny and ask rules also cover what Claude Code would do without asking.
     // Named accounts add only deny rules for their folders (#375): nothing that changes how Claude Code asks or sandboxes.
     const permissions = claudePermissions(t.rules, o.accountDenies !== false);
+    // Edits to Cavvy's own configuration ask in every mode but bypass, as for Cavvy's own tools: Claude Code's own
+    // modes (accept edits, auto) would otherwise make them without asking.
+    permissions.ask.push(...cavvyConfigAsks([t.rules.root, ...t.additionalDirectories]));
     // Its own schedules would fire only while its process runs (it's stopped at a turn's end, or when idle): Cavvy's schedule tools keep them instead.
     if (t.orchestrator?.tools.includes("schedule_create")) permissions.deny.push(...CLAUDE_SCHEDULE_TOOLS);
     // Always override external preferences: an unsupported model must not silently switch to Opus.
@@ -2281,6 +2289,17 @@ export function claudePermissions(r: { deny: string[]; ask: string[]; root: stri
     const folders = (accounts ? [...accountProtectionFolders(), ...aliases.map((h) => join(h, "accounts"))] : []).flatMap((folder) => [`Read(/${folder})`, `Read(/${folder}/**)`, `Edit(/${folder})`, `Edit(/${folder}/**)`]);
     const map = (rules: string[]) => [...new Set(rules.flatMap((x) => claudeRule(x, r.root)))];
     return { deny: [...map(r.deny), ...store, ...folders], ask: map(r.ask) };
+}
+
+/**
+ * Ask rules for edits to Cavvy's own configuration (a project's .cavvy/ and .mcp.json, at any depth, and the settings
+ * files in Cavvy's home): the model mustn't widen its own permissions unseen. Claude Code's edit tools only: in accept edits, its
+ * file commands (sed, mv) aren't covered.
+ */
+export function cavvyConfigAsks(roots: string[]): string[] {
+    const abs = (p: string) => `Edit(/${p})`;
+    const projects = [...new Set(roots)].flatMap((r) => [join(r, ".cavvy/**"), join(r, "**/.cavvy/**"), join(r, ".mcp.json"), join(r, "**/.mcp.json")]);
+    return [...projects, join(cavvyHome(), "*.json")].map(abs);
 }
 
 /** Claude Code's tool name and input as Cavvy's own tool sees them (for rules, titles, previews). */

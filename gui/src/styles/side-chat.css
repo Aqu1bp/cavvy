@@ -1,0 +1,86 @@
+/* ---- The Side chat pane (SideChatPane), a tab of the side panel ----
+   The conversation's own views (stage.css: the transcript, and the composer
+   docked over its end) in the panel's column, under the panel's title line.
+   Its widths' steps are its own (data-narrow, as a split's pane). Loaded with
+   the pane. */
+
+.side-chat {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    /* Not a pane of the stage's: no fade-in or dim of a split's. */
+    isolation: auto;
+    transition: none;
+    /* The conversation's type, not the panel's smaller one. */
+    font-size: 1rem;
+}
+
+.side-chat .sc-head h2 {
+    text-transform: none;
+    white-space: nowrap;
+}
+
+/* At its narrowest, Bring back is its arrow. */
+.side-chat[data-narrow~="240"] .sc-back-l {
+    display: none;
+}
+
+.side-chat .sc-head .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(5 * var(--sp));
+}
+
+/* The conversation and its composer fill what's under the title. */
+.sc-body {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+}
+
+/* No title bar over it: the conversation fades out just under the panel's title line. The conversation's margins and
+   the composer's foot are the session's, not a narrow pane's (stage.css): beside it, they line up with its own, and its
+   edges with the panel's title line. */
+.side-chat .stage {
+    --bar-h: 0px;
+    --stage-x: calc(18 * var(--sp));
+}
+
+.side-chat .composer-dock {
+    padding-bottom: calc(12 * var(--sp));
+}
+
+/* The empty view's one line, where the panel's other views put theirs. */
+.side-chat .sc-none {
+    padding: 0 calc(18 * var(--sp));
+    font-size: 0.929rem;
+}
+
+/* Its box sits where the session's does: the line under it ("4% context") keeps its room before there's a side chat. */
+.side-chat .composer-under:empty {
+    display: flex;
+}
+
+/* At the panel's usual width and narrower: a permission's answers one under another, each on one line, rather than
+   the broader one wrapped to three beside Deny; a turn's changed files without the icon and the total (each row has
+   its own), so Review changes stays whole; and the working line's end without the room kept for a command's chevron. */
+.side-chat[data-narrow~="360"] {
+    .ask-row.perm-row {
+        grid-template-columns: 1fr;
+    }
+
+    .ask-row.perm-row .pbtn.quiet {
+        margin: 0;
+    }
+
+    .files-head > .tcard-ic,
+    .files-head > .stat {
+        display: none;
+    }
+
+    .live-line .layer {
+        padding-right: 0;
+    }
+}

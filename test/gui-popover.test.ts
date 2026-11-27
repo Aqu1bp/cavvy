@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import * as solid from "../gui/node_modules/solid-js/dist/solid.js";
-import { placePopover } from "../gui/src/lib/popover";
+import { outOfSight, placePopover } from "../gui/src/lib/popover";
 import { scaled } from "../gui/src/lib/text-size";
 import { all, component, node, renderer } from "./helpers/gui-render";
 
@@ -82,4 +82,20 @@ test("a popover whose session is kept out of sight (switched away from by a key)
         setParked(false);
         expect(open()).toBe(false);
     } finally { dispose(); }
+});
+
+test("a menu's anchor out of sight after a resize: not drawn at its middle (cut off, or outside the window); one with no box isn't", () => {
+    // The rail's list, from 140 to 400, draws what's in it there; the window is 460 tall.
+    const drawn = (y: number) => y >= 140 && y <= 400;
+    const at = (top: number, boxes = 1) => {
+        const el: any = { getClientRects: () => Array(boxes).fill({}), getBoundingClientRect: () => ({ top, bottom: top + 24, left: 220, right: 244 }) };
+        el.ownerDocument = { elementsFromPoint: (x: number, y: number) => (x === 232 && drawn(y) ? [el] : []) };
+        return el;
+    };
+    expect(outOfSight(at(230))).toBe(false);
+    // Under the list's end, below the window, and scrolled up out of the list.
+    expect(outOfSight(at(420))).toBe(true);
+    expect(outOfSight(at(520))).toBe(true);
+    expect(outOfSight(at(100))).toBe(true);
+    expect(outOfSight(at(520, 0))).toBe(false);
 });

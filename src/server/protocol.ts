@@ -48,7 +48,12 @@ export interface WireFile {
     data: string /* base64 */;
     /** Pasted into the box rather than a file. */
     pasted?: boolean;
+    /** Text brought back from the session's side chat (its answer, or part of it), not a file. */
+    from?: AttachedFrom;
 }
+
+/** Where attached text came from, when it isn't a file or the user's own paste. */
+export type AttachedFrom = "side-chat";
 
 /** What a prompt shows of an attached file: never its contents. */
 export interface FileChip {
@@ -57,6 +62,7 @@ export interface FileChip {
     size: number;
     lines?: number;
     pasted?: boolean;
+    from?: AttachedFrom;
 }
 
 export type PermissionModeId = "default" | "acceptEdits" | "plan" | "auto" | "bypassPermissions";
@@ -511,6 +517,8 @@ export interface QuestionInteraction {
     question: string;
     options: { label: string; description?: string }[];
     multi: boolean;
+    /** Images and files can go with the answer. */
+    attach?: boolean;
 }
 
 export interface PlanInteraction {
@@ -638,7 +646,8 @@ export type Interaction = (PermissionInteraction | QuestionInteraction | PlanInt
 
 export type InteractionResponse =
     | { kind: "permission"; choice: PermissionOption["id"]; feedback?: string }
-    | { kind: "question"; answers?: string[] }
+    /** `images`, `files`: what's attached to the answer, as session.send carries them (where the question takes them). */
+    | { kind: "question"; answers?: string[]; images?: { mediaType: string; data: string }[]; files?: WireFile[] }
     | { kind: "plan"; approved: boolean; mode?: PermissionModeId; feedback?: string }
     /** No value: declined. The value goes to the session's memory and nowhere else. */
     | { kind: "secret"; value?: string }
@@ -668,6 +677,8 @@ export interface ModelSummary {
     effortLevels?: EffortLevel[];
     supportsFastMode?: boolean;
     deprecated?: boolean;
+    /** Its provider was removed or turned off: it can't run until another model is picked. */
+    unavailable?: true;
     /**
      * false: a message sent while it works can't join the running turn (its agent CLI takes none mid-turn), so it
      * waits for the turn's end, and nothing offers to steer. Missing: it can (Cavvy's own models, Claude Code, Codex).
@@ -869,6 +880,10 @@ export interface SessionState {
     planLinks?: PlanLink[];
     /** Forked from this session (its title then). */
     forkOf?: { id: string; title: string };
+    /** Its side chat, while one is open (session.sideChat), and whether it's working or waiting on the user. */
+    sideChat?: { id: string; status?: SessionStatus };
+    /** A side chat's: the session it's about. Never listed with the sessions. */
+    sideOf?: string;
     /** The names of the secrets the user gave this session (never their values). */
     secrets: string[];
     /** Its schedules (/loop, cron jobs, the resume after a usage limit), soonest first as the server keeps them. */
@@ -974,6 +989,14 @@ export interface SessionSummary {
     archived: boolean;
     /** Set aside: done with for now, listed apart from the sessions still in play. */
     settled: boolean;
+    /** Snoozed: out of the list until then (or until it needs you), under Snoozed. */
+    snoozedUntil?: number;
+    /** Its last turn didn't finish: stopped, or cut off when Cavvy quit or stopped while it worked. */
+    stopped?: true;
+    /** It woke from a snooze and hasn't been opened since. */
+    woke?: true;
+    /** Never settled by itself (Settings → General, "Settle idle sessions after"). */
+    neverSettle?: true;
     /** The model it last used ("provider:id"). */
     model?: string;
     /** Loaded in the server right now. */
@@ -1304,6 +1327,8 @@ export interface ProviderInfo {
         accounts?: AccountInfo[];
         defaultAccount?: string;
         installed: boolean;
+        /** The program it runs (its saved path, else the one on PATH): an instance without a path of its own runs it too. */
+        path?: string;
         /** The CLI's own sign-in command, for when it isn't signed in. */
         signIn: string;
         install: string;
@@ -1318,7 +1343,41 @@ export interface ProviderInfo {
         multiAccount?: boolean;
         /** It reports plan limits (false: there's no plan row to show). */
         planLimits?: boolean;
+        /** The environment variables it's started with. A secret's value is never sent: only that it's set. */
+        env?: AgentEnvVar[];
+        /** Its named instances (src/providers/instances.ts), each a provider of its own in the model picker. */
+        instances?: AgentInstanceInfo[];
     };
+}
+
+/** A named instance of an agent CLI: "Claude Code · OpenRouter". */
+export interface AgentInstanceInfo {
+    /** Its provider id (claude-code@openrouter). */
+    id: string;
+    /** Its own name ("OpenRouter"). */
+    name: string;
+    path?: string;
+    args?: string[];
+    env: AgentEnvVar[];
+    /** Model ids offered besides the ones the CLI lists. */
+    models?: string[];
+}
+
+/** What a named instance is set up with, as Settings sends it. */
+export interface AgentInstanceInput {
+    name: string;
+    path?: string;
+    args?: string[];
+    env?: AgentEnvVar[];
+    models?: string[];
+}
+
+/** An environment variable an agent CLI is started with (src/providers/agent-env.ts). */
+export interface AgentEnvVar {
+    name: string;
+    /** Left out for a secret: the saved value stays when it's saved again without one. */
+    value?: string;
+    secret?: boolean;
 }
 
 export interface ProviderModels {
@@ -1538,26 +1597,47 @@ export interface AppUpdateInfo {
 export interface RewindTargetInfo {
     index: number;
     text: string;
-    /** Files Cavvy's own tools changed answering it. */
+    /** Files changed answering it: by anything (`whole`), or by Cavvy's own tools. */
     files: number;
     tracked: boolean;
+    /** Everything that changed files answering it is covered, shell commands and agent backends included. */
+    whole?: boolean;
     /** From before this session was forked: files changed then are restored from the original session, not here. */
     forked?: boolean;
     /** Agent backends that answered it (Claude Code, Codex): what they changed isn't tracked, so it isn't in `files`. */
     backends?: string[];
+    /** When it was sent, where its turn is one the server has (the window's, and those read since). */
+    at?: number;
 }
 
 export interface RewindPlanInfo {
     index: number;
     /** Passed back to session.rewind, which restores exactly this plan (or refuses if the conversation moved on). */
     planId: string;
-    restore: { path: string; action: "write" | "delete"; outside: boolean }[];
+    /** create: it was deleted since, so it's made again. `outside`: changed outside Cavvy, and restoring it can't be undone. */
+    restore: { path: string; action: "write" | "delete" | "create"; outside: boolean }[];
+    /** Files restored too that aren't listed in `restore` (a long list is cut). */
+    more?: number;
     skipped: { path: string; reason: string }[];
     tracked: boolean;
+    /** Every file changed since then is in `restore`, whoever changed it (shell commands, agent backends). */
+    whole?: boolean;
+    /** Why only Cavvy's own edits can be restored, where everything could have been (another session working in the folder, say). */
+    refused?: string;
     /** From before the fork: `restore` has only what this session changed since. */
     forked?: boolean;
-    /** Agent backends that answered since then: their changes to files aren't in `restore`, and rewinding leaves them. */
+    /** Agent backends that answered since then: their changes to files aren't in `restore` (unless `whole`), and rewinding leaves them. */
     backends?: string[];
+}
+
+export interface RewindResult {
+    restored: string[];
+    failed: { path: string; error: string }[];
+    text: string;
+    images?: { mediaType: string; data: string }[];
+    files?: WireFile[];
+    /** Passed to session.rewindUndo to put the restored files back as they were. */
+    undo?: string;
 }
 
 export interface ChangesInfo {
@@ -1567,8 +1647,19 @@ export interface ChangesInfo {
     tracked: boolean;
 }
 
-/** Uncommitted: the working tree against HEAD. Branch: against where this branch left its base. */
-export type GitScope = "uncommitted" | "branch" | "last-turn" | "turn";
+/** Uncommitted: the working tree against HEAD. Branch: against where this branch left its base. Commit: one commit against its (first) parent. */
+export type GitScope = "uncommitted" | "branch" | "commit" | "last-turn" | "turn";
+
+/** A commit, as the review pane lists them (newest first). Subject and author are redacted. */
+export interface GitLogEntry {
+    sha: string;
+    subject: string;
+    author: string;
+    /** Committed, in ms. */
+    time: number;
+    /** How many parents: 0 a root commit, 2 or more a merge (shown against its first). */
+    parents: number;
+}
 
 export interface GitFileDiff extends FileDiff {
     /** What git would call it. Renames are exact ones (the same content under a new name). */
@@ -1583,6 +1674,8 @@ export interface GitFileDiff extends FileDiff {
     filter?: string;
     /** `path` hides a registered value: send this instead of it to act on the file. */
     pathToken?: string;
+    /** Lines in the new side, when there are hunks: whether there's more of the file after the last one. */
+    lines?: number;
 }
 
 /** What git says changed in a session's folder, whoever changed it. */
@@ -1614,6 +1707,8 @@ export interface GitChangesInfo extends ChangesInfo {
     moreAtLeast?: boolean;
     /** A turn's: the other worktrees of the repository it worked in (TurnPlace), as they were when it ended. */
     places?: TurnPlace[];
+    /** Commit scope: the commit shown. */
+    commit?: GitLogEntry;
 }
 
 /**
@@ -1658,6 +1753,60 @@ export interface GitPublishInfo {
     compareUrl?: string;
     pr?: GitPrInfo;
 }
+/** A branch against its upstream, from what was last fetched (GitSyncInfo is read without the network). */
+export interface GitSyncInfo {
+    detached: boolean;
+    branch?: string;
+    /** "origin/main"; unset when the branch has none. */
+    upstream?: string;
+    ahead?: number;
+    behind?: number;
+    /** The upstream's branch was deleted on the remote. */
+    gone?: boolean;
+}
+export interface GitPullResult {
+    /** current: nothing to pull; pulled: fast-forwarded by `pulled` commits; diverged: commits on both sides, nothing changed. */
+    result: "current" | "pulled" | "diverged";
+    branch: string;
+    upstream: string;
+    ahead: number;
+    behind: number;
+    pulled?: number;
+}
+export interface GitBranchEntry {
+    /** Local: "feature"; remote: "origin/feature". */
+    name: string;
+    upstream?: string;
+    /** Last commit, ms. */
+    at?: number;
+    /** Checked out in this other worktree. */
+    worktree?: string;
+    /** That worktree's folder is gone (git lists it as prunable): git.switch removes the worktree, then switches. */
+    worktreeGone?: true;
+}
+export interface GitBranchList {
+    current?: string;
+    local: GitBranchEntry[];
+    remote: GitBranchEntry[];
+    /** A new branch's name from the session's title (with the branch prefix), when no branch has it. */
+    suggested?: string;
+}
+/** A repository's open pull requests (git.pullRequests). */
+export interface GitPrListInfo {
+    /** "owner/name" on github.com. */
+    repo: string;
+    prs: { number: number; title: string; branch: string; author: string; draft: boolean; fork: boolean; updatedAt?: number }[];
+}
+/** A pull request checked out in a worktree for a new session (git.prWorktree). */
+export interface GitPrWorktree {
+    path: string;
+    branch: string;
+    /** A worktree was already on that branch: it's used as it is. */
+    reused?: boolean;
+    /** The branch was there already (not checked out): it got a worktree, unchanged. */
+    existing?: boolean;
+    pr: { number: number; title: string; url: string; state: string };
+}
 export interface GitPublishRequest {
     fingerprint: string;
     action: "push" | "pr";
@@ -1699,13 +1848,29 @@ export interface GitCommitInfo {
     branch?: string;
 }
 
+export interface GitPrTextInfo {
+    title: string;
+    body: string;
+    model: string;
+}
+
+export interface GitBranchNameInfo {
+    branch: string;
+    model: string;
+}
+
 export interface GitCommitMessageInfo {
     message: string;
     model: string;
 }
 
+/** The settings that hold a model: reset to unset when what they name is removed. */
+export type ModelSettingName = "model" | "smallModel" | "reviewModel";
+
 export interface GuiSettings {
     model?: string;
+    /** What a new session starts on when `model` is unset, or names something that can't run now (read-only). */
+    autoModel?: string;
     smallModel?: string;
     /** The auto-mode reviewer. Unset: Claude Sonnet 5.5 with an Anthropic key, else the session's model. */
     reviewModel?: string;
@@ -1728,7 +1893,55 @@ export interface GuiSettings {
     followUpBehavior?: FollowUpMode;
     /** "Open files with": an id from the server's editor list (src/server/editors.ts). */
     editor?: string;
+    /** Sessions idle this many days are settled by themselves: 0 (off), 1, 3, 7 (the default) or 14. */
+    autoSettleDays?: number;
+    /** Keep the computer from idling to sleep while sessions work (default true). */
+    keepAwake?: boolean;
+    /** Set when keeping it awake can't work on this computer (nothing to run, not installed, or refused). */
+    keepAwakeUnavailable?: boolean;
 }
+
+/**
+ * A line Search in project found: its number (1-based) and the line, cut to a part around its first match when it's
+ * long (`from`: the characters cut off its start), with where the matches are in that part (UTF-16 offsets).
+ */
+export interface SearchHit {
+    line: number;
+    preview: { text: string; ranges: [number, number][]; from?: number };
+}
+
+/** A file's hits, in line order; `more`: it has more than were sent. */
+export interface SearchFileHits {
+    path: string;
+    hits: SearchHit[];
+    more?: boolean;
+}
+
+/**
+ * What Search in project found, by file (paths relative to the session's folder). `truncated`: it stopped at the cap
+ * (or, the scan, at its most files); `timedOut`: at its time limit. `via`: ripgrep, git grep or Cavvy's own scan.
+ * `skippedLarge`: files the scan didn't read for their size. `cancelled`: a newer search (or fs.searchCancel) stopped it.
+ */
+export interface ProjectSearchResult {
+    files: SearchFileHits[];
+    matches: number;
+    truncated: boolean;
+    via: "rg" | "git" | "js";
+    timedOut?: boolean;
+    skippedLarge?: number;
+    cancelled?: boolean;
+}
+
+/**
+ * A file of the session's, for the file viewer. `path`: absolute, as named; `rel`: from the session's folder. Text
+ * comes whole up to a cap (`large` past it), an image as its bytes, anything else that isn't text as `binary`.
+ */
+export type FileContent = { path: string; rel: string; size: number } & (
+    | { kind: "text"; text: string }
+    | { kind: "image"; mediaType: string; data: string }
+    | { kind: "binary" }
+    | { kind: "large" }
+);
 
 /** An editor Cavvy knows, and whether it's on this machine (the server's). */
 export interface EditorInfo {
@@ -1889,7 +2102,7 @@ export interface LentSession {
  * it (servers.relay). Anything else is done in a window that's on that machine: so is removing a session's worktree
  * as it's archived, which asks about folders on that machine.
  */
-export const RELAYED_SESSION_METHODS = ["session.rename", "session.pin", "session.settle", "session.archive", "session.delete", "session.restore"] as const;
+export const RELAYED_SESSION_METHODS = ["session.rename", "session.pin", "session.settle", "session.archive", "session.delete", "session.restore", "session.snooze", "session.neverSettle", "session.regenerateTitle"] as const;
 /**
  * Asked the same way before a session there is archived, for a yes or no only: whether it works in a worktree, which
  * archiving from here keeps (the user is told so). Nothing of the worktree itself is passed on.
@@ -2258,9 +2471,9 @@ export interface Methods {
      * Something a session's row offers (rename, pin, settle, archive, delete, restore: RELAYED_SESSION_METHODS),
      * asked of a session on a server by a window that isn't on it. `params`: that call's own, with the session's id.
      * Nothing of the server's answer is passed on, but whether a session it's about to archive works in a worktree
-     * (RELAYED_ARCHIVE_OFFER).
+     * (RELAYED_ARCHIVE_OFFER), and whether a session it deleted was never saved (no Undo).
      */
-    "servers.relay": { params: { name: string; method: string; params: Record<string, unknown> }; result: { worktree: true } | null };
+    "servers.relay": { params: { name: string; method: string; params: Record<string, unknown> }; result: { worktree: true } | { unsaved: true } | { title: string } | null };
     "servers.add": { params: { name: string; destination: string; port?: number; identityFile?: string; trust?: string[]; sync?: boolean }; result: AddResult };
     "servers.copy": { params: { name: string }; result: { took: string; left?: string } };
     "servers.sync": { params: { name?: string }; result: { results: ServerSyncItemResult[] } };
@@ -2317,6 +2530,8 @@ export interface Methods {
      * `list` is that list's id: a pick made in a list that's been replaced since picks nothing.
      */
     "browser.choose": { params: { id: string; index?: number; tab?: number; list?: number }; result: null };
+    /** The pane's find bar, in a page of the headless browser: `query` ("" clears what it marked); `step` 0 searches anew, 1 and -1 go to the next and previous match. `active` counts from 1 (0: none). */
+    "browser.find": { params: { id: string; query: string; step?: number; tab?: number }; result: { matches: number; active: number } };
     /** The session's simulator: its device, whether it runs, and the devices there are (looked up again). */
     "simulator.state": { params: { id: string }; result: SimulatorState };
     /**
@@ -2344,7 +2559,8 @@ export interface Methods {
     /** What the server's memory is made of (src/server/memory-probe.ts); `types`: the most common kinds of object too. */
     "server.memory": { params: { types?: boolean }; result: ServerMemory };
     /** Sessions whose latest work couldn't be saved (a full disk) and would be lost if Cavvy quit now: the desktop app asks before quitting. */
-    "server.unsaved": { params: Record<string, never>; result: { sessions: { id: string; title: string }[] } };
+    /** `working`: this computer's sessions quitting would stop (0 while an update restarts the app). */
+    "server.unsaved": { params: Record<string, never>; result: { sessions: { id: string; title: string }[]; working: number } };
     /**
      * Takes the window's terminal on this connection (after a reload or a
      * reconnect). What it printed since `have` (the last terminal.data's `pos`)
@@ -2408,6 +2624,12 @@ export interface Methods {
      */
     "session.find": { params: { id: string; query: string; before?: string; turns?: string[]; gap?: { after: string; before: string } }; result: { matches: SessionFindMatch[] } };
     "session.close": { params: { id: string }; result: null };
+    /** The session's side chat (opened if it has none), with `text` sent to it. */
+    "session.sideChat": { params: { id: string; text?: string }; result: { id: string } };
+    /** Close the session's side chat: it's discarded, once a while for Undo has passed. */
+    "session.closeSideChat": { params: { id: string }; result: null };
+    /** The side chat closed a moment ago, back (Undo). Fails once it's been discarded. */
+    "session.reopenSideChat": { params: { id: string }; result: { id: string } };
     /** The session this window has on screen, or none: the others' words can come less often. */
     "session.shown": { params: { id?: string }; result: null };
     /** `literal`: send a leading /word as a message. Unknown commands fail with `unknown_command`, so clients keep the draft. */
@@ -2424,9 +2646,13 @@ export interface Methods {
     "session.rename": { params: { id: string; title: string }; result: null };
     "session.compact": { params: { id: string; instructions?: string }; result: null };
     "session.rewindTargets": { params: { id: string }; result: RewindTargetInfo[] };
+    /** Whether the session's last file restore can still be undone (session.rewindUndo without `undo`). */
+    "session.rewindCanUndo": { params: { id: string }; result: boolean };
     "session.rewindPlan": { params: { id: string; index: number }; result: RewindPlanInfo };
     /** `text` and what the prompt carried (images, files) go back to the input box, as with an edited queued message. */
-    "session.rewind": { params: { id: string; index: number; planId: string; code: boolean; conversation: boolean }; result: { restored: string[]; failed: { path: string; error: string }[]; text: string; images?: { mediaType: string; data: string }[]; files?: WireFile[] } };
+    "session.rewind": { params: { id: string; index: number; planId: string; code: boolean; conversation: boolean }; result: RewindResult };
+    /** Put back the files a rewind restored (`undo` from its result; without it, the session's last restore), as they were before it. */
+    "session.rewindUndo": { params: { id: string; undo?: string }; result: { restored: string[]; failed: { path: string; error: string }[] } };
     /** A new session with the conversation up to the end of the turn of the prompt at `index` (TurnPrompt.index, or Turn.pos.index for imported prompts), which the window showed as turn `turn` with `text`. */
     /**
      * `soon`: answer at once with how the fork will look (`making` set) while it's made, when the turn is in the
@@ -2440,14 +2666,43 @@ export interface Methods {
      * any other folder is refused. Turn scopes are the session's own folder's only.
      */
     /** `pathToken` / `baseToken`: handles from an earlier listing (GitFileDiff.pathToken, baseTokens), instead of `path` / `base`. */
-    "session.gitChanges": { params: { id: string; scope: GitScope; base?: string; baseToken?: string; path?: string; pathToken?: string; turnId?: number; worktree?: string }; result: GitChangesInfo };
+    /**
+     * `commit`: the commit scope's (HEAD when unset). `ignoreWhitespace`: lines that differ only in whitespace are unchanged.
+     * `full`: with a path, that file's diff with every line as context (the review pane's hidden lines).
+     */
+    "session.gitChanges": { params: { id: string; scope: GitScope; base?: string; baseToken?: string; path?: string; pathToken?: string; turnId?: number; worktree?: string; commit?: string; ignoreWhitespace?: boolean; full?: boolean }; result: GitChangesInfo };
+    /** The recent commits of HEAD (of `worktree`, another worktree of the session's repository), newest first. */
+    "session.gitLog": { params: { id: string; worktree?: string }; result: { commits: GitLogEntry[]; more: boolean } };
     /** The worktrees of the repository the session's folder is in (none outside one), with their branch's lead on the main branch. */
     "session.worktrees": { params: { id: string }; result: SessionWorktreeInfo[] };
+    /** `sessionId`: the session it's for, so the call goes to that session's machine. */
+    /** The branch of the folder against its upstream, from local refs (no network). */
+    "git.sync": { params: { cwd: string; sessionId?: string }; result: GitSyncInfo };
+    "git.branches": { params: { cwd: string; sessionId?: string }; result: GitBranchList };
+    /** Fetch the branch's remote (or origin). */
+    "git.fetch": { params: { cwd: string; sessionId?: string }; result: GitSyncInfo & { remote: string } };
+    /** Fetch, then fast-forward only; refused while a session works in the folder. */
+    "git.pull": { params: { cwd: string; sessionId?: string }; result: GitPullResult };
+    /** Refused while a session works in the folder. `remote`: `branch` is a remote one (origin/x). */
+    "git.switch": { params: { cwd: string; sessionId?: string; branch: string; remote?: boolean }; result: { branch: string; created?: boolean } };
+    /** A new branch at HEAD, switched to. */
+    "git.createBranch": { params: { cwd: string; sessionId?: string; name: string }; result: { branch: string } };
+    /** The open pull requests of the folder's GitHub repository (needs gh, signed in: codes gh_missing, sign_in, not_github). */
+    "git.pullRequests": { params: { cwd: string; sessionId?: string }; result: GitPrListInfo };
+    /** Pull request `pr` (#123, 123 or its URL) checked out in a worktree of its own. */
+    "git.prWorktree": { params: { cwd: string; sessionId?: string; pr: string }; result: GitPrWorktree };
     "session.gitPublishInfo": { params: { id: string }; result: GitPublishInfo };
-    "session.gitPublish": { params: { id: string } & GitPublishRequest; result: { pr?: GitPrInfo } };
+    "session.gitPublish": { params: { id: string } & GitPublishRequest; result: { pr?: GitPrInfo; created?: true } };
     "session.gitPrState": { params: { id: string }; result: { pr?: GitPrInfo } };
     /** `pathTokens`: files whose names were shown redacted (GitFileDiff.pathToken), with `paths` for the rest. */
-    "session.gitCommit": { params: { id: string; paths: string[]; pathTokens?: string[]; message: string; expectedHead?: GitCommitHead }; result: GitCommitInfo };
+    /** `newBranch`: commit there instead, a branch made from HEAD, which then checks it out (the old branch stays where it was). */
+    "session.gitCommit": { params: { id: string; paths: string[]; pathTokens?: string[]; message: string; expectedHead?: GitCommitHead; newBranch?: string }; result: GitCommitInfo };
+    /** A small model's title and description for a pull request from this branch into `base`. */
+    "session.gitPrText": { params: { id: string; base?: string }; result: GitPrTextInfo };
+    /** A small model's branch name for `text` (what the work is), after the `worktree.branchPrefix` setting. */
+    "session.gitBranchName": { params: { id: string; text: string }; result: GitBranchNameInfo };
+    /** The same, from Home (no session yet): the project's settings and small model. */
+    "projects.suggestBranch": { params: { path: string; text: string }; result: GitBranchNameInfo };
     "session.gitCommitMessage": { params: { id: string; paths: string[]; pathTokens?: string[] }; result: GitCommitMessageInfo };
     "session.pin": { params: { id: string; pinned: boolean }; result: null };
     /**
@@ -2463,8 +2718,18 @@ export interface Methods {
     /** Writes the plan as Markdown, in the session's folder or the Cavvy home; an existing file only with `replace`. */
     "session.savePlan": { params: { id: string; toolId?: string; path?: string; replace?: boolean }; result: { path: string } };
     "session.settle": { params: { id: string; settled: boolean }; result: null };
+    /**
+     * Out of the list until `until` (the server's clock, ms), or until it needs you: a question, an approval, a
+     * failure, or the end of the turn it was running. `until: null` wakes it now.
+     */
+    "session.snooze": { params: { id: string; until: number | null }; result: null };
+    /** Named again by the small model from the conversation so far; the old title stays when that fails. */
+    "session.regenerateTitle": { params: { id: string }; result: { title: string } };
+    /** Never settled by itself when it's been idle (`on`), or as any other again. */
+    "session.neverSettle": { params: { id: string; on: boolean }; result: null };
     /** Moves its files to the trash (sessions.remove follows); session.restore puts them back for a week. */
-    "session.delete": { params: { id: string }; result: null };
+    /** `unsaved`: it was never saved, so it was only closed: there's nothing for session.restore to bring back. */
+    "session.delete": { params: { id: string }; result: null | { unsaved: true } };
     "session.restore": { params: { id: string }; result: null };
     /** The sessions in the trash (deleted in the past week), the most recently deleted first. */
     /** `servers`: those deleted on the servers this machine is connected to (each row says which), not its own. */
@@ -2516,9 +2781,16 @@ export interface Methods {
     "providers.list": { params: Record<string, never>; result: ProviderInfo[] };
     /** `model`: the default model it set, when there was none yet. */
     "providers.setKey": { params: { provider?: string; key: string }; result: { provider: string; masked: string; warning?: string; model?: string } };
-    "providers.removeKey": { params: { provider: string }; result: null };
+    "providers.removeKey": { params: { provider: string }; result: { reset: ModelSettingName[] } };
     /** Turn on an agent CLI provider after checking (with the CLI) that it's installed and signed in. */
     "providers.connectCli": { params: { provider: string }; result: { description: string; warning?: string; model?: string } };
+    /** Set all of an agent CLI's environment variables (those left out are removed). It has to be turned on. */
+    "providers.setEnv": { params: { provider: string; vars: AgentEnvVar[] }; result: null };
+    /** Add a named instance of an agent CLI (`base`: claude-code, codex, …); its models are listed with its setup. */
+    "providers.addInstance": { params: AgentInstanceInput & { base: string }; result: { id: string } };
+    "providers.updateInstance": { params: AgentInstanceInput & { id: string }; result: { reset: ModelSettingName[] } };
+    /** Its running turns go on; a session on it then asks for another model. */
+    "providers.removeInstance": { params: { id: string }; result: { reset: ModelSettingName[] } };
     /** Recent Claude Code and Codex sessions that ran in this folder. */
     "cliSessions.list": { params: { cwd: string }; result: CliSessionsList };
     /** Import one into a Cavvy session (or open the one that already holds it). */
@@ -2556,6 +2828,17 @@ export interface Methods {
     "fs.exists": { params: { sessionId?: string; cwd?: string; paths: string[] }; result: (string | null)[] };
     /** A PNG, JPEG, GIF or WebP file anywhere on this machine (judged by its bytes; a relative path is the session's), for showing an image the model's reply names. */
     "fs.image": { params: { sessionId?: string; cwd?: string; path: string }; result: { mediaType: string; data: string } };
+    /** Go to file: the files of the session's folder (as @-mentions list them: ignored ones left out) that best match `query`, best first. */
+    "fs.files": { params: { sessionId?: string; cwd?: string; query: string; limit?: number }; result: { paths: string[] } };
+    /**
+     * Search in project: text in the session's folder, nothing outside it. A window's newer search (or fs.searchCancel)
+     * stops its last one, which answers with `cancelled`. A query that can't be searched for is refused ("invalid").
+     */
+    "fs.search": { params: { sessionId?: string; cwd?: string; query: string; caseSensitive?: boolean; wholeWord?: boolean; regex?: boolean }; result: ProjectSearchResult };
+    /** Stop this window's search under way, if any (`sessionId`: the session it was for, so it goes to that session's machine). */
+    "fs.searchCancel": { params: { sessionId?: string }; result: null };
+    /** A file inside the session's folders, for the file viewer: refused ("outside") past them, links followed included. */
+    "fs.read": { params: { sessionId?: string; cwd?: string; path: string }; result: FileContent };
     /** Uses the cwd's default provider unless given; an optional command name is checked before creating a session. */
     "commands.list": { params: { cwd: string; provider?: string; command?: string }; result: CommandInfo[] };
     /** Plugins and marketplaces, with each plugin's state for `cwd`'s folder (without one: the user's own settings only). */

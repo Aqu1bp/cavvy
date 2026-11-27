@@ -1,24 +1,35 @@
-import { createEffect, createResource, createSignal, For, on, onCleanup, Show } from "solid-js";
+import { createEffect, createMemo, createResource, createSignal, For, on, onCleanup, Show } from "solid-js";
 import { promptPreview } from "../lib/review-comments";
-import { AlertTriangle, FileMinus2, FilePen, History } from "lucide-solid";
+import { AlertTriangle, FileMinus2, FilePen, FilePlus2, History } from "lucide-solid";
 import type { RewindPlanInfo, RewindTargetInfo } from "@shared/protocol";
 import { app, connFor, handleFor, reportError, rpc, toast } from "../state/app";
 import { rewindOpen, rewindTarget, setRewindOpen } from "../state/ui";
 import { plural } from "../lib/format";
+import { rewindTimes } from "../lib/rewind-times";
+import { refreshGitChanges } from "../state/changes";
+import { undoRestore } from "../state/actions";
 import { Dialog } from "./ui/Dialog";
 import { Spinner } from "./ui/bits";
+import { userMovedFocus } from "../lib/focus-trap";
 
 /** "Claude Code", "Claude Code and Codex". */
 const names = (backends: string[]) => backends.join(" and ");
+/**
+ * Why everything can't be restored, and what can: one line ("Another session is working here: only Cavvy's edits can be
+ * restored."), which also says where the rest is when Claude Code or Codex answered since ("Use git for Claude Code's").
+ * With none of Cavvy's edits to restore either (`any` false): "…, so files can't be restored. Use git."
+ */
+const onlyOwnEdits = (refused: string, backends: string[] | undefined, any: boolean) =>
+    any ? `${refused.replace(/\.$/, "")}: only Cavvy's edits can be restored.${backends?.length ? ` Use git for ${names(backends.map((b) => `${b}'s`))}.` : ""}` : `${refused.replace(/\.$/, "")}, so files can't be restored. Use git.`;
 
 /** What answering the prompt changed in files, as far as Cavvy knows. */
 function changedLabel(t: RewindTargetInfo): string {
     if (t.forked) return "from before the fork";
-    // Claude Code and Codex change files with their own tools: Cavvy doesn't see what they did.
-    const untracked = t.backends?.length ? `${names(t.backends)} changes not tracked` : undefined;
+    // Without a record of the whole folder, Claude Code and Codex change files with their own tools that Cavvy doesn't see.
+    const untracked = t.backends?.length && !t.whole ? `${names(t.backends)} changes not tracked` : undefined;
     if (!t.tracked) return untracked ?? "files not tracked";
     if (t.files) return untracked ? `${plural(t.files, "file")} changed · ${untracked}` : `${plural(t.files, "file")} changed`;
-    return untracked ?? "no file changes";
+    return untracked ?? "";
 }
 
 
@@ -28,6 +39,8 @@ export function RewindDialog() {
     const [chosen, setChosen] = createSignal<number>();
     const [plan, setPlan] = createSignal<RewindPlanInfo>();
     const [busy, setBusy] = createSignal(false);
+    /** The chosen prompt's plan is being worked out (the files are read for it). */
+    const [planning, setPlanning] = createSignal(false);
     /** Files changed outside Cavvy: restoring them needs a second, explicit click. */
     const [confirming, setConfirming] = createSignal<{ code: boolean; conversation: boolean }>();
     /** The connection the session's shown over: another machine's, for one of its sessions opened here. */
@@ -36,24 +49,39 @@ export function RewindDialog() {
         // Reconnect reopens sessions later; a plan against the old view is no longer safe.
         if (rewindOpen() && conn() !== "open") setRewindOpen(false);
     });
-    const [targets, { refetch }] = createResource(
-        () => (conn() === "open" && rewindOpen() && id() ? id() : undefined),
+    // An idle compaction stops for a rewind.
+    const busySession = () => Boolean(handleFor(id())?.view.state.busy && !handleFor(id())?.view.state.activity?.idle);
+    // Read once the dialog has its session, and again when a response that ran as it opened ends: what can be rewound
+    // to, and each one's plan, are only known then.
+    const readFor = createMemo(() => (conn() === "open" && rewindOpen() && !busySession() ? id() : undefined));
+    const [targets, { mutate }] = createResource(
+        readFor,
         (sid) =>
             rpc.call("session.rewindTargets", { id: sid }).catch((e) => {
                 if (conn() === "open") reportError(e);
                 return [];
             }),
     );
+    /** The session's last file restore can still be undone: after a restart too, once the toast's Undo is gone. */
+    const [canUndo, { mutate: setCanUndo }] = createResource(readFor, (sid) => rpc.call("session.rewindCanUndo", { id: sid }).catch(() => false));
+    /** The prompts, once read for the session the dialog is open for (not while they're read again). */
+    const list = () => (targets.state === "ready" ? targets() : undefined);
+    /** When each was sent; to the second where the next one up or down would read the same. */
+    const times = createMemo(() => rewindTimes(list()?.map((t) => t.at) ?? []));
     createEffect(
         on(rewindOpen, (open) => {
-            if (!open) return;
+            // Closed, it's for no session: opened next, it doesn't first ask for this one's prompts (deleted by then, say).
+            if (!open) {
+                setId(undefined);
+                mutate(undefined);
+                return;
+            }
             setId(app.activeId);
             setPlan(undefined);
             // Through undefined, so the plan is fetched again even for the prompt chosen last time.
             setChosen(undefined);
             setChosen(rewindTarget.get());
             rewindTarget.set(undefined);
-            void refetch();
         }),
     );
     // Open, the user is back: the session doesn't compact while idle under it (that would change what can be rewound to).
@@ -74,14 +102,16 @@ export function RewindDialog() {
         ),
     );
     createEffect(
-        on([chosen, () => conn() === "open", id, rewindOpen], ([index, connected, sid, open]) => {
+        on([chosen, () => conn() === "open", id, rewindOpen, readFor], ([index, connected, sid, open, reading]) => {
             let current = true;
             onCleanup(() => {
                 current = false;
             });
             setPlan(undefined);
             setConfirming(undefined);
-            if (index === undefined || !sid || !connected || !open) return;
+            setPlanning(false);
+            if (index === undefined || !sid || !connected || !open || !reading) return;
+            setPlanning(true);
             void rpc.call("session.rewindPlan", { id: sid, index }).then(
                 (value) => {
                     if (current) setPlan(value);
@@ -89,10 +119,46 @@ export function RewindDialog() {
                 (e) => {
                     if (current) reportError(e);
                 },
-            );
+            ).finally(() => {
+                if (current) setPlanning(false);
+            });
         }),
     );
     const close = () => setRewindOpen(false);
+    // The prompts come after the dialog has put the keyboard on what it had (Cancel, the first row of the last list, or
+    // nothing yet): once they're here (or shown, once a reply ends), it goes to the chosen prompt, else the first, so
+    // Tab and Enter start from the list.
+    let listEl: HTMLDivElement | undefined;
+    createEffect(
+        on([list, () => busySession()], ([t, waiting]) => {
+            if (!t?.length || waiting || !rewindOpen()) return;
+            requestAnimationFrame(() => {
+                if (!listEl?.isConnected) return;
+                // Not if the user has moved it since the dialog opened.
+                const dialog = listEl.closest('[role="dialog"]');
+                if (!dialog || userMovedFocus(dialog)) return;
+                const chosenRow = listEl.querySelector<HTMLElement>(".rw-item.on");
+                const at = document.activeElement;
+                if (at === chosenRow || (!chosenRow && listEl.contains(at))) return;
+                (chosenRow ?? listEl.querySelector<HTMLElement>(".rw-item"))?.focus();
+            });
+        }),
+    );
+    /** Up and Down (round the ends, as the branch dialog's list goes), Home and End move between the prompts; Enter picks one. */
+    const onListKey = (e: KeyboardEvent) => {
+        const rows = [...(listEl?.querySelectorAll<HTMLElement>(".rw-item") ?? [])];
+        const at = rows.indexOf(document.activeElement as HTMLElement);
+        if (at < 0 || e.altKey || e.ctrlKey || e.metaKey) return;
+        const n = rows.length;
+        const to = e.key === "ArrowDown" ? (at + 1) % n : e.key === "ArrowUp" ? (at - 1 + n) % n : e.key === "Home" ? 0 : e.key === "End" ? n - 1 : -1;
+        if (to < 0) return;
+        e.preventDefault();
+        rows[to]!.focus();
+    };
+    /** How many files the plan restores, those past the list's end too. */
+    const listedCount = () => (plan()?.restore.length ?? 0) + (plan()?.more ?? 0);
+    /** Nothing to rewind to (yet, or while a response runs): the line, and Close alone. */
+    const empty = () => busySession() || list()?.length === 0;
     const go = async (code: boolean, conversation: boolean) => {
         const p = plan();
         if (!p || !id()) return;
@@ -106,9 +172,13 @@ export function RewindDialog() {
         setBusy(true);
         try {
             const r = await rpc.call("session.rewind", { id: sid, index: p.index, planId: p.planId, code, conversation });
+            // The files moved under every view of them: the changes chip and pane read them again.
+            if (code) refreshGitChanges();
             if (conversation && !r.failed.length) handleFor(sid)?.setDraft({ text: r.text, images: r.images, files: r.files });
             for (const f of r.failed) toast(`Couldn't restore ${f.path}: ${f.error}`, "error");
-            toast(code && r.restored.length ? `Restored ${plural(r.restored.length, "file")}${conversation ? " and the conversation" : ""}` : "Rewound the conversation", "success");
+            const message = code && r.restored.length ? `Restored ${plural(r.restored.length, "file")}${conversation && !r.failed.length ? " and the conversation" : ""}` : "Rewound the conversation";
+            const undo = r.undo;
+            toast(message, "success", undo ? { label: conversation && !r.failed.length ? "Undo files" : "Undo", run: () => undoRestore(sid, undo) } : undefined);
             close();
         } catch (e) {
             reportError(e);
@@ -116,24 +186,26 @@ export function RewindDialog() {
             setBusy(false);
         }
     };
-    // An idle compaction stops for a rewind.
-    const busySession = () => Boolean(handleFor(id())?.view.state.busy && !handleFor(id())?.view.state.activity?.idle);
     return (
-        <Dialog open={rewindOpen()} onClose={close} title="Rewind" subtitle="Go back to before one of your prompts" width={620}>
+        <Dialog open={rewindOpen()} onClose={close} title={empty() ? "Rewind" : "Rewind to before which prompt?"} width={620}>
             <Show when={!busySession()} fallback={<div class="panel-empty">Wait for the response to finish, or stop it.</div>}>
-                <Show when={targets()} fallback={<Spinner />}>
-                    <Show when={targets()!.length} fallback={<div class="panel-empty">Nothing to rewind to yet.</div>}>
-                        <div class="rw-list">
-                            <For each={targets()}>
-                                {(t) => (
+                <Show when={list()} fallback={<Spinner />}>
+                    <Show when={list()!.length} fallback={<div class="panel-empty">Nothing to rewind to yet.</div>}>
+                        <div class="rw-list" ref={listEl} onKeyDown={onListKey}>
+                            <For each={list()}>
+                                {(t, i) => (
                                     <button class={`rw-item ${chosen() === t.index ? "on" : ""}`} aria-pressed={chosen() === t.index} onClick={() => setChosen(t.index)}>
                                         <History size={14} />
                                         <span class="truncate">{promptPreview(t.text) || "(empty prompt)"}</span>
-                                        <span class="muted small">{changedLabel(t)}</span>
+                                        <Show when={changedLabel(t)}>{(label) => <span class="muted small">{label()}</span>}</Show>
+                                        <Show when={t.at}>{(at) => <time class="muted small rw-when" dateTime={new Date(at()).toISOString()} title={new Date(at()).toLocaleString()}>{times()[i()]}</time>}</Show>
                                     </button>
                                 )}
                             </For>
                         </div>
+                        <Show when={planning()}>
+                            <Spinner />
+                        </Show>
                         <Show when={plan()}>
                             <div class="rw-plan">
                                 <Show when={plan()!.forked}>
@@ -142,7 +214,14 @@ export function RewindDialog() {
                                         <span class="small">Files changed before the fork can only be restored in the original session.</span>
                                     </div>
                                 </Show>
-                                <Show when={plan()!.backends?.length}>
+                                <Show when={plan()!.refused}>
+                                    <div class="rw-file warn">
+                                        <AlertTriangle size={13} />
+                                        <span class="small">{onlyOwnEdits(plan()!.refused!, plan()!.backends, plan()!.restore.length > 0)}</span>
+                                    </div>
+                                </Show>
+                                {/* With a refusal, its line says this too. */}
+                                <Show when={plan()!.backends?.length && !plan()!.whole && !plan()!.refused}>
                                     <div class="rw-file warn">
                                         <AlertTriangle size={13} />
                                         <span class="small">
@@ -150,20 +229,26 @@ export function RewindDialog() {
                                         </span>
                                     </div>
                                 </Show>
-                                <Show when={plan()!.restore.length} fallback={<div class="muted small">{plan()!.forked ? "No file changes to undo since the fork." : plan()!.tracked ? (plan()!.backends?.length ? "Cavvy made no file changes to undo since then." : "No file changes to undo since then.") : "File changes from then can't be undone."}</div>}>
-                                    <div class="small">Cavvy changed {plural(plan()!.restore.length, "file")} {plan()!.forked ? "in this session since the fork" : "since then"}:</div>
+                                <Show when={plan()!.restore.length} fallback={<Show when={!plan()!.refused}><div class="muted small">{plan()!.forked ? "No file changes to undo since the fork." : plan()!.tracked ? (plan()!.backends?.length && !plan()!.whole ? "Cavvy made no file changes to undo since then." : "No file changes to undo since then.") : "File changes from then can't be undone."}</div></Show>}>
+                                    {/* Said only when it isn't the row's own count: changes since then, from later prompts or by hand. */}
+                                    <Show when={listedCount() !== list()?.find((t) => t.index === chosen())?.files}>
+                                        <div class="small">{plan()!.whole ? `${plural(listedCount(), "file")} changed since then:` : `Cavvy changed ${plural(listedCount(), "file")} ${plan()!.forked ? "in this session since the fork" : "since then"}:`}</div>
+                                    </Show>
                                     <For each={plan()!.restore}>
                                         {(r) => (
                                             <div class="rw-file">
-                                                {r.action === "delete" ? <FileMinus2 size={13} class="tone-del" /> : <FilePen size={13} />}
+                                                {r.action === "delete" ? <FileMinus2 size={13} class="tone-del" /> : r.action === "create" ? <FilePlus2 size={13} /> : <FilePen size={13} />}
                                                 <span class="mono truncate">{r.path}</span>
-                                                <span class="muted small">{r.action === "delete" ? "delete" : "restore"}</span>
+                                                <span class="muted small">{r.action === "delete" ? "delete" : r.action === "create" ? "recreate" : "restore"}</span>
                                                 <Show when={r.outside}>
                                                     <span class="chip tiny warn">changed outside</span>
                                                 </Show>
                                             </div>
                                         )}
                                     </For>
+                                    <Show when={plan()!.more}>
+                                        <div class="muted small">and {plan()!.more} more</div>
+                                    </Show>
                                 </Show>
                                 <For each={plan()!.skipped}>
                                     {(s) => (
@@ -174,7 +259,10 @@ export function RewindDialog() {
                                         </div>
                                     )}
                                 </For>
-                                <div class="muted small">Changes made by shell commands aren't undone.</div>
+                                {/* Said already by the line on why only Cavvy's edits can be restored. */}
+                                <Show when={!plan()!.whole && !plan()!.refused}>
+                                    <div class="muted small">Changes made by shell commands aren't undone.</div>
+                                </Show>
                                 <Show when={confirming()}>
                                     <div class="rw-confirm">
                                         <AlertTriangle size={14} />
@@ -189,20 +277,43 @@ export function RewindDialog() {
                     </Show>
                 </Show>
             </Show>
+            {/* Above the buttons: beside them, the row is too wide for the dialog. */}
+            <Show when={canUndo.state === "ready" && canUndo() && !busySession()}>
+                <div>
+                    <button
+                        class="link-btn small"
+                        disabled={busy()}
+                        onClick={() => {
+                            const sid = id();
+                            if (!sid) return;
+                            setCanUndo(false);
+                            close();
+                            void undoRestore(sid);
+                        }}
+                    >
+                        Undo last restore
+                    </button>
+                </div>
+            </Show>
             <div class="dialog-actions">
+                <Show when={empty()}>
+                    <span class="grow" />
+                </Show>
                 <button class="btn ghost" onClick={close}>
-                    Cancel
+                    {empty() ? "Close" : "Cancel"}
                 </button>
-                <span class="grow" />
-                <button class="btn secondary" disabled={!plan() || busy() || !plan()!.restore.length} onClick={() => void go(true, false)}>
-                    Code only
-                </button>
-                <button class="btn secondary" disabled={!plan() || busy()} onClick={() => void go(false, true)}>
-                    Conversation only
-                </button>
-                <button class="btn primary" disabled={!plan() || busy() || !plan()!.restore.length} onClick={() => void go(true, true)}>
-                    Restore both
-                </button>
+                <Show when={!empty()}>
+                    <span class="grow" />
+                    <button class="btn secondary" disabled={!plan() || busy() || !plan()!.restore.length} onClick={() => void go(true, false)}>
+                        Code only
+                    </button>
+                    <button class="btn secondary" disabled={!plan() || busy()} onClick={() => void go(false, true)}>
+                        Conversation only
+                    </button>
+                    <button class="btn primary" disabled={!plan() || busy() || !plan()!.restore.length} onClick={() => void go(true, true)}>
+                        Restore both
+                    </button>
+                </Show>
             </div>
         </Dialog>
     );

@@ -1,7 +1,7 @@
 import { createSignal, createUniqueId, onCleanup, onMount, Show, type JSX } from "solid-js";
 import { Portal } from "solid-js/web";
 import { X } from "lucide-solid";
-import { tabWrap } from "../../lib/focus-trap";
+import { focusMoved, tabWrap, userMovedFocus } from "../../lib/focus-trap";
 
 export interface DialogProps {
     open: boolean;
@@ -48,6 +48,7 @@ function DialogInner(p: DialogProps) {
         const me = box!;
         stack.push(me);
         setDialogOpen(true);
+        document.documentElement.toggleAttribute("data-dialog", true);
         const onKey = (e: KeyboardEvent) => {
             if (stack[stack.length - 1] !== me || !box) return;
             if (e.key === "Escape") {
@@ -55,6 +56,8 @@ function DialogInner(p: DialogProps) {
                 e.stopPropagation();
                 p.onClose();
             } else if (e.key === "Tab") {
+                // The user moves the keyboard: what loads later doesn't take it back (takeFocus).
+                focusMoved(me);
                 // Tab stays in the dialog: what's behind it can't be reached while it's open.
                 // A roving group's other members (tabIndex -1) aren't Tab stops, so they can't be the ends it wraps at.
                 const items = [...box.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((el) => el.tabIndex >= 0 && el.getClientRects().length > 0);
@@ -72,15 +75,17 @@ function DialogInner(p: DialogProps) {
             }
         };
         document.addEventListener("keydown", onKey, true);
-        // Focus the first field, or the dialog itself.
+        // Focus the field marked autofocus, else the first, or the dialog itself.
         requestAnimationFrame(() => {
-            const first = box?.querySelector<HTMLElement>("[autofocus], input, textarea, select, button:not(.dialog-close)");
+            if (box && userMovedFocus(box)) return;
+            const first = box?.querySelector<HTMLElement>("[autofocus]") ?? box?.querySelector<HTMLElement>("input, textarea, select, button:not(.dialog-close)");
             (first ?? box)?.focus();
         });
         onCleanup(() => {
             document.removeEventListener("keydown", onKey, true);
             stack.splice(stack.indexOf(me), 1);
             setDialogOpen(stack.length > 0);
+            document.documentElement.toggleAttribute("data-dialog", stack.length > 0);
             previous?.focus?.();
         });
     });
@@ -95,6 +100,7 @@ function DialogInner(p: DialogProps) {
                     aria-modal="true"
                     aria-labelledby={p.bare ? p.labelledBy : p.title ? titleId : undefined}
                     tabIndex={-1}
+                    onPointerDown={() => focusMoved(box!)}
                 >
                     <Show when={!p.bare}>
                         <div class="dialog-head">

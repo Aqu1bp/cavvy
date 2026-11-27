@@ -685,6 +685,23 @@ export function markSeenAll(list: SessionSummary[], unlisted: string[] = []) {
     saveSeen();
 }
 
+/**
+ * Sessions the list had working that come back stopped (the server was stopped or died while they worked, and was
+ * started again): news, as a turn that ended while you were elsewhere is, even when nothing was written since you
+ * last looked (the row says "Stopped").
+ */
+function noteStopped(next: readonly SessionSummary[]) {
+    let was: Map<string, SessionSummary> | undefined;
+    for (const s of next) {
+        if (!s.stopped || s.status !== "idle" || s.id === app.activeId) continue;
+        was ??= new Map(app.sessions.map((x) => [x.id, x]));
+        const before = was.get(s.id);
+        if (before?.status !== "running" && before?.status !== "waiting") continue;
+        const seen = app.seen[s.id];
+        if (seen === undefined || s.updatedAt <= seen + 1500) markSeen(s.id, s.updatedAt - 1501);
+    }
+}
+
 export function isUnread(s: SessionSummary): boolean {
     if (s.id === app.activeId || s.status === "running") return false;
     const seen = app.seen[s.id];
@@ -860,10 +877,10 @@ function letGo(h: SessionHandle) {
  * closed, the one just left too, each opened afresh on the way back (another machine's: 119-137 ms, against 14-19).
  * Not one holding a message handed back that no box has taken yet: it'd be lost. Nor `opened`, just made or opened to
  * be shown (not yet the one in view): with the others all working or waiting on the user, it was the one closed, and
- * what was typed into it went nowhere.
+ * what was typed into it went nowhere. Nor one with a side chat open, which closing it would throw away.
  */
 function trim(opened: string) {
-    const kept = (h: SessionHandle) => h.view.state.busy || h.draft() !== undefined;
+    const kept = (h: SessionHandle) => h.view.state.busy || h.draft() !== undefined || h.view.state.sideChat !== undefined;
     let idle = 0;
     for (const h of handles.values()) if (!kept(h)) idle++;
     if (idle <= KEEP_OPEN) return;
@@ -1587,6 +1604,7 @@ export async function refreshSessions() {
         setApp("seen", seen);
         saveSeen();
     }
+    noteStopped(list);
     batch(() => {
         setApp("sessions", reconcile(orderSessions(list), { key: "id" }));
         setApp("archived", reconcile(orderSessions(archived), { key: "id" }));
@@ -1792,6 +1810,7 @@ function upsertSessions(all: readonly SessionSummary[]) {
         });
     const archived = all.filter((s) => s.archived);
     const live = all.filter((s) => !s.archived);
+    noteStopped(live);
     batch(() => {
         put("sessions", live, new Set(archived.map((s) => s.id)));
         put("archived", archived, new Set(live.map((s) => s.id)));
@@ -1878,6 +1897,8 @@ function onEvent(ev: ServerEvent) {
             return;
         case "models.changed":
             void refreshProviders().catch(() => undefined);
+            // A provider removed resets the defaults that named it, and changes what Automatic picks.
+            void refreshSettings().catch(() => undefined);
             // A fetch in flight gets the new list anyway.
             if (!app.modelsLoading) void refreshModels().catch(() => undefined);
             return;

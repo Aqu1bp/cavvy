@@ -27,7 +27,7 @@ export function cwdGitEnv(): Record<string, string> {
     return env;
 }
 
-function untrustedGitEnv(): Record<string, string> {
+export function untrustedGitEnv(): Record<string, string> {
     // Git before 2.45 ignores GIT_NO_LAZY_FETCH. As in git-changes, deny every
     // real protocol too, so missing objects cannot invoke a promisor transport.
     // A relative PATH entry ("." or empty) would let the repo supply the program a
@@ -199,7 +199,7 @@ function readSmall(path: string): string | undefined {
  * every session until it returned. "" when HEAD is detached; undefined whenever it takes git to say, as anything not plain
  * does: a reftable repository (its HEAD names nothing), a bare one, a stop to the search, a mount on the way up.
  */
-function headBranch(cwd: string): string | undefined {
+export function headBranch(cwd: string): string | undefined {
     if (process.env.GIT_CEILING_DIRECTORIES !== undefined || process.env.GIT_DISCOVERY_ACROSS_FILESYSTEM !== undefined) return undefined;
     try {
         let dir = realpathSync(cwd);

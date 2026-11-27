@@ -21,7 +21,7 @@ import type { ProviderDef } from "../providers/registry";
 import type { PlanLimits } from "../server/protocol";
 import { cliNotice } from "./notice-data";
 import { codexReachedType, creditsNote, limitAccountLabel, limitNotice, limitStopOf, limitStopReport, mergeLimits, parseCodexRateLimits, resetSentence } from "./limits";
-import type { PermissionMode } from "../permissions/modes";
+import { STRICTNESS, type PermissionMode } from "../permissions/modes";
 import { analyzeCommand } from "../permissions/bash-safety";
 import { APP_NAME, APP_TITLE, APP_VERSION } from "../config/paths";
 import { redact } from "../util/redact";
@@ -38,6 +38,7 @@ import { servedSessionTool } from "../tools/session-tools";
 import { servedWorktreeTool } from "../tools/worktree-tools";
 import { codexInput, codexSkills, pastedPrompt, skillFolder, type CodexSkill } from "./native-skills";
 import { accountEnv, defaultAccount } from "../providers/accounts";
+import { cliEnv } from "../providers/agent-env";
 import { signInAdvice } from "./account-login";
 import { askForm } from "../mcp/elicitation";
 import { backendModel, type AgentBackendClient, type BackgroundStop, type SessionHost, type TurnSink, type BackendPermission, type BackendQuestion, type BackendResult, type BackendTurn, type OrchestratorServer, type PermissionAnswer, type SteerMessage } from "./types";
@@ -143,7 +144,7 @@ export function untrustedArgs(cwd: string): string[] {
 function spawnRpc(providerId: string, cwd: string, onNotification: (method: string, params: any) => void, onRequest: (method: string, params: any) => Promise<unknown>, opts: { trusted?: boolean; accountId?: string; hooks?: CodexHookEvent[] } = {}): Rpc {
     const bin = requireCli(providerId, CODEX_CLI);
     const args = ["app-server", ...extraArgs(providerId), ...(opts.trusted === false ? untrustedArgs(cwd) : []), ...(opts.hooks?.length ? codexHookArgs(opts.hooks) : [])];
-    return new Rpc(new JsonLinesProcess(bin, args, { cwd, env: accountEnv(providerId, opts.accountId, cwd) }), onNotification, onRequest);
+    return new Rpc(new JsonLinesProcess(bin, args, { cwd, env: cliEnv(providerId, opts.accountId, cwd) }), onNotification, onRequest);
 }
 
 async function handshake(rpc: Rpc) {
@@ -524,7 +525,7 @@ export function imagesOf(messages: readonly SteerMessage[] | undefined): ImagePa
 }
 
 /** How much a mode lets Codex do on its own; switching to a higher one mid-turn can't wait for the next turn. */
-export const STRICTNESS: Record<PermissionMode, number> = { bypassPermissions: 0, auto: 1, acceptEdits: 2, default: 3, plan: 4 };
+export { STRICTNESS };
 
 export interface OpenItem {
     name: string;
@@ -1967,7 +1968,7 @@ export class CodexTurn {
             // asks gets the user now, since Codex may not ask (bypass never does). Either way a PermissionRequest
             // hook may answer, and may rewrite it again: what it approved is what runs.
             const input = h?.updatedInput ?? call.input;
-            const a = await this.cliSession.permission({ toolName: call.toolName, input, callId: id, hookDecision, hooksOnly: h?.updatedInput ? bypass : undefined, agentLabel, ...this.subAsk(from) });
+            const a = await this.cliSession.permission({ toolName: call.toolName, input, callId: id, hookDecision, hooksOnly: h?.updatedInput ? bypass : undefined, agentLabel, ...this.subAsk(from), ...this.ownMode() });
             if (!a.allow) {
                 if (a.stop) this.interrupt(from);
                 return deny(a.message || "Denied.");
@@ -1979,6 +1980,14 @@ export class CodexTurn {
         }
         if (hookDecision && id) this.hookAnswers.set(id, "allow");
         return preToolUseAnswer({ context });
+    }
+
+    /**
+     * In auto, Codex's own reviewer decides, and what it asks about it has decided needs the user: Cavvy adds nothing
+     * of its own mode (BackendPermission.ownMode). Not for a read-only agent, whose policy is Cavvy's.
+     */
+    protected ownMode(): Pick<BackendPermission, "ownMode"> {
+        return (this.turnMode ?? this.cliSession.mode()) === "auto" && !this.t.readOnly ? { ownMode: true } : {};
     }
 
     /**
@@ -2064,7 +2073,7 @@ export class CodexTurn {
                 // network says something. One in another folder is checked as `cd <folder> && …`, where it runs,
                 // and only inside the workspace: a search there (`rg --hidden .`) reads what the checker can't see.
                 const asksAlways = !net && insideWorkspace(dir, this.t.cwd, this.t.additionalDirectories) && codexPolicy(this.turnMode ?? this.cliSession.mode(), [], Boolean(this.t.readOnly)).approvalPolicy === "untrusted";
-                const a = await this.ask({ toolName: "Bash", input: { command, description: typeof p.reason === "string" ? p.reason : undefined }, reason: `${typeof p.reason === "string" ? p.reason : ""}${net}`.trim() || undefined, asksAlways, agentLabel, ...this.subAsk(from), callId: typeof p.itemId === "string" ? p.itemId : undefined });
+                const a = await this.ask({ toolName: "Bash", input: { command, description: typeof p.reason === "string" ? p.reason : undefined }, reason: `${typeof p.reason === "string" ? p.reason : ""}${net}`.trim() || undefined, asksAlways, agentLabel, ...this.subAsk(from), ...this.ownMode(), callId: typeof p.itemId === "string" ? p.itemId : undefined });
                 return { decision: this.decision(a, p.itemId, from) };
             }
             case "item/fileChange/requestApproval": {
@@ -2072,7 +2081,7 @@ export class CodexTurn {
                 // A sub-agent's change Codex asks about before saying whose thread it is: the change as it was announced.
                 const changes = open?.changes ?? this.unclaimedChanges(p.threadId, p.itemId);
                 if (!changes.length && typeof p.grantRoot === "string") {
-                    const a = await this.cliSession.permission({ toolName: "Edit", input: { file_path: join(p.grantRoot, "*") }, title: `Write access to ${p.grantRoot}`, reason: p.reason ?? undefined, agentLabel, ...this.subAsk(from) });
+                    const a = await this.cliSession.permission({ toolName: "Edit", input: { file_path: join(p.grantRoot, "*") }, title: `Write access to ${p.grantRoot}`, reason: p.reason ?? undefined, agentLabel, ...this.subAsk(from), ...this.ownMode() });
                     return { decision: this.decision(a, p.itemId, from) };
                 }
                 if (!changes.length) {
@@ -2094,7 +2103,7 @@ export class CodexTurn {
                     preview: first ? changePreview(first, this.t.cwd) : undefined,
                     otherPaths: others,
                     agentLabel,
-                    ...this.subAsk(from),
+                    ...this.subAsk(from), ...this.ownMode(),
                 });
                 return { decision: this.decision(a, p.itemId, from) };
             }
@@ -2113,7 +2122,7 @@ export class CodexTurn {
                     reason: [typeof p.reason === "string" ? p.reason : "", `It wants: ${asks.join(", ")}.`].filter(Boolean).join(" "),
                     widens: { read: want.read, write: want.write },
                     agentLabel,
-                    ...this.subAsk(from),
+                    ...this.subAsk(from), ...this.ownMode(),
                 });
                 // Codex grants exactly what it asked for, so a hook's rewrite of the request can't be granted; nothing is.
                 if (a.allow && a.updatedInput) {
@@ -2128,7 +2137,7 @@ export class CodexTurn {
             case "item/tool/requestUserInput": {
                 const qs: any[] = Array.isArray(p.questions) ? p.questions : [];
                 const answers = await this.cliSession.askQuestions(
-                    qs.map((q) => ({ question: String(q?.question ?? ""), header: typeof q?.header === "string" ? q.header : undefined, options: (Array.isArray(q?.options) ? q.options : []).map((o: any) => ({ label: String(o?.label ?? ""), description: typeof o?.description === "string" ? o.description : undefined })) })),
+                    qs.map((q) => ({ question: String(q?.question ?? ""), header: typeof q?.header === "string" ? q.header : undefined, options: (Array.isArray(q?.options) ? q.options : []).map((o: any) => ({ label: String(o?.label ?? ""), description: typeof o?.description === "string" ? o.description : undefined })), attach: true })),
                 );
                 return { answers: Object.fromEntries(qs.map((q, i) => [String(q?.id ?? i), { answers: answers?.[i] ?? [] }])) };
             }
@@ -2156,8 +2165,8 @@ export class CodexTurn {
             const call = meta.codex_approval_kind === "mcp_tool_call" ? this.mcpCall(server, meta.tool_params, message, from) : undefined;
             const a = await this.cliSession.permission(
                 call
-                    ? { toolName: call.name, input: call.input, title: call.title, reason: message || undefined, agentLabel, ...this.subAsk(from) }
-                    : { toolName: "Codex approval", input: { server, kind: meta.codex_approval_kind, message }, title: message || `Codex asks for approval (${String(meta.codex_approval_kind)})`, agentLabel, ...this.subAsk(from) },
+                    ? { toolName: call.name, input: call.input, title: call.title, reason: message || undefined, agentLabel, ...this.subAsk(from), ...this.ownMode() }
+                    : { toolName: "Codex approval", input: { server, kind: meta.codex_approval_kind, message }, title: message || `Codex asks for approval (${String(meta.codex_approval_kind)})`, agentLabel, ...this.subAsk(from), ...this.ownMode() },
             );
             const d = this.decision(a, call?.id, from);
             const asked = call?.id ? this.items.get(call.id) : undefined;

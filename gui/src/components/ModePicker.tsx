@@ -31,7 +31,7 @@ export function nextMode(m: PermissionModeId, bypass: boolean): PermissionModeId
 const BYPASS_OFF = "Turn on “Allow bypass mode” in Settings first.";
 
 /** Words alone, on the button and in its menu. Grey but Plan, in the accent, and Bypass, in red: the two worth noticing. */
-export function ModePicker(p: ComposerMenu & { mode: PermissionModeId; bypassAllowed: boolean }) {
+export function ModePicker(p: ComposerMenu & { /** The session it's for (default: the one shown). */ sessionId?: string; mode: PermissionModeId; bypassAllowed: boolean }) {
     let anchor: HTMLButtonElement | undefined;
     const describe = (m: PermissionModeId) => MODE_LABELS[m].description;
     return (
@@ -65,7 +65,7 @@ export function ModePicker(p: ComposerMenu & { mode: PermissionModeId; bypassAll
                                     title={disabled() ? BYPASS_OFF : describe(m)}
                                     onClick={() => {
                                         p.setOpen(false);
-                                        void setMode(m);
+                                        void setMode(m, p.sessionId);
                                     }}
                                 >
                                     <span class="menu-text">

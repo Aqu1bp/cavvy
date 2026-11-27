@@ -244,7 +244,7 @@ describe("GitPush", () => {
         expect(calls(state, ".git-calls").some((a) => a.includes("push"))).toBe(false);
     });
 
-    test("a rejected push says to reconcile and never forces", async () => {
+    test("a rejected push says to pull first and never forces", async () => {
         const { cwd, remote } = repo();
         const ctx = ctxFor(cwd);
         await run(GitPushTool, {}, ctx);
@@ -256,8 +256,8 @@ describe("GitPush", () => {
         git(cwd, "commit", "--allow-empty", "-qm", "mine");
         const r = await run(GitPushTool, {}, ctx);
         expect(r.isError).toBe(true);
-        expect(r.content).toMatch(/rejected|fetch/i);
-        expect(r.content).toContain("No force push was attempted");
+        expect(r.content).toContain("The remote has commits this branch doesn't. Pull, then push again.");
+        expect(r.content).toMatch(/rejected|fetch first/i);
         expect(git(remote, "log", "-1", "--format=%s", "feature")).toBe("theirs");
     });
 
@@ -318,7 +318,7 @@ describe("GitPush", () => {
         const { cwd } = repo();
         git(cwd, "checkout", "-q", "--detach");
         const r = await run(GitPushTool, {}, ctxFor(cwd));
-        expect(r).toMatchObject({ isError: true, content: expect.stringContaining("detached HEAD") });
+        expect(r).toMatchObject({ isError: true, content: expect.stringContaining("Check out a branch to push") });
     });
 });
 
@@ -538,9 +538,10 @@ describe("permissions", () => {
         }
         // The reviewer isn't told of them either: it would take a push from Bash as approved too.
         expect(checker.recentApprovals()).toEqual([]);
-        // Other tools still remember an exact yes.
+        // Other tools' yeses do reach the reviewer.
         checker.approve(tool("Bash"), { command: "make" }, cwd);
-        expect(checker.check(tool("Bash"), { command: "make" }, "default", cwd)).toMatchObject({ behavior: "allow", remembered: true });
+        expect(checker.check(tool("Bash"), { command: "make" }, "default", cwd)).toMatchObject({ behavior: "ask" });
+        expect(checker.recentApprovals()).toEqual([{ tool: "Bash", cwd: expect.any(String), command: "make" }]);
     });
 
     test("watching only reads, so it runs without asking, plan mode included", () => {

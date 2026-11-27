@@ -8,6 +8,7 @@ import type { ModelInfo } from "../providers/types";
 import { USAGE_DAYS, type UsageDays, type UsageSummary, type UsageTotals, type UsageRow, type UsageSourceRow, type UsageBucket, type UsageAccountRow, type UsageDetailBucket, type PlanLimits } from "./protocol";
 import { RpcError } from "./rpc-error";
 import { scanUsage, usageBounds, type Source, type UsageRecord } from "./usage-reader";
+import { baseCli } from "../backends/defs";
 export { usageBounds, clearUsageCache } from "./usage-reader";
 
 export function usageDays(v: unknown): UsageDays {
@@ -53,10 +54,10 @@ export async function usageSummary(days: UsageDays, now = Date.now(), limits: Pl
             // Concrete models pin historical records to their own price. An
             // alias without a recorded resolution has no historical evidence;
             // do not silently price it as today's default model.
-            if (provider === "claude-code" || provider === "anthropic") {
+            if (baseCli(provider) === "claude-code" || provider === "anthropic") {
                 const known = anthropicPricing(id);
                 models.set(key, known ? { ...resolveModelInfo(`anthropic:${id}`), provider: "anthropic", id, pricing: known.pricing, pricingEstimated: known.estimated || undefined } : undefined);
-            } else models.set(key, resolveModelInfo(`${provider === "codex" ? "openai" : provider}:${id}`));
+            } else models.set(key, resolveModelInfo(`${baseCli(provider) === "codex" ? "openai" : provider}:${id}`));
         }
         return models.get(key);
     };
@@ -69,7 +70,7 @@ export async function usageSummary(days: UsageDays, now = Date.now(), limits: Pl
         v.cost = recorded ? r.cost : estimate.usd;
         v.unknown = r.unknown || (estimate.unknown && !r.cost);
         // Priced by Cavvy (now, or when the turn was saved) from a family's latest: the "~" in Usage. Not a provider's own figure.
-        const guessed = (provider === "claude-code" || provider === "anthropic") && info?.pricingEstimated;
+        const guessed = (baseCli(provider) === "claude-code" || provider === "anthropic") && info?.pricingEstimated;
         if (guessed && !r.unknown && v.cost > 0 && typeof r.usage.cost !== "number") v.estimated = true;
         v.planEquivalent = source === "api" ? 0 : v.cost;
         if (parts && !r.unknown) {

@@ -21,6 +21,7 @@ import { addNotice, noticesUpTo, savingRetry, turnNotice, type TurnNotice } from
 import { eachLine, linesFromEnd } from "../util/lines";
 import { nextSlice } from "../util/slices";
 import { allProviders, getProvider } from "../providers/registry";
+import { agentCli } from "../backends/defs";
 
 /** Tool output sent inline; longer output is fetched when the row is opened. */
 export const INLINE_OUTPUT = 4000;
@@ -750,9 +751,10 @@ export function withoutActionsNote(text: string): string {
 
 function actionsNoteRe(): RegExp {
     if (!actionsNote) {
+        // A CLI's named instances (added later, or removed since) are "<its name> · <theirs>".
         const names = allProviders()
-            .filter((p) => p.kind === "agent")
-            .map((p) => p.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+            .filter((p) => p.kind === "agent" && !p.instanceOf)
+            .map((p) => `${p.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?: · [^\\]\\n]+?)?`);
         actionsNote = new RegExp(`(^|\\n\\n)\\[(?:${names.join("|")}) used: ([\\s\\S]*?)\\](?=\\n\\n|$)`, "g");
     }
     actionsNote.lastIndex = 0;
@@ -920,7 +922,8 @@ export function replay(o: ReplayInput): Turn[] {
     const backends = new Map<string, boolean>();
     const isBackend = (provider: string) => {
         let b = backends.get(provider);
-        if (b === undefined) backends.set(provider, (b = getProvider(provider)?.kind === "agent"));
+        // A named instance removed since is still its CLI's (agentCli takes its CLI's id).
+        if (b === undefined) backends.set(provider, (b = getProvider(provider)?.kind === "agent" || Boolean(agentCli(provider))));
         return b;
     };
     const last = o.segments[o.segments.length - 1];

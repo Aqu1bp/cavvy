@@ -11,7 +11,7 @@
 
 import { isAbsolute, join } from "path";
 import { homedir } from "os";
-import { analyzeCommand, effectiveArgv, shellCommands, onlySafeAssignments, programNames, runLevels, runs, SHELLS, substitutionBodies } from "./bash-safety";
+import { analyzeCommand, effectiveArgv, shellCommands, onlySafeAssignments, programNames, runLevels, runs, SHELL_WORDS, SHELLS, suggestBashRules, substitutionBodies } from "./bash-safety";
 import { CASE_FOLDS, canonical, spellings } from "../util/files";
 import { isShellTool } from "../tools/types";
 import { APP_NAME } from "../config/name";
@@ -145,6 +145,25 @@ function matchCommandSpec(spec: string, command: string): boolean {
         return re.test(cmd);
     }
     return cmd === spec;
+}
+
+/**
+ * Shell syntax at a command's start (if, then, do, `!`, `[[`, `{`, `(`, zsh's noglob and nocorrect): what follows isn't
+ * a program a rule names.
+ */
+const syntaxWord = (w: string | undefined) => !w || SHELL_WORDS.has(w) || w === "!" || w === "noglob" || w === "nocorrect" || w.startsWith("[[") || w.startsWith("((") || /^[{}()]|[{}()]$/.test(w);
+
+/**
+ * The Bash rules to offer as Always allow: only ones that, saved, would let this command through by themselves (one
+ * rule has to match every command on the line), and none for shell syntax.
+ */
+export function workingBashRules(command: string): string[] {
+    if (shellCommands(command).commands.some((c) => syntaxWord(effectiveArgv(c.argv)[0]))) return [];
+    // Not one named by an option (`time -p x` would make Bash(-p:*)): it isn't a program.
+    return suggestBashRules(command).filter((r) => {
+        const spec = parseRule(r).spec;
+        return !!spec && !spec.startsWith("-") && bashRuleMatches(spec, command, "allow");
+    });
 }
 
 /**

@@ -39,6 +39,7 @@ describe("the view menu", () => {
     test("the button names the view, or the turn by its place in the session", () => {
         expect(viewLabel("uncommitted")).toBe("Uncommitted");
         expect(viewLabel("branch")).toBe("Branch");
+        expect(viewLabel("commit")).toBe("Commit");
         expect(viewLabel("last-turn")).toBe("Last turn");
         expect(viewLabel("cavvy")).toBe("Cavvy edits");
         expect(viewLabel("turn", 7, turns)).toBe("Turn 2");
@@ -46,19 +47,21 @@ describe("the view menu", () => {
         expect(viewLabel("turn", 12, turns)).toBe("Turn");
         expect(viewLabel("turn", undefined, undefined)).toBe("Turn");
         // Names only: what each covers is in docs/git.md, not in the menu.
-        expect(Object.values(VIEWS).map((v) => Object.keys(v))).toEqual([["label"], ["label"], ["label"], ["label"]]);
+        expect(Object.values(VIEWS).map((v) => Object.keys(v))).toEqual([["label"], ["label"], ["label"], ["label"], ["label"]]);
     });
 
-    test("at home: the four views, the recorded turns newest first, a running one not yet pickable", () => {
+    test("at home: the five views, the recorded turns newest first, a running one not yet pickable", () => {
         const m = viewMenu({ place: { scope: "turn" }, turnId: 7, repo: true, turns, busy: true, branch: "main", base: "origin/main" });
         expect(m.views.map((v) => [v.scope, v.on, v.disabled])).toEqual([
             ["uncommitted", false, undefined],
             ["branch", false, undefined],
+            ["commit", false, undefined],
             ["last-turn", false, undefined],
             ["cavvy", false, undefined],
         ]);
-        // Only Branch has a second line: what it's compared with.
-        expect(m.views.map((v) => v.desc)).toEqual([undefined, "vs origin/main", undefined, undefined]);
+        // Branch and Commit have a second line: what it's compared with, and which commit.
+        expect(m.views.map((v) => v.desc)).toEqual([undefined, "vs origin/main", undefined, undefined, undefined]);
+        expect(viewMenu({ place: { scope: "commit" }, repo: true, busy: false, commit: { sha: "a1b2c3d4e5f6", subject: "Fix the build" } }).views[2]).toMatchObject({ on: true, desc: "a1b2c3d Fix the build" });
         expect(m.turns.map((t) => [t.id, t.label, t.on, Boolean(t.disabled)])).toEqual([
             [9, "Turn 3", false, true],
             [7, "Turn 2", true, false],
@@ -74,6 +77,7 @@ describe("the view menu", () => {
         expect(m.views.map((v) => [v.scope, v.on, Boolean(v.disabled)])).toEqual([
             ["uncommitted", false, false],
             ["branch", true, false],
+            ["commit", false, false],
             ["last-turn", false, true],
             ["cavvy", false, true],
         ]);
@@ -85,6 +89,7 @@ describe("the view menu", () => {
         expect(m.views.map((v) => [v.scope, v.on, v.disabled])).toEqual([
             ["uncommitted", false, "Not a Git repository."],
             ["branch", false, "Not a Git repository."],
+            ["commit", false, "Not a Git repository."],
             ["last-turn", false, "Not a Git repository."],
             ["cavvy", true, undefined],
         ]);

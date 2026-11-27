@@ -168,6 +168,16 @@ test("a server's sessions are listed and kept up to date, each change told by it
     expect(((await remote.call("sessions.list", { limit: 50, archived: true })) as { id: string; pinned: boolean }[]).map((s) => [s.id, s.pinned])).toEqual([[id, true]]);
     await here.call("servers.relay", { name: "box", method: "session.archive", params: { id, archived: false } });
     await until("it to be told back in play", () => here.machine("box")?.sessions.find((s) => s.id === id)?.archived === false);
+    // Snoozed there, by the server's own timer, and told back with when it wakes; woken from here.
+    const until_ = Date.now() + 3_600_000;
+    expect(await here.call("servers.relay", { name: "box", method: "session.snooze", params: { id, until: until_, extra: "x" } })).toBeNull();
+    await until("it to be told snoozed", () => here.machine("box")?.sessions.find((s) => s.id === id)?.snoozedUntil === until_);
+    await here.call("servers.relay", { name: "box", method: "session.snooze", params: { id, until: null } });
+    await until("it to be told awake", () => here.machine("box")?.sessions.find((s) => s.id === id)?.snoozedUntil === undefined);
+    // Named again there, by the server's model; the new title is told back.
+    // The new title comes back, for the row's toast and its Undo.
+    expect(await here.call("servers.relay", { name: "box", method: "session.regenerateTitle", params: { id } })).toEqual({ title: "Say hi" });
+    await until("the new title to be told", () => here.machine("box")?.sessions.find((s) => s.id === id)?.title === "Say hi");
     // Only what a row offers, only for a session, only on one of this Cavvy's servers; and why not, in the server's words.
     await expect(here.call("servers.relay", { name: "box", method: "session.send", params: { id, text: "hi" } })).rejects.toThrow("Open the session to do that.");
     // What asks about folders there (removing a session's worktree as it's archived) isn't done from here. Only
@@ -177,6 +187,11 @@ test("a server's sessions are listed and kept up to date, each change told by it
     const asks = watch.call;
     watch.call = async () => ({ worktree: { path: "/srv/app/.claude/worktrees/x", branch: "x", main: "/srv/app" }, removable: true, reason: "It has changes." });
     expect(await here.call("servers.relay", { name: "box", method: "session.archiveOffer", params: { id } })).toEqual({ worktree: true });
+    // A delete there that had nothing to put in its trash says so (no Undo), and only that.
+    watch.call = async () => ({ unsaved: true, path: "/srv/app" });
+    expect(await here.call("servers.relay", { name: "box", method: "session.delete", params: { id } })).toEqual({ unsaved: true });
+    watch.call = async () => null;
+    expect(await here.call("servers.relay", { name: "box", method: "session.delete", params: { id } })).toBeNull();
     watch.call = asks;
     // And archiving passes on only the session and whether it's archived.
     expect(await here.call("servers.relay", { name: "box", method: "session.archive", params: { id, archived: true, removeWorktree: true, deleteIgnored: "x" } })).toBeNull();

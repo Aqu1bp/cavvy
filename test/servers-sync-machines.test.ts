@@ -196,3 +196,25 @@ test("the last computer signed out for good takes the keys it synced with it", a
         expect(await getKey("openai")).toBeUndefined();
     });
 });
+
+test("a CLI's copies from two computers merge one by one; one goes once neither has it", () => {
+    const store = {};
+    const p = (instances: { id: string; name: string }[]) => ({ customProviders: [], agents: [], agentInstances: instances });
+    mergeSent(store, "a", p([{ id: "claude-code@router", name: "Router" }]), 100);
+    let m = mergeSent(store, "b", p([{ id: "claude-code@work", name: "Work" }]), 200);
+    expect(m.agentInstances?.map((i) => i.id).sort()).toEqual(["claude-code@router", "claude-code@work"]);
+    mergeSent(store, "a", p([]), 300);
+    m = mergeSent(store, "b", p([]), 400);
+    expect(m.agentInstances).toEqual([]);
+});
+
+test("a computer that turns its keys off keeps no secret variable on the server, its providers unread or not", () => {
+    const store = {};
+    const env = [{ name: "P", value: "1" }, { name: "S", value: "s3cret", secret: true }, { name: "GH", value: `ghp_${"a".repeat(36)}` }];
+    mergeSent(store, "a", { customProviders: [], agents: [{ id: "claude-code", accounts: [], env }], includeSecrets: true }, 100);
+    // B syncs keys too; A turns its key sync off while its providers can't be read.
+    mergeSent(store, "b", { customProviders: [], agents: [], includeSecrets: true }, 200);
+    const m = mergeSent(store, "a", {}, 300);
+    expect(m.includeSecrets).toBe(true);
+    expect(m.agents?.[0]?.env).toEqual([{ name: "P", value: "1" }]);
+});

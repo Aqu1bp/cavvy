@@ -1,13 +1,14 @@
 // Agent backends: which program runs each one.
 
 import { accountEnv } from "../providers/accounts";
+import { loadAgentSecrets } from "../providers/agent-env";
 import type { ProviderDef } from "../providers/registry";
 import type { AgentBackendClient } from "./types";
 import { ClaudeCodeBackend, claudeStatus, claudeUsage, describeClaudeAuth } from "./claude-code";
 import { CodexBackend, codexAccount, codexPlan, describeCodexAuth, type CodexAccount } from "./codex";
 import type { PlanLimits } from "../server/protocol";
 import { findCli } from "./cli";
-import { agentCli } from "./defs";
+import { agentCli, baseCli } from "./defs";
 import { AcpBackend, acpStatus } from "./acp/backend";
 
 export function createBackend(def: ProviderDef): AgentBackendClient {
@@ -87,6 +88,7 @@ export async function checkPlanLimits(providerId: string, signal?: AbortSignal, 
 async function checkCli(providerId: string, signal: AbortSignal | undefined, accountId: string | undefined, limits: boolean): Promise<{ status: AgentCliStatus; limits?: PlanLimits }> {
     const def = agentCli(providerId);
     if (!def) throw new Error(`${providerId} isn't an agent CLI`);
+    await loadAgentSecrets(providerId);
     // An ACP agent has its default sign-in only, and no plan limits to report.
     if (def.protocol === "acp") return { status: await acpStatus(providerId, signal) };
     accountEnv(providerId, accountId);
@@ -94,7 +96,7 @@ async function checkCli(providerId: string, signal: AbortSignal | undefined, acc
     const base = { signIn: cli.signIn, signOut: cli.signOut, installHint: cli.install };
     const path = findCli(providerId, cli);
     if (!path) return { status: { ...base, installed: false, signedIn: false, description: "not installed" } };
-    if (providerId === "codex") {
+    if (baseCli(providerId) === "codex") {
         const plan: { account: CodexAccount; limits?: PlanLimits } = limits ? await codexPlan(providerId, signal, accountId) : { account: await codexAccount(providerId, signal, accountId) };
         const a = plan.account;
         return { status: { ...base, installed: true, path, signedIn: Boolean(a.type) || !a.requiresAuth, description: describeCodexAuth(a), apiKey: a.type === "apiKey", email: a.email, plan: a.planType }, limits: plan.limits };

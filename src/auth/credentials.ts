@@ -211,7 +211,9 @@ export async function configuredProviders(): Promise<ProviderDef[]> {
 
 /** Load all keys up front so they're registered with the redactor. */
 export async function preloadKeys(): Promise<void> {
-    await Promise.all([...allProviders().map((p) => getKey(p.id)), ...SEARCH_PROVIDERS.map((s) => getKey(s.id))]);
+    // The agent CLIs' secret variables too (agent-env.ts): a CLI is started synchronously, and its output redacted.
+    const agentSecrets = import("../providers/agent-env").then((m) => m.loadAgentSecrets());
+    await Promise.all([...allProviders().map((p) => getKey(p.id)), ...SEARCH_PROVIDERS.map((s) => getKey(s.id)), agentSecrets]);
 }
 
 export function keychainLabel(): string {
