@@ -40,7 +40,7 @@ Cavvy can't replace itself in these cases, and About says to move it to Applicat
 
 - It's running from the disk image.
 - macOS opened it from the folder it was downloaded to (app translocation).
-- Its folder is read-only.
+- It's on a read-only volume.
 
 If Cavvy is in a folder you aren't allowed to change (for example Applications, when you aren't an administrator), About says to ask an administrator to update it.
 
