@@ -44,15 +44,15 @@ export function keepSideChatLinks(dir: string) {
     } catch {
         return;
     }
-    const lines: string[] = [];
+    const lines = new Set<string>();
     for (const n of names.filter((n) => n.endsWith(".jsonl"))) {
         try {
-            for (const l of cliLinks(join(dir, n))) if (l.kind !== "import") lines.push(JSON.stringify({ t: "subagent", provider: l.provider, id: l.id }));
+            for (const l of cliLinks(join(dir, n))) if (l.kind !== "import") lines.add(JSON.stringify({ t: "subagent", provider: l.provider, id: l.id }));
         } catch {
             // unreadable: nothing to keep
         }
     }
-    if (lines.length) appendFileSync(sideChatRecord(), `${lines.join("\n")}\n`, { mode: 0o600 });
+    if (lines.size) appendFileSync(sideChatRecord(), `${[...lines].join("\n")}\n`, { mode: 0o600 });
 }
 
 /** CLI sessions Cavvy already has, from the session files of these folders. */
