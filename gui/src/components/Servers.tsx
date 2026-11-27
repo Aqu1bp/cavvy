@@ -157,8 +157,8 @@ export function checkLines(name: string, c: ServerCheck): string[] {
     const lines: string[] = [];
     const have = c.clis.filter((x) => x.installed);
     for (const cli of have) {
-        if (cli.signedIn === false) lines.push(`${cli.product} isn't signed in. Open ${name}, then Settings → Providers.`);
-        else if (cli.signedIn === true && cli.on === false) lines.push(`${cli.product} is off. Open ${name}, then Settings → Providers.`);
+        if (cli.signedIn === false) lines.push(`${cli.product} isn't signed in there. Sign it in from Settings → Providers.`);
+        else if (cli.signedIn === true && cli.on === false) lines.push(`${cli.product} is off there. Turn it on from Settings → Providers.`);
     }
     if (!have.length) lines.push("No agent CLI there (Claude Code, Codex). API keys work without one.");
     if (!c.git) lines.push("No git there.");
