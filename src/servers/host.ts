@@ -758,7 +758,12 @@ export async function hostCommand(args: string[], env: HostRunEnv): Promise<numb
     };
     const print = (v: unknown) => process.stdout.write(JSON.stringify(v) + "\n");
     if (sub === "run") {
-        await hostRun(rest, env);
+        try {
+            await hostRun(rest, env);
+        } catch (e) {
+            process.stderr.write(`[${APP_NAME} host] fatal: ${redact((e as Error)?.stack ?? String(e))}\n`);
+            return 1;
+        }
         // Runs until it's stopped.
         return new Promise<number>(() => {});
     }

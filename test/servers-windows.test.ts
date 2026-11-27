@@ -285,7 +285,18 @@ process.exit(await proc.exited);
                         const p = join(sdir, f);
                         return existsSync(p) ? `${f}=${readFileSync(p, "utf-8").slice(0, 400)}` : `${f}=MISSING`;
                     });
-                    throw new Error(`${(err as Error).message}\n[diag] ${diag.join("\n[diag] ")}`);
+                    // Probe running the compiled exe directly for 4s to see exact startup output/error.
+                    const probe = Bun.spawn([join(sdir, "builds", buildId, "cavvy.exe"), "host", "run", "--login-env", "--port", "0"], {
+                        env: { ...process.env, CAVVY_HOME: join(remoteHome, ".cavvy-probe"), CAVVY_NO_KEYCHAIN: "1" },
+                        stdin: "ignore",
+                        stdout: "pipe",
+                        stderr: "pipe",
+                    });
+                    await Bun.sleep(4000);
+                    const probeRunning = probe.exitCode === null;
+                    if (probeRunning) probe.kill();
+                    const [pOut, pErr, pCode] = await Promise.all([new Response(probe.stdout).text(), new Response(probe.stderr).text(), probe.exited]);
+                    throw new Error(`${(err as Error).message}\n[diag] ${diag.join("\n[diag] ")}\n[probe] running=${probeRunning} code=${pCode} out=${pOut.slice(0, 400)} err=${pErr.slice(0, 600)}`);
                 } finally {
                     await stopRemote(localWin).catch(() => undefined);
                 }
