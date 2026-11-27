@@ -29,9 +29,9 @@ Building it needs only Bun: the first build downloads Electron. It's built for m
 
 ### Downloading it
 
-Each release has the app for Macs with Apple silicon (`Cavvy-<version>-arm64.dmg`) and Intel (`Cavvy-<version>-x64.dmg`), built from the release's commit on GitHub's Macs ([releasing](releasing.md)). A downloaded app updates itself to new releases, not from `main`.
+Each release has the app for Macs with Apple silicon (`Cavvy-<version>-arm64.dmg`) and Intel (`Cavvy-<version>-x64.dmg`), built from the release's commit on GitHub's Macs ([releasing](releasing.md)).
 
-It's signed with Cavvy's own certificate, not by an Apple developer account, and not notarized. So the first time you open it, macOS says "Cavvy Not Opened" and offers only **Done** and **Move to Trash** (on macOS 15 and later, Control-clicking **Open** no longer gets past it). Click **Done**, open **System Settings → Privacy & Security**, click **Open Anyway** beside the message about Cavvy, enter your password, then **Open**. macOS remembers that for this copy; updates open without asking. Because every release is signed with the same certificate, macOS treats each update as the same app, and Cavvy keeps the access to your keychain you allowed (where it keeps API keys).
+It's signed with Cavvy's own certificate, not by an Apple developer account, and not notarized. So the first time you open it, macOS says "Cavvy Not Opened" and offers only **Done** and **Move to Trash** (on macOS 15 and later, Control-clicking **Open** no longer gets past it). Click **Done**, open **System Settings → Privacy & Security**, click **Open Anyway** beside the message about Cavvy, enter your password, then **Open**. macOS remembers that for this copy. Because every release is signed with the same certificate, macOS treats each new version as the same app, and Cavvy keeps the access to your keychain you allowed (where it keeps API keys).
 
 ## Using it
 

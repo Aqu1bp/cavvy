@@ -28,7 +28,7 @@ Cavvy reads, edits and runs code in your project, asks before doing anything ris
 
 ### The desktop app (macOS)
 
-Download the `.dmg` for your Mac from the [latest release](https://github.com/Aqu1bp/cavvy/releases/latest): `Cavvy-<version>-arm64.dmg` for Apple silicon, `Cavvy-<version>-x64.dmg` for Intel. Open it and drag Cavvy to Applications. It needs macOS 13 or later, and updates itself to each new release.
+Download the `.dmg` for your Mac from the [latest release](https://github.com/Aqu1bp/cavvy/releases/latest): `Cavvy-<version>-arm64.dmg` for Apple silicon, `Cavvy-<version>-x64.dmg` for Intel. Open it and drag Cavvy to Applications. It needs macOS 13 or later.
 
 The first time you open it, macOS says "Cavvy Not Opened", as Cavvy isn't signed by an Apple developer account. Click **Done**, then in **System Settings → Privacy & Security** click **Open Anyway**, enter your password and click **Open**. You only do this once. [The desktop app](docs/desktop.md#downloading-it) says why.
 
