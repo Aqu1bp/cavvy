@@ -11,7 +11,7 @@ import { createHash, randomUUID } from "crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { cavvyHome } from "../config/paths";
-import { applyStateSync, readSyncedStateDigest, readSyncedStateRecord, type ApplyStateResult, type SyncRemoteStateStatus, type SyncStatePayload } from "./sync-state";
+import { agentVarSyncs, applyStateSync, readSyncedStateDigest, readSyncedStateRecord, type ApplyStateResult, type SyncRemoteStateStatus, type SyncStatePayload } from "./sync-state";
 
 /** Parts of a payload sent together, each left out when the computer couldn't read it (see localSyncState). */
 type Group = "settings" | "plugins" | "providers" | "keys";
@@ -111,6 +111,10 @@ function split(p: Partial<SyncStatePayload>): Partial<Record<Group, Record<strin
             g["agents"] = true;
             for (const a of named(p.agents, "id")) g[`a:${a.id}`] = a;
         }
+        if (Array.isArray(p.agentInstances)) {
+            g["instances"] = true;
+            for (const i of named(p.agentInstances, "id")) g[`i:${i.id}`] = i;
+        }
         out.providers = g;
     }
     if (p.includeSecrets === true && isObj(p.apiKeys)) {
@@ -153,12 +157,24 @@ function join_(groups: Partial<Record<Group, Record<string, unknown>>>, keysOn: 
         p.customProviders = of(pr, "c:").map(([, v]) => v) as SyncStatePayload["customProviders"];
         if (pr["vertex"] !== undefined) p.vertex = pr["vertex"] as SyncStatePayload["vertex"];
         if (pr["agents"] === true) p.agents = of(pr, "a:").map(([, v]) => v) as SyncStatePayload["agents"];
+        if (pr["instances"] === true) p.agentInstances = of(pr, "i:").map(([, v]) => v) as SyncStatePayload["agentInstances"];
     }
     if (keysOn) {
         p.includeSecrets = true;
         if (groups.keys) p.apiKeys = Object.fromEntries(of(groups.keys, "key:")) as SyncStatePayload["apiKeys"];
     }
     return p;
+}
+
+/** A computer's CLIs and copies (`a:`, `i:`) without the variables that go only while its keys sync. */
+function withoutSecretVars(items: Record<string, Item>): Record<string, Item> {
+    const out: Record<string, Item> = {};
+    const keeps = (x: unknown) => isObj(x) && typeof x.name === "string" && typeof x.value === "string" && agentVarSyncs({ name: x.name, value: x.value, secret: x.secret === true }, false);
+    for (const [k, it] of Object.entries(items)) {
+        const env = isObj(it.v) && Array.isArray(it.v.env) ? (it.v.env as unknown[]) : undefined;
+        out[k] = env && !env.every(keeps) ? { v: { ...(it.v as object), env: env.filter(keeps) }, t: it.t } : it;
+    }
+    return out;
 }
 
 /**
@@ -185,6 +201,8 @@ export function mergeSent(store: Store, from: string, raw: unknown, now: number)
         }
         groups[g] = next;
     }
+    // Keys off, though its providers couldn't be read this time: what it last sent of them keeps no secret variable.
+    if (p.includeSecrets !== true && !incoming.providers && groups.providers) groups.providers = withoutSecretVars(groups.providers as Record<string, Item>);
     store[from] = { since: prev?.since ?? now, groups, ...(p.includeSecrets === true ? { keys: true } : {}) };
 
     return { ...mergeAll(store), ...(p.installMissing === true ? { installMissing: true } : {}) };

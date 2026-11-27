@@ -77,6 +77,9 @@ function checked(base: string, input: InstanceInput, id?: string): Pick<AgentCli
     return { name, ...(path ? { path } : {}), ...(args.length ? { args } : {}), ...(models.length ? { models } : {}) };
 }
 
+/** An instance's fields as they'd be saved, or why not (sync takes copies from another computer with it). */
+export { checked as checkInstance };
+
 /** Add a named instance of `base` (claude-code, codex, …): its provider id. */
 export async function addInstance(base: string, input: InstanceInput): Promise<string> {
     const fields = checked(base, input);
