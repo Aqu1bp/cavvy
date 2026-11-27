@@ -28,7 +28,7 @@ import { Panes } from "./components/Panes";
 import { AgentView } from "./components/Agents";
 import { ReviewRail, RightPanel } from "./components/RightPanel";
 import { preloadTerminal, TerminalPanel, terminalOpenedEarly } from "./components/TerminalPanel";
-import { openFind, terminalLogin, setTerminalLogin, terminalOpen, setTerminalOpen, mcpOpen, planDialog, rewindOpen, viewedImage, commitRequest, archiveRequest, folderPickerOpen, deletedOpen, gitDialog, gitModule, openGit } from "./state/ui";
+import { openFind, terminalLogin, setTerminalLogin, setHomeLogin, terminalActions, terminalOpen, setTerminalOpen, mcpOpen, planDialog, rewindOpen, viewedImage, commitRequest, archiveRequest, folderPickerOpen, deletedOpen, gitDialog, gitModule, openGit } from "./state/ui";
 import { Home } from "./components/Home";
 import { CommandPalette } from "./components/CommandPalette";
 import { TrustDialog } from "./components/TrustDialog";
@@ -343,7 +343,10 @@ export function App() {
         return at === "pending" ? null : at.on;
     };
     /** The machine whose panel shows: the current one, or the window's own while an account's sign-in shows (Settings). */
-    const terminalShowing = () => (terminalLogin() ? undefined : terminalOn());
+    const terminalShowing = () => {
+        const login = terminalLogin();
+        return login ? login.on : terminalOn();
+    };
     // Opened while the session in view is still connecting: its machine's panel starts a shell once it's there.
     createEffect(on(terminalOpen, (open) => { if (open && untrack(terminalOn) === null) terminalOpenedEarly(); }, { defer: true }));
     // For that session only: going elsewhere first, it's over.
@@ -358,6 +361,15 @@ export function App() {
         const at = terminalAt();
         if (at !== "pending" && at.on !== undefined && at.link) addTerminalMachine(at.on, at.link);
     });
+    // In a window on a server, a sign-in on the user's own computer (Settings → Providers): its panel, made if
+    // there's none, opens it (TerminalPanel.tsx).
+    if (machine) {
+        terminalActions.loginOnHome = (ask) => {
+            setHomeLogin(ask);
+            void machineLink("").then((link) => addTerminalMachine("", link), reportError);
+        };
+        onCleanup(() => delete terminalActions.loginOnHome);
+    }
     // Another session or Home in view: an account's sign-in tab no longer holds the window's own terminal there.
     createEffect(on(() => app.activeId, () => setTerminalLogin(false), { defer: true }));
     // Shells kept on other machines for this window's tabs (a reload): their panels come back now, not when one of

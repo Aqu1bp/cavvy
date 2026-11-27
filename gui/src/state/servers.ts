@@ -8,7 +8,7 @@
 import { createSignal } from "solid-js";
 import type { ServerSummary } from "@shared/protocol";
 import { homeRpc } from "../lib/machines";
-import { machine, os } from "../lib/platform";
+import { os } from "../lib/platform";
 import { reportError, rpc, toast } from "./app";
 import { terminalActions } from "./ui";
 
@@ -19,11 +19,10 @@ export const [serverList, setServerList] = createSignal<ServerSummary[]>([]);
 /** Counts up when something was done on a server from here that its providers follow: what shows them reads them again. */
 export const [serverTouched, setServerTouched] = createSignal(0);
 
-/** Only a window on the user's own computer: one on a server shows that server's own setup. */
+/** As the user's own computer lists them, in a window on a server too. */
 export async function refreshServerList(): Promise<void> {
-    if (machine) return;
     try {
-        setServerList((await rpc.call("servers.list", {})).servers);
+        setServerList((await homeRpc(rpc).call("servers.list", {})).servers);
     } catch {
         // No list: nothing is said about servers.
     }
@@ -71,10 +70,10 @@ export async function setServerSync(name: string, next: boolean, changed: () => 
 
 /** A sign-in on a server ended: it's asked how it stands now, and the list follows. */
 export async function serverSignedIn(name: string): Promise<void> {
-    if (machine) return;
-    await rpc.call("servers.sync", { name }).catch(() => undefined);
+    await homeRpc(rpc).call("servers.sync", { name }).catch(() => undefined);
     await refreshServerList();
     setServerTouched((n) => n + 1);
 }
 
 terminalActions.serverSignedIn = (name) => void serverSignedIn(name);
+terminalActions.accountsChanged = () => setServerTouched((n) => n + 1);

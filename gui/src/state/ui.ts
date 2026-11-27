@@ -111,15 +111,31 @@ export interface SetupRun { ticket: string; label: string; command: string }
 export const splitActions: { leave?: (id: string) => boolean; closeBesideReader?: () => boolean } = {};
 
 /**
- * An account's sign-in tab (Settings) is showing: the window's own machine's terminal shows though a session of
- * another machine is in view, until another session or Home is (App.tsx).
+ * An account's sign-in tab (Settings) is showing, on the machine whose terminal panel has it (`on`, as App.tsx's panels
+ * name them): that terminal shows though a session of another machine is in view, until another session or Home is.
  */
-export const [terminalLogin, setTerminalLogin] = createSignal(false);
+export const [terminalLogin, setTerminalLogin] = createSignal<false | { on: string | undefined }>(false);
+
+/** A sign-in or install for the terminal on the user's own computer, in a window on a server (Settings → Providers). */
+export interface HomeLogin {
+    provider: string;
+    accountId: string;
+    name: string;
+    /** One of the user's servers, reached from their computer, as in a window there. */
+    server?: string;
+    install?: boolean;
+}
+/** Asked for and not yet opened: the user's computer's terminal panel opens it once it's ready (TerminalPanel.tsx). */
+export const [homeLogin, setHomeLogin] = createSignal<HomeLogin>();
 
 /** Set while the terminal panel is mounted: opens it on a new tab that runs a project script there (`setup`: a new worktree's setup run). */
 export const terminalActions: {
     /** A sign-in on a server ended in a terminal here: what shows that server follows (state/servers.ts, which sets this). */
     serverSignedIn?: (server: string) => void;
+    /** A sign-in on a machine other than the window's ended: what shows its accounts reads them again (state/servers.ts). */
+    accountsChanged?: () => void;
+    /** In a window on a server: `ask` in a terminal on the user's own computer, its panel made if there's none (App.tsx). */
+    loginOnHome?: (ask: HomeLogin) => void;
     /** `server`: the sign-in is that CLI's on one of the user's servers, in a terminal here. */
     loginAccount?: (provider: string, accountId: string, name: string, server?: string) => void;
     /** Installs an agent CLI on this machine or a server, in a terminal tab (CliInfo.installCommand). */
