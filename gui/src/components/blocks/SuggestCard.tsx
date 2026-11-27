@@ -262,7 +262,7 @@ function Pending(p: { suggestion: SuggestionState; sessionId: string; key: strin
             const outcome = await startSuggestion(
                 { sessionId: p.sessionId, from: { title: view()?.state.title ?? "", mode: view()?.state.mode ?? "default", on: suggesterOn() }, suggestion: s(), on: on(), cwd: cwd(), title: title().trim(), prompt: prompt(), model: model()!, effort: effort(), worktree: inWorktree(), resume: draft.resume },
                 // Once the folder is trusted, Start again: unless where it starts has changed since.
-                { ...windowCalls(() => attempt === attempts() && startOf.get(p.key)?.()), alive: () => attempt === attempts(), claimed: () => clearTimeout(deadline) },
+                { ...windowCalls(() => attempt === attempts() && (startOf.get(p.key) ?? run)()), alive: () => attempt === attempts(), claimed: () => clearTimeout(deadline) },
             );
             if (attempt !== attempts()) return;
             if ((outcome.kind === "failed" || outcome.kind === "trust") && outcome.resume) keep({ resume: outcome.resume });

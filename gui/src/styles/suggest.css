@@ -69,6 +69,7 @@
 
 .sg-why {
     padding: calc(2 * var(--sp)) calc(14 * var(--sp)) 0;
+    overflow-wrap: anywhere;
     font-size: 0.929rem;
     color: var(--fg-3);
 }

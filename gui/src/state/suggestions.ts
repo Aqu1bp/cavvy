@@ -34,10 +34,11 @@ export const linkOn = (on: string | undefined): Promise<Rpc> => (on === machine 
 
 /** The machine `id` is on, if the window knows (opened here from it, or its row listed); null if it doesn't. */
 export function knownMachineOf(id: string): string | undefined | null {
-    const { awayOn } = machinesInside;
+    const { awayOn, restoredOn } = machinesInside;
     if (awayOn.has(id)) return awayOn.get(id) || undefined;
     const at = [...app.sessions, ...app.archived].find((s) => s.id === id);
-    return at ? at.machine : null;
+    if (at) return at.machine;
+    return restoredOn.has(id) ? restoredOn.get(id) || undefined : null;
 }
 /** Machine `k`'s models (awayMachine's names; undefined: the window's own). Another's are there once asked for (loadMachine). */
 export const modelsOn = (k: string | undefined): ProviderModels[] => (k === undefined ? app.models : (machinesInside.machineModels[k] ?? []));
@@ -69,7 +70,7 @@ export function listsOn(k: string | undefined) {
         served: () => (k === undefined ? app.served : {}),
         loading: () => (k === undefined ? app.modelsLoading : Boolean(machinesLoading[k])),
         refresh: async (again = false) => {
-            if (k === undefined) return refreshModels(again);
+            if (k === undefined) return refreshModels(again).catch(() => undefined);
             if (!(k in machineModels)) return loadMachine(k).catch(() => undefined);
             setMachinesLoading(k, true);
             try {
@@ -100,9 +101,9 @@ function madeOn(id: string, on: string | undefined, link: Rpc) {
     const { away, earlyDrafts, linked, keepDraft } = machinesInside;
     if (on === machine || away.has(id)) return;
     linked(id, on, link);
-    const early = earlyDrafts.get(id);
-    earlyDrafts.delete(id);
-    if (early?.link === link) for (const d of early.drafts) keepDraft(id, d);
+    const of = earlyDrafts.get(link);
+    for (const d of of?.get(id) ?? []) keepDraft(id, d);
+    of?.delete(id);
 }
 
 // ---------------------------------------------------------------------------

@@ -808,12 +808,13 @@ function keepDraft(id: string, d: Draft) {
     if (draftsFor.size > 20) draftsFor.delete(draftsFor.keys().next().value!);
 }
 
-/** Drafts another machine said for a session before it was linked here: only that machine's, and only once madeOn links it. */
-const earlyDrafts = new Map<string, { link: Rpc; drafts: Draft[] }>();
+/** Drafts each other machine said for a session before it was linked here: taken only once madeOn links it over that connection. */
+const earlyDrafts = new WeakMap<Rpc, Map<string, Draft[]>>();
 function earlyDraft(id: string, link: Rpc, d: Draft) {
-    const had = earlyDrafts.get(id);
-    earlyDrafts.set(id, { link, drafts: had?.link === link ? [...had.drafts, d] : [d] });
-    if (earlyDrafts.size > 20) earlyDrafts.delete(earlyDrafts.keys().next().value!);
+    const of = earlyDrafts.get(link) ?? new Map<string, Draft[]>();
+    earlyDrafts.set(link, of);
+    of.set(id, [...(of.get(id) ?? []), d]);
+    if (of.size > 20) of.delete(of.keys().next().value!);
 }
 
 /** A session this window had open, asked for again after its connection was back: what it missed, or a snapshot. */
@@ -2051,4 +2052,4 @@ export function attentionCount(): number {
 }
 
 /** What a suggested task's card reads and does of the window's machines and sessions (state/suggestions.ts, loaded with it). */
-export const machinesInside = { away, awayOn, handles, machineModels, machineSettings, machineProviders, machineLimits, earlyDrafts, linked, keepDraft, machineReady, machineModelsAgain };
+export const machinesInside = { away, awayOn, restoredOn, handles, machineModels, machineSettings, machineProviders, machineLimits, earlyDrafts, linked, keepDraft, machineReady, machineModelsAgain };
