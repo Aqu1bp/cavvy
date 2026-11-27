@@ -247,37 +247,43 @@ interface UndoRecord {
     /** By repository-relative path: what Undo puts back (`to`, none: delete it), if it's still as the restore left it (`left`). */
     files: Map<string, { to?: Entry; left?: Entry }>;
 }
-/** By the session's file-history folder (its snapshots' too), each session's last restore, as read or made here. */
-const undos = new Map<string, UndoRecord | null>();
-/** The last restore's record, beside the session's snapshots: Undo outlasts the app or terminal closing. */
+/**
+ * The last restore's record, in the session's file-history folder (its snapshots' too): Undo outlasts the app or
+ * terminal closing. Read each time it's asked for, never kept in memory, so the app and the terminal taking the
+ * session in turn each see the other's.
+ */
 const undoFile = (dir: string) => join(dir, "rewind-undo.json");
 const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const validEntry = (e: unknown) => e === undefined || (!!e && typeof e === "object" && typeof (e as Entry).mode === "string" && /^[0-7]{6}$/.test((e as Entry).mode) && typeof (e as Entry).oid === "string" && OID.test((e as Entry).oid));
 const validRel = (p: unknown) => typeof p === "string" && p.length > 0 && !p.includes("\0") && !isAbsolute(p) && !p.split("/").some((part) => part === "" || part === "." || part === ".." || part.toLowerCase() === ".git");
 
-/** The session's last restore, while Undo can put it back: read from its file the first time it's asked for. */
+/** The session's last restore, while Undo can put it back. */
 function lastRecord(snapshots: TurnSnapshots | undefined): UndoRecord | undefined {
     if (!snapshots) return undefined;
-    const had = undos.get(snapshots.dir);
-    if (had !== undefined) return had ?? undefined;
-    let rec: UndoRecord | null = null;
     try {
         const r = JSON.parse(readFileSync(undoFile(snapshots.dir), "utf-8"));
         // Only for this repository, and only paths inside it.
         if (typeof r?.id === "string" && /^[0-9a-f]{16}$/.test(r.id) && typeof r.root === "string" && r.root === topOf(snapshots.cwd) && Array.isArray(r.files) && r.files.length && r.files.every((f: unknown) => Array.isArray(f) && f.length === 2 && validRel(f[0]) && !!f[1] && typeof f[1] === "object" && validEntry(f[1].to) && validEntry(f[1].left))) {
-            rec = { id: r.id, root: r.root, files: new Map(r.files.map(([rel, f]: [string, { to?: Entry; left?: Entry }]) => [rel, { ...(f.to ? { to: f.to } : {}), ...(f.left ? { left: f.left } : {}) }])) };
+            return { id: r.id, root: r.root, files: new Map(r.files.map(([rel, f]: [string, { to?: Entry; left?: Entry }]) => [rel, { ...(f.to ? { to: f.to } : {}), ...(f.left ? { left: f.left } : {}) }])) };
         }
     } catch { /* None, or unreadable: no Undo. */ }
-    undos.set(snapshots.dir, rec);
-    return rec ?? undefined;
+    return undefined;
 }
 
-function setRecord(dir: string, rec: UndoRecord | null) {
-    undos.set(dir, rec);
+/** Whether it was saved: one that wasn't isn't offered. */
+function saveRecord(dir: string, rec: UndoRecord): boolean {
     try {
-        if (rec) writeFileSync(undoFile(dir), JSON.stringify({ id: rec.id, root: rec.root, files: [...rec.files] }), { mode: 0o600 });
-        else rmSync(undoFile(dir), { force: true });
-    } catch { /* Undo then lasts only while this stays open. */ }
+        writeFileSync(undoFile(dir), JSON.stringify({ id: rec.id, root: rec.root, files: [...rec.files] }), { mode: 0o600 });
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+function dropRecord(dir: string) {
+    try {
+        rmSync(undoFile(dir), { force: true });
+    } catch { /* Then its Undo still checks each file is as the restore left it before writing. */ }
 }
 
 /** Snapshot changes in an order that never meets its own work in the way: removals deepest first, then writes. */
@@ -353,17 +359,18 @@ export async function restoreFiles(plan: FileRestorePlan, o: { alongside?: strin
     }
 
     // An earlier restore can't be undone past this one (callers without snapshots here: dropUndo).
-    if (done.length && snapshots) setRecord(snapshots.dir, null);
+    if (done.length && snapshots) dropRecord(snapshots.dir);
+    let saved = false;
     if (undo?.files.size) {
         try {
             // The versions Undo needs, kept apart from the repository's (its garbage collection can't lose them).
             await snapshots!.keepVersions([...undo.files.values()].flatMap((f) => (f.to && f.to.mode !== "160000" ? [f.to] : [])));
-            setRecord(snapshots!.dir, undo);
+            saved = saveRecord(snapshots!.dir, undo);
         } catch {
             // Without them, an Undo might put back nothing: none is offered.
         }
     }
-    return { done, failed, ...(undo?.files.size && snapshots && undos.get(snapshots.dir) === undo ? { undo: undo.id } : {}) };
+    return { done, failed, ...(saved && undo ? { undo: undo.id } : {}) };
 }
 
 /** Whether `id` is the restore an Undo can still put back. */
@@ -376,7 +383,7 @@ export function canUndoRestore(snapshots: TurnSnapshots | undefined, id: string)
  * earlier one's goes. `dir`: the session's file-history folder.
  */
 export function dropUndo(dir: string | undefined) {
-    if (dir) setRecord(dir, null);
+    if (dir) dropRecord(dir);
 }
 
 /** The session's last restore, if an Undo can still put it back (after a restart too). */
@@ -391,7 +398,7 @@ export function lastUndo(snapshots: TurnSnapshots | undefined): string | undefin
 export async function undoRestore(snapshots: TurnSnapshots | undefined, id: string, history?: FileHistory): Promise<{ done: string[]; failed: { path: string; error: string }[] }> {
     const rec = lastRecord(snapshots);
     if (!rec || rec.id !== id) throw new Error("That restore can't be undone any more.");
-    setRecord(snapshots!.dir, null);
+    dropRecord(snapshots!.dir);
     const done: string[] = [];
     const failed: { path: string; error: string }[] = [];
     const all = new Map([...rec.files].map(([rel, f]) => [rel, { old: f.to, now: f.left }]));
