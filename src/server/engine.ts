@@ -30,7 +30,7 @@ import { homedir, hostname, userInfo } from "os";
 import { APP_TITLE, APP_VERSION, cavvyHome, paths } from "../config/paths";
 import { LEGACY } from "../config/legacy";
 import { JsonFileError, loadedUnreadable, loadScope, loadScopeChecked, loadSettings, readJson, readJsonCached, updateSettings, worktreeSettings, writeJson, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
-import { isTrusted, othersCode, projectConfigSummary, trustedByUser, trustFolder, trustForSession } from "../config/trust";
+import { isTrusted, projectConfigSummary, trustedByUser, trustFolder, trustForSession } from "../config/trust";
 import { fireHooks } from "../agent/hooks";
 import { findSessionAnywhere, heldSessionFolders, listAllSessions, Session, SessionInUseError, sessionFolder, sessionHolder, newSessionId, type Line } from "../agent/session";
 import { forkSessionSoon, forkTitle, readForkSource } from "../agent/fork";
@@ -1021,7 +1021,7 @@ export class Engine {
         const p = resolve(expandHome(path));
         const exists = isDir(p);
         const trusted = exists && isTrusted(p);
-        const found = exists ? this.configOf(p) : [];
+        const found = exists ? projectConfigSummary(p) : [];
         const git = exists && Boolean(gitRoot(p));
         return {
             path: p,
@@ -1035,16 +1035,6 @@ export class Engine {
             git,
             openedAt: readStore().recent?.find((r) => r.path === p)?.at,
         };
-    }
-
-    /**
-     * What trusting the folder would let run: its project configuration, and in someone else's code checked out in a
-     * trusted repository (a fork's pull request) the repository's Git hooks too, which can run its files as you commit.
-     * Asked about until the user trusts it, so it's never trusted for having nothing to protect.
-     */
-    private configOf(p: string): string[] {
-        const found = projectConfigSummary(p);
-        return othersCode(p) ? [...found, "Git hooks"] : found;
     }
 
     async trustProject(path: string, trust: boolean): Promise<ProjectInfo> {
@@ -1069,7 +1059,7 @@ export class Engine {
         const existing = this.workspaces.get(p);
         if (existing) return existing;
         let trusted = isTrusted(p);
-        const found = this.configOf(p);
+        const found = projectConfigSummary(p);
         if (!trusted && found.length && !this.declined.has(p)) {
             throw new RpcError(`${p} has configuration (${found.join(", ")}) that can run commands. Trust the folder, or open it without its configuration.`, "needs_trust");
         }

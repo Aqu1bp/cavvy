@@ -148,5 +148,8 @@ export function projectConfigSummary(cwd: string, has: (path: string) => boolean
     // Only on disk: `has` for a commit's tree can't read what the files say, so a caller checking
     // a commit reads its memory files itself (committedExternalImports, in src/server/runs.ts).
     if (has === existsSync) found.push(...externalImports(cwd));
+    // Someone else's code in a trusted repository (a fork's pull request): the repository's Git hooks can run its
+    // files as you commit, so it's asked about even with nothing of the above.
+    if (has === existsSync && othersCode(cwd)) found.push("Git hooks");
     return [...new Set(found)];
 }

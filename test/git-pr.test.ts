@@ -127,6 +127,10 @@ test("a fork's pull request isn't trusted for being inside a trusted repository;
     expect(engine.inspectProject(fork.path).needsTrust).toEqual(["Git hooks"]);
     await expect(engine.handle(c, "session.create", { cwd: fork.path })).rejects.toMatchObject({ code: "needs_trust" });
     expect(engine.inspectProject(same.path).needsTrust).toEqual([]);
+    // A worktree made from it (Implement a plan there, say) holds the fork's code too: asked about the same way.
+    const { createWorktreeWithHooks } = await import("../src/server/worktrees");
+    const derived = await createWorktreeWithHooks({ path: fork.path, branch: "plan-x", base: "pr-9" });
+    expect(engine.inspectProject(derived.path).needsTrust).toEqual(["Git hooks"]);
     trustFolder(fork.path);
     expect([trustedByUser(fork.path), trustedByUser(cwd)]).toEqual([true, true]);
     expect(engine.inspectProject(fork.path).needsTrust).toEqual([]);

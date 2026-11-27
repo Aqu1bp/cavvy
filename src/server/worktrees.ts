@@ -5,7 +5,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "pat
 import { cwdGitEnv, gitArgv } from "../util/git";
 import { isInside } from "../util/files";
 import { LEGACY } from "../config/legacy";
-import { isTrusted, trustedByUser } from "../config/trust";
+import { isTrusted, othersCode, trustedByUser, trustOwnOnly } from "../config/trust";
 import { loadSettings, type Settings } from "../config/settings";
 import { runHooks } from "../agent/hooks";
 import { redact } from "../util/redact";
@@ -458,6 +458,8 @@ export function excludeManagedWorktrees(main: string, log?: Log) {
  */
 export async function createWorktree(o: CreateWorktreeParams, log?: Log, x: { existingBranch?: boolean } = {}): Promise<{ path: string; branch: string; commit: string }> {
     const cwd = resolve(o.path);
+    // Made from someone else's code (a fork's pull request): the new one holds it too, so it isn't trusted by path either.
+    const foreign = othersCode(cwd);
     const main = checkCreate(cwd);
     const branch = checkBranch(cwd, o.branch, { existing: x.existingBranch });
     // The commit, not the name: a remote branch as base doesn't become the new branch's upstream.
@@ -480,6 +482,7 @@ export async function createWorktree(o: CreateWorktreeParams, log?: Log, x: { ex
         throw new RpcError("Git couldn't create the worktree.", "git_failed");
     }
     if (isManaged(main, target.path, true)) excludeManagedWorktrees(main, log);
+    if (foreign) trustOwnOnly(target.path);
     return { path: target.path, branch, commit };
 }
 
@@ -515,6 +518,7 @@ export async function createWorktreeWithHooks(o: CreateWorktreeParams, log?: Log
     if (h.errors.length) throw new RpcError(`The WorktreeCreate hook failed: ${redact(h.errors[0]!)}`, "hook_failed");
     if (!h.worktreePath) throw new RpcError("The WorktreeCreate hook didn't print the new worktree's path.", "hook_failed");
     const path = hookWorktreePath(main, h.worktreePath);
+    if (othersCode(cwd)) trustOwnOnly(path);
     const head = await runGitAsync(path, ["rev-parse", "--verify", "HEAD"], CREATE_TIMEOUT_MS);
     return { path, branch: o.branch, commit: head.code === 0 ? head.stdout.trim() : "" };
 }
