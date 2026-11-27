@@ -91,6 +91,9 @@ function startServer() {
             pending = pending.slice(i + 1);
             try {
                 const h = JSON.parse(line) as { type?: string; port?: number; token?: string };
+                // A downloaded app's update is ready: quit as the user would, and a helper puts it in place and opens
+                // it (src/server/release-update.ts). A cancelled quit is said back, so nothing is applied.
+                if (h.type === "quit-for-update") void quitForUpdate();
                 if (h.type === "ready" && h.port && h.token) {
                     mark("serverReady");
                     console.error(`[cavvy] server ready on port ${h.port}`);
@@ -510,6 +513,39 @@ function bridge() {
     });
 }
 
+let asking = false;
+
+/**
+ * Quits, closing the sessions first; asked first only when work would be lost: a session whose latest work couldn't
+ * be saved (a full disk). Whether it's quitting.
+ */
+async function confirmQuit(): Promise<boolean> {
+    if (quitting) return true;
+    if (asking) return false;
+    asking = true;
+    const n = await unsavedSessions();
+    const w = win && !win.isDestroyed() ? win : undefined;
+    if (n > 0) {
+        const detail = n === 1 ? "A session's latest work couldn't be saved." : `${n} sessions' latest work couldn't be saved.`;
+        const { response } = await (w ? dialog.showMessageBox(w, { type: "warning", message: "Quit without saving?", detail, buttons: ["Quit", "Cancel"], defaultId: 1, cancelId: 1 }) : dialog.showMessageBox({ type: "warning", message: "Quit without saving?", detail, buttons: ["Quit", "Cancel"], defaultId: 1, cancelId: 1 }));
+        if (response === 1) {
+            asking = false;
+            // Its last window closed to quit: it comes back, so the work can still be saved.
+            if (!win || win.isDestroyed()) createWindow();
+            return false;
+        }
+    }
+    quitting = true;
+    host.close();
+    void stopServer().finally(() => app.quit());
+    return true;
+}
+
+async function quitForUpdate() {
+    const child = server;
+    if (!(await confirmQuit())) child?.stdin.write("restart-cancelled\n");
+}
+
 // ---------------------------------------------------------------------------
 
 if (!app.requestSingleInstanceLock()) app.quit();
@@ -537,28 +573,9 @@ else {
         createWindow();
     });
     app.on("window-all-closed", () => app.quit());
-    let asking = false;
     app.on("before-quit", (e) => {
         if (quitting) return;
         e.preventDefault();
-        if (asking) return;
-        asking = true;
-        // Asked only when work would be lost: a session whose latest work couldn't be saved (a full disk).
-        void unsavedSessions().then(async (n) => {
-            const w = win && !win.isDestroyed() ? win : undefined;
-            if (n > 0) {
-                const detail = n === 1 ? "A session's latest work couldn't be saved." : `${n} sessions' latest work couldn't be saved.`;
-                const { response } = await (w ? dialog.showMessageBox(w, { type: "warning", message: "Quit without saving?", detail, buttons: ["Quit", "Cancel"], defaultId: 1, cancelId: 1 }) : dialog.showMessageBox({ type: "warning", message: "Quit without saving?", detail, buttons: ["Quit", "Cancel"], defaultId: 1, cancelId: 1 }));
-                if (response === 1) {
-                    asking = false;
-                    // Its last window closed to quit: it comes back, so the work can still be saved.
-                    if (!win || win.isDestroyed()) createWindow();
-                    return;
-                }
-            }
-            quitting = true;
-            host.close();
-            void stopServer().finally(() => app.quit());
-        });
+        void confirmQuit();
     });
 }

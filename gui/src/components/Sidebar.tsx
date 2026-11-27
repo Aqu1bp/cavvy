@@ -249,12 +249,24 @@ function UpdateButton() {
             <Show when={rail()}>
                 {(r) => (
                     <button class={`hb lg upd-btn ${r().state}`} title={r().label} aria-label={r().label} aria-disabled={r().state === "busy" || update.pending() || undefined} onClick={update.request}>
-                        {r().state === "busy" ? <Spinner size={15} /> : <Download size={16} />}
+                        {r().state === "busy" ? (r().progress !== undefined ? <ProgressRing share={r().progress!} /> : <Spinner size={15} />) : <Download size={16} />}
                     </button>
                 )}
             </Show>
             <update.Confirm />
         </>
+    );
+}
+
+/** How much of a download has come, as a ring that fills: drawn anew only when the share moves (every 2%). */
+function ProgressRing(p: { share: number }) {
+    const r = 6.5;
+    const c = 2 * Math.PI * r;
+    return (
+        <svg class="upd-ring" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+            <circle cx="8" cy="8" r={r} fill="none" stroke="currentColor" stroke-opacity="0.25" stroke-width="2" />
+            <circle cx="8" cy="8" r={r} fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-dasharray={`${c}`} stroke-dashoffset={`${c * (1 - Math.min(1, Math.max(0, p.share)))}`} transform="rotate(-90 8 8)" />
+        </svg>
     );
 }
 
