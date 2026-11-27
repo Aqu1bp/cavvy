@@ -149,12 +149,17 @@ test("turning key sync off takes the secret variables back though the payload ca
     await inHome(server, () => updateInstance(copy, { name: "Mine now", env: [{ name: "CS", secret: true }] }));
     await sync(server, true);
     expect((await agents(server))[copy]?.name).toBe("Mine now");
+    // A key typed as a plain variable goes only while keys sync, and comes back with them.
+    await saveAgentEnv("claude-code", [{ name: "S", secret: true }, { name: "GH", value: `ghp_${"a".repeat(36)}` }]);
+    await sync(server, true);
+    expect((await agents(server))["claude-code"]?.env).toEqual({ GH: `ghp_${"a".repeat(36)}` });
     // An opt-out whose providers couldn't be read here: the secrets go all the same, as keys do.
     const r = await inHome(server, () => applyStateSync(undefined, {}));
     expect(r.keysLeft).toBeUndefined();
     expect(await stored(server, "claude-code", "S")).toBeUndefined();
     expect(await stored(server, copy, "CS")).toBeUndefined();
     expect((await agents(server))["claude-code"]?.secretEnv).toBeUndefined();
+    expect((await agents(server))["claude-code"]?.env).toBeUndefined();
     await removeInstance(copy);
 });
 

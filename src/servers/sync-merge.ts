@@ -166,6 +166,16 @@ function join_(groups: Partial<Record<Group, Record<string, unknown>>>, keysOn: 
     return p;
 }
 
+/** A computer's CLIs and copies (`a:`, `i:`) without their secret variables, which go only while its keys sync. */
+function withoutSecretVars(items: Record<string, Item>): Record<string, Item> {
+    const out: Record<string, Item> = {};
+    for (const [k, it] of Object.entries(items)) {
+        const env = isObj(it.v) && Array.isArray(it.v.env) ? (it.v.env as Record<string, unknown>[]) : undefined;
+        out[k] = env?.some((x) => x?.secret === true) ? { v: { ...(it.v as object), env: env.filter((x) => x?.secret !== true) }, t: it.t } : it;
+    }
+    return out;
+}
+
 /**
  * Records what computer `from` sent and gives what the server should have: every syncing computer's items, the most
  * recent change of each. `now` is when it's taken.
@@ -190,6 +200,8 @@ export function mergeSent(store: Store, from: string, raw: unknown, now: number)
         }
         groups[g] = next;
     }
+    // Keys off, though its providers couldn't be read this time: what it last sent of them keeps no secret variable.
+    if (p.includeSecrets !== true && !incoming.providers && groups.providers) groups.providers = withoutSecretVars(groups.providers as Record<string, Item>);
     store[from] = { since: prev?.since ?? now, groups, ...(p.includeSecrets === true ? { keys: true } : {}) };
 
     return { ...mergeAll(store), ...(p.installMissing === true ? { installMissing: true } : {}) };

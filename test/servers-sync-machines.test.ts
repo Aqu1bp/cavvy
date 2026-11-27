@@ -207,3 +207,14 @@ test("a CLI's copies from two computers merge one by one; one goes once neither 
     m = mergeSent(store, "b", p([]), 400);
     expect(m.agentInstances).toEqual([]);
 });
+
+test("a computer that turns its keys off keeps no secret variable on the server, its providers unread or not", () => {
+    const store = {};
+    const env = [{ name: "P", value: "1" }, { name: "S", value: "s3cret", secret: true }];
+    mergeSent(store, "a", { customProviders: [], agents: [{ id: "claude-code", accounts: [], env }], includeSecrets: true }, 100);
+    // B syncs keys too; A turns its key sync off while its providers can't be read.
+    mergeSent(store, "b", { customProviders: [], agents: [], includeSecrets: true }, 200);
+    const m = mergeSent(store, "a", {}, 300);
+    expect(m.includeSecrets).toBe(true);
+    expect(m.agents?.[0]?.env).toEqual([{ name: "P", value: "1" }]);
+});

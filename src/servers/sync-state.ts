@@ -754,7 +754,7 @@ async function applyAgentEnv(
         if (have && varHash(have) === before) next.delete(name);
         else if (!have && !(await secretGone(id, name))) {
             // Its removal failed before: its value is still stored.
-            out.keysLeft.push(secretEnvId(id, name));
+            stuck(out, id, name);
             rec[name] = before;
         }
     }
@@ -770,10 +770,16 @@ async function applyAgentEnv(
     // A secret sync took away whose value is still stored here: said, as for a key, and kept on record to try again.
     for (const [name, v] of cur) {
         if (!v.secret || next.has(name) || prev?.[name] === undefined || (await secretGone(id, name))) continue;
-        out.keysLeft.push(secretEnvId(id, name));
+        stuck(out, id, name);
         rec[name] = prev[name]!;
     }
     return { rec: Object.keys(rec).length ? rec : undefined, changed: true };
+}
+
+/** A secret sync put here couldn't be taken away: said, as for a key (the sync isn't done until it's gone). */
+function stuck(out: { warnings: string[]; keysLeft: string[] }, id: string, name: string) {
+    out.keysLeft.push(secretEnvId(id, name));
+    out.warnings.push(`${agentCli(id)?.name ?? id}'s ${name} couldn't be removed from this server.`);
 }
 
 /** Whether a secret variable's stored value is gone here, removing it once more if it isn't. */
@@ -785,7 +791,7 @@ async function secretGone(id: string, name: string): Promise<boolean> {
 }
 
 /**
- * Key sync is off: the secret variables sync put here go, whatever else the payload carries (as keys do, before
+ * Key sync is off: the secret variables sync put here (and plain ones holding a key) go, whatever else the payload carries (as keys do, before
  * anything else is looked at). One changed here since is the server's own and stays; one that can't be removed
  * stays on record, and is said.
  */
@@ -796,12 +802,21 @@ async function takeBackAgentSecrets(recs: Record<string, { env?: Record<string, 
         const cfg = readAgentConfig(id);
         const listed = new Set(cfg?.secretEnv ?? []);
         const take: string[] = [];
+        const plain = { ...cfg?.env };
         for (const [name, before] of Object.entries(r.env)) {
-            if (Object.hasOwn(cfg?.env ?? {}, name)) continue;
+            if (Object.hasOwn(plain, name)) {
+                // One holding a key goes only with key sync (agentVarSyncs): back with the rest.
+                const value = plain[name]!;
+                if (varHash({ value }) === before && !agentVarSyncs({ name, value }, false)) {
+                    delete plain[name];
+                    take.push(name);
+                }
+                continue;
+            }
             if (!listed.has(name)) {
                 // Not listed any more, but its value may still be stored from a removal that failed.
                 if (await secretGone(id, name)) delete r.env[name];
-                else out.keysLeft.push(secretEnvId(id, name));
+                else stuck(out, id, name);
                 continue;
             }
             const k = await getKey(secretEnvId(id, name)).catch(() => undefined);
@@ -811,18 +826,18 @@ async function takeBackAgentSecrets(recs: Record<string, { env?: Record<string, 
         if (!take.length || !cfg) continue;
         try {
             await saveAgentEnv(id, [
-                ...Object.entries(cfg.env ?? {}).map(([name, value]) => ({ name, value })),
+                ...Object.entries(plain).map(([name, value]) => ({ name, value })),
                 ...[...listed].filter((n) => !take.includes(n)).map((name) => ({ name, secret: true })),
             ]);
             changed.push(id);
         } catch (e) {
             out.warnings.push(`${agentCli(id)?.name ?? id} variables: ${(e as Error).message}`);
-            for (const name of take) out.keysLeft.push(secretEnvId(id, name));
+            for (const name of take) stuck(out, id, name);
             continue;
         }
         for (const name of take) {
             if (await secretGone(id, name)) delete r.env[name];
-            else out.keysLeft.push(secretEnvId(id, name));
+            else stuck(out, id, name);
         }
     }
     return changed;
