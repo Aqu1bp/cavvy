@@ -2592,6 +2592,8 @@ export interface Methods {
     "session.rename": { params: { id: string; title: string }; result: null };
     "session.compact": { params: { id: string; instructions?: string }; result: null };
     "session.rewindTargets": { params: { id: string }; result: RewindTargetInfo[] };
+    /** Whether the session's last file restore can still be undone (session.rewindUndo without `undo`). */
+    "session.rewindCanUndo": { params: { id: string }; result: boolean };
     "session.rewindPlan": { params: { id: string; index: number }; result: RewindPlanInfo };
     /** `text` and what the prompt carried (images, files) go back to the input box, as with an edited queued message. */
     "session.rewind": { params: { id: string; index: number; planId: string; code: boolean; conversation: boolean }; result: RewindResult };

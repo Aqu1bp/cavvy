@@ -62,6 +62,8 @@ export function RewindDialog() {
                 return [];
             }),
     );
+    /** The session's last file restore can still be undone: after a restart too, once the toast's Undo is gone. */
+    const [canUndo, { mutate: setCanUndo }] = createResource(readFor, (sid) => rpc.call("session.rewindCanUndo", { id: sid }).catch(() => false));
     /** The prompts, once read for the session the dialog is open for (not while they're read again). */
     const list = () => (targets.state === "ready" ? targets() : undefined);
     /** When each was sent; to the second where the next one up or down would read the same. */
@@ -276,6 +278,21 @@ export function RewindDialog() {
                 </Show>
             </Show>
             <div class="dialog-actions">
+                <Show when={canUndo.state === "ready" && canUndo() && !busySession()}>
+                    <button
+                        class="btn ghost"
+                        disabled={busy()}
+                        onClick={() => {
+                            const sid = id();
+                            if (!sid) return;
+                            setCanUndo(false);
+                            close();
+                            void undoRestore(sid);
+                        }}
+                    >
+                        Undo last restore
+                    </button>
+                </Show>
                 <Show when={empty()}>
                     <span class="grow" />
                 </Show>

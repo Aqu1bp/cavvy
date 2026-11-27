@@ -10,7 +10,7 @@ process.env.GIT_CONFIG_NOSYSTEM = "1";
 process.env.GIT_CONFIG_GLOBAL = "/dev/null";
 const { TurnSnapshots } = await import("../src/agent/turn-snapshots");
 const { FileHistory } = await import("../src/agent/checkpoints");
-const { planFileRestore, restoreFiles, undoRestore, canUndoRestore, changedBy } = await import("../src/agent/rewind-files");
+const { planFileRestore, restoreFiles, undoRestore, canUndoRestore, changedBy, lastUndo } = await import("../src/agent/rewind-files");
 const { gitArgv, gitEnv } = await import("../src/util/git");
 afterAll(() => {
     for (const key of Object.keys(process.env)) if (key.startsWith("GIT_CONFIG")) delete process.env[key];
@@ -160,6 +160,34 @@ describe("restoring files on rewind", () => {
         expect(canUndoRestore(s.snapshots, r.undo!)).toBe(false);
         await expect(undoRestore(s.snapshots, r.undo!)).rejects.toThrow(/can't be undone/);
         await s.snapshots.stop();
+    });
+
+    test("Undo outlasts a restart (a hand edit the restore overwrote comes back), and only the last restore's", async () => {
+        const s = setup();
+        const { cwd } = s;
+        const cp = await turn(s, () => write(cwd, "a.txt", "by the agent\n"));
+        write(cwd, "a.txt", "by hand\n");
+        const first = await restoreFiles(await planFileRestore({ snapshots: s.snapshots, history: s.history, checkpoint: cp }));
+        expect(read(cwd, "a.txt")).toBe("a\n");
+        await s.snapshots.stop();
+
+        // The app closed and opened again: the session's snapshots are read anew.
+        const again = new TurnSnapshots(s.dir, cwd);
+        expect(lastUndo(again)).toBe(first.undo!);
+        write(cwd, "src/b.txt", "b, by hand\n");
+        const second = await restoreFiles(await planFileRestore({ snapshots: again, history: s.history, checkpoint: cp }));
+        expect(second.undo).toBeTruthy();
+        expect(canUndoRestore(again, first.undo!)).toBe(false);
+        expect(lastUndo(again)).toBe(second.undo!);
+        await again.stop();
+
+        const third = new TurnSnapshots(s.dir, cwd);
+        const u = await undoRestore(third, lastUndo(third)!);
+        expect(u.failed).toEqual([]);
+        expect(read(cwd, "src/b.txt")).toBe("b, by hand\n");
+        expect(lastUndo(third)).toBeUndefined();
+        expect(lastUndo(new TurnSnapshots(s.dir, cwd))).toBeUndefined();
+        await third.stop();
     });
 
     test("files that didn't change since are left alone, and a later prompt restores only what came after it", async () => {

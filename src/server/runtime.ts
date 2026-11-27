@@ -23,7 +23,7 @@ import { basename, join } from "path";
 import { Agent, type Admission, type Admitted, type AgentEvent, type PermissionRequest, type PermissionResponse, type TurnEndReason } from "../agent/agent";
 import { digestToolState, lastPlanCall, latestCheckpointOf } from "../agent/history-digest";
 import { backendsIn, canonical, FileHistory, promptNotes, resetToolState, resetToolStateTo, rewindTargets, untrackedChangesNote } from "../agent/checkpoints";
-import { canUndoRestore, changedBy, planFileRestore, restoreFiles, undoRestore, type FileRestorePlan } from "../agent/rewind-files";
+import { canUndoRestore, changedBy, lastUndo, planFileRestore, restoreFiles, undoRestore, type FileRestorePlan } from "../agent/rewind-files";
 import { beforeFork, forkCut, isForkTarget } from "../agent/fork";
 import { sideChatReminder, type SideChatOrigin } from "../agent/side-chat";
 import { fireHooks, type HookEvent } from "../agent/hooks";
@@ -691,7 +691,6 @@ export class Runtime {
     /** The rewind last shown: restoring does what it showed, or nothing if the conversation moved on. */
     private rewindShown?: { id: string; index: number; message: Message; count: number; plan: FileRestorePlan };
     /** What can put the files a rewind restored back as they were, by its id (rewindUndo). */
-    private rewindUndone?: string;
 
     // What the current turn is building
     private turnId?: string;
@@ -5089,6 +5088,11 @@ export class Runtime {
     // -----------------------------------------------------------------------
     // Rewind and changes
 
+    /** Whether the Rewind dialog offers to undo the last file restore. */
+    rewindCanUndo(): boolean {
+        return !!lastUndo(this.rewindSnapshots());
+    }
+
     rewindTargets(): RewindTargetInfo[] {
         const history = FileHistory.for(this.session);
         const snapshots = this.rewindSnapshots();
@@ -5230,7 +5234,7 @@ export class Runtime {
             }
             restored = r.done.map(rel);
             failed = r.failed.map((f) => ({ path: rel(f.path), error: f.error }));
-            undo = this.rewindUndone = r.undo;
+            undo = r.undo;
             this.forgetReads(r.done);
             if (conversation && failed.length) rewindConversation = false;
             if (!rewindConversation && r.done.length) this.agent?.addReminder(`The user restored these files to how they were before an earlier prompt (/rewind), undoing the changes made to them since. Read them again before editing them:\n${restored.map((p) => `- ${p}`).join("\n")}`);
@@ -5270,9 +5274,8 @@ export class Runtime {
         this.checkCommitting();
         if (this.busy) throw new Error("Wait for the response to finish, or stop it.");
         const last = !undo;
-        if (last) undo = this.rewindUndone;
-        if (!undo || this.rewindUndone !== undo || !canUndoRestore(this.rewindSnapshots(), undo)) throw new Error(last ? "There's no file restore to undo." : "That restore can't be undone any more.");
-        this.rewindUndone = undefined;
+        if (last) undo = lastUndo(this.rewindSnapshots());
+        if (!undo || !canUndoRestore(this.rewindSnapshots(), undo)) throw new Error(last ? "There's no file restore to undo." : "That restore can't be undone any more.");
         this.restoring = true;
         let r: Awaited<ReturnType<typeof undoRestore>>;
         try {

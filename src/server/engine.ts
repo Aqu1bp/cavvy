@@ -3912,6 +3912,8 @@ export class Engine {
                 await rt.allTurns();
                 return rt.rewindTargets();
             }
+            case "session.rewindCanUndo":
+                return this.runtime(p.id).rewindCanUndo();
             case "session.rewindPlan": {
                 const rt = this.runtime(p.id);
                 if (rt.compactingWhileIdle) await rt.yieldIdleCompaction();

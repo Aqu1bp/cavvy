@@ -7,7 +7,7 @@ import type { App } from "../ui/app";
 import { SelectDialog } from "../ui/dialogs";
 import { theme, truncate } from "../ui/ansi";
 import { backendsIn, canonical, FileHistory, resetToolState, rewindTargets, untrackedChangesNote, type RewindTarget } from "../agent/checkpoints";
-import { canUndoRestore, changedBy, planFileRestore, restoreFiles, undoRestore, type FileRestoreItem } from "../agent/rewind-files";
+import { changedBy, lastUndo, planFileRestore, restoreFiles, undoRestore, type FileRestoreItem } from "../agent/rewind-files";
 import { TurnSnapshots } from "../agent/turn-snapshots";
 import { beforeFork } from "../agent/fork";
 import { APP_TITLE } from "../config/paths";
@@ -56,9 +56,6 @@ function lastReply(messages: Message[]): string {
     return "";
 }
 
-/** The last file restore of each session, while Undo can put it back. */
-const lastRestore = new WeakMap<object, string>();
-
 /** The turn snapshots files are restored from: only in a trusted folder, where they're recorded. */
 function snapshotsOf(app: App): TurnSnapshots | undefined {
     return app.init?.trusted ? (app.agent?.turnSnapshots ?? TurnSnapshots.for(app.session, app.toolState.projectRoot)) : undefined;
@@ -66,8 +63,8 @@ function snapshotsOf(app: App): TurnSnapshots | undefined {
 
 async function undoLastRestore(app: App) {
     const snapshots = snapshotsOf(app);
-    const id = lastRestore.get(app.session);
-    if (!id || !canUndoRestore(snapshots, id)) {
+    const id = lastUndo(snapshots);
+    if (!id) {
         app.notice("There's no file restore to undo.");
         return;
     }
@@ -75,7 +72,6 @@ async function undoLastRestore(app: App) {
         app.notice("Wait for the response to finish, or stop it.", "warn");
         return;
     }
-    lastRestore.delete(app.session);
     const root = canonical(app.cwd);
     const rel = (p: string) => displayPath(p, root);
     try {
@@ -103,8 +99,7 @@ export async function rewindCommand(app: App, args = "") {
     }
     const history = FileHistory.for(app.session);
     const snapshots = snapshotsOf(app);
-    const undo = lastRestore.get(app.session);
-    const undoable = !!undo && canUndoRestore(snapshots, undo);
+    const undoable = !!lastUndo(snapshots);
     const header: string[] = [];
     if (compacted) header.push(theme.muted("Prompts from before the last /compact can't be rewound to."));
     if (history?.unsaved) header.push(theme.warning(`File history couldn't be saved (${history.unsaved}), so it will be lost when this session ends.`));
@@ -215,10 +210,7 @@ export async function rewindCommand(app: App, args = "") {
         for (const p of [...app.toolState.fileState.keys()]) if (restored.has(canonical(p))) app.toolState.fileState.delete(p);
         if (done.length) app.print(["", `${theme.success("✔")} Restored ${plural(done.length, "file")} to how ${done.length === 1 ? "it was" : "they were"} before that prompt`, ...listed(done.map((p) => theme.muted(`  ${rel(p)}`)))]);
         for (const f of failed) app.notice(`Couldn't restore ${rel(f.path)}: ${f.error}`, "error");
-        if (r.undo) {
-            lastRestore.set(app.session, r.undo);
-            app.notice("Undo it with /rewind undo");
-        }
+        if (r.undo) app.notice("Undo it with /rewind undo");
         // Kept, so the prompt stays in /rewind to try again.
         if (conversation && failed.length) {
             rewindConversation = false;
