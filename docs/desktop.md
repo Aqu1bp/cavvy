@@ -33,6 +33,8 @@ Each release has the app for Macs with Apple silicon (`Cavvy-<version>-arm64.dmg
 
 It's signed with Cavvy's own certificate, not by an Apple developer account, and not notarized. So the first time you open it, macOS says "Cavvy Not Opened" and offers only **Done** and **Move to Trash** (on macOS 15 and later, Control-clicking **Open** no longer gets past it). Click **Done**, open **System Settings → Privacy & Security**, click **Open Anyway** beside the message about Cavvy, enter your password, then **Open**. macOS remembers that for this copy. Because every release is signed with the same certificate, macOS treats each new version as the same app, and Cavvy keeps the access to your keychain you allowed (where it keeps API keys).
 
+After that, Cavvy updates itself to each new release. When one is out, a download icon shows beside Settings, and Settings → About links its release notes. Click the icon: Cavvy downloads the release in the background and checks it, then restarts into the new version. It asks first if sessions are working. Keep Cavvy in Applications: it can't replace itself from the disk image. [App updates](app-updates.md) lists the checks. `bun run gui:demo --update release` walks through it with a stand-in release.
+
 ## Using it
 
 - `⌘K` (`Ctrl+K`) searches sessions, projects and actions; `⌘N` new session, `⌘B` sidebar, `⌘.` side panel, `⌘/` model, `⌘[` `⌘]` previous/next session, `⌘,` settings, `` Ctrl+` `` terminal.

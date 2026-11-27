@@ -35,7 +35,7 @@ There's no Apple Developer ID, so the app isn't notarized and macOS doesn't trus
 
 A key: list the new public half beside the old one, release with the new key, and remove the old one once no supported version needs it.
 
-The certificate is harder. A release signed with another certificate has another designated requirement, so macOS treats it as another app and asks again for its keychain access. Moving to a new certificate would take a bridging release first, still signed with the old one, that also accepts the new certificate's requirement. That hasn't been built or tested. So keep the copy of the .p12: losing it means everyone downloads the app again.
+The certificate is harder. A release signed with another certificate has another designated requirement, so macOS treats it as another app and asks again for its keychain access. Moving to a new certificate would take a bridging release first, still signed with the old one, that also accepts the new certificate's requirement. That hasn't been built or tested, and until then an installed Cavvy refuses an update signed with another certificate. So keep the copy of the .p12: losing it means everyone downloads the app again.
 
 ## Each release
 
@@ -76,3 +76,5 @@ A release app can also be built and signed on a Mac: `bun desktop-electron/pack.
 ## What a Cavvy checks
 
 Before a downloaded build goes to a server: the description is signed by a key in `RELEASE_KEYS`; it names this very build and the server's kind of machine; the bundle is the size and has the hash the description gives. On the server the program's hash is checked again and it's started once on trial before it replaces what runs. A build that fails any of these is not installed, and the server keeps what it had.
+
+A downloaded Cavvy.app checks its own updates the same way. The release's description has to be signed with that key, and the app in the zip has to be signed with the same certificate as the app that's running. [App updates](app-updates.md) lists every check. Installed apps take whichever release `releases/latest` points to, so publish a version only when it's ready for everyone.
