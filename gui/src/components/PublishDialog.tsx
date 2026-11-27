@@ -203,9 +203,10 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
                                 <Show when={drafted()}>
                                     <button class="link-btn small" disabled={busy()} onClick={undoDraft}>Undo</button>
                                 </Show>
+                                {/* The pull request's own option, at the row's end, under the description it goes with. */}
+                                <label class="check-row pr-draft"><input type="checkbox" checked={draft()} disabled={busy()} onChange={(e) => setDraft(e.currentTarget.checked)} /><span>Draft</span></label>
                                 <Show when={genError()}><span class="wt-error" role="status">{genError()}</span></Show>
                             </div>
-                            <label class="check-row"><input type="checkbox" checked={draft()} disabled={busy()} onChange={(e) => setDraft(e.currentTarget.checked)} /><span>Draft</span></label>
                         </Show>
                     </Show>
                 </Show>
