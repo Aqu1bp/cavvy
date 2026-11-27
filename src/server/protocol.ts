@@ -1548,7 +1548,7 @@ export interface AppUpdateChange {
     subject: string;
 }
 
-/** Whether the desktop app, built from a checkout (scripts/update-desktop.ts), is behind origin/main, and its update if one is running. */
+/** Whether the desktop app is behind: a checkout's build behind origin/main, or a downloaded one behind the latest release; and its update if one is running. */
 export interface AppUpdateInfo {
     /** Why this copy can't update itself (not the installed desktop app, no record of the checkout it came from); nothing else is set. */
     unavailable?: string;
@@ -1565,8 +1565,22 @@ export interface AppUpdateInfo {
     note?: string;
     checkedAt?: number;
     checking: boolean;
-    /** An update running: since when, and the last line it printed. `restarting`: built and installed, Cavvy restarts next. */
-    updating?: { startedAt: number; line: string; restarting: boolean };
+    /**
+     * An update running: since when, and the last line it printed. `restarting`: built and installed, Cavvy restarts
+     * next. `progress`: a downloaded app's download, 0–1, while it comes.
+     */
+    updating?: { startedAt: number; line: string; restarting: boolean; progress?: number };
+    /**
+     * A downloaded Cavvy (a release build): it updates to Cavvy's latest release, not from main. `installed` and
+     * `latest` are then versions, and `changes` is empty.
+     */
+    release?: boolean;
+    /** The latest release's notes, when it's newer. */
+    notes?: string;
+    /** The latest release needs a newer macOS than this Mac's: the version it needs. */
+    needsSystem?: string;
+    /** The latest release is downloaded and checked: restarting Cavvy puts it in place. */
+    ready?: boolean;
     /** The last check failed (couldn't fetch main, say): the rest is as of the fetch before. */
     error?: string;
     /** The last update failed, or installed without the app restarting: what happened. Cleared when one starts. */

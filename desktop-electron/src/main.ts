@@ -94,6 +94,9 @@ function startServer() {
             pending = pending.slice(i + 1);
             try {
                 const h = JSON.parse(line) as { type?: string; port?: number; token?: string };
+                // A downloaded app's update is ready: quit as the user would, and a helper puts it in place and opens
+                // it (src/server/release-update.ts). A cancelled quit is said back, so nothing is applied.
+                if (h.type === "quit-for-update") void quitForUpdate();
                 if (h.type === "ready" && h.port && h.token) {
                     mark("serverReady");
                     console.error(`[cavvy] server ready on port ${h.port}`);
@@ -569,6 +572,55 @@ function bridge() {
     });
 }
 
+/** The quit being decided (its cost being read, or a question up): a second quit gets its answer. */
+let asking: Promise<boolean> | undefined;
+
+/**
+ * Quits, closing the sessions first; asked first only when work would be lost: a session whose latest work couldn't
+ * be saved (a full disk), or sessions on this computer that are working (a server's carry on without the app). An
+ * update's restart asked about working sessions before it began (UpdateAction), so it asks only about unsaved work.
+ * Whether it's quitting.
+ */
+function confirmQuit(forUpdate = false): Promise<boolean> {
+    if (quitting) return Promise.resolve(true);
+    // Asked already (a second ⌘Q, the window closed meanwhile): the question that's up is the one answered, as long
+    // as the window still answers.
+    if (asking) {
+        if (win && !win.isDestroyed()) raiseWindow();
+        pageAsking?.recheck();
+        return asking;
+    }
+    return (asking = decideQuit(forUpdate).finally(() => (asking = undefined)));
+}
+
+async function decideQuit(forUpdate: boolean): Promise<boolean> {
+    const { unsaved, working } = await quitCost();
+    const question: QuitQuestion | undefined =
+        unsaved > 0
+            ? { title: "Quit without saving?", detail: unsaved === 1 ? "A session's latest work couldn't be saved." : `${unsaved} sessions' latest work couldn't be saved.` }
+            : working > 0 && !quitAsked && !forUpdate
+              ? { title: working === 1 ? "Quit while a session is working?" : `Quit while ${working} sessions are working?`, detail: working === 1 ? "It stops where it is." : "They stop where they are." }
+              : undefined;
+    if (question && !(await askToQuit(question))) {
+        // Its last window closed to quit: it comes back, so the work can still be saved, or watched (shown once its
+        // page is ready, as at launch).
+        if (!win || win.isDestroyed()) {
+            shown = false;
+            createWindow();
+        }
+        return false;
+    }
+    quitting = true;
+    host.close();
+    void stopServer().finally(() => app.quit());
+    return true;
+}
+
+async function quitForUpdate() {
+    const child = server;
+    if (!(await confirmQuit(true))) child?.stdin.write("restart-cancelled\n");
+}
+
 // ---------------------------------------------------------------------------
 
 if (!app.requestSingleInstanceLock()) app.quit();
@@ -596,40 +648,9 @@ else {
         createWindow();
     });
     app.on("window-all-closed", () => app.quit());
-    let asking = false;
     app.on("before-quit", (e) => {
         if (quitting) return;
         e.preventDefault();
-        // Asked already (a second ⌘Q, the window closed meanwhile): the question that's up is the one answered, as long
-        // as the window still answers.
-        if (asking) {
-            if (win && !win.isDestroyed()) raiseWindow();
-            pageAsking?.recheck();
-            return;
-        }
-        asking = true;
-        // Asked only when work would be lost: a session whose latest work couldn't be saved (a full disk), or sessions on
-        // this computer that are working (a server's carry on without the app). An update's restart asked before it began.
-        void quitCost().then(async ({ unsaved, working }) => {
-            const question: QuitQuestion | undefined =
-                unsaved > 0
-                    ? { title: "Quit without saving?", detail: unsaved === 1 ? "A session's latest work couldn't be saved." : `${unsaved} sessions' latest work couldn't be saved.` }
-                    : working > 0 && !quitAsked
-                      ? { title: working === 1 ? "Quit while a session is working?" : `Quit while ${working} sessions are working?`, detail: working === 1 ? "It stops where it is." : "They stop where they are." }
-                      : undefined;
-            if (question && !(await askToQuit(question))) {
-                asking = false;
-                // Its last window closed to quit: it comes back, so the work can still be saved, or watched (shown once
-                // its page is ready, as at launch).
-                if (!win || win.isDestroyed()) {
-                    shown = false;
-                    createWindow();
-                }
-                return;
-            }
-            quitting = true;
-            host.close();
-            void stopServer().finally(() => app.quit());
-        });
+        void confirmQuit();
     });
 }

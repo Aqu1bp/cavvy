@@ -156,6 +156,8 @@ describe("signing a release's builds (scripts/sign-release.mjs)", () => {
         mkdirSync(join(root, "src", "servers"), { recursive: true });
         writeFileSync(join(root, "scripts", "sign-release.mjs"), readFileSync(join(import.meta.dir, "..", "scripts", "sign-release.mjs")));
         writeFileSync(join(root, "package.json"), JSON.stringify({ version }));
+        mkdirSync(join(root, "desktop-electron"));
+        writeFileSync(join(root, "desktop-electron", "package.json"), JSON.stringify({ version, cavvy: { minimumSystemVersion: "13.0" } }));
         mkdirSync(join(root, "src", "config"), { recursive: true });
         writeFileSync(join(root, "src", "config", "paths.ts"), `export const APP_VERSION = "${version}";\n`);
         writeFileSync(join(root, "src", "servers", "published.ts"), `export const RELEASE_KEYS: readonly string[] = [${keys.map((k) => JSON.stringify(k)).join(", ")}];\n`);
@@ -206,8 +208,64 @@ describe("signing a release's builds (scripts/sign-release.mjs)", () => {
         const split = repo([publicHalf]);
         writeFileSync(join(split, "package.json"), JSON.stringify({ version: "9.9.8" }));
         await refused("name different versions", split, built());
+        const app = repo([publicHalf]);
+        writeFileSync(join(app, "desktop-electron", "package.json"), JSON.stringify({ version: "9.9.8" }));
+        await refused("desktop-electron/package.json and APP_VERSION (9.9.9) name different versions", app, built());
         const extra = built();
         writeFileSync(join(extra.dir, "something-else.sh"), "");
         await refused("holds what isn't a build or its description: something-else.sh", repo([publicHalf]), extra);
+    });
+
+    /** What scripts/codesign-release.mjs hands over for Cavvy.app: the zip, the disk image and their description. */
+    const REQUIREMENT = 'identifier "dev.cavvy.desktop" and certificate leaf = H"' + "8".repeat(40) + '"';
+    function app(o: { arch?: "arm64" | "x64"; says?: Record<string, unknown>; dir?: string } = {}) {
+        const dir = o.dir ?? mkdtempSync(join(work, "app-"));
+        const arch = o.arch ?? "arm64";
+        const file = (name: string, bytes: string) => {
+            writeFileSync(join(dir, name), bytes);
+            return { name, size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") };
+        };
+        const manifest = { kind: "cavvy-desktop", version: "9.9.9", commit, platform: "darwin", arch, minimumSystemVersion: "13.0", zip: file(`Cavvy-9.9.9-${arch}.zip`, `a zip ${arch}`), dmg: file(`Cavvy-9.9.9-${arch}.dmg`, `a disk image ${arch}`), requirement: REQUIREMENT, notes: "https://github.com/Aqu1bp/cavvy/releases/tag/v9.9.9", ...o.says };
+        const name = `cavvy-desktop-darwin-${arch}.json`;
+        const text = JSON.stringify(manifest, null, 2) + "\n";
+        writeFileSync(join(dir, name), text);
+        return { dir, text, sig: join(dir, `${name}.sig`) };
+    }
+
+    test("Cavvy.app's descriptions are signed beside the servers' builds, each over its exact bytes", async () => {
+        const b = built();
+        const arm = app({ dir: b.dir });
+        const intel = app({ dir: b.dir, arch: "x64" });
+        expect(await run(repo([publicHalf]), b.dir)).toEqual({ code: 0, err: "" });
+        for (const d of [b, arm, intel]) expect(signedBy(d.text, readFileSync(d.sig, "utf-8"), [publicHalf])).toBe(true);
+    });
+
+    test("an app's description is signed only when all of it is this release's", async () => {
+        const refused = async (why: string, a: ReturnType<typeof app>, root = repo([publicHalf])) => {
+            const r = await run(root, a.dir);
+            expect([why, r.code, r.err]).toEqual([why, 1, expect.stringContaining(why)]);
+            expect(existsSync(a.sig)).toBe(false);
+        };
+        await refused("is of version 9.9.8, not this release's (9.9.9)", app({ says: { version: "9.9.8" } }));
+        await refused("is of commit " + "f".repeat(40), app({ says: { commit: "f".repeat(40) } }));
+        await refused("doesn't describe what it's named for", app({ says: { arch: "x64" } }));
+        await refused("doesn't describe what it's named for", app({ says: { kind: "cavvy-server" } }));
+        await refused("says it needs macOS 14.0", app({ says: { minimumSystemVersion: "14.0" } }));
+        await refused("links to https://example.com/", app({ says: { notes: "https://example.com/" } }));
+        // Ad hoc: its requirement is its own hash, which no other build meets.
+        await refused("isn't of an app signed with Cavvy's certificate", app({ says: { requirement: 'cdhash H"' + "0".repeat(40) + '"' } }));
+        await refused("doesn't describe the zip beside it", app({ says: { zip: { name: "Cavvy-9.9.9-arm64.zip", size: 1, sha256: "0".repeat(64) } } }));
+        await refused("doesn't describe the disk image beside it", app({ says: { dmg: { name: "Cavvy-9.9.9-arm64.dmg", size: 21, sha256: "0".repeat(64) } } }));
+        // Named for another version: not a file this release has, so it's one that may not ride along.
+        const older = app({ says: { zip: { name: "Cavvy-9.9.8-arm64.zip", size: 1, sha256: createHash("sha256").update("z").digest("hex") } } });
+        writeFileSync(join(older.dir, "Cavvy-9.9.8-arm64.zip"), "z");
+        await refused("holds what isn't a build or its description: Cavvy-9.9.8-arm64.zip", older);
+        const both = app();
+        app({ dir: both.dir, arch: "x64", says: { requirement: REQUIREMENT.replace("8888", "9999") } });
+        await refused("name different requirements", both);
+        // A file it describes that isn't there.
+        const missing = app();
+        rmSync(join(missing.dir, "Cavvy-9.9.9-arm64.dmg"));
+        await refused("doesn't describe the disk image beside it", missing);
     });
 });

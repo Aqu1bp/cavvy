@@ -908,8 +908,9 @@ function Shortcuts() {
 }
 
 /**
- * The desktop app updating itself from main (src/server/app-update.ts): what's
- * new since this build, and Update & restart. The build runs while you work;
+ * The desktop app updating itself (src/server/app-update.ts): from main, what's
+ * new since this build, and Update & restart; a downloaded app, the latest
+ * release, its notes, and Update & restart. The build runs while you work;
  * Cavvy restarts once it's installed. Only the desktop app shows why it can't
  * (a browser's server never updates an app).
  */
@@ -941,9 +942,17 @@ function Updates() {
                             {(a) => (
                                 <>
                                     <button class="btn sm" disabled={asking()} onClick={() => void check()}>Check now</button>
+                                    <Show when={v().notes}>
+                                        {(url) => <button class="btn ghost sm" onClick={() => void openExternal(url())}>Release notes <ExternalLink size={12} /></button>}
+                                    </Show>
                                     <Show when={a() === "update"}>
                                         <button class="btn primary sm" disabled={update.pending()} onClick={update.request}>
                                             <Download size={14} /> Update &amp; restart
+                                        </button>
+                                    </Show>
+                                    <Show when={a() === "restart"}>
+                                        <button class="btn primary sm" disabled={update.pending()} onClick={update.request}>
+                                            <RotateCcw size={14} /> Restart
                                         </button>
                                     </Show>
                                 </>
@@ -952,6 +961,9 @@ function Updates() {
                     </Row>
                     <Show when={v().warn}>
                         <div class="upd-warn"><AlertTriangle size={13} /> {v().warn}</div>
+                    </Show>
+                    <Show when={v().problem}>
+                        <div class="upd-warn"><AlertTriangle size={13} /> {v().problem}</div>
                     </Show>
                     <Show when={!u().updating && u().changes?.length}>
                         <ul class="upd-changes" aria-label="New on main">

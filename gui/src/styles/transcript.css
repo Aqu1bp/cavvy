@@ -335,20 +335,26 @@
     white-space: nowrap;
 }
 
-/* A message from the agent in another session: quoted in the reply's column (it isn't the user's), under who sent it. */
+/* A message from the agent in another session (it isn't the user's): a card in the reply's column, with who sent it
+   (a click opens that session), then what it wrote, as Markdown. */
 .peer-card {
-    max-width: min(82%, 600 * var(--sp));
+    width: min(100%, 640 * var(--sp));
     margin-bottom: calc(14 * var(--sp));
+    background: var(--card);
+    border-radius: var(--r-card);
+    box-shadow: inset 0 0 0 0.5px var(--card-stroke), inset 0 0.5px 0 var(--card-hi);
+    overflow: hidden;
 }
 
 .peer-head {
     display: flex;
     align-items: center;
     gap: calc(6 * var(--sp));
-    max-width: 100%;
-    margin-bottom: calc(6 * var(--sp));
-    color: var(--fg-3);
-    font-size: 0.857rem;
+    width: 100%;
+    padding: calc(9 * var(--sp)) calc(14 * var(--sp));
+    border-bottom: 0.5px solid var(--line);
+    color: var(--fg-2);
+    font-weight: 560;
 }
 
 .peer-head svg {
@@ -356,21 +362,29 @@
     color: var(--accent);
 }
 
+.peer-head .peer-go {
+    margin-left: auto;
+    color: var(--fg-3);
+}
+
 .peer-head:hover {
-    color: var(--fg-2);
+    color: var(--fg);
+    background: var(--hover);
     cursor: pointer;
 }
 
-.peer-card .more {
-    padding-left: calc(16 * var(--sp));
+.peer-body {
+    padding: calc(10 * var(--sp)) calc(14 * var(--sp)) calc(12 * var(--sp));
+    line-height: 1.55;
+    overflow-wrap: anywhere;
 }
 
-.peer-body {
-    padding: calc(2 * var(--sp)) 0 calc(2 * var(--sp)) calc(14 * var(--sp));
-    border-left: 2px solid var(--accent);
-    line-height: 1.55;
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
+.peer-body > :first-child {
+    margin-top: 0;
+}
+
+.peer-body > :last-child {
+    margin-bottom: 0;
 }
 
 /* The bubble's look; its shape in the conversation is .user-row's (a sub-agent's task uses it too). */
@@ -439,16 +453,14 @@
     color: var(--fg-3);
 }
 
-.user-bubble.clamped .user-text,
-.peer-body.clamped {
+.user-bubble.clamped .user-text {
     display: -webkit-box;
     -webkit-line-clamp: 14;
     -webkit-box-orient: vertical;
     overflow: hidden;
 }
 
-.user-bubble .more,
-.peer-card .more {
+.user-bubble .more {
     display: flex;
     margin-top: calc(6 * var(--sp));
     color: var(--fg-2);
@@ -4096,4 +4108,18 @@
 .prompt-comment-text {
     white-space: pre-wrap;
     overflow-wrap: anywhere;
+}
+
+/* Long: its first lines, fading out, and Show more under them. */
+.peer-body.clamped {
+    max-height: calc(10 * 1.55em);
+    overflow: hidden;
+    -webkit-mask-image: linear-gradient(to bottom, #000 70%, transparent);
+    mask-image: linear-gradient(to bottom, #000 70%, transparent);
+}
+
+.peer-card .more {
+    display: flex;
+    padding: 0 calc(14 * var(--sp)) calc(10 * var(--sp));
+    color: var(--fg-2);
 }
