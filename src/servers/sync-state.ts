@@ -799,8 +799,17 @@ async function takeBackAgentSecrets(recs: Record<string, { env?: Record<string, 
     const changed: string[] = [];
     for (const [id, r] of Object.entries(recs)) {
         const cfg = readAgentConfig(id);
-        // Its setup unreadable here, or gone with its secrets (turnOffAgent): nothing to tell apart, so nothing's touched.
-        if (!r.env || !cfg) continue;
+        if (!r.env) continue;
+        if (!cfg) {
+            // Its setup unreadable here (or gone, with its secrets): a stored value still as sync wrote it goes all the same.
+            for (const [name, before] of Object.entries(r.env)) {
+                const k = await getKey(secretEnvId(id, name)).catch(() => undefined);
+                if (k && varHash({ value: k.value, secret: true }) !== before) delete r.env[name];
+                else if (await secretGone(id, name)) delete r.env[name];
+                else stuck(out, id, name);
+            }
+            continue;
+        }
         const listed = new Set(cfg?.secretEnv ?? []);
         const take: string[] = [];
         const plain = { ...cfg?.env };

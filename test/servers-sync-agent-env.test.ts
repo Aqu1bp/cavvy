@@ -7,11 +7,12 @@ import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
 const iso = isolate();
-const { getKey, forgetCachedKeys } = await import("../src/auth/credentials");
+const { getKey, setKey, forgetCachedKeys } = await import("../src/auth/credentials");
 const { readProvidersFile, writeProvidersFile } = await import("../src/providers/registry");
 const { saveAgentEnv, secretEnvId } = await import("../src/providers/agent-env");
 const { addInstance, removeInstance, updateInstance } = await import("../src/providers/instances");
 const { applyStateSync, localSyncState } = await import("../src/servers/sync-state");
+const { paths } = await import("../src/config/paths");
 
 const binDir = tempDir("cavvy-fake-bin-");
 writeFileSync(join(binDir, "claude"), "#!/bin/sh\nprintf '{\"loggedIn\":false}\\n'\n", { mode: 0o755 });
@@ -193,4 +194,20 @@ test("a copy whose CLI the server lacks asks for that CLI", async () => {
     expect(r.missingClis).toContain("opencode");
     expect((await agents(server))[copy]).toBeUndefined();
     await removeInstance(copy);
+});
+
+test("with the server's providers unreadable, keys off still takes back what sync stored, and only that", async () => {
+    writeProvidersFile({ agents: { "claude-code": {} } });
+    await saveAgentEnv("claude-code", [{ name: "S", value: "sync", secret: true }, { name: "T", value: "sync", secret: true }]);
+    const server = tempDir("cavvy-sync-env-server-");
+    await inHome(server, () => writeProvidersFile({ agents: {} }));
+    await sync(server, true);
+    await inHome(server, async () => {
+        // T set again on the server, then its providers file broken.
+        await setKey(secretEnvId("claude-code", "T"), "server");
+        writeFileSync(paths.providers(), "{ not json");
+    });
+    await inHome(server, () => applyStateSync(undefined, {}));
+    expect(await stored(server, "claude-code", "S")).toBeUndefined();
+    expect(await stored(server, "claude-code", "T")).toBe("server");
 });
