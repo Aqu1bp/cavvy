@@ -19,8 +19,10 @@ export function CommitDialog() {
     const [paths, setPaths] = createSignal<string[]>([]);
     const [message, setMessage] = createSignal("");
     const [model, setModel] = createSignal<string>();
-    /** What the box held before Generate replaced it, for Undo; gone once the box is typed in. */
+    /** What was typed before Generate replaced it, for Undo; gone once the box is typed in. */
     const [before, setBefore] = createSignal<string>();
+    /** The last draft put in the box: Generate again keeps what was typed before it, not the draft. */
+    let lastDraft: string | undefined;
     const [error, setError] = createSignal<string>();
     /** Why Generate couldn't draft a message: under its button, as Suggest's is under its own. */
     const [genError, setGenError] = createSignal<string>();
@@ -47,6 +49,7 @@ export function CommitDialog() {
             setMessage("");
             setModel(undefined);
             setBefore(undefined);
+            lastDraft = undefined;
             setError(undefined);
             setGenError(undefined);
             setGenerating(false);
@@ -115,7 +118,8 @@ export function CommitDialog() {
                 return;
             }
             const typed = message();
-            setBefore(typed.trim() && typed !== result.message ? typed : undefined);
+            if (typed !== lastDraft) setBefore(typed.trim() && typed !== result.message ? typed : undefined);
+            lastDraft = result.message;
             setMessage(result.message);
             setModel(result.model);
         } catch (e) {

@@ -144,7 +144,8 @@ export async function undoRestore(sid: string, undo?: string): Promise<boolean> 
         for (const f of r.failed) toast(`Couldn't put back ${f.path}: ${f.error}`, "error");
         if (r.restored.length) toast(`Put back ${plural(r.restored.length, "file")}`, "success");
     } catch (e) {
-        reportError(e);
+        // Nothing to undo, or a response running: a note, not an error to copy.
+        toast(e instanceof Error ? e.message : String(e), "warn");
     }
     // A failure keeps the toast's Undo, to try again.
     return true;

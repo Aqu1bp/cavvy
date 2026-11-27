@@ -5263,7 +5263,7 @@ export class Runtime {
     /** Put the files a rewind restored (`undo`, its result's; without one, the session's last) back as they were before it. */
     async rewindUndo(undo?: string): Promise<{ restored: string[]; failed: { path: string; error: string }[] }> {
         this.checkCommitting();
-        if (this.busy) throw new Error("Wait for the current response to finish, or interrupt it first.");
+        if (this.busy) throw new Error("Wait for the response to finish, or stop it.");
         const last = !undo;
         if (last) undo = this.rewindUndone;
         if (!undo || this.rewindUndone !== undo || !canUndoRestore(this.rewindSnapshots(), undo)) throw new Error(last ? "There's no file restore to undo." : "That restore can't be undone any more.");
