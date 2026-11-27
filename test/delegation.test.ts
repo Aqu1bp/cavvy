@@ -145,6 +145,11 @@ function logLines(): any[] {
     return fakeLog(LOG);
 }
 const starts = () => logLines().filter((l) => l.argv);
+/** Claude Code's appended system prompt in its last start: where Cavvy's tools' instructions go (its MCP server sends it none). */
+const appended = (): string => {
+    const argv: string[] = starts().at(-1).argv;
+    return argv[argv.indexOf("--append-system-prompt") + 1] ?? "";
+};
 const received = () => logLines().flatMap((l) => (l.received ? [l.received] : []));
 const mcpResults = () => logLines().flatMap((l) => (l.mcpResult ? [l.mcpResult] : []));
 const setServers = () => received().filter((m) => m.type === "control_request" && m.request?.subtype === "mcp_set_servers");
@@ -673,10 +678,11 @@ describe("Claude Code as the main agent", () => {
         expect(JSON.stringify(session.messages)).not.toContain(token);
         expect(redact(token)).not.toContain(token);
 
-        // It connected, and got the instructions (Claude Code puts them in its system prompt).
+        // It connected, and has the instructions in its appended system prompt, not from the server (which cuts them).
         const conn = logLines().find((l) => l.mcpConnected);
         expect(conn).toMatchObject({ mcpConnected: "cavvy", tools: TOOLS });
-        expect(conn.instructions).toContain("For Claude models, keep using your own Agent tool.");
+        expect(conn.instructions).toBeUndefined();
+        expect(appended()).toContain("For Claude models, keep using your own Agent tool.");
 
         // The delegated agent's edit was asked about like the main agent's, naming it and its model.
         expect(asked.map((a) => [a.tool.name, a.agentLabel])).toEqual([["Write", "Write notes (gemini:gemini-test)"]]);
@@ -807,9 +813,8 @@ describe("Claude Code as the main agent", () => {
         };
         const { run, events, agent } = await makeAgent({ provider: "claude-code", headless: true });
         expect(await run("start a review")).toBe("done");
-        const conn = logLines().find((l) => l.mcpConnected);
-        expect(conn.instructions).toContain("This run ends with your turn: get every task's result before you finish");
-        expect(conn.instructions).not.toContain("next message");
+        expect(appended()).toContain("This run ends with your turn: get every task's result before you finish");
+        expect(appended()).not.toContain("next message");
         expect(notices(events)).toContain("info: 1 delegated task is still running. It stops with this run.");
         await agent.dispose(1000);
         expect(agent.delegatedTasks.map((t) => t.status)).toEqual(["cancelled"]);
@@ -2421,9 +2426,8 @@ describe("secrets in Claude Code and Codex sessions (request_secret, run_with_se
         const only = await makeAgent({ provider: "claude-code", secrets: new SecretStore(), ui: { requestSecret: async () => undefined }, settings: { delegation: false } });
         await only.run("go");
         expect(setServers().at(-1).request.servers.cavvy.tools.map((t: { name: string }) => t.name)).toEqual(["request_secret", "run_with_secrets"]);
-        const conn = logLines().findLast((l) => l.mcpConnected);
-        expect(conn.instructions).toContain("# Secrets (cavvy)");
-        expect(conn.instructions).not.toContain("Delegating to other models");
+        expect(appended()).toContain("# Secrets (cavvy)");
+        expect(appended()).not.toContain("Delegating to other models");
 
         rmSync(LOG, { force: true });
         const none = await makeAgent({ provider: "claude-code", secrets: new SecretStore(), settings: { delegation: false } });

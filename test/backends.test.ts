@@ -4743,3 +4743,38 @@ describe("Claude Code background tasks: #282 review round 4", () => {
         expect(reminders.join("\n")).toContain(m.id);
     }, 15_000);
 });
+
+// Claude Code keeps only about the first 4,000 characters of an MCP server's instructions, and all of an appended
+// system prompt: Cavvy's tools' instructions go there, and its MCP server sends Claude Code none.
+describe("where Cavvy's tools' instructions reach an agent CLI", () => {
+    const initialize = async (o: { url: string; authorization: string }) => {
+        const r = await fetch(o.url, { method: "POST", headers: { Authorization: o.authorization, "Content-Type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } }) });
+        return ((await r.json()) as { result: { instructions?: string } }).result.instructions;
+    };
+
+    test("Claude Code reads them in its appended system prompt, not from the MCP server", async () => {
+        const { agent, run } = await makeAgent({ provider: "claude-code", ui: { requestSignIn: async () => ({ signedIn: true }) } });
+        await run("hi");
+        const argv: string[] = starts()[0].argv;
+        expect(argv[argv.indexOf("--append-system-prompt") + 1]).toContain("# Sign-ins (cavvy)");
+        const served = (agent as any).orchestrator();
+        expect(served.instructions).toContain("# Sign-ins (cavvy)");
+        expect(await initialize(served)).toBeUndefined();
+        // Another agent on the same server (an ACP one, after a model switch) still gets them from it.
+        (agent as any).model = { provider: "opencode", id: "default" };
+        expect(await initialize(served)).toContain("# Sign-ins (cavvy)");
+        await agent.dispose?.();
+    });
+
+    test("a read-only Claude Code has no MCP server, so none in its prompt either", async () => {
+        const { claudeArgs } = await import("../src/backends/claude-code");
+        const t = { mode: "default", model: { provider: "claude-code", id: "default" }, additionalDirectories: [], trusted: true, cwd, rules: { deny: [], ask: [], root: cwd } } as unknown as Parameters<typeof claudeArgs>[1];
+        const orchestrator = { name: "cavvy", url: "http://127.0.0.1:1/mcp", authorization: "Bearer x", tools: [], instructions: "SERVED-INSTRUCTIONS", toolTimeoutSec: 1 } as unknown as NonNullable<typeof t.orchestrator>;
+        const prompt = (readOnly: boolean) => {
+            const { args } = claudeArgs("claude-code", { ...t, orchestrator, readOnly }, { append: ["OWN"] });
+            return args.includes("--append-system-prompt") ? args[args.indexOf("--append-system-prompt") + 1] : undefined;
+        };
+        expect(prompt(false)).toBe("OWN\n\nSERVED-INSTRUCTIONS");
+        expect(prompt(true)).toBe("OWN");
+    });
+});

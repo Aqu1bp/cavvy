@@ -2176,7 +2176,8 @@ export function claudeArgs(defId: string, t: ClaudeSpawnSettings, o: { pluginDir
     if (t.effort && (!t.model.effortLevels || t.model.effortLevels.includes(t.effort))) a.push("--effort", t.effort);
     if (t.resumeId) a.push("--resume", t.resumeId, ...(t.forkSession ? ["--fork-session"] : []));
     if (t.maxTurns && Number.isFinite(t.maxTurns)) a.push("--max-turns", String(t.maxTurns));
-    const append = o.append.filter(Boolean).join("\n\n");
+    // Cavvy's tools' instructions too, where none is cut (its MCP server sends Claude Code none: Agent.orchestrator).
+    const append = [...o.append, t.readOnly ? undefined : t.orchestrator?.instructions].filter(Boolean).join("\n\n");
     if (append) a.push("--append-system-prompt", append);
     for (const d of t.additionalDirectories) a.push("--add-dir", d);
     if (o.pluginDir) a.push("--plugin-dir", o.pluginDir);

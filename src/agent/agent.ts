@@ -1841,7 +1841,7 @@ export class Agent {
             tools.push(...selfChecked(serverServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId))));
             instructions.push(SERVER_INSTRUCTIONS);
         }
-        // First, where it's sure to be read: Claude Code keeps only the start of a server's instructions (about 4,000 characters).
+        // First, where it's sure to be read by an agent that keeps only the start of a server's instructions.
         else if (!this.oneShot && onServer()) instructions.unshift(SERVERS_ELSEWHERE_INSTRUCTIONS);
         if (theming) {
             tools.push(...selfChecked(themeServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId))));
@@ -1854,10 +1854,11 @@ export class Agent {
         }
         this.serverTools = tools;
         this.serverInstructions = instructions.join("\n\n");
-        // Claude Code puts MCP server instructions in its system prompt; Codex gets them as developer instructions.
+        // Codex gets them as developer instructions, and Claude Code in its appended system prompt: it keeps only about
+        // the first 4,000 characters of a server's instructions (measured on 2.1.325), and none of an appended prompt is cut.
         this.registration ??= registerTools(
             () => this.serverTools,
-            () => (baseCli(this.model.provider) === "codex" ? undefined : this.serverInstructions),
+            () => (baseCli(this.model.provider) === "codex" || baseCli(this.model.provider) === "claude-code" ? undefined : this.serverInstructions),
         );
         return {
             name: MCP_SERVER_NAME,
