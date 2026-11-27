@@ -175,17 +175,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
+          set -o pipefail
           tag="$GITHUB_REF_NAME"
           version="${tag#v}"
-          # A draft is made only when there's no release for the tag; any other answer stops here.
-          if found=$(gh release view "$tag" --json isDraft --jq .isDraft 2>&1); then
-            if [ "$found" != true ]; then echo "$tag is already published: its files aren't replaced." >&2; exit 1; fi
-          elif [ "$found" = "release not found" ]; then
-            gh release create "$tag" --draft --title "$tag" --notes "" --verify-tag
-          else
-            echo "$found" >&2
-            exit 1
-          fi
+          # Every release of the repository, drafts included: a draft is made only when none is for this tag, and the
+          # files go only onto this tag's one draft. A failed listing stops here.
+          found=$(gh api --paginate "repos/$GH_REPO/releases" | jq -r --arg tag "$tag" '.[] | select(.tag_name == $tag) | .draft')
+          case "$found" in
+            "") gh release create "$tag" --draft --title "$tag" --notes "" --verify-tag ;;
+            true) ;;
+            *) echo "$tag already has a published release, or more than one: its files aren't replaced." >&2; exit 1 ;;
+          esac
           gh release upload "$tag" "$RUNNER_TEMP"/release/* --clobber
           case "$version" in
             *-*)
