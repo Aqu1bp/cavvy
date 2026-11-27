@@ -1795,7 +1795,7 @@ describe("sessions", () => {
         c.close();
     }, 30_000);
 
-    test("in a trusted Git folder, rewind restores what shell commands changed too, and Undo puts it back", async () => {
+    test("in a trusted Git folder, rewind restores what shell commands changed too, and Undo (or /rewind undo) puts it back", async () => {
         const dir = project();
         await snapshotRepo(dir);
         const before = readFileSync(join(dir, "src/auth/index.ts"), "utf-8");
@@ -1826,12 +1826,15 @@ describe("sessions", () => {
         expect(existsSync(join(dir, "src/auth/sso.ts"))).toBe(false);
         expect(readFileSync(join(dir, "src/auth/index.ts"), "utf-8")).toBe(before);
 
-        const u = await c.call("session.rewindUndo", { id, undo: r.undo });
+        // Without the toast's id (`/rewind undo` in the window): the session's last restore.
+        const u = await c.call("session.rewindUndo", { id });
         expect(u.failed).toEqual([]);
         expect(readFileSync(join(dir, "shell.txt"), "utf-8")).toBe("made by a shell\n");
         expect(existsSync(join(dir, "src/auth/sso.ts"))).toBe(true);
         const again = await c.call("session.rewindUndo", { id, undo: r.undo }).then(() => "ok", (e: unknown) => e);
         expect((again as Error).message).toMatch(/can't be undone/);
+        const none = await c.call("session.rewindUndo", { id }).then(() => "ok", (e: unknown) => e);
+        expect((none as Error).message).toBe("There's no file restore to undo.");
         c.close();
     }, 30_000);
 

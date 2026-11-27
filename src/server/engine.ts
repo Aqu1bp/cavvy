@@ -82,7 +82,7 @@ import { listServers } from "../servers/store";
 import type { WakeMemory } from "../agent/wakes";
 import { forkUiLogSoon, readSegments, readUiLogSoon, type UiLog } from "./history";
 import { CLI_SOURCES, findCliSession, listCliSessions, readCliTranscript, validCliId, type CliSource } from "./cli-sessions";
-import { cavvyLinks, importModel, linkKey, writeImportedSession, type CavvyLinks } from "./cli-import";
+import { cavvyLinks, importModel, keepCliLinks, keepSideChatLinks, linkKey, writeImportedSession, type CavvyLinks } from "./cli-import";
 import { CODEX_CLIENT_NAME } from "../backends/codex";
 import { checkId, claimForDelete, listTrash, locateSession, purgeTrash, restoreSession, trashSession, type SessionFlags } from "./session-delete";
 import { searchSessions, warmSearch } from "./search";
@@ -564,6 +564,13 @@ export class Engine {
         this.reopenScheduled();
         void this.resumeWorking();
         // Side chats left by a server that stopped: discarded with it.
+        let left: string[] = [];
+        try {
+            left = readdirSync(sideChatsDir());
+        } catch {
+            // none
+        }
+        for (const s of left) keepSideChatLinks(join(sideChatsDir(), s));
         rmSync(sideChatsDir(), { recursive: true, force: true });
         purgeTrash();
         // Snoozes that ran out while Cavvy was closed wake now.
@@ -1519,6 +1526,7 @@ export class Engine {
             rt.interrupt();
             await this.unload(rt);
         }
+        keepSideChatLinks(sideChatDir(rt.id));
         rmSync(sideChatDir(rt.id), { recursive: true, force: true });
         // What was attached to its messages, saved in the project.
         rmSync(join(attachmentsDir(rt.ws.cwd), rt.id), { recursive: true, force: true });
@@ -1854,7 +1862,8 @@ export class Engine {
      * Meanwhile opening or renaming it waits, as for one being unloaded, and
      * then finds nothing.
      */
-    private async deleteSession(id: string) {
+    /** Whether it went to the trash, for Undo: one never saved (nothing but `!` commands run, say) is only closed. */
+    private async deleteSession(id: string): Promise<boolean> {
         // A model still being set up (as it opens) isn't work to refuse over: wait for it, a while.
         const until = Date.now() + 10_000;
         for (;;) {
@@ -1871,7 +1880,9 @@ export class Engine {
         const snoozedUntil = store.snoozed?.[id]?.until;
         const flags: SessionFlags = { pinned: !!store.pinned?.includes(id), archived: !!store.archived?.includes(id), settled: !!store.settled?.includes(id), neverSettle: !!store.neverSettle?.includes(id), ...(snoozedUntil !== undefined ? { snoozedUntil } : {}) };
         // Held from before its runtime closes until it's in the trash, so a terminal can't take it in between.
-        const release = claimForDelete(locateSession(id).file);
+        const unsaved = !!rt && !findSessionAnywhere(id);
+        const release = unsaved ? () => {} : claimForDelete(locateSession(id).file);
+        let trashed = false;
         const work = (async () => {
             try {
                 if (rt) {
@@ -1889,7 +1900,12 @@ export class Engine {
                     if (rt.guest) this.guestGone(rt);
                     await rt.close().catch(() => undefined);
                 }
+                const file = unsaved ? findSessionAnywhere(id) : locateSession(id).file;
+                if (!file) return;
+                // Cavvy's own: its CLI sessions stay out of the list to continue once it's gone.
+                keepCliLinks([file]);
                 trashSession(id, flags);
+                trashed = true;
             } finally {
                 release();
             }
@@ -1923,6 +1939,7 @@ export class Engine {
             forgetPlay(s, id);
         });
         this.broadcast({ type: "sessions.remove", id });
+        return trashed;
     }
 
     private runtime(id: unknown): Runtime {
@@ -3895,6 +3912,8 @@ export class Engine {
                 await rt.allTurns();
                 return rt.rewindTargets();
             }
+            case "session.rewindCanUndo":
+                return this.runtime(p.id).rewindCanUndo();
             case "session.rewindPlan": {
                 const rt = this.runtime(p.id);
                 if (rt.compactingWhileIdle) await rt.yieldIdleCompaction();
@@ -3908,7 +3927,7 @@ export class Engine {
                 return rt.rewind(num(p.index, -1), str(p.planId, "planId"), Boolean(p.code), Boolean(p.conversation), this.workingFolders(rt));
             }
             case "session.rewindUndo":
-                return this.runtime(p.id).rewindUndo(str(p.undo, "undo"));
+                return this.runtime(p.id).rewindUndo(optStr(p.undo));
             case "session.fork": {
                 const original = this.runtime(p.id);
                 const text = str(p.text, "text");
@@ -4077,8 +4096,7 @@ export class Engine {
                 return { path: writePlanFile({ cwd: rt.ws.cwd, home: cavvyHome(), input, text: plan.text, replace: p.replace === true }) };
             }
             case "session.delete":
-                await this.deleteSession(checkId(p.id));
-                return null;
+                return (await this.deleteSession(checkId(p.id))) ? null : { unsaved: true };
             case "session.restore": {
                 const id = checkId(p.id);
                 while (this.closing.has(id)) await this.afterClosing(id);
@@ -4470,8 +4488,11 @@ export class Engine {
                 this.branchMoved(cwd);
                 return info;
             }
-            case "git.branches":
-                return await gitBranches(this.gitFolder(p.cwd));
+            case "git.branches": {
+                const list = await gitBranches(this.gitFolder(p.cwd));
+                const suggested = typeof p.sessionId === "string" ? this.runtimes.get(p.sessionId)?.branchFromTitle() : undefined;
+                return suggested && !list.local.some((b) => b.name === suggested) ? { ...list, suggested } : list;
+            }
             case "git.fetch":
                 return await this.gitAction(p.cwd, false, (cwd) => gitFetch(cwd));
             case "git.pull":

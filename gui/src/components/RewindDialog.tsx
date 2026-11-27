@@ -7,6 +7,7 @@ import { rewindOpen, rewindTarget, setRewindOpen } from "../state/ui";
 import { plural } from "../lib/format";
 import { rewindTimes } from "../lib/rewind-times";
 import { refreshGitChanges } from "../state/changes";
+import { undoRestore } from "../state/actions";
 import { Dialog } from "./ui/Dialog";
 import { Spinner } from "./ui/bits";
 import { userMovedFocus } from "../lib/focus-trap";
@@ -31,20 +32,6 @@ function changedLabel(t: RewindTargetInfo): string {
     return untracked ?? "";
 }
 
-
-/** Put back the files a rewind restored. A failure keeps the toast's Undo, to try again. */
-async function undoRestore(sid: string, undo: string): Promise<boolean> {
-    try {
-        const r = await rpc.call("session.rewindUndo", { id: sid, undo });
-        refreshGitChanges();
-        for (const f of r.failed) toast(`Couldn't put back ${f.path}: ${f.error}`, "error");
-        if (r.restored.length) toast(`Put back ${plural(r.restored.length, "file")}`, "success");
-        return true;
-    } catch (e) {
-        reportError(e);
-        return true;
-    }
-}
 
 export function RewindDialog() {
     /** The session the dialog was opened for; it closes if another one is shown. */
@@ -75,6 +62,8 @@ export function RewindDialog() {
                 return [];
             }),
     );
+    /** The session's last file restore can still be undone: after a restart too, once the toast's Undo is gone. */
+    const [canUndo, { mutate: setCanUndo }] = createResource(readFor, (sid) => rpc.call("session.rewindCanUndo", { id: sid }).catch(() => false));
     /** The prompts, once read for the session the dialog is open for (not while they're read again). */
     const list = () => (targets.state === "ready" ? targets() : undefined);
     /** When each was sent; to the second where the next one up or down would read the same. */
@@ -287,6 +276,24 @@ export function RewindDialog() {
                         </Show>
                     </Show>
                 </Show>
+            </Show>
+            {/* Above the buttons: beside them, the row is too wide for the dialog. */}
+            <Show when={canUndo.state === "ready" && canUndo() && !busySession()}>
+                <div>
+                    <button
+                        class="link-btn small"
+                        disabled={busy()}
+                        onClick={() => {
+                            const sid = id();
+                            if (!sid) return;
+                            setCanUndo(false);
+                            close();
+                            void undoRestore(sid);
+                        }}
+                    >
+                        Undo last restore
+                    </button>
+                </div>
             </Show>
             <div class="dialog-actions">
                 <Show when={empty()}>

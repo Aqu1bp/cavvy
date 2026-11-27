@@ -139,9 +139,10 @@ function nowhere(url: string): boolean {
     return url === "" || url === "about:blank" || url.startsWith("chrome-error:");
 }
 
-function navigationFailure(url: string, error: string): string {
+/** `person`: the one at the pane typed or clicked the address, not the agent: no advice about the agent's tools. */
+function navigationFailure(url: string, error: string, person = false): string {
     const where = displayUrl(url);
-    if (/ERR_CONNECTION_REFUSED/.test(error)) return `Couldn't load ${where}: nothing is listening there (${error}). If it's a dev server, start it first (Bash with run_in_background) and wait for it to be ready.`;
+    if (/ERR_CONNECTION_REFUSED/.test(error)) return person ? `Nothing is running at ${where}.` : `Couldn't load ${where}: nothing is listening there (${error}). If it's a dev server, start it first (Bash with run_in_background) and wait for it to be ready.`;
     if (/ERR_NAME_NOT_RESOLVED/.test(error)) return `Couldn't load ${where}: the host name doesn't resolve (${error}).`;
     if (/ERR_ABORTED/.test(error)) return `Couldn't load ${where}: the load was aborted (${error}). It may be a download (downloads are blocked here), or a page that redirected itself elsewhere.`;
     if (/ERR_BLOCKED_BY_CLIENT/.test(error)) return `Couldn't load ${where}: the browser here doesn't open that kind of address.`;
@@ -644,13 +645,16 @@ export class Page {
         return loaded;
     }
 
-    /** Opens `url` (already checked by the URL policy) and waits for the load. False if it was still loading after `timeoutMs`. */
-    goto(url: string, signal?: AbortSignal, timeoutMs = LOAD_TIMEOUT_MS): Promise<boolean> {
+    /**
+     * Opens `url` (already checked by the URL policy) and waits for the load. False if it was still loading after
+     * `timeoutMs`. `person`: asked for at the pane, not by the agent.
+     */
+    goto(url: string, signal?: AbortSignal, timeoutMs = LOAD_TIMEOUT_MS, person = false): Promise<boolean> {
         this.ready();
         return this.navigate(async () => {
             if (signal) this.stillAgent(signal);
             const r = await this.send<{ errorText?: string }>("Page.navigate", { url });
-            if (r.errorText) throw new BrowserError(navigationFailure(url, r.errorText));
+            if (r.errorText) throw new BrowserError(navigationFailure(url, r.errorText, person));
         }, signal, timeoutMs);
     }
 

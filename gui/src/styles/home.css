@@ -557,13 +557,6 @@
     color: var(--accent);
 }
 
-.cl-sub {
-    padding: calc(12 * var(--sp)) calc(10 * var(--sp)) calc(4 * var(--sp));
-    font-size: 0.821rem;
-    font-weight: 600;
-    color: var(--fg-3);
-}
-
 .cl-note {
     padding: calc(6 * var(--sp)) calc(10 * var(--sp));
     font-size: 0.857rem;

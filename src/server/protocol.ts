@@ -1769,6 +1769,8 @@ export interface GitBranchList {
     current?: string;
     local: GitBranchEntry[];
     remote: GitBranchEntry[];
+    /** A new branch's name from the session's title (with the branch prefix), when no branch has it. */
+    suggested?: string;
 }
 /** A repository's open pull requests (git.pullRequests). */
 export interface GitPrListInfo {
@@ -2417,9 +2419,9 @@ export interface Methods {
      * Something a session's row offers (rename, pin, settle, archive, delete, restore: RELAYED_SESSION_METHODS),
      * asked of a session on a server by a window that isn't on it. `params`: that call's own, with the session's id.
      * Nothing of the server's answer is passed on, but whether a session it's about to archive works in a worktree
-     * (RELAYED_ARCHIVE_OFFER).
+     * (RELAYED_ARCHIVE_OFFER), and whether a session it deleted was never saved (no Undo).
      */
-    "servers.relay": { params: { name: string; method: string; params: Record<string, unknown> }; result: { worktree: true } | null };
+    "servers.relay": { params: { name: string; method: string; params: Record<string, unknown> }; result: { worktree: true } | { unsaved: true } | null };
     "servers.add": { params: { name: string; destination: string; port?: number; identityFile?: string; trust?: string[] }; result: AddResult };
     "servers.copy": { params: { name: string }; result: { took: string; left?: string } };
     "servers.check": { params: { name: string }; result: ServerCheck };
@@ -2590,11 +2592,13 @@ export interface Methods {
     "session.rename": { params: { id: string; title: string }; result: null };
     "session.compact": { params: { id: string; instructions?: string }; result: null };
     "session.rewindTargets": { params: { id: string }; result: RewindTargetInfo[] };
+    /** Whether the session's last file restore can still be undone (session.rewindUndo without `undo`). */
+    "session.rewindCanUndo": { params: { id: string }; result: boolean };
     "session.rewindPlan": { params: { id: string; index: number }; result: RewindPlanInfo };
     /** `text` and what the prompt carried (images, files) go back to the input box, as with an edited queued message. */
     "session.rewind": { params: { id: string; index: number; planId: string; code: boolean; conversation: boolean }; result: RewindResult };
-    /** Put back the files a rewind restored (`undo` from its result), as they were before it. */
-    "session.rewindUndo": { params: { id: string; undo: string }; result: { restored: string[]; failed: { path: string; error: string }[] } };
+    /** Put back the files a rewind restored (`undo` from its result; without it, the session's last restore), as they were before it. */
+    "session.rewindUndo": { params: { id: string; undo?: string }; result: { restored: string[]; failed: { path: string; error: string }[] } };
     /** A new session with the conversation up to the end of the turn of the prompt at `index` (TurnPrompt.index, or Turn.pos.index for imported prompts), which the window showed as turn `turn` with `text`. */
     /**
      * `soon`: answer at once with how the fork will look (`making` set) while it's made, when the turn is in the
@@ -2670,7 +2674,8 @@ export interface Methods {
     /** Never settled by itself when it's been idle (`on`), or as any other again. */
     "session.neverSettle": { params: { id: string; on: boolean }; result: null };
     /** Moves its files to the trash (sessions.remove follows); session.restore puts them back for a week. */
-    "session.delete": { params: { id: string }; result: null };
+    /** `unsaved`: it was never saved, so it was only closed: there's nothing for session.restore to bring back. */
+    "session.delete": { params: { id: string }; result: null | { unsaved: true } };
     "session.restore": { params: { id: string }; result: null };
     /** The sessions in the trash (deleted in the past week), the most recently deleted first. */
     /** `servers`: those deleted on the servers this machine is connected to (each row says which), not its own. */

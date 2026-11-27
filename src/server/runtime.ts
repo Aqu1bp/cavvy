@@ -23,7 +23,7 @@ import { basename, join } from "path";
 import { Agent, type Admission, type Admitted, type AgentEvent, type PermissionRequest, type PermissionResponse, type TurnEndReason } from "../agent/agent";
 import { digestToolState, lastPlanCall, latestCheckpointOf } from "../agent/history-digest";
 import { backendsIn, canonical, FileHistory, promptNotes, resetToolState, resetToolStateTo, rewindTargets, untrackedChangesNote } from "../agent/checkpoints";
-import { canUndoRestore, changedBy, planFileRestore, restoreFiles, undoRestore, type FileRestorePlan } from "../agent/rewind-files";
+import { canUndoRestore, changedBy, dropUndo, lastUndo, planFileRestore, restoreFiles, undoRestore, type FileRestorePlan } from "../agent/rewind-files";
 import { beforeFork, forkCut, isForkTarget } from "../agent/fork";
 import { sideChatReminder, type SideChatOrigin } from "../agent/side-chat";
 import { fireHooks, type HookEvent } from "../agent/hooks";
@@ -72,7 +72,7 @@ import { expandMcpMentions, findMcpMentions } from "../mcp/mentions";
 import type { McpAsker } from "../mcp/elicitation";
 import { notifyAfterMs } from "../ui/notify";
 import { displayPath } from "../util/files";
-import { gitBranch } from "../util/git";
+import { gitBranch, headBranch } from "../util/git";
 import { pathSettling } from "../util/env";
 import { redact, redactPrefix, lineRedactor } from "../util/redact";
 import { redactedReport } from "../lsp/diagnostics";
@@ -691,7 +691,6 @@ export class Runtime {
     /** The rewind last shown: restoring does what it showed, or nothing if the conversation moved on. */
     private rewindShown?: { id: string; index: number; message: Message; count: number; plan: FileRestorePlan };
     /** What can put the files a rewind restored back as they were, by its id (rewindUndo). */
-    private rewindUndone?: string;
 
     // What the current turn is building
     private turnId?: string;
@@ -985,6 +984,11 @@ export class Runtime {
 
     get title(): string | undefined {
         return this.view.state.title;
+    }
+
+    /** A new branch's name from the session's title, as Suggest in the commit dialog makes one. */
+    branchFromTitle(): string | undefined {
+        return this.title ? branchName(this.title, worktreeSettings(this.settings()).branchPrefix) : undefined;
     }
 
     /** The first prompt, for sessions without a title. */
@@ -5084,6 +5088,11 @@ export class Runtime {
     // -----------------------------------------------------------------------
     // Rewind and changes
 
+    /** Whether the Rewind dialog offers to undo the last file restore. */
+    rewindCanUndo(): boolean {
+        return !!lastUndo(this.rewindSnapshots());
+    }
+
     rewindTargets(): RewindTargetInfo[] {
         const history = FileHistory.for(this.session);
         const snapshots = this.rewindSnapshots();
@@ -5225,7 +5234,8 @@ export class Runtime {
             }
             restored = r.done.map(rel);
             failed = r.failed.map((f) => ({ path: rel(f.path), error: f.error }));
-            undo = this.rewindUndone = r.undo;
+            undo = r.undo;
+            if (!undo && r.done.length) dropUndo(FileHistory.for(this.session)?.dir);
             this.forgetReads(r.done);
             if (conversation && failed.length) rewindConversation = false;
             if (!rewindConversation && r.done.length) this.agent?.addReminder(`The user restored these files to how they were before an earlier prompt (/rewind), undoing the changes made to them since. Read them again before editing them:\n${restored.map((p) => `- ${p}`).join("\n")}`);
@@ -5260,12 +5270,13 @@ export class Runtime {
         for (const p of [...this.toolState.fileState.keys()]) if (changed.has(canonical(p))) this.toolState.fileState.delete(p);
     }
 
-    /** Put the files a rewind restored (`undo`, its result's) back as they were before it. */
-    async rewindUndo(undo: string): Promise<{ restored: string[]; failed: { path: string; error: string }[] }> {
+    /** Put the files a rewind restored (`undo`, its result's; without one, the session's last) back as they were before it. */
+    async rewindUndo(undo?: string): Promise<{ restored: string[]; failed: { path: string; error: string }[] }> {
         this.checkCommitting();
-        if (this.busy) throw new Error("Wait for the current response to finish, or interrupt it first.");
-        if (this.rewindUndone !== undo || !canUndoRestore(this.rewindSnapshots(), undo)) throw new Error("That restore can't be undone any more.");
-        this.rewindUndone = undefined;
+        if (this.busy) throw new Error("Wait for the response to finish, or stop it.");
+        const last = !undo;
+        if (last) undo = lastUndo(this.rewindSnapshots());
+        if (!undo || !canUndoRestore(this.rewindSnapshots(), undo)) throw new Error(last ? "There's no file restore to undo." : "That restore can't be undone any more.");
         this.restoring = true;
         let r: Awaited<ReturnType<typeof undoRestore>>;
         try {
@@ -5493,18 +5504,26 @@ export class Runtime {
         return gitPublishInfo(this.ws.cwd);
     }
 
-    private prRead?: { at: number; promise: Promise<{ pr?: GitPrInfo }> };
+    /** The branch's pull request, read at most once a minute for the branch checked out then. */
+    private prRead?: { at: number; branch?: string; promise: Promise<{ pr?: GitPrInfo }> };
     gitPrState() {
         if (!this.ws.trusted || this.closed) return Promise.resolve({});
-        if (!this.prRead || Date.now() - this.prRead.at >= 60_000) {
-            this.prRead = {
+        // The branch checked out now, from the HEAD file (a terminal's checkout may not have reached the header yet).
+        // When that can't say (a reftable repository, say), nothing read before is trusted.
+        const branch = headBranch(this.ws.cwd);
+        if (branch === undefined || !this.prRead || Date.now() - this.prRead.at >= 60_000 || this.prRead.branch !== branch) {
+            const read = {
                 at: Date.now(),
+                branch,
                 promise: gitPrState(this.ws.cwd).then((pr) => {
+                    // Another branch checked out while it was read: it may be that one's, so it isn't kept.
+                    if (headBranch(this.ws.cwd) !== branch && this.prRead === read) this.prRead = undefined;
                     // Merged or closed: with auto-settle on, the session is done with (engine.ts prEnded).
                     if ((pr?.state === "merged" || pr?.state === "closed") && !this.closed) this.engine.prEnded(this);
                     return { pr };
                 }),
             };
+            this.prRead = read;
         }
         return this.prRead.promise;
     }
@@ -5514,11 +5533,14 @@ export class Runtime {
         this.checkGitCommit("publishing");
         this.committing = true;
         this.commitAbort = new AbortController();
+        const branch = headBranch(this.ws.cwd);
         const done = gitPublish(this.ws.cwd, request, this.commitAbort.signal);
         this.commitDone = done;
         try {
             const result = await done;
-            this.prRead = { at: Date.now(), promise: Promise.resolve(result) };
+            // Kept for the branch it was published from, unless another was checked out meanwhile (its PR is then
+            // looked up for whichever that is).
+            this.prRead = branch !== undefined && headBranch(this.ws.cwd) === branch ? { at: Date.now(), branch, promise: Promise.resolve(result) } : undefined;
             return result;
         } finally {
             this.committing = false;

@@ -80,15 +80,27 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
         const info = view(), id = p.id;
         if (!info || !id || !ready() || (action === "pr" && (!info.gh || !title().trim() || !baseOr()))) return;
         const version = revision;
+        // A new pull request opens on GitHub: what comes next is looking at it. In a browser the tab is opened now,
+        // while this is still the click (one opened after the answer would be a blocked pop-up); the desktop app
+        // opens none, and opens the page once it's known.
+        const tab = action === "pr" ? window.open("", "_blank") : null;
         setBusy(true); setError(undefined);
         try {
             const result = await rpc.call("session.gitPublish", { id, fingerprint: info.fingerprint, action, confirmProtected: confirmed(), base: baseOr(), title: title(), body: body(), draft: draft() });
             refreshGitChanges();
-            toast(result.pr ? `Pushed ${info.remote}/${info.target} · PR #${result.pr.number}` : `Pushed ${info.remote}/${info.target}`, "success");
+            const pr = result.pr;
+            if (pr && action === "pr" && /^https:\/\//i.test(pr.url)) {
+                if (tab && !tab.closed) {
+                    tab.opener = null;
+                    tab.location.href = pr.url;
+                } else if (!tab) void openExternal(pr.url);
+            } else tab?.close();
+            toast(pr && action === "pr" ? `Created PR #${pr.number}` : pr ? `Pushed ${info.remote}/${info.target} · PR #${pr.number}` : `Pushed ${info.remote}/${info.target}`, "success", pr ? { label: "Open", run: () => void openExternal(pr.url) } : undefined);
             if (revision !== version) return;
             p.onPublished(result.pr);
             p.onClose();
         } catch (e) {
+            tab?.close();
             if (revision !== version) return;
             // Signed out since the dialog opened: the button for it, not the CLI's advice.
             const code = (e as { code?: string }).code;

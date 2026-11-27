@@ -12,6 +12,7 @@ import { toWire, type Attachment } from "../lib/attachments";
 import { activate, agentReady, app, awayMachine, awayUnopened, createSession, homeAt, type HomeAt, homeCwdAfter, homeHere, homeOn, homeOnMachine, machineFor, rpcFor, setHomeAwayMode, updateHomeSettings, revealBackground, dropHandle, forkMakingOf, forkSession, handleFor, importCliSession, markSeen, refreshModels, refreshProjects, refreshProviders, refreshSessions, refreshSettings, reportError, requestTrust, rpc, serversUi, setApp, toast } from "./app";
 import type { ReviewScope } from "./changes";
 import { refreshGitChanges } from "./changes";
+import { plural } from "../lib/format";
 import { keepSentImages } from "./images";
 import { prefs, setPrefs } from "./prefs";
 import { freeRail, railOpen, requestComposerFocus, setAgentFocus, setArchiveRequest, setContextCardOpen, setFolderPickerOpen, setAskSideChat, setInspectorPane, setMcpOpen, setModePickerOpen, setModelPickerOpen, setRailOpen, review, setReview, setRewindOpen, setSettingsTab, setTerminalMax, shellLayout, splitActions } from "./ui";
@@ -135,6 +136,21 @@ export async function openSideChat(id: string, text?: string) {
     if (text?.trim()) await rpcFor(id).call("session.sideChat", { id, text }).catch(reportError);
 }
 
+/** Put back the files a rewind restored (`undo` from its result; without it, the session's last restore). */
+export async function undoRestore(sid: string, undo?: string): Promise<boolean> {
+    try {
+        const r = await rpcFor(sid).call("session.rewindUndo", { id: sid, ...(undo ? { undo } : {}) });
+        refreshGitChanges();
+        for (const f of r.failed) toast(`Couldn't put back ${f.path}: ${f.error}`, "error");
+        if (r.restored.length) toast(`Put back ${plural(r.restored.length, "file")}`, "success");
+    } catch (e) {
+        // Nothing to undo, or a response running: a note, not an error to copy.
+        toast(e instanceof Error ? e.message : String(e), "warn");
+    }
+    // A failure keeps the toast's Undo, to try again.
+    return true;
+}
+
 /** Run a slash command the GUI handles itself. Returns false when it's the server's (or a prompt). */
 function clientCommand(id: string | undefined, text: string): boolean {
     const c = clientAction(text);
@@ -151,7 +167,9 @@ function clientCommand(id: string | undefined, text: string): boolean {
             newSession(app.homeCwd);
             return true;
         case "rewind":
-            if (id) setRewindOpen(true);
+            // `/rewind undo`: the session's last file restore put back, as the toast's Undo does, after the toast has gone too.
+            if (id && args.trim() === "undo") void undoRestore(id);
+            else if (id) setRewindOpen(true);
             return true;
         case "fork":
             if (id) void fork(id);
@@ -543,11 +561,17 @@ export async function settle(id: string, settled: boolean): Promise<boolean> {
 
 /** At once, without asking: the server moves its files to the trash, and the toast's Undo puts them back. Whether it was done. */
 export async function deleteSession(id: string): Promise<boolean> {
+    let r: Awaited<ReturnType<typeof rpc.call<"session.delete">>>;
     try {
-        await rpc.call("session.delete", { id });
+        r = await rpc.call("session.delete", { id });
     } catch (e) {
         reportError(e);
         return false;
+    }
+    // Never saved: nothing for Undo to bring back.
+    if (r?.unsaved) {
+        toast("Session deleted", "info");
+        return true;
     }
     toast(
         "Session deleted",

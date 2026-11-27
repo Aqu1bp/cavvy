@@ -41,7 +41,7 @@ import { formatWakes, wakeDisplay, type Wake } from "./wakes";
 import { isReadOnly, isShellTool } from "../tools/types";
 import { coerceInput, validateInput, EXPLORE_TOOLS, toSchema } from "../tools/index";
 import { isReadOnlyCommand, notReadOnly } from "../permissions/bash-safety";
-import { mcpToolMatches } from "../permissions/rules";
+import { mcpToolMatches, workingBashRules } from "../permissions/rules";
 import { toolNameFor } from "../mcp/manager";
 import { costOf, promptTokens, type CostEstimate } from "../providers/pricing";
 import { redactMessage, Session } from "./session";
@@ -113,7 +113,6 @@ import {
     type ChildResult,
     type DelegatedTask,
 } from "./delegation";
-import { suggestBashRules } from "../permissions/bash-safety";
 import { isTrusted, trustedByUser } from "../config/trust";
 import { deniedWithin } from "../permissions/rules";
 import { canonical, expandPath, isInside } from "../util/files";
@@ -3483,7 +3482,7 @@ export class Agent {
             ...(req.incomplete ? { ...decision, grant: undefined } : this.o.checker.withGrant(tool, input, decision, cwd)),
             behavior: "ask" as const,
             reason: decision.behavior === "ask" ? (decision.reason ?? req.reason) : req.reason,
-            suggestions: req.incomplete ? [] : (decision.suggestions ?? (command ? suggestBashRules(command) : tool.category === "mcp" ? [tool.name] : undefined)),
+            suggestions: req.incomplete ? [] : (decision.suggestions ?? (command ? workingBashRules(command) : tool.category === "mcp" ? [tool.name] : undefined)),
             sandbox: undefined,
             needsClassifier: undefined,
         };
