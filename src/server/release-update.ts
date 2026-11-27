@@ -540,7 +540,10 @@ say() { printf '{"reason":"%s","version":"%s"}\\n' "$1" "$version" > "$note"; }
 launch() { [ -d "$1" ] || return; if [ "$how" = exec ]; then "$1/Contents/MacOS/cavvy-desktop" >/dev/null 2>&1 & else /usr/bin/open "$1"; fi; }
 give_up() { /bin/rm -rf "$part"; /bin/rm -f "$pending"; say "$1"; reopen; exit 1; }
 reopen() { if [ -d "$dest" ]; then launch "$dest"; else launch "$old"; fi; }
-field() { /usr/bin/plutil -extract "$1" raw -o - "$new/Contents/Resources/release.json" 2>/dev/null; }
+nl=$(printf '\\nx'); nl=\${nl%x}
+# Whether release.json's field $1 is exactly $2: plutil adds one newline, and only that one is dropped (the "." keeps
+# the shell from dropping any).
+is() { v=$(/usr/bin/plutil -extract "$1" raw -o - "$new/Contents/Resources/release.json" 2>/dev/null && echo .) || return 1; v=\${v%.}; [ "\${v%"$nl"}" = "$2" ]; }
 i=0
 while kill -0 "$pid" 2>/dev/null; do
     if [ $i -ge 3000 ]; then /bin/rm -f "$pending"; exit 0; fi
@@ -548,7 +551,7 @@ while kill -0 "$pid" 2>/dev/null; do
 done
 /usr/bin/codesign --verify --deep --strict -R="$req" "$new" >/dev/null 2>&1 || give_up unsigned
 /usr/bin/codesign --verify --strict -R="$sreq" "$new/Contents/MacOS/cavvy" >/dev/null 2>&1 || give_up unsigned
-[ "$(field version)" = "$version" ] && [ "$(field commit)" = "$commit" ] && [ "$(field arch)" = "$arch" ] || give_up unsigned
+is version "$version" && is commit "$commit" && is arch "$arch" || give_up unsigned
 /usr/bin/xattr -p com.apple.quarantine "$new" >/dev/null 2>&1 && give_up unsigned
 /bin/rm -rf "$old"
 /bin/mv "$dest" "$old" 2>/dev/null || give_up management

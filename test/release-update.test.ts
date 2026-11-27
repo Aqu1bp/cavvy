@@ -586,13 +586,13 @@ describe.if(mac)("a downloaded app updating (macOS)", () => {
 
 describe.if(mac)("the restart helper (macOS)", () => {
     /** An "app" that's a sleep: the helper waits for it to end. A new app's launcher records that it opened, and (if `starts`) clears the pending record as its server would. */
-    function scene(o: { starts: boolean; newId?: string; commit?: string }) {
+    function scene(o: { starts: boolean; newId?: string; commit?: string; newArch?: string }) {
         const apps = join(dir, "Apps");
         const dest = join(apps, "Cavvy.app");
         makeApp(dest, { version: "1.2.0", desktop: `#!/bin/sh\necho old >> "${join(dir, "opened")}"\n` });
         const part = join(apps, ".Cavvy.app.partial");
         const clear = o.starts ? `rm -f "${join(dir, "pending.json")}"\n` : "";
-        makeApp(join(part, "Cavvy.app"), { version: "1.3.0", id: o.newId, desktop: `#!/bin/sh\necho new >> "${join(dir, "opened")}"\n${clear}` });
+        makeApp(join(part, "Cavvy.app"), { version: "1.3.0", id: o.newId, arch: o.newArch as Arch | undefined, desktop: `#!/bin/sh\necho new >> "${join(dir, "opened")}"\n${clear}` });
         writeFileSync(join(dir, "pending.json"), "{}");
         const app = Bun.spawn(["/bin/sleep", "0.5"]);
         const helper = Bun.spawn(["/bin/sh", "-c", RESTART_HELPER, "sh", String(app.pid), join(part, "Cavvy.app"), dest, join(apps, ".Cavvy.app.old"), REQ, SREQ, join(dir, "pending.json"), join(dir, "note.json"), "exec", "1.3.0", "2", o.commit ?? COMMIT, ARCH], { stdout: "ignore", stderr: "pipe" });
@@ -629,6 +629,12 @@ describe.if(mac)("the restart helper (macOS)", () => {
     }, 20_000);
     test("the unpacked app's release.json isn't the one checked (another commit): nothing replaced", async () => {
         const { dest, helper } = scene({ starts: true, commit: COMMIT2 });
+        await helper.exited;
+        expect(version(dest)).toBe("1.2.0");
+        expect(JSON.parse(readFileSync(join(dir, "note.json"), "utf8")).reason).toBe("unsigned");
+    }, 20_000);
+    test("release.json's arch only nearly the one checked (a trailing newline): nothing replaced", async () => {
+        const { dest, helper } = scene({ starts: true, newArch: "arm64\n" });
         await helper.exited;
         expect(version(dest)).toBe("1.2.0");
         expect(JSON.parse(readFileSync(join(dir, "note.json"), "utf8")).reason).toBe("unsigned");
