@@ -277,10 +277,11 @@ export function RewindDialog() {
                     </Show>
                 </Show>
             </Show>
-            <div class="dialog-actions">
-                <Show when={canUndo.state === "ready" && canUndo() && !busySession()}>
+            {/* Above the buttons: beside them, the row is too wide for the dialog. */}
+            <Show when={canUndo.state === "ready" && canUndo() && !busySession()}>
+                <div>
                     <button
-                        class="btn ghost"
+                        class="link-btn small"
                         disabled={busy()}
                         onClick={() => {
                             const sid = id();
@@ -292,7 +293,9 @@ export function RewindDialog() {
                     >
                         Undo last restore
                     </button>
-                </Show>
+                </div>
+            </Show>
+            <div class="dialog-actions">
                 <Show when={empty()}>
                     <span class="grow" />
                 </Show>
