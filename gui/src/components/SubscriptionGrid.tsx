@@ -29,6 +29,8 @@ interface Far {
 
 /** While a server installs a CLI, how often its providers are read again. */
 const INSTALL_RECHECK_MS = 10_000;
+/** After a change here, long enough for sync to reach a server (its 1.5 s settle, then the call). */
+const SYNC_SETTLE_MS = 4_000;
 
 const planLabel = (plan?: string) => (plan ? plan.charAt(0).toUpperCase() + plan.slice(1) : undefined);
 
@@ -86,11 +88,18 @@ export default function SubscriptionGrid(p: { here: string; servers: readonly st
     createEffect(on(() => [...p.servers], (names) => names.forEach(open), { defer: true }));
     // Signed in on a server from here, or its keys changed: how its accounts stand is asked again there.
     createEffect(on(p.touched, () => p.servers.forEach((name) => void check(name)), { defer: true }));
+    // A subscription turned on or off here: sync takes it to the servers (installing it where it's missing), so
+    // they're read again once that's had time to start.
+    createEffect(on(() => app.providers.filter((pr) => pr.agentCli && pr.configured).map((pr) => pr.id).join(","), () => {
+        const t = setTimeout(() => p.servers.forEach((name) => void read(name).then(() => check(name))), SYNC_SETTLE_MS);
+        onCleanup(() => clearTimeout(t));
+    }, { defer: true }));
     // A server installing a CLI by sync (src/servers/sync-install.ts): read again until it's done. Only meanwhile.
     createEffect(() => {
         for (const name of p.servers) {
             if (!far[name]?.list?.some((pr) => pr.agentCli?.installing)) continue;
-            const t = setTimeout(() => void read(name), INSTALL_RECHECK_MS);
+            // Then how it stands there: installed is "Sign in" or signed in, not unknown.
+            const t = setTimeout(() => void read(name).then(() => check(name)), INSTALL_RECHECK_MS);
             onCleanup(() => clearTimeout(t));
         }
     });
@@ -120,7 +129,14 @@ export default function SubscriptionGrid(p: { here: string; servers: readonly st
     const signIn = (c: Column, pr: ProviderInfo, a: AccountInfo) =>
         terminalActions.loginAccount?.(pr.id, a.id, [pr.name, a.id === "default" ? undefined : a.name, c.server].filter(Boolean).join(" · "), c.server);
     const turnOn = async (c: Column, pr: ProviderInfo) => {
-        if (!c.server) return void (await connectCli(pr));
+        // Here: signed in first when it isn't (the sign-in turns it on), installed first when it isn't there.
+        if (!c.server)
+            return void (await connectCli(pr, (e) => {
+                const code = (e as { code?: string }).code;
+                if (code === "not_signed_in") signIn(c, pr, { id: "default", name: "Default", folder: "", managed: false });
+                else if (code === "not_installed" && pr.agentCli?.installable) install(c, pr);
+                else reportError(e);
+            }));
         const link = far[c.server]?.link;
         if (!link) return;
         try {
@@ -162,7 +178,13 @@ export default function SubscriptionGrid(p: { here: string; servers: readonly st
                     <Match when={!cli()?.installed}>
                         <Show when={q.head} fallback={<span />}>
                             <Show when={(pr() ?? any())?.agentCli?.installable} fallback={<span class="sg-muted" title={(pr() ?? any())?.agentCli?.install}>Not installed</span>}>
-                                <button class="sg-link" title={cli()?.installError} aria-label={`Install ${(pr() ?? any())!.name} on ${q.c.label}`} onClick={() => install(q.c, (pr() ?? any())!)}>Install</button>
+                                <Show
+                                    when={cli()?.installError}
+                                    fallback={<button class="sg-link" aria-label={`Install ${(pr() ?? any())!.name} on ${q.c.label}`} onClick={() => install(q.c, (pr() ?? any())!)}>Install</button>}
+                                >
+                                    {/* Sync tried and it failed: the installer runs again where the user sees why. */}
+                                    {(why) => <button class="sg-link sg-failed" title={why()} aria-label={`Couldn't install ${(pr() ?? any())!.name} on ${q.c.label}: ${why()}. Try again`} onClick={() => install(q.c, (pr() ?? any())!)}>Couldn't install</button>}
+                                </Show>
                             </Show>
                         </Show>
                     </Match>

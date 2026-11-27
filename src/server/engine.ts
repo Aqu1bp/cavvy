@@ -2989,7 +2989,17 @@ export class Engine {
                     const release = holdLogin(provider, accountId);
                     try {
                         const command = loginCommand(provider, accountId, { away: this.o.away });
-                        return this.terminals.open(client, str(p.id, "id"), homedir(), p.cols, p.rows, { command, login: { provider, accountId, name: account(provider, accountId).name }, onExit: () => { release(); void this.accountsList(provider, true).then(() => this.refreshListings(true)).then(() => this.broadcast({ type: "models.changed" })).catch(() => undefined); } });
+                        return this.terminals.open(client, str(p.id, "id"), homedir(), p.cols, p.rows, { command, login: { provider, accountId, name: account(provider, accountId).name }, onExit: () => {
+                                release();
+                                // Signed in to a CLI that isn't turned on (Settings' "Add a subscription"): it is now, as a server's sign-in does.
+                                void this.accountsList(provider, true)
+                                    .then(async (accounts) => {
+                                        if (!readAgentConfig(provider) && accounts.find((a) => a.id === accountId)?.signedIn === true) await this.connectCli(provider).catch(() => undefined);
+                                    })
+                                    .then(() => this.refreshListings(true))
+                                    .then(() => this.broadcast({ type: "models.changed" }))
+                                    .catch(() => undefined);
+                            } });
                     } catch (e) {
                         release();
                         throw e;
