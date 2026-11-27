@@ -210,7 +210,7 @@ test("a CLI's copies from two computers merge one by one; one goes once neither 
 
 test("a computer that turns its keys off keeps no secret variable on the server, its providers unread or not", () => {
     const store = {};
-    const env = [{ name: "P", value: "1" }, { name: "S", value: "s3cret", secret: true }];
+    const env = [{ name: "P", value: "1" }, { name: "S", value: "s3cret", secret: true }, { name: "GH", value: `ghp_${"a".repeat(36)}` }];
     mergeSent(store, "a", { customProviders: [], agents: [{ id: "claude-code", accounts: [], env }], includeSecrets: true }, 100);
     // B syncs keys too; A turns its key sync off while its providers can't be read.
     mergeSent(store, "b", { customProviders: [], agents: [], includeSecrets: true }, 200);

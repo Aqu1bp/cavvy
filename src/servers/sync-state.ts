@@ -798,8 +798,9 @@ async function secretGone(id: string, name: string): Promise<boolean> {
 async function takeBackAgentSecrets(recs: Record<string, { env?: Record<string, string> }>, out: { warnings: string[]; keysLeft: string[] }): Promise<string[]> {
     const changed: string[] = [];
     for (const [id, r] of Object.entries(recs)) {
-        if (!r.env) continue;
         const cfg = readAgentConfig(id);
+        // Its setup unreadable here, or gone with its secrets (turnOffAgent): nothing to tell apart, so nothing's touched.
+        if (!r.env || !cfg) continue;
         const listed = new Set(cfg?.secretEnv ?? []);
         const take: string[] = [];
         const plain = { ...cfg?.env };

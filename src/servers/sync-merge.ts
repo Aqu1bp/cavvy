@@ -11,7 +11,7 @@ import { createHash, randomUUID } from "crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { cavvyHome } from "../config/paths";
-import { applyStateSync, readSyncedStateDigest, readSyncedStateRecord, type ApplyStateResult, type SyncRemoteStateStatus, type SyncStatePayload } from "./sync-state";
+import { agentVarSyncs, applyStateSync, readSyncedStateDigest, readSyncedStateRecord, type ApplyStateResult, type SyncRemoteStateStatus, type SyncStatePayload } from "./sync-state";
 
 /** Parts of a payload sent together, each left out when the computer couldn't read it (see localSyncState). */
 type Group = "settings" | "plugins" | "providers" | "keys";
@@ -166,12 +166,13 @@ function join_(groups: Partial<Record<Group, Record<string, unknown>>>, keysOn: 
     return p;
 }
 
-/** A computer's CLIs and copies (`a:`, `i:`) without their secret variables, which go only while its keys sync. */
+/** A computer's CLIs and copies (`a:`, `i:`) without the variables that go only while its keys sync. */
 function withoutSecretVars(items: Record<string, Item>): Record<string, Item> {
     const out: Record<string, Item> = {};
+    const keeps = (x: unknown) => isObj(x) && typeof x.name === "string" && typeof x.value === "string" && agentVarSyncs({ name: x.name, value: x.value, secret: x.secret === true }, false);
     for (const [k, it] of Object.entries(items)) {
-        const env = isObj(it.v) && Array.isArray(it.v.env) ? (it.v.env as Record<string, unknown>[]) : undefined;
-        out[k] = env?.some((x) => x?.secret === true) ? { v: { ...(it.v as object), env: env.filter((x) => x?.secret !== true) }, t: it.t } : it;
+        const env = isObj(it.v) && Array.isArray(it.v.env) ? (it.v.env as unknown[]) : undefined;
+        out[k] = env && !env.every(keeps) ? { v: { ...(it.v as object), env: env.filter(keeps) }, t: it.t } : it;
     }
     return out;
 }
