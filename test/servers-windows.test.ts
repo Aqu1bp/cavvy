@@ -45,6 +45,14 @@ describe("PowerShell SSH transport", () => {
         expect(decoded).toContain(`$cavvyArgs = @('a''b', 'C:\\Program Files\\Cavvy')`);
         expect(decoded).toContain("Write-Output $cavvyArgs[0]");
     });
+
+    test("remotePs automatically gzip-compresses long scripts so cmd.exe's 8191-char limit is never exceeded", () => {
+        const longScript = Array.from({ length: 120 }, (_, i) => `Write-Output "line ${i}: the quick brown fox jumps over the lazy dog"`).join("\n");
+        const cmd = remotePs(longScript, ["arg1"]);
+        expect(cmd.length).toBeLessThan(8000);
+        const decoded = Buffer.from(cmd.split(" ").at(-1)!, "base64").toString("utf16le");
+        expect(decoded).toContain("GZipStream");
+    });
 });
 
 describe("Windows server facts, target, store, and build helpers", () => {

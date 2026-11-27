@@ -11,6 +11,7 @@
 import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "fs";
 import { homedir, tmpdir } from "os";
 import { dirname, join } from "path";
+import { gzipSync } from "zlib";
 import { childEnv } from "../util/env";
 import { cavvyHome } from "../config/paths";
 import { ServerError, type ServerEntry } from "./store";
@@ -114,6 +115,8 @@ export function psQuote(s: string): string {
  * Base64 contains no quotes, spaces or shell metacharacters, so it arrives intact whether
  * Windows OpenSSH's default shell is `cmd.exe`, `powershell.exe` or `pwsh.exe`.
  * Arguments are bound into `$cavvyArgs` (0-indexed) inside the script.
+ * Scripts whose plain `-EncodedCommand` would approach `cmd.exe`'s 8,191-char limit are
+ * gzip-compressed automatically and decoded into a scriptblock on the remote side.
  */
 export function remotePs(script: string, args: string[] = []): string {
     const header = [
@@ -122,8 +125,15 @@ export function remotePs(script: string, args: string[] = []): string {
         "$OutputEncoding = [Console]::OutputEncoding",
         `$cavvyArgs = @(${args.map(psQuote).join(", ")})`,
     ].join("\n");
-    const encoded = Buffer.from(`${header}\n${script}`, "utf16le").toString("base64");
-    return `powershell.exe -NoLogo -NoProfile -NonInteractive -InputFormat Text -OutputFormat Text -EncodedCommand ${encoded}`;
+    const full = `${header}\n${script}`;
+    let encoded = Buffer.from(full, "utf16le").toString("base64");
+    const prefix = "powershell.exe -NoLogo -NoProfile -NonInteractive -InputFormat Text -OutputFormat Text -EncodedCommand ";
+    if (prefix.length + encoded.length > 6500) {
+        const gz = gzipSync(Buffer.from(full, "utf-8")).toString("base64");
+        const loader = `$z=[Convert]::FromBase64String('${gz}');$m=New-Object IO.MemoryStream(,$z);$g=New-Object IO.Compression.GZipStream($m,[IO.Compression.CompressionMode]::Decompress);$r=New-Object IO.StreamReader($g,[Text.Encoding]::UTF8);$s=$r.ReadToEnd();$r.Dispose();$g.Dispose();$m.Dispose();& ([scriptblock]::Create($s))`;
+        encoded = Buffer.from(loader, "utf16le").toString("base64");
+    }
+    return `${prefix}${encoded}`;
 }
 
 /** argv for a command on the server. `tty`: an interactive one, on this terminal. */
