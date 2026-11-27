@@ -55,6 +55,12 @@ export function trustedByUser(dir: string): boolean {
     return saved().some(counts);
 }
 
+/** Inside a folder whose trust is its own (trustOwnOnly) that the user hasn't trusted: someone else's code. */
+export function othersCode(dir: string): boolean {
+    const d = resolve(dir);
+    return ownOnly().some((o) => isInside(d, o)) && !trustedByUser(d);
+}
+
 /**
  * Trust of the folders around `dir` doesn't reach into it: it's trusted only when the user trusts it (or a folder
  * inside it) themselves. For someone else's code checked out inside a trusted repository, such as a fork's pull

@@ -30,12 +30,16 @@ test("a reply ends it: done", () => {
     expect(listed(session(prompt("hi"), calling, results, reply("Read it.")).meta.id)?.stopped).toBeUndefined();
 });
 
-test("a note Cavvy adds after the reply (stopped background tasks, messages to send again) leaves it as the reply did", () => {
-    const note = (o: Record<string, unknown> = {}) => ({ role: "user", content: [{ type: "text", text: "<system-reminder>Cavvy stopped these background tasks: x</system-reminder>" }], meta: { kind: "reminder", ...o } }) as never;
+test("a note Cavvy adds as the turn ends (stopped background tasks, messages to send again) leaves it as the reply did", () => {
+    const note = (o: Record<string, unknown> = {}) => ({ role: "user", content: [{ type: "text", text: "<system-reminder>Cavvy stopped these background tasks: x</system-reminder>" }], meta: { kind: "reminder", ...o, ended: true } }) as never;
+    const long = "Also, when you are done with that, please check the failing tests in the auth module and tell me why they fail.".repeat(20);
     expect(listed(session(prompt("hi"), reply("Done."), note()).meta.id)?.stopped).toBeUndefined();
-    expect(listed(session(prompt("hi"), reply("Done."), note(), note({ resends: ["a"] })).meta.id)?.stopped).toBeUndefined();
+    expect(listed(session(prompt("hi"), reply("Done."), note(), note({ resends: [long] })).meta.id)?.stopped).toBeUndefined();
     // After a stop, still stopped.
     expect(listed(session(prompt("hi"), interrupt, note()).meta.id)?.stopped).toBe(true);
+    // A reminder that continues the turn (a hook's "keep going", a wake), cut off there: stopped.
+    const keepGoing = { role: "user", content: [{ type: "text", text: "<system-reminder>A Stop hook asked you to keep going</system-reminder>" }], meta: { kind: "reminder" } } as never;
+    expect(listed(session(prompt("hi"), reply("Done."), keepGoing).meta.id)?.stopped).toBe(true);
 });
 
 test("stopped, before or during its tools: stopped", () => {

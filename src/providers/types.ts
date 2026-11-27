@@ -90,6 +90,8 @@ export interface UserMessage {
         background?: true;
         /** Messages from other sessions' agents that joined the turn here (a reminder, or tool results): who, and what they said. */
         peers?: { from: { id: string; title: string }; text: string }[];
+        /** A reminder written as its turn ended, after the reply: the turn is as the reply left it. Kept last, where a session's list reads it (session.ts). */
+        ended?: true;
     };
 }
 

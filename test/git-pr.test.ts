@@ -119,8 +119,18 @@ test("a fork's pull request isn't trusted for being inside a trusted repository;
     // Opened again, still its own; trusted when the user trusts it, and the repository stays trusted.
     await gitPrWorktree(cwd, "9");
     expect(trustedByUser(fork.path)).toBe(false);
+    // With nothing of Cavvy's in it, its session still asks first: the repository's Git hooks can run its files.
+    const { Engine } = await import("../src/server/engine");
+    const engine = new Engine({ listModels: async () => [] });
+    const c = { subs: new Set<string>(), send: () => {} } as never;
+    engine.clients.add(c);
+    expect(engine.inspectProject(fork.path).needsTrust).toEqual(["Git hooks"]);
+    await expect(engine.handle(c, "session.create", { cwd: fork.path })).rejects.toMatchObject({ code: "needs_trust" });
+    expect(engine.inspectProject(same.path).needsTrust).toEqual([]);
     trustFolder(fork.path);
     expect([trustedByUser(fork.path), trustedByUser(cwd)]).toEqual([true, true]);
+    expect(engine.inspectProject(fork.path).needsTrust).toEqual([]);
+    await engine.stop();
 });
 
 test("without gh signed in, a sign-in is asked for; another repository's URL or a missing PR is refused", async () => {

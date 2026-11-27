@@ -1767,13 +1767,14 @@ const LINE_END_BYTES = 128;
 const INTERRUPT_ENDS = [/"text":"\[Request interrupted by user\]"\}\],"meta":\{"kind":"interrupt"\}\}\}$/, /"text":"\[Request interrupted by user for tool use\]"\}\],"meta":\{"kind":"tool_results"\}\}\}$/];
 const TOOL_CALL = Buffer.from('"type":"tool_call"');
 
-/** A note Cavvy adds after a turn (stopped background tasks, messages to send again): its line's end. */
-const REMINDER_END = /"meta":\{"kind":"reminder"[,}]/;
+/** A note Cavvy adds as a turn ends, after the reply (stopped background tasks, messages to send again): its line's end. */
+const ENDED_NOTE_END = /,"ended":true\}\}\}$/;
 
 /** How a message leaves its turn (SessionHead.last); `before`, the one before's. */
 function lastOf(m: Message, before?: SessionHead["last"]): SessionHead["last"] {
-    // Written after the reply, as the turn ends: the turn is as the reply left it.
-    if (m.role === "user" && m.meta?.kind === "reminder") return before;
+    // Written after the reply, as the turn ends: the turn is as the reply left it. (A reminder that continues the
+    // turn, a hook's "keep going" or a wake, leaves it open.)
+    if (m.role === "user" && m.meta?.kind === "reminder" && m.meta.ended) return before;
     if (m.role === "assistant") return m.content.some((p) => p.type === "tool_call") ? "open" : "done";
     if (m.meta?.kind === "interrupt" || m.content.some((p) => p.type === "text" && p.text.startsWith("[Request interrupted by user"))) return "stopped";
     return "open";
@@ -1947,7 +1948,7 @@ function scanHead(fd: number, from: number, head: SessionHead): number {
             // A torn line, which load() skipped (and ended), isn't counted.
             else if (end.endsWith("}}") && Buffer.concat(parts).toString("latin1").startsWith(MSG_PREFIX)) {
                 head.count++;
-                head.last = role === "a" ? (calls ? "open" : "done") : REMINDER_END.test(end) ? head.last : INTERRUPT_ENDS.some((r) => r.test(end)) ? "stopped" : "open";
+                head.last = role === "a" ? (calls ? "open" : "done") : ENDED_NOTE_END.test(end) ? head.last : INTERRUPT_ENDS.some((r) => r.test(end)) ? "stopped" : "open";
             }
             parts = [];
             len = 0;
