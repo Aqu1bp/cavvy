@@ -112,9 +112,15 @@ export function servedSuggestTool(server: string | undefined, toolName: unknown)
 export const SERVED_SUGGEST_NAME = `mcp__${MCP_SERVER_NAME}__${SUGGEST_SERVER_TOOL}`;
 
 /**
- * For the CLIs' MCP server instructions, first among them: the CLI may list suggest_task by name alone, so this is
- * what gets an agent to use it unprompted.
+ * What gets an agent to use suggest_task unprompted: a CLI may list it by name alone. Codex (and other CLIs) get it in
+ * Cavvy's MCP server instructions; Claude Code in its system prompt (suggestNote), since it keeps only the start of a
+ * server's instructions.
  */
 export const SUGGEST_INSTRUCTIONS = `# Suggesting tasks (${MCP_SERVER_NAME})
 
 When you notice a problem unrelated to what you were asked (a bug, a UI glitch, a test failing for a reason your change didn't cause), call ${SUGGEST_SERVER_TOOL} with a title, a self-contained prompt and why, then carry on with your task. Do this instead of fixing it, offering to fix it or only mentioning it: the user gets a card to start it as a new session, and nothing starts until they do.`;
+
+/** For Claude Code's --append-system-prompt: SUGGEST_INSTRUCTIONS, where Cavvy's MCP server offers it suggest_task. */
+export function suggestNote(orchestrator: { tools: readonly string[] } | undefined): string | undefined {
+    return orchestrator?.tools.includes(SUGGEST_SERVER_TOOL) ? SUGGEST_INSTRUCTIONS : undefined;
+}

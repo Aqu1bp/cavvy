@@ -53,7 +53,7 @@ import { getKey, removeKey, setKey } from "../auth/credentials";
 import { detectKeyProvider, validateKey } from "../auth/detect";
 import { FileIndex } from "../ui/mentions";
 import { gitRoot, gitBranch } from "../util/git";
-import { createWorktreeWithHooks, currentBase, ignoredWaiting, listWorktrees, mainCheckoutOf, managedWorktreeOf, othersPresent, planRemoval, runRemoval, suggestBranch, unpushedReason, type Removal } from "./worktrees";
+import { createWorktreeWithHooks, currentBase, ignoredWaiting, listWorktrees, mainCheckoutOf, managedWorktreeOf, othersPresent, planRemoval, runRemoval, suggestBranch, taskBranch, unpushedReason, type Removal } from "./worktrees";
 import { defaultPlanPath, implementPrompt, planTitle, slugify, writePlanFile } from "./plans";
 import { billingOf, parseRunRequest, startRun, type RunHost, type RunRecord } from "./runs";
 import { readRegular } from "./git-changes";
@@ -69,10 +69,11 @@ import { OWN_SIMULATOR_TOOLS, simulatorsToLend } from "../tools/simulator-tools"
 import { isReadOnly, type ToolResult } from "../tools/types";
 import type { LentCall, LentResult } from "../servers/watch";
 import { askedModel, peerOps, type PeerHost } from "./session-peers";
-import { branchSlug, SUGGEST_LIMITS } from "../agent/suggestions";
+import type { TurnEndReason } from "../agent/agent";
+import { SUGGEST_LIMITS, taskSlug } from "../agent/suggestions";
 import { checkMessage, narrowerMode, PeerError, type FarPeers } from "../agent/peers";
 import { findMatch } from "../permissions/rules";
-import { listServers } from "../servers/store";
+import { listServers, SERVER_NAME } from "../servers/store";
 import type { WakeMemory } from "../agent/wakes";
 import { forkUiLogSoon, readSegments, readUiLogSoon, type UiLog } from "./history";
 import { CLI_SOURCES, findCliSession, listCliSessions, readCliTranscript, validCliId, type CliSource } from "./cli-sessions";
@@ -1488,7 +1489,7 @@ export class Engine {
         }
         this.runtimes.set(rt.id, rt);
         // A start of one of its suggestions left halfway: started, if a session here took it, or waiting again.
-        rt.settleStarting((key) => this.taskStartedFor(key));
+        rt.settleStarting((key) => (this.startingTasks.has(key) ? "running" : this.taskStartedFor(key)));
         return rt;
     }
 
@@ -1887,11 +1888,14 @@ export class Engine {
 
     /** Starts under way, by origin key: a second call for the same one waits for the first's session. */
     private startingTasks = new Map<string, Promise<StartTaskResult>>();
+    /** Sessions a suggested task made whose first prompt a UserPromptSubmit hook refused: Start again makes another. */
+    private refusedTasks = new Set<string>();
 
     /** The session a suggested task was started as here (loaded, or saved), by its origin key. */
     taskStartedFor(key: string): { sessionId: string; title: string; cwd: string } | undefined {
         for (const rt of this.runtimes.values()) {
-            if (rt.session.meta.suggestedBy?.key === key) return { sessionId: rt.id, title: rt.title ?? "", cwd: rt.ws.cwd };
+            // One whose first prompt a hook refused doesn't count: Start again makes another.
+            if (rt.session.meta.suggestedBy?.key === key && !this.refusedTasks.has(rt.id)) return { sessionId: rt.id, title: rt.title ?? "", cwd: rt.ws.cwd };
         }
         const known = readStore().suggestedTasks?.find((t) => t.key === key);
         const file = known && findSessionAnywhere(known.session);
@@ -1921,12 +1925,19 @@ export class Engine {
      * asked (on fix/<slug>, -2, -3 where taken), the session there, its title, and the prompt as the user's message.
      */
     private async startTask(client: EngineClient, p: Record<string, any>): Promise<StartTaskResult> {
+        // What the window says of the suggesting session (another machine's word, when it's on a server) goes into the
+        // new session unseen: held to the shapes it has, shown as it is.
         const o = (p.origin && typeof p.origin === "object" ? p.origin : {}) as Record<string, unknown>;
+        const session = text(o.session, "origin.session", 200);
+        const key = text(o.key, "origin.key", 400);
+        if (!/^(?:[\w.-]{1,40}\/)?[\w.-]{1,120}$/.test(session) || !key.startsWith(`${session}#`) || !/^[\w.:-]{1,200}$/.test(key.slice(session.length + 1))) throw new RpcError("That names no suggestion to start.", "invalid");
+        const machine = typeof o.machine === "string" ? o.machine.trim() : "";
+        if (machine && !SERVER_NAME.test(machine)) throw new RpcError("That names no machine.", "invalid");
         const origin: SuggestedBy = {
-            key: text(o.key, "origin.key", 400),
-            session: text(o.session, "origin.session", 300),
-            title: (typeof o.title === "string" ? o.title : "").replace(/\s+/g, " ").trim().slice(0, 200),
-            ...(typeof o.machine === "string" && o.machine.trim() ? { machine: o.machine.trim().slice(0, 100) } : {}),
+            key,
+            session,
+            title: visible((typeof o.title === "string" ? o.title : "").replace(/\s+/g, " ").trim().slice(0, 120)).text,
+            ...(machine ? { machine } : {}),
         };
         const running = this.startingTasks.get(origin.key);
         if (running) return { ...(await running), existing: true };
@@ -1958,8 +1969,11 @@ export class Engine {
             throw e;
         }
         await this.checkTaskModel(ref, effort);
-        // The suggesting session's mode, plan counting as ask, or the folder's default (where it runs): whichever asks the user more.
-        const asked = p.mode === "plan" ? "default" : (p.mode as PermissionMode);
+        // The suggesting session's mode (as the window says, and as it is when it's here), plan counting as ask, or the
+        // folder's default (where it runs): whichever asks the user more.
+        const ask = (m: PermissionMode): PermissionMode => (m === "plan" ? "default" : m);
+        const suggester = origin.machine ? undefined : this.runtimes.get(origin.session);
+        const asked = suggester ? narrowerMode(ask(p.mode as PermissionMode), ask(suggester.mode)) : ask(p.mode as PermissionMode);
         const resume = optText(p.resume, "resume", 4096);
         let made: { path: string; branch: string } | undefined;
         if (p.worktree === true || resume) {
@@ -1971,7 +1985,7 @@ export class Engine {
                     if (!w) throw new RpcError(`${resume} isn't a worktree Cavvy made in this repository.`, "worktree_failed");
                     made = { path: w.path, branch: w.branch! };
                 } else {
-                    const r = await createWorktreeWithHooks({ path: cwd, branch: suggestBranch(cwd, branchSlug(title)) }, this.o.log);
+                    const r = await createWorktreeWithHooks({ path: cwd, branch: taskBranch(cwd, taskSlug(title)) }, this.o.log);
                     made = { path: r.path, branch: r.branch };
                 }
             } catch (e) {
@@ -1995,34 +2009,52 @@ export class Engine {
         let next: Runtime;
         try {
             // On the suggesting session's Claude Code and Codex accounts, when it's on this machine.
-            const from = this.runtimes.get(origin.session);
-            const accounts = from ? Object.fromEntries(ACCOUNT_PROVIDERS.map((provider) => [provider, from.session.accountId(provider)])) : undefined;
+            const accounts = suggester ? Object.fromEntries(ACCOUNT_PROVIDERS.map((provider) => [provider, suggester.session.accountId(provider)])) : undefined;
             const mode = narrowerMode(asked, this.defaultMode(there === cwd ? ws : this.workspaceFor(there)));
             next = await this.createSession(there, { mode, accounts, suggestedBy: origin });
         } catch (e) {
             if (!made) throw e;
             return failed(e);
         }
-        updateStore((s) => {
-            s.suggestedTasks = [{ key: origin.key, session: next.id, at: Date.now() }, ...(s.suggestedTasks ?? []).filter((t) => t.key !== origin.key)].slice(0, MAX_SUGGESTED_TASKS);
-        });
+        // Failed once it's made: it goes (nothing is in it), so Start again makes it afresh; a worktree stays, to resume.
+        const abandon = async (e: unknown, code: string): Promise<StartTaskResult> => {
+            this.runtimes.get(next.id) === next && (await this.unload(next).catch(() => undefined));
+            const r = failed(e, undefined, code);
+            if (!made) throw new RpcError(r.failed!.message, code);
+            return r;
+        };
         try {
-            if (!(await next.setModel(ref, { quiet: true }))) return failed(new Error("That model isn't available here. Pick another in the session."), next.id, "model_unavailable");
+            if (!(await next.setModel(ref, { quiet: true }))) return await abandon(new Error("That model isn't available here. Pick another."), "model_unavailable");
             if (effort) next.setEffort(effort as EffortLevel);
             next.rename(title);
             this.watch(client, next.id);
             // The user's message as they sent it from the card; the agent is told where it came from, beside it (a
             // reminder: nothing in it is read as the user's, its @mentions included).
-            next.agent?.addReminder(`This task was suggested by the agent in session ${origin.session}${origin.machine ? ` on ${origin.machine}` : ""} (“${origin.title}”) while it worked on something else; the user started it. To ask that agent what it saw, use send_to_session.`);
-            // Its first turn ending with nothing kept (a UserPromptSubmit hook blocked it): the prompt goes back to its composer.
-            void next
-                .startTurn(prompt)
-                .then(() => {
-                    if (!next.session.messageCount) this.draft(next, prompt);
-                })
-                .catch((e) => this.o.log?.(`suggested task ${next.id}: ${redact((e as Error).message)}`));
+            // As this machine names that session: on another one, by that machine's name.
+            const from = origin.machine && !origin.session.includes("/") ? `${origin.machine}/${origin.session}` : origin.session;
+            next.agent?.addReminder(`This task was suggested by the agent in session ${from} (“${origin.title}”) while it worked on something else; the user started it. To ask that agent what it saw, send a message to session ${from} (SendToSession, or send_to_session among Cavvy's tools).`);
+            // A UserPromptSubmit hook that refuses it, before it's kept: the prompt goes back to its composer, and the
+            // start isn't one (Start again makes another). Esc keeps it its own way; a stop later in the turn leaves it
+            // where it was sent. Said as its own run ends, before anything queued after it runs.
+            const ran = (reason: TurnEndReason, kept: boolean) => {
+                if (reason !== "blocked" || kept) return;
+                this.refusedTasks.add(next.id);
+                updateStore((s) => {
+                    s.suggestedTasks = (s.suggestedTasks ?? []).filter((t) => t.session !== next.id);
+                });
+                this.draft(next, prompt);
+            };
+            const turn = next.startTurn(prompt, { ran });
+            // Not begun (a prompt held for the account the session needs is, its own way): what stopped it is the start's.
+            if (!next.busy) await turn;
+            void turn.catch((e) => this.o.log?.(`suggested task ${next.id}: ${redact((e as Error).message)}`));
         } catch (e) {
-            return failed(e, next.id, "send_failed");
+            return await abandon(e, "send_failed");
+        }
+        if (!this.refusedTasks.has(next.id)) {
+            updateStore((s) => {
+                s.suggestedTasks = [{ key: origin.key, session: next.id, at: Date.now() }, ...(s.suggestedTasks ?? []).filter((t) => t.key !== origin.key)].slice(0, MAX_SUGGESTED_TASKS);
+            });
         }
         return { sessionId: next.id, title, cwd: there, ...(worktree ? { worktree } : {}) };
     }
@@ -3655,14 +3687,20 @@ export class Engine {
                 return this.planInfo(this.runtime(text(p.id, "id", 200)), optText(p.toolId, "toolId", 200));
             case "session.suggestion": {
                 const id = str(p.id, "id");
-                const rt = this.runtimes.get(id);
-                if (!rt) {
-                    // A terminal has it open: its file is that process's while it does.
-                    const file = findSessionAnywhere(id);
-                    if (file && sessionHolder(file) !== undefined) throw new RpcError("Close this session in the terminal to start it.", "held");
-                    throw new RpcError("That session isn't open", "not_open");
+                const sid = text(p.suggestionId, "suggestionId", 300);
+                const live = this.runtimes.get(id);
+                if (live) return live.suggestionAction(sid, p as unknown as SuggestionAction);
+                // A terminal has it open: its file is that process's while it does.
+                const file = findSessionAnywhere(id);
+                if (file && sessionHolder(file) !== undefined) throw new RpcError("Close this session in the terminal to start it.", "held");
+                // Closed meanwhile (a start outlasting its idle close): opened to take how it went, then let go again.
+                while (this.closing.has(id)) await this.afterClosing(id);
+                const rt = this.openSession(id);
+                try {
+                    return rt.suggestionAction(sid, p as unknown as SuggestionAction);
+                } finally {
+                    this.unloadIfUnused(id);
                 }
-                return rt.suggestionAction(text(p.suggestionId, "suggestionId", 300), p as unknown as SuggestionAction);
             }
             case "tasks.start":
                 return await this.startTask(client, p);

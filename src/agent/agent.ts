@@ -8,6 +8,7 @@
 //   - every tool call gets exactly one tool result, even when interrupted
 //   - an interrupted (partial) model response is discarded, never stored
 
+import { randomUUID } from "crypto";
 import type {
     AttachedPart,
     AssistantMessage,
@@ -1843,9 +1844,9 @@ export class Agent {
         }
         if (suggesting) {
             tools.push(...selfChecked(suggestServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId))));
-            // First, where it's sure to be read: the CLI may list the tool by name alone (its description loaded on
-            // demand), and Claude Code keeps only the start of a server's instructions.
-            instructions.unshift(SUGGEST_INSTRUCTIONS);
+            // Claude Code lists the tool by name alone, and keeps only the start of a server's instructions, which the
+            // sections above fill: it gets these in its system prompt instead (suggestNote, claude-code.ts).
+            if (caller !== "claude-code") instructions.push(SUGGEST_INSTRUCTIONS);
         }
         this.serverTools = tools;
         this.serverInstructions = instructions.join("\n\n");
@@ -3225,7 +3226,8 @@ export class Agent {
         if (tool.name === SuggestTaskTool.name) {
             const c = await this.servedSuggestCall(input, callId);
             if (c.sub) return { text: "Tasks can't be suggested from a sub-agent. Put the problem in your report, with what you saw, and say it's unrelated: the main agent can suggest it.", isError: true };
-            callId = c.id;
+            // Not matched to the backend's call: an id of its own, never one an earlier card has.
+            callId = c.id ?? `suggest-${randomUUID()}`;
         }
         // The CLI approves Cavvy's tools without asking: a rule naming the tool as served is enforced here, before the checks its own name gets.
         const served = servedBrowserName(tool.name) ?? servedSimulatorName(tool.name) ?? servedWorktreeFor(tool.name) ?? servedSessionName(tool.name) ?? servedSuggestName(tool.name) ?? servedServerName(tool.name) ?? servedThemeName(tool.name);

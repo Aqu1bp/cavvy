@@ -10,7 +10,7 @@ import type { ThemeEntry } from "../themes/format";
 import type { ThemeReplaced } from "./protocol";
 import { SESSION_TOOLS } from "../tools/session-tools";
 import { SUGGEST_TOOLS } from "../tools/suggest-tools";
-import { applyAction, pendingCount, refusal, shownSuggestions, SuggestionError, type SuggestionInput } from "../agent/suggestions";
+import { applyAction, pendingCount, refusal, shownSuggestions, SUGGEST_LIMITS, SuggestionError, type SuggestionInput } from "../agent/suggestions";
 import type { SuggestionAction, SuggestionState } from "./protocol";
 import { appPeers } from "./session-peers";
 import type { ScheduledJob } from "../agent/schedule";
@@ -3964,8 +3964,10 @@ export class Runtime {
     // -----------------------------------------------------------------------
     // Suggested tasks (src/agent/suggestions.ts)
 
-    /** Suggestions made in the running turn, by id: SuggestTask's cap, and the done notification's count. */
+    /** Suggestions made since the turn started (startTurn), by id: the done notification's count. */
     private turnSuggested: string[] = [];
+    /** SuggestTask's 3 a turn: how many in the turn shown now (a queued message the run takes up is a turn of its own). */
+    private suggestCap = { turn: undefined as string | undefined, n: 0 };
 
     /** Pending suggestions: the sidebar's count. */
     get suggestedCount(): number {
@@ -3978,8 +3980,10 @@ export class Runtime {
         // The same call again (a retry): it's there already.
         const had = this.session.suggestions.get(id);
         if (had && had.state !== "withdrawn") return { ok: true };
-        const why = refusal(this.session.suggestions.values(), s.title, this.turnSuggested.length);
+        if (this.suggestCap.turn !== this.turnId) this.suggestCap = { turn: this.turnId, n: 0 };
+        const why = refusal(this.session.suggestions.values(), s.title, this.suggestCap.n);
         if (why) return { error: why };
+        this.suggestCap.n++;
         this.turnSuggested.push(id);
         this.session.setSuggestion({ id, ...s, at: Date.now(), state: "pending", ...this.session.suggestionAt() });
         this.suggestionsChanged();
@@ -4013,11 +4017,14 @@ export class Runtime {
      * Opened again: a start left halfway (a window that claimed one and was gone before it said how it went) is
      * started where a session here took it (`startedHere`), and waits for the user again where none did.
      */
-    settleStarting(startedHere: (key: string) => { sessionId: string; title: string; cwd: string } | undefined) {
+    settleStarting(startedHere: (key: string) => { sessionId: string; title: string; cwd: string } | "running" | undefined) {
         let changed = false;
         for (const r of [...this.session.suggestions.values()]) {
-            if (r.state !== "starting") continue;
+            // A fresh claim's start may still be under way: only one gone quiet is settled (as claim takes it over then).
+            if (r.state !== "starting" || Date.now() - (r.claimedAt ?? 0) < SUGGEST_LIMITS.staleClaimMs) continue;
             const s = startedHere(`${this.id}#${r.id}`);
+            // Still being made here: how it went is said when it's done.
+            if (s === "running") continue;
             this.session.setSuggestion(s ? { ...r, state: "started", started: { ...s, at: Date.now() } } : { ...r, state: "pending" });
             changed = true;
         }
@@ -4398,7 +4405,7 @@ export class Runtime {
     /** `mentionsIn`: the part of `text` the user wrote, whose @mentions attach files and MCP resources (a skill's or an MCP prompt's text is sent as written). */
     /** `goal`: a turn the goal started (src/agent/goal.ts). */
     /** `adopt`: a wake turn its agent CLI started by itself (AgentHost.wake): nothing is sent, the turn takes its events. */
-    async startTurn(text: string, opts: { display?: string; kind?: "prompt" | "command" | "wake"; attachments?: AttachedPart[]; about?: string; mentionsIn?: string; wakes?: Wake[]; goal?: boolean; adopt?: BackendWake; admitted?: { context?: string }; from?: { id: string; title: string } } = {}) {
+    async startTurn(text: string, opts: { display?: string; kind?: "prompt" | "command" | "wake"; attachments?: AttachedPart[]; about?: string; mentionsIn?: string; wakes?: Wake[]; goal?: boolean; adopt?: BackendWake; admitted?: { context?: string }; from?: { id: string; title: string }; /** How this prompt's run ended, said before what's queued runs; kept: whether the prompt was stored. */ ran?: (reason: TurnEndReason, kept: boolean) => void } = {}) {
         // The user's own turn overtakes a pending goal check, and a paused goal picks up after it. A scheduled prompt
         // leaves a paused goal paused; the resume after a usage limit is the exception, as in Claude Code.
         // A watch's events don't either: they aren't the user's.
@@ -4492,7 +4499,9 @@ export class Runtime {
                 // Kept beside the session as it's sent: shown again (promptImages), they're read from there.
                 if (images.length) this.keepToolImages(images as ImagePart[]);
                 if (images.length) this.op({ op: "turn.patch", turnId: turn.id, patch: { prompt: { ...turn.prompt!, ...attachedPrompt(images) } } });
+                const before = this.session.messageCount;
                 reason = await agent.run(parts, { signal: ac.signal, display, kind: opts.kind, ...(opts.adopt ? { adopt: opts.adopt } : {}), admitted: opts.admitted, ...(opts.from ? { from: opts.from } : {}) });
+                opts.ran?.(reason, this.session.messageCount > before);
             }
         } catch (e) {
             const message = `Unexpected error: ${redact((e as Error).message)}`;
@@ -4548,6 +4557,7 @@ export class Runtime {
         this.schedules.poke();
         // Nothing followed it: from here the conversation is idle.
         if (!this.busy && !this.closed) this.idleCompact.arm();
+        return reason;
     }
 
     /**

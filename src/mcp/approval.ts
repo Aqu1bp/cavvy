@@ -207,11 +207,11 @@ export const LIMITS = { label: 100, command: 1000, arg: 400, args: 64, argChars:
 /** Control, format (bidi, zero-width) and non-ASCII space characters: shown, never rendered. */
 const INVISIBLE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}   -   　]/gu;
 
-/** With `lineBreaks` (for error text), a line break stays one; everything else invisible is still shown. */
+/** With `lineBreaks` (for error text, a prompt), a line break and a tab stay as they are; everything else invisible is still shown. */
 export function visible(s: string, o: { lineBreaks?: boolean } = {}): { text: string; hidden: boolean } {
     let hidden = false;
     const text = (o.lineBreaks ? s.replace(/\r\n/g, "\n") : s).replace(INVISIBLE, (c) => {
-        if (o.lineBreaks && c === "\n") return c;
+        if (o.lineBreaks && (c === "\n" || c === "\t")) return c;
         hidden = true;
         return `⟨U+${c.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}⟩`;
     });

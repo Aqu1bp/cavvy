@@ -212,8 +212,13 @@ export function pendingCount(records: Iterable<SuggestionRecord>): number {
     return n;
 }
 
-/** "fix/<slug>" for a title: lower case, words joined by "-", at most 40 characters of them, a leading "fix" left out. */
+/** "fix/<slug>" for a title (taskSlug). */
 export function branchSlug(title: string): string {
+    return `fix/${taskSlug(title)}`;
+}
+
+/** A title as a branch name's part: lower case, words joined by "-", at most 40 characters of them, a leading "fix" left out. */
+export function taskSlug(title: string): string {
     const words = title
         .normalize("NFKD")
         .replace(/\p{M}/gu, "")
@@ -230,5 +235,5 @@ export function branchSlug(title: string): string {
         if (next.length > 40) break;
         slug = next;
     }
-    return `fix/${slug || "task"}`;
+    return slug || "task";
 }
