@@ -66,7 +66,7 @@ import type { AgentCliStatus } from "./index";
 import { servedBrowserTool } from "../tools/browser-tools";
 import { servedSimulatorTool } from "../tools/simulator-tools";
 import { servedSessionTool } from "../tools/session-tools";
-import { servedSuggestTool } from "../tools/suggest-tools";
+import { servedSuggestTool, suggestNote } from "../tools/suggest-tools";
 import { SESSION_VAR } from "../util/session-processes";
 
 /** checkAgentCli, imported when it's asked for (index.ts imports this file). */
@@ -796,7 +796,7 @@ class ClaudeTurn {
             pluginDir: this.pluginDir,
             memoryDir: claudeMemoryDirectory(claudeConfigDir(this.def.id, t), t.cwd, t.trusted),
             agentsPath: this.agentsFile?.path,
-            append: [t.appendSystemPrompt, t.goalContext,
+            append: [t.appendSystemPrompt, t.goalContext, t.readOnly ? undefined : suggestNote(t.orchestrator),
                 `After an answer, Cavvy waits for a reported background Bash command until its own \`timeout\` runs out, counted from its start (at most ${span(backgroundTiming.commandMaxTimeoutMs)}); for one without a timeout, and for each monitor, it waits up to ${claudeBackgroundWaitMs(t.backgroundWaitSec) / 1000} seconds after the answer. ${Number.isFinite(backgroundTiming.maxWaitMs) ? `Sub-agents and other background work have a ${span(backgroundTiming.maxWaitMs)} limit, which doesn't cut short a command still within its own timeout (nor, while one is, any sub-agent or workflow).` : "Sub-agents and other background work run until they finish or the user stops them, with no time limit."} For a long finite job in the background (a test suite, a build, a benchmark), pass \`timeout\` with \`run_in_background\`, set to how long it may take. Background commands and monitors do not survive process shutdown, a user interrupt, or the end of their wait. Recognized dev servers/watchers are stopped without waiting after the answer, timeout or not. Consume finite-work results before declaring success; do not expect a background server to outlive the turn. Work not reported by the CLI cannot be waited for.`,
             ],
         });

@@ -2,17 +2,14 @@
 // it's told, the card's states, and where the tool isn't offered.
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { readFileSync } from "fs";
-import { join } from "path";
 import { isolate } from "./helpers/isolate";
 
 const iso = isolate();
 afterAll(() => iso.cleanup());
-const { SuggestTaskTool, suggestServerTools, servedSuggestTool, nativeSuggestCall, servedSuggestName, SUGGEST_INSTRUCTIONS, SUGGEST_TOOL_NAMES } = await import("../src/tools/suggest-tools");
+const { SuggestTaskTool, suggestServerTools, servedSuggestTool, nativeSuggestCall, servedSuggestName, suggestNote, SUGGEST_INSTRUCTIONS, SUGGEST_TOOL_NAMES } = await import("../src/tools/suggest-tools");
 const { applyAction, branchSlug, checkSuggestion, pendingCount, refusal, rewoundAway, shownSuggestions, SUGGEST_LIMITS, SuggestionError } = await import("../src/agent/suggestions");
 import type { SuggestionRecord, SuggestHost, SuggestionInput } from "../src/agent/suggestions";
 
-const ROOT = join(import.meta.dir, "..");
 const input = { title: "Login button misaligned", prompt: "The login button on /login sits 4px below the field. Fix the CSS in src/login.css.", why: "Saw it in the screenshot of /login." };
 const rec = (o: Partial<SuggestionRecord> = {}): SuggestionRecord => ({ id: "c1", title: "Flaky auth test", prompt: "Fix it.", why: "It failed twice.", at: 1, state: "pending", seg: 1, msg: 3, ...o });
 const ctx = (suggest?: SuggestHost, callId = "toolu_1") => ({ state: { suggest }, callId, signal: new AbortController().signal }) as never;
@@ -94,13 +91,18 @@ describe("the tool", () => {
         expect(SUGGEST_INSTRUCTIONS).toContain("suggest_task");
     });
 
-    test("not offered to sub-agents or in the terminal", () => {
-        const agent = readFileSync(join(ROOT, "src/agent/agent.ts"), "utf-8");
-        // The sub-agent's tools leave it out (and get no suggest host: their toolState is built without one).
-        expect(agent).toMatch(/const exclude = new Set\(\[[^\]]*\.\.\.SUGGEST_TOOL_NAMES/);
+    test("not offered in the terminal (v1): no tool, no host", async () => {
+        const { App } = await import("../src/ui/app");
+        const app = new App({ cwd: iso.home, trusted: true, mode: "default", allowBypass: false, startupNotes: [] });
+        expect(app.tools().map((t) => t.name)).not.toContain("SuggestTask");
+        expect(app.toolState.suggest).toBeUndefined();
         expect(SUGGEST_TOOL_NAMES).toEqual(["SuggestTask"]);
-        // The terminal offers no SuggestTask (v1).
-        expect(readFileSync(join(ROOT, "src/ui/app.ts"), "utf-8")).not.toMatch(/SUGGEST_TOOLS|suggest-tools/);
+    });
+
+    test("Claude Code gets the instructions in its system prompt where suggest_task is served, not otherwise", () => {
+        expect(suggestNote({ tools: ["list_sessions", "suggest_task"] })).toBe(SUGGEST_INSTRUCTIONS);
+        expect(suggestNote({ tools: ["list_sessions"] })).toBeUndefined();
+        expect(suggestNote(undefined)).toBeUndefined();
     });
 
     test("what it adds to every request, measured", () => {
@@ -108,7 +110,9 @@ describe("the tool", () => {
         const chars = SuggestTaskTool.description.length + schema.length + SuggestTaskTool.name.length;
         // About 4 characters a token: the PR says what this comes to.
         console.log(`SuggestTask: description ${SuggestTaskTool.description.length} + schema ${schema.length} characters (≈${Math.round(chars / 4)} tokens); CLI instructions ${SUGGEST_INSTRUCTIONS.length} characters`);
-        expect(chars).toBeLessThan(2600);
+        // About 420 tokens, as the docs say.
+        expect(chars).toBeLessThan(1700);
+        expect(SUGGEST_INSTRUCTIONS.length).toBeLessThan(450);
     });
 });
 
@@ -154,11 +158,12 @@ describe("the card's states", () => {
 
     test("windows get none rewound away, invisible characters shown, old resolved ones without their prompt", () => {
         const resolved = Array.from({ length: SUGGEST_LIMITS.withPrompt + 2 }, (_, i) => rec({ id: `r${i}`, at: 10 + i, state: i % 2 ? "started" : "dismissed" }));
-        const shown = shownSuggestions([rec({ id: "w", state: "withdrawn" }), rec({ id: "p", at: 100, title: "Fix‮evil", prompt: "do​this\nnow" }), ...resolved]);
+        const shown = shownSuggestions([rec({ id: "w", state: "withdrawn" }), rec({ id: "p", at: 100, title: "Fix\u202Eevil", prompt: "do\u200Bthis\nnow\n\tindented" }), ...resolved]);
         expect(shown.find((s) => s.id === "w")).toBeUndefined();
         const p = shown.find((s) => s.id === "p")!;
         expect(p.title).toBe("Fix⟨U+202E⟩evil");
-        expect(p.prompt).toBe("do⟨U+200B⟩this\nnow");
+        // Line breaks and tabs stay as they are: the prompt goes back as the new session's first message.
+        expect(p.prompt).toBe("do⟨U+200B⟩this\nnow\n\tindented");
         expect("seg" in p).toBe(false);
         expect(shown.filter((s) => s.prompt === undefined).map((s) => s.id)).toEqual(["r0", "r1"]);
         expect(pendingCount([rec(), rec({ id: "b", state: "dismissed" }), rec({ id: "c" })])).toBe(2);

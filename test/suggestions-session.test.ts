@@ -2,12 +2,12 @@
 // winning; through reloads, compaction and checkpoints; taken away by a rewind past them; not copied by a fork.
 
 import { afterAll, expect, test } from "bun:test";
-import { readFileSync, realpathSync } from "fs";
+import { existsSync, readFileSync, realpathSync } from "fs";
 import { isolate, tempDir } from "./helpers/isolate";
 
 const iso = isolate();
 afterAll(() => iso.cleanup());
-const { Session, checkpointing } = await import("../src/agent/session");
+const { Session, checkpointing, checkpointFile } = await import("../src/agent/session");
 const { forkSession } = await import("../src/agent/fork");
 import type { SuggestionRecord } from "../src/agent/suggestions";
 
@@ -51,11 +51,14 @@ test("a rewind past one takes it away (withdrawn, in the file too); one before i
     const again = Session.load(s.path);
     expect(again.suggestions.get("late")?.state).toBe("withdrawn");
     expect(again.suggestions.get("early")?.state).toBe("pending");
-    // One made after the compaction isn't taken by a rewind of the new segment's messages before it.
+    // After the compaction: a rewind past one made since takes it; one from before the compaction (another segment) stays.
+    const kept = again.messageCount;
     again.push(user("four"));
     suggest(again, "after");
-    again.rewind(again.messageCount);
-    expect(again.suggestions.get("after")?.state).toBe("pending");
+    again.push(reply("ok"));
+    again.rewind(kept);
+    expect(again.suggestions.get("after")?.state).toBe("withdrawn");
+    expect(again.suggestions.get("early")?.state).toBe("pending");
     again.release();
 });
 
@@ -65,15 +68,18 @@ test("read from a checkpoint", () => {
     suggest(s, "cp");
     s.push(reply("done"));
     s.release();
-    const was = checkpointing.after;
-    checkpointing.after = 1;
+    const was = { ...checkpointing };
+    Object.assign(checkpointing, { after: 1, most: Infinity });
     try {
         Session.load(s.path).release(); // writes the checkpoint
+        expect(existsSync(checkpointFile(s.path))).toBe(true);
+        // Its suggestion line is behind the checkpoint now: what's read is the checkpoint's.
+        expect(JSON.parse(readFileSync(checkpointFile(s.path), "utf-8")).state.suggestions.map((r: SuggestionRecord) => r.id)).toEqual(["cp"]);
         const again = Session.load(s.path); // reads it
         expect(again.suggestions.get("cp")?.state).toBe("pending");
         again.release();
     } finally {
-        checkpointing.after = was;
+        Object.assign(checkpointing, was);
     }
 });
 

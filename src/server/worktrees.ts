@@ -529,6 +529,21 @@ export function suggestBranch(cwd: string, wanted: string): string {
     return `${wanted}-${Date.now().toString(36)}`;
 }
 
+/**
+ * A suggested task's branch: fix/<slug>, or fix/<slug>-2, -3, … when a branch has that name here or on a remote. Where
+ * a branch is named "fix" itself, git can't make one under fix/: fix-<slug> then.
+ */
+export function taskBranch(cwd: string, slug: string): string {
+    const has = (ref: string) => runGit(cwd, ["show-ref", "--verify", "--quiet", ref]) !== undefined;
+    const remote = (b: string) => Boolean(runGit(cwd, ["for-each-ref", "--count=1", "--format=%(refname)", `refs/remotes/*/${b}`])?.trim());
+    const wanted = `${has("refs/heads/fix") ? "fix-" : "fix/"}${slug}`;
+    for (let n = 1; n < 100; n++) {
+        const b = n > 1 ? `${wanted}-${n}` : wanted;
+        if (!has(`refs/heads/${b}`) && !remote(b)) return b;
+    }
+    return `${wanted}-${Date.now().toString(36)}`;
+}
+
 /** The folder's current branch, or its commit (abbreviated) when HEAD is detached; undefined before the first commit. */
 export function currentBase(cwd: string): string | undefined {
     const branch = runGit(cwd, ["branch", "--show-current"])?.trim();

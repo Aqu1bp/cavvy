@@ -3964,8 +3964,10 @@ export class Runtime {
     // -----------------------------------------------------------------------
     // Suggested tasks (src/agent/suggestions.ts)
 
-    /** Suggestions made in the running turn, by id: SuggestTask's cap, and the done notification's count. */
+    /** Suggestions made since the turn started (startTurn), by id: the done notification's count. */
     private turnSuggested: string[] = [];
+    /** SuggestTask's 3 a turn: how many in the turn shown now (a queued message the run takes up is a turn of its own). */
+    private suggestCap = { turn: undefined as string | undefined, n: 0 };
 
     /** Pending suggestions: the sidebar's count. */
     get suggestedCount(): number {
@@ -3978,8 +3980,10 @@ export class Runtime {
         // The same call again (a retry): it's there already.
         const had = this.session.suggestions.get(id);
         if (had && had.state !== "withdrawn") return { ok: true };
-        const why = refusal(this.session.suggestions.values(), s.title, this.turnSuggested.length);
+        if (this.suggestCap.turn !== this.turnId) this.suggestCap = { turn: this.turnId, n: 0 };
+        const why = refusal(this.session.suggestions.values(), s.title, this.suggestCap.n);
         if (why) return { error: why };
+        this.suggestCap.n++;
         this.turnSuggested.push(id);
         this.session.setSuggestion({ id, ...s, at: Date.now(), state: "pending", ...this.session.suggestionAt() });
         this.suggestionsChanged();
@@ -4548,6 +4552,7 @@ export class Runtime {
         this.schedules.poke();
         // Nothing followed it: from here the conversation is idle.
         if (!this.busy && !this.closed) this.idleCompact.arm();
+        return reason;
     }
 
     /**

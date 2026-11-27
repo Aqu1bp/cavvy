@@ -1372,7 +1372,7 @@ interface SessionState {
     workedAt?: number;
 }
 
-const CHECKPOINT_VERSION = 4;
+const CHECKPOINT_VERSION = 5;
 /** Lines that change its messages other than by adding one: read from a digest of them (Session.read), these can't be applied to it. */
 const CHANGES_MESSAGES = new Set<string>(["compact", "rewind", "withdraw", "imagesRefused"]);
 /**

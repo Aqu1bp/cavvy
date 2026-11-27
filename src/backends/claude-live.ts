@@ -56,7 +56,7 @@ import type { ImagePart, PdfPart } from "../providers/types";
 import { servedBrowserTool } from "../tools/browser-tools";
 import { servedSimulatorTool } from "../tools/simulator-tools";
 import { servedSessionTool } from "../tools/session-tools";
-import { servedSuggestTool } from "../tools/suggest-tools";
+import { servedSuggestTool, suggestNote } from "../tools/suggest-tools";
 import {
     DECLINED,
     LAUNCH_END,
@@ -2083,7 +2083,7 @@ class ClaudeCliAdapter implements AgentCliAdapter {
         const t = cfg as BackendTurn;
         const { pluginDir } = claudeSkills(this.def.id, t);
         const agentsPath = cfg.agents && Object.keys(cfg.agents).length && !cfg.readOnly ? agentsFileFor(cfg.agents) : undefined;
-        const o = { pluginDir, agentsPath, append: [cfg.appendSystemPrompt], memoryDir: claudeMemoryDirectory(env.CLAUDE_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR, cfg.cwd, cfg.trusted) };
+        const o = { pluginDir, agentsPath, append: [cfg.appendSystemPrompt, cfg.readOnly ? undefined : suggestNote(cfg.orchestrator)], memoryDir: claudeMemoryDirectory(env.CLAUDE_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR, cfg.cwd, cfg.trusted) };
         const { args } = claudeArgs(this.def.id, cfg, o);
         // Without what changes on a running process (the model, effort, mode and fast mode) and the session it resumes.
         // Nor the account folders' deny rules: adding or removing an account restarts nothing (#375); a new process has them.

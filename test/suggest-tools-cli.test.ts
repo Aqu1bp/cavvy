@@ -43,3 +43,37 @@ for (const [provider, asAgent] of [["claude-code", false], ["claude-code", true]
         );
     }, 40_000);
 }
+
+{
+    test("codex's sub-agent is refused", async () => {
+        await kit.withApp(
+            "codex",
+            true,
+            async (h) => {
+                await h.send("count the files with a sub-agent");
+                await until(() => h.lines().some((l: any) => l.mcpResult), 10_000);
+                const result = h.lines().find((l: any) => l.mcpResult)?.mcpResult;
+                expect(result?.isError).toBe(true);
+                expect(result?.text).toContain("sub-agent");
+                expect(h.rt.snapshot().state.suggestions ?? []).toEqual([]);
+            },
+            { env: { FAKE_SCENARIO: "subagent", FAKE_CODEX_SCENARIO: "subagent", FAKE_CHILD_MCP: JSON.stringify({ tool: "suggest_task", args }) } },
+        );
+    }, 40_000);
+}
+
+test("Claude Code is given the instructions in its system prompt, and its server instructions leave them out", async () => {
+    await kit.withApp(
+        "claude-code",
+        true,
+        async (h) => {
+            await h.send("hello");
+            const all = h.lines().filter((l: any) => Array.isArray(l.argv)).map((l: any) => l.argv as string[]);
+            const argv = all.at(-1) ?? [];
+            const append = argv[argv.indexOf("--append-system-prompt") + 1] ?? "";
+            expect(append).toContain("call suggest_task");
+            expect((h.rt as any).agent.serverInstructions).not.toContain("suggest_task");
+        },
+        { env: { FAKE_SCENARIO: "mcp" } },
+    );
+}, 40_000);
