@@ -8,6 +8,8 @@ export interface DialogProps {
     onClose: () => void;
     title?: JSX.Element;
     subtitle?: JSX.Element;
+    /** A glyph before the title (the design's .dlg-icon). */
+    icon?: JSX.Element;
     width?: number;
     class?: string;
     /** No header row (the content brings its own). */
@@ -110,6 +112,9 @@ function DialogInner(p: DialogProps) {
                 >
                     <Show when={!p.bare}>
                         <div class="dlg-head">
+                            <Show when={p.icon}>
+                                <span class="dlg-icon">{p.icon}</span>
+                            </Show>
                             <div class="dlg-heading">
                                 <h2 class="dlg-title" id={titleId}>{p.title}</h2>
                                 <Show when={p.subtitle}>
