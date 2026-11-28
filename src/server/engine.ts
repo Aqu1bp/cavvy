@@ -1922,7 +1922,8 @@ export class Engine {
      * session's own start (session-peers.ts): no startedBy, no hourly bound. Never relayed, and never among what a
      * server may ask the user's computer for (far-peers.ts). One with the same origin key started before is returned
      * instead (`existing`). Checks first (folder, trust, model, effort), then as implementPlan does: a worktree when
-     * asked (on fix/<slug>, -2, -3 where taken), the session there in the folder's default mode (as session.create without one), its title, and the prompt as the user's message.
+     * asked (on fix/<slug>, -2, -3 where taken), the session there in the folder's default mode (as session.create
+     * without one), its title, and the prompt as the user's message.
      */
     private async startTask(client: EngineClient, p: Record<string, any>): Promise<StartTaskResult> {
         // What the window says of the suggesting session (another machine's word, when it's on a server) goes into the
