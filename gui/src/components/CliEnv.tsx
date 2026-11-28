@@ -82,7 +82,7 @@ export function EnvEditor(p: { rows: EnvRow[]; onChange: (rows: EnvRow[]) => voi
                         <div class="env-item">
                             <div class="env-row">
                                 <input
-                                    class="input mono env-name"
+                                    class="input input-sm mono env-name"
                                     aria-label="Variable name"
                                     aria-invalid={Boolean(problem())}
                                     aria-describedby={problem() ? errorId() : undefined}
@@ -96,7 +96,7 @@ export function EnvEditor(p: { rows: EnvRow[]; onChange: (rows: EnvRow[]) => voi
                                     onInput={(e) => set(r().key, { name: e.currentTarget.value, ...(r().auto ? { secret: looksSecret(e.currentTarget.value) } : {}) })}
                                 />
                                 <input
-                                    class="input mono env-value"
+                                    class="input input-sm mono env-value"
                                     aria-label={`Value of ${named()}`}
                                     type={r().secret ? "password" : "text"}
                                     autocomplete="off"
@@ -110,23 +110,23 @@ export function EnvEditor(p: { rows: EnvRow[]; onChange: (rows: EnvRow[]) => voi
                                 />
                                 <button
                                     type="button"
-                                    class="hb sm env-lock"
+                                    class="icon-btn icon-btn-sm env-lock"
                                     classList={{ on: r().secret }}
                                     aria-pressed={r().secret}
                                     aria-label={`Keep ${named()} secret`}
-                                    title={r().secret ? "Secret: hidden once saved" : "Make secret"}
+                                    data-tip={r().secret ? "Secret: hidden once saved" : "Make secret"}
                                     disabled={p.disabled}
                                     // A saved secret made plain needs its value typed again: it's never sent back.
                                     onClick={() => set(r().key, { secret: !r().secret, auto: false, ...(r().secret ? { saved: false } : {}) })}
                                 >
-                                    {r().secret ? <Lock size={14} /> : <LockOpen size={14} />}
+                                    {r().secret ? <Lock size={13} /> : <LockOpen size={13} />}
                                 </button>
-                                <button type="button" class="hb sm env-remove" aria-label={`Remove ${named()}`} title="Remove" disabled={p.disabled} onClick={() => remove(r().key)}>
-                                    <X size={14} />
+                                <button type="button" class="icon-btn icon-btn-sm env-remove" aria-label={`Remove ${named()}`} data-tip="Remove" disabled={p.disabled} onClick={() => remove(r().key)}>
+                                    <X size={13} />
                                 </button>
                             </div>
                             <Show when={problem()}>
-                                <span id={errorId()} class="env-error">
+                                <span id={errorId()} class="field-error env-error">
                                     {problem()}
                                 </span>
                             </Show>
@@ -134,7 +134,7 @@ export function EnvEditor(p: { rows: EnvRow[]; onChange: (rows: EnvRow[]) => voi
                     );
                 }}
             </Index>
-            <button ref={addButton} type="button" class="btn btn-ghost btn-sm env-add" disabled={p.disabled} onClick={add}>
+            <button ref={addButton} type="button" class="btn btn-sm btn-ghost env-add" disabled={p.disabled} onClick={add}>
                 <Plus size={13} />
                 Add variable
             </button>
@@ -145,15 +145,14 @@ export function EnvEditor(p: { rows: EnvRow[]; onChange: (rows: EnvRow[]) => voi
 /** Cancel and the dialog's own action, at the trailing edge as in the app's other dialogs. */
 function Actions(p: { busy: boolean; blocked: boolean; label: string; onCancel: () => void; onSave: () => void }) {
     return (
-        <div class="dialog-actions">
-            <span class="grow" />
-            <button type="button" class="btn btn-ghost" disabled={p.busy} onClick={() => p.onCancel()}>
+        <>
+            <button type="button" class="btn" disabled={p.busy} onClick={() => p.onCancel()}>
                 Cancel
             </button>
             <button type="button" class="btn btn-primary" disabled={p.busy || p.blocked} aria-busy={p.busy} onClick={() => p.onSave()}>
                 {p.busy ? <Spinner size={12} /> : p.label}
             </button>
-        </div>
+        </>
     );
 }
 
@@ -189,7 +188,7 @@ export function EnvDialog(p: { provider: ProviderInfo; onClose: () => void }) {
             footer={<Actions busy={busy()} blocked={blocked()} label="Save" onCancel={p.onClose} onSave={() => void save()} />}
         >
             <form
-                class="env-form"
+                class="dlg-form env-form"
                 onSubmit={(e) => {
                     e.preventDefault();
                     void save();
@@ -197,7 +196,7 @@ export function EnvDialog(p: { provider: ProviderInfo; onClose: () => void }) {
             >
                 <EnvEditor rows={rows()} onChange={setRows} disabled={busy()} />
                 <Show when={error()}>
-                    <p class="account-error" role="alert">
+                    <p class="field-error" role="alert">
                         {error()}
                     </p>
                 </Show>
@@ -248,38 +247,38 @@ export function InstanceDialog(p: { provider: ProviderInfo; instance?: AgentInst
             footer={<Actions busy={busy()} blocked={blocked()} label={p.instance ? "Save" : "Add"} onCancel={p.onClose} onSave={() => void save()} />}
         >
             <form
-                class="env-form instance-form"
+                class="dlg-form env-form instance-form"
                 onSubmit={(e) => {
                     e.preventDefault();
                     void save();
                 }}
             >
-                <label>
-                    <span>Name</span>
+                <label class="field">
+                    <span class="field-label">Name</span>
                     <input class="input" autofocus maxLength={64} placeholder="OpenRouter" value={name()} disabled={busy()} onInput={(e) => setName(e.currentTarget.value)} />
                 </label>
-                <div class="instance-field" role="group" aria-label="Environment variables">
-                    <span aria-hidden="true">Environment variables</span>
+                <div class="field instance-field" role="group" aria-label="Environment variables">
+                    <span class="field-label" aria-hidden="true">Environment variables</span>
                     <EnvEditor rows={rows()} onChange={setRows} disabled={busy()} />
                 </div>
-                <label>
-                    <span>More models</span>
-                    <textarea class="input mono" rows={2} spellcheck={false} placeholder="One per line" value={models()} disabled={busy()} onInput={(e) => setModels(e.currentTarget.value)} />
+                <label class="field">
+                    <span class="field-label">More models</span>
+                    <textarea class="textarea mono" rows={2} spellcheck={false} placeholder="One per line" value={models()} disabled={busy()} onInput={(e) => setModels(e.currentTarget.value)} />
                 </label>
                 <details class="account-advanced" open={Boolean(p.instance?.path || p.instance?.args?.length)}>
                     <summary><ChevronRight size={14} class="chev" />Program and arguments</summary>
-                    <label>
-                        <span>Path</span>
+                    <label class="field">
+                        <span class="field-label">Path</span>
                         {/* Left blank, it runs what its CLI runs: that program's path, or the one on PATH. */}
-                        <input class="input mono" spellcheck={false} autocomplete="off" placeholder={p.provider.agentCli?.path ?? "From PATH"} title={p.provider.agentCli?.path} value={path()} disabled={busy()} onInput={(e) => setPath(e.currentTarget.value)} />
+                        <input class="input mono" spellcheck={false} autocomplete="off" placeholder={p.provider.agentCli?.path ?? "From PATH"} data-tip={p.provider.agentCli?.path} value={path()} disabled={busy()} onInput={(e) => setPath(e.currentTarget.value)} />
                     </label>
-                    <label>
-                        <span>Arguments</span>
-                        <textarea class="input mono" rows={2} spellcheck={false} placeholder="One per line" value={args()} disabled={busy()} onInput={(e) => setArgs(e.currentTarget.value)} />
+                    <label class="field">
+                        <span class="field-label">Arguments</span>
+                        <textarea class="textarea mono" rows={2} spellcheck={false} placeholder="One per line" value={args()} disabled={busy()} onInput={(e) => setArgs(e.currentTarget.value)} />
                     </label>
                 </details>
                 <Show when={error()}>
-                    <p class="account-error" role="alert">
+                    <p class="field-error" role="alert">
                         {error()}
                     </p>
                 </Show>

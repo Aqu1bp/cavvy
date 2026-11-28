@@ -14,7 +14,7 @@ import type { Rpc } from "../lib/rpc";
 import { ProviderIcon } from "./ui/ProviderIcon";
 import { Menu } from "./ui/Menu";
 import { Dialog } from "./ui/Dialog";
-import { MoreHorizontal } from "lucide-solid";
+import { Ellipsis } from "lucide-solid";
 import { Spinner } from "./ui/bits";
 import "../styles/subscription-grid.css";
 
@@ -196,25 +196,25 @@ export default function SubscriptionGrid(p: { here: string; servers: readonly st
             <div class="sg-cell" role="cell">
                 <Switch fallback={<span class="sg-none" aria-label="Not on this machine">–</span>}>
                     <Match when={problem()}>
-                        <Show when={q.head}><span class="sg-muted" title={problem()}>Offline</span></Show>
+                        <Show when={q.head}><span class="sg-muted" data-tip={problem()}>Offline</span></Show>
                     </Match>
                     <Match when={!list()}>
-                        <Show when={q.head}><Spinner size={11} /></Show>
+                        <Show when={q.head}><Spinner size={12} /></Show>
                     </Match>
                     <Match when={!cli()?.installed && cli()?.installing}>
                         <Show when={q.head} fallback={<span />}>
-                            <span class="sg-muted sg-installing"><Spinner size={11} /> Installing</span>
+                            <span class="sg-muted sg-installing"><Spinner size={12} /> Installing</span>
                         </Show>
                     </Match>
                     <Match when={!cli()?.installed}>
                         <Show when={q.head} fallback={<span />}>
-                            <Show when={(pr() ?? any())?.agentCli?.installable} fallback={<span class="sg-muted" title={(pr() ?? any())?.agentCli?.install}>Not installed</span>}>
+                            <Show when={(pr() ?? any())?.agentCli?.installable} fallback={<span class="sg-muted" data-tip={(pr() ?? any())?.agentCli?.install}>Not installed</span>}>
                                 <Show
                                     when={cli()?.installError}
-                                    fallback={<button class="sg-link" aria-label={`Install ${(pr() ?? any())!.name} on ${q.c.label}`} onClick={() => install(q.c, (pr() ?? any())!)}>Install</button>}
+                                    fallback={<button class="link-btn" aria-label={`Install ${(pr() ?? any())!.name} on ${q.c.label}`} onClick={() => install(q.c, (pr() ?? any())!)}>Install</button>}
                                 >
                                     {/* Sync tried and it failed: the installer runs again where the user sees why. */}
-                                    {(why) => <button class="sg-link sg-failed" title={why()} aria-label={`Couldn't install ${(pr() ?? any())!.name} on ${q.c.label}: ${why()}. Try again`} onClick={() => install(q.c, (pr() ?? any())!)}>Couldn't install</button>}
+                                    {(why) => <button class="link-btn sg-failed" data-tip={why()} aria-label={`Couldn't install ${(pr() ?? any())!.name} on ${q.c.label}: ${why()}. Try again`} onClick={() => install(q.c, (pr() ?? any())!)}>Couldn't install</button>}
                                 </Show>
                             </Show>
                         </Show>
@@ -226,7 +226,7 @@ export default function SubscriptionGrid(p: { here: string; servers: readonly st
                     </Match>
                     <Match when={account()}>
                         {(a) => (
-                            <Switch fallback={<span class="sg-muted" title="Not checked yet" />}>
+                            <Switch fallback={<span class="sg-muted" data-tip="Not checked yet" />}>
                                 <Match when={a().invalid}><span class="sg-muted">Unavailable</span></Match>
                                 {/* On its free models without a sign-in (OpenCode): it runs, and signing in is offered. */}
                                 <Match when={a().free}>
@@ -235,7 +235,7 @@ export default function SubscriptionGrid(p: { here: string; servers: readonly st
                                         <button class="btn btn-sm" aria-label={`Sign in to ${pr()!.name} ${a().name} on ${q.c.label}`} onClick={() => signIn(q.c, pr()!, a())}>Sign in</button>
                                     </span>
                                 </Match>
-                                <Match when={a().signedIn === true}><span class="cli-dot" role="img" aria-label="Signed in" title={a().email ?? "Signed in"} /></Match>
+                                <Match when={a().signedIn === true}><span class="sg-in" role="img" aria-label="Signed in" data-tip={a().email ?? "Signed in"}><span class="dot" data-tone="green" /></span></Match>
                                 <Match when={a().signedIn === false}>
                                     <button class="btn btn-sm" aria-label={`Sign in to ${pr()!.name} ${a().name} on ${q.c.label}`} onClick={() => signIn(q.c, pr()!, a())}>Sign in</button>
                                 </Match>
@@ -258,15 +258,15 @@ export default function SubscriptionGrid(p: { here: string; servers: readonly st
         if (id && app.providers.some((x) => x.id === id && x.agentCli)) setManaging(id);
     });
     // Provider, then account, then a column per machine: every account of a provider in the same column.
-    const cols = () => `calc(150 * var(--sp)) minmax(0, 1fr) repeat(${columns().length}, minmax(calc(76 * var(--sp)), calc(96 * var(--sp))))`;
+    const cols = () => `calc(170 * var(--sp)) minmax(0, 1fr) repeat(${columns().length}, minmax(calc(76 * var(--sp)), calc(100 * var(--sp))))`;
     /** The user's computer's account, for its name and plan. */
     const accountHere = (id: string, account: string) => homeList()?.find((x) => x.id === id)?.agentCli?.accounts?.find((a) => a.id === account);
     /** The window's own machine, whose card the ••• opens. */
     const ownLabel = () => machine ?? p.here;
     const AccountName = (q: { id: string; account: string; name?: string }) => (
         <div class="sg-account" role="rowheader">
-            <span class="truncate">{q.name ?? accountHere(q.id, q.account)?.name ?? "Default"}</span>
-            <Show when={planLabel(accountHere(q.id, q.account)?.plan)}>{(t) => <span class="sg-muted">{t()}</span>}</Show>
+            <span class="account-name truncate">{q.name ?? accountHere(q.id, q.account)?.name ?? "Default"}</span>
+            <Show when={planLabel(accountHere(q.id, q.account)?.plan)}>{(t) => <span class="tag" data-tone="neutral">{t()}</span>}</Show>
         </div>
     );
     return (
@@ -274,7 +274,7 @@ export default function SubscriptionGrid(p: { here: string; servers: readonly st
             <div class="sg-row sg-head" role="row">
                 <span role="columnheader" />
                 <span role="columnheader" />
-                <For each={columns()}>{(c) => <span class="sg-machine truncate" role="columnheader" title={c.label}>{c.label}</span>}</For>
+                <For each={columns()}>{(c) => <span class="sg-machine truncate" role="columnheader" data-tip={c.label}>{c.label}</span>}</For>
             </div>
             <For each={providers()}>
                 {(pr) => {
@@ -283,10 +283,10 @@ export default function SubscriptionGrid(p: { here: string; servers: readonly st
                         <div class="sg-prov" role="rowgroup">
                             <div class="sg-row" role="row">
                                 <div class="sg-name" role="rowheader">
-                                    <span class="prov-logo"><ProviderIcon id={pr.id} name={pr.name} size={18} /></span>
-                                    <span class="truncate">{pr.name}</span>
+                                    <ProviderIcon id={pr.id} name={pr.name} size={18} class="prow-icon" />
+                                    <span class="row-title">{pr.name}</span>
                                     <Show when={app.providers.some((x) => x.id === pr.id && x.agentCli)}>
-                                        <button class="hb sm sg-manage" aria-label={`${pr.name} on ${ownLabel()}`} title={`${pr.name} on ${ownLabel()}`} onClick={() => setManaging(pr.id)}><MoreHorizontal size={14} /></button>
+                                        <button class="icon-btn icon-btn-sm sg-manage" aria-label={`${pr.name} on ${ownLabel()}`} data-tip={`${pr.name} on ${ownLabel()}`} onClick={() => setManaging(pr.id)}><Ellipsis size={14} /></button>
                                     </Show>
                                 </div>
                                 <AccountName id={pr.id} account={mainOf(pr.id)} />
@@ -307,7 +307,7 @@ export default function SubscriptionGrid(p: { here: string; servers: readonly st
             </For>
             <Show when={unused().length}>
                 <div class="sg-more">
-                    <button ref={moreBtn} class="sg-link" aria-haspopup="menu" aria-expanded={more()} onClick={() => setMore(!more())}>Add a subscription</button>
+                    <button ref={moreBtn} class="link-btn" aria-haspopup="menu" aria-expanded={more()} onClick={() => setMore(!more())}>Add a subscription</button>
                     <Menu open={more()} anchor={() => moreBtn} onClose={() => setMore(false)} label="Add a subscription" width={220} align="start">
                         <For each={unused()}>
                             {(pr) => (
@@ -319,7 +319,7 @@ export default function SubscriptionGrid(p: { here: string; servers: readonly st
                     </Menu>
                 </div>
             </Show>
-            <Dialog open={Boolean(managed())} onClose={() => setManaging()} title={`${managed()?.name ?? ""} on ${ownLabel()}`} width={560}>
+            <Dialog open={Boolean(managed())} onClose={() => setManaging()} title={`${managed()?.name ?? ""} on ${ownLabel()}`} width={560} class="sg-dialog">
                 <Show when={managed()}>{(pr) => p.manage(pr())}</Show>
             </Dialog>
         </div>

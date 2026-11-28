@@ -1,21 +1,107 @@
-/* Settings → Providers with servers: subscriptions down the side, machines across (SubscriptionGrid.tsx). */
-.sg { display: grid; padding: calc(4 * var(--sp)) 0; }
-.sg-row { display: grid; grid-template-columns: var(--sg-cols); align-items: center; column-gap: calc(8 * var(--sp)); min-height: calc(44 * var(--sp)); padding: 0 calc(14 * var(--sp)); }
-.sg-prov + .sg-prov > .sg-row:first-child { border-top: 0.5px solid var(--line); }
-.sg-head { min-height: calc(30 * var(--sp)); }
-.sg-machine { justify-self: center; max-width: 100%; font-size: 0.786rem; font-weight: 600; color: var(--fg-3); }
-.sg-name { display: flex; align-items: center; gap: calc(10 * var(--sp)); min-width: 0; font-size: 0.929rem; color: var(--fg); }
-.sg-name .prov-logo { flex: none; }
-.sg-acct { min-height: calc(36 * var(--sp)); }
-.sg-account { display: flex; align-items: baseline; gap: calc(8 * var(--sp)); min-width: 0; font-size: 0.929rem; color: var(--fg-2); }
-.sg-cell { display: flex; justify-content: center; align-items: center; min-width: 0; }
-.sg-muted { font-size: 0.786rem; color: var(--fg-3); white-space: nowrap; }
-.sg-none { color: var(--fg-4, var(--fg-3)); opacity: 0.6; }
-.sg-link { padding: 0; border: 0; background: none; font: inherit; font-size: 0.857rem; color: var(--accent); cursor: default; }
-.sg-link:hover { text-decoration: underline; }
-.sg-more { padding: calc(10 * var(--sp)) calc(14 * var(--sp)) calc(6 * var(--sp)); border-top: 0.5px solid var(--line); }
-.sg-installing { display: inline-flex; align-items: center; gap: calc(5 * var(--sp)); }
-.sg-failed { color: var(--warn); }
+/* Settings → Providers with servers: subscriptions down the side, machines across (SubscriptionGrid.tsx). No design
+   of its own in the mock: drawn from its parts. The head is its usage table's (.usage-table th), a provider's row its
+   .row.prow, an account's row its .account, the cells its words (.row-sub), .dot, .link-btn and .btn. */
+.sg {
+    display: grid;
+}
+
+.sg-row {
+    display: grid;
+    grid-template-columns: var(--sg-cols);
+    align-items: center;
+    column-gap: calc(10 * var(--sp));
+    min-height: calc(46 * var(--sp));
+    padding: calc(6 * var(--sp)) calc(10 * var(--sp)) calc(6 * var(--sp)) calc(14 * var(--sp));
+}
+
+.sg-prov + .sg-prov > .sg-row:first-child {
+    border-top: 1px solid var(--line);
+}
+
+.sg-head {
+    min-height: calc(30 * var(--sp));
+    padding-top: 0;
+    padding-bottom: 0;
+    border-bottom: 1px solid var(--line);
+    background: var(--code-head);
+    color: var(--text-2);
+    font-size: calc(12 * var(--sp));
+    font-weight: 500;
+}
+
+.sg-machine {
+    justify-self: center;
+    max-width: 100%;
+}
+
+.sg-name {
+    display: flex;
+    align-items: center;
+    gap: calc(10 * var(--sp));
+    min-width: 0;
+}
+
+.sg-name .prow-icon {
+    flex: none;
+    color: var(--text);
+}
+
+.sg-acct {
+    min-height: calc(34 * var(--sp));
+    padding-top: 0;
+    padding-bottom: 0;
+}
+
+.sg-account {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    min-width: 0;
+}
+
+.sg-acct .account-name {
+    color: var(--text-2);
+}
+
+.sg-cell {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-width: 0;
+}
+
+.sg-muted {
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
+    white-space: nowrap;
+}
+
+.sg-none {
+    color: var(--text-4);
+}
+
+.sg-in {
+    display: inline-flex;
+    padding: calc(4 * var(--sp));
+}
+
+.sg-more {
+    display: flex;
+    align-items: center;
+    min-height: calc(36 * var(--sp));
+    padding: 0 calc(14 * var(--sp));
+    border-top: 1px solid var(--line);
+}
+
+.sg-installing {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(6 * var(--sp));
+}
+
+.sg-failed {
+    color: var(--red);
+}
 
 /* This computer's own card for the provider (accounts, turning it off), over the grid. */
 .sg-manage {
@@ -28,4 +114,13 @@
     display: inline-flex;
     align-items: center;
     gap: calc(6 * var(--sp));
+}
+
+/* The card it opens: the provider's own rows, edge to edge in the dialog. */
+.sg-dialog .dlg-body {
+    padding: 0;
+}
+
+.sg-dialog .prov + .prov {
+    border-top: 1px solid var(--line);
 }

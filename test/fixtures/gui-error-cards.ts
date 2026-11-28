@@ -326,7 +326,7 @@ test("a CLI row that can't connect says why on the row, copies the command, and 
         expect(r.toasts).toEqual([["Copied codex login", "success"]]);
         // Checking again, still not signed in: the row flashes again.
         button(r.root, "Check again")!.props.onClick();
-        const check = buttons(r.root).find((b) => b.props.class === "btn btn-primary btn-sm")!;
+        const check = buttons(r.root).find((b) => text(b).startsWith("Check"))!;
         expect(all(check).some((n) => n.tag === "spinner")).toBe(true);
         expect(text(check)).toBe("Checking");
         expect(check.props.disabled).toBe(true);
@@ -358,8 +358,8 @@ test("a key that isn't saved says so on its row; the row clears once the provide
         await settle();
         expect(r.reported).toEqual([]);
         expect(has(r.row(), "err")).toBe(true);
-        expect(text(all(r.root).find((n) => has(n, "prov-name"))!)).toContain("Key not saved");
-        expect(text(all(r.root).find((n) => has(n, "prov-sub"))!)).toBe("OpenAI rejected the key (401 invalid). Nothing was saved.");
+        expect(text(all(r.root).find((n) => has(n, "prow-name"))!)).toContain("Key not saved");
+        expect(text(all(r.root).find((n) => has(n, "prow-problem"))!)).toBe("OpenAI rejected the key (401 invalid). Nothing was saved.");
         // No command in it: nothing to copy.
         expect(button(r.root, "Copy command")).toBeUndefined();
         r.setPr({ id: "openai", name: "OpenAI", requiresKey: true, configured: true, masked: "sk-…a91f" });

@@ -649,8 +649,8 @@ function ProviderRow(p: { pr: ProviderInfo }) {
         }
     };
     const badTag = (tag: string) => (
-        <span class="tag bad">
-            <CircleAlert size={11} stroke-width={2.5} />
+        <span class="tag bad" data-tone="red">
+            <CircleAlert size={10} stroke-width={2.5} />
             {tag}
         </span>
     );
@@ -659,14 +659,13 @@ function ProviderRow(p: { pr: ProviderInfo }) {
         <>
             <Show when={commandIn(message)}>
                 {(command) => (
-                    <button class="btn btn-ghost btn-sm" onClick={() => void copyCommand(command())}>
-                        <Copy size={13} />
+                    <button class="btn btn-sm btn-ghost" onClick={() => void copyCommand(command())}>
                         Copy command
                     </button>
                 )}
             </Show>
             <Show when={retry}>
-                <button class="btn btn-primary btn-sm" disabled={busy()} onClick={() => retry!()}>
+                <button class="btn btn-sm" disabled={busy()} onClick={() => retry!()}>
                     <Show when={busy()} fallback="Check again">
                         <Spinner size={12} />
                         Checking
@@ -680,18 +679,22 @@ function ProviderRow(p: { pr: ProviderInfo }) {
     const sub = () =>
         p.pr.masked ? undefined
         : !p.pr.configured ? (p.pr.requiresKey ? "Not set up" : p.pr.id === "vertex" ? "Run cavvy auth add vertex in a terminal" : "Set up in the terminal")
-        : undefined;
+        : p.pr.local ? "Running" : "Connected";
+    const closeAdd = () => {
+        setAdding(false);
+        setKey("");
+    };
     return (
         <div class="prov" classList={{ err: !!failure() }} data-flash={failure() ? flash() : undefined}>
             <ConfirmDialog
                 open={confirmRemove()}
                 onClose={() => setConfirmRemove(false)}
                 title={p.pr.agentCli ? `Turn off ${p.pr.name}?` : `Remove the ${p.pr.name} key?`}
-                confirmLabel={p.pr.agentCli ? "Turn off" : "Remove key"}
+                confirmLabel={p.pr.agentCli ? "Turn off" : "Remove"}
                 busy={removingProviders().has(`${at.server ?? ""}:${p.pr.id}`)}
                 onConfirm={remove}
             >
-                {p.pr.agentCli ? `${p.pr.name} stays signed in.` : `You'll need to add it again to use ${p.pr.name}.`}
+                {p.pr.agentCli ? "Its models leave the picker. Your sign-in stays." : "Sessions on its models stop until you add one again."}
             </ConfirmDialog>
             {/* Claude Code and Codex: their row, accounts and menus are in Accounts. */}
             <Show
@@ -714,75 +717,87 @@ function ProviderRow(p: { pr: ProviderInfo }) {
                     </>
                 }
             >
-                <div class="prov-line">
-                    <span class="prov-logo" title={p.pr.configured ? "Set up" : "Not set up"}>
-                        <ProviderIcon id={p.pr.id} name={p.pr.name} size={18} />
-                    </span>
-                    <div class="prov-lab">
-                        <div class="prov-name">
-                            <span class="truncate">{p.pr.name}</span>
+                <div class="row prow">
+                    <ProviderIcon id={p.pr.id} name={p.pr.name} size={18} class="prow-icon" />
+                    <div class="row-text">
+                        <span class="prow-name">
+                            <span class="row-title">{p.pr.name}</span>
                             <Show when={p.pr.local}>
-                                <span class="tag">local</span>
+                                <span class="tag" data-tone="neutral">local</span>
+                            </Show>
+                            <Show when={!failure() && p.pr.source && p.pr.source !== "local"}>
+                                <span class="tag" data-tone="neutral" title="Where the key comes from">{p.pr.source}</span>
                             </Show>
                             <Show when={failure()}>{(f) => badTag(f().tag)}</Show>
-                        </div>
+                        </span>
                         <Show
                             when={failure()}
                             fallback={
-                                <Show when={p.pr.masked || sub()}>
-                                    <div class="prov-sub">
-                                        <Show when={p.pr.masked} fallback={sub()}>
-                                            <code class="prov-key">{p.pr.masked}</code>
-                                        </Show>
-                                    </div>
-                                </Show>
+                                <span class={`row-sub ${p.pr.masked ? "mono" : ""}`}>{p.pr.masked ?? sub()}</span>
                             }
                         >
                             {(f) => (
-                                <div class="prov-sub selectable" role="alert">
+                                <span class="row-sub prow-problem selectable" role="alert">
                                     <MessageText text={f().message} />
-                                </div>
+                                </span>
                             )}
                         </Show>
                     </div>
-                    <span class="prov-end">
-                        {/* Saving again is the key's own Save, under the row. */}
-                        <Show when={failure() && commandIn(failure()!.message)}>
-                            <span class="prov-fix">{fix(failure()!.message)}</span>
-                        </Show>
-                        <Show when={p.pr.source && p.pr.source !== "local"}>
-                            <span class="tag">{p.pr.source}</span>
-                        </Show>
-                        <Show when={p.pr.requiresKey}>
-                            <Show
-                                when={removable()}
-                                fallback={
-                                    <Show when={!p.pr.configured}>
-                                        <Show when={p.pr.keyUrl}>
-                                            <button class="link-btn" onClick={() => void openExternal(p.pr.keyUrl!)}>
-                                                Get a key <ExternalLink size={11} />
-                                            </button>
-                                        </Show>
-                                        <button class="btn btn-sm" aria-expanded={adding()} onClick={() => setAdding(!adding())}>
-                                            Add key
-                                        </button>
-                                    </Show>
-                                }
-                            >
-                                <button class="hb sm" title="Remove key" aria-label={`Remove the ${p.pr.name} key`} onClick={() => setConfirmRemove(true)}>
-                                    <X size={14} />
-                                </button>
-                            </Show>
-                        </Show>
-                    </span>
-                </div>
-            </Show>
-            <Show when={adding()}>
-                <div class="prov-add">
-                    <input class="input mono" type="password" autofocus aria-label={`${p.pr.name} key`} placeholder={`Paste your ${p.pr.name} key`} value={key()} onInput={(e) => setKey(e.currentTarget.value)} onKeyDown={(e) => e.key === "Enter" && void save()} />
-                    <button class="btn btn-primary btn-sm" disabled={!key().trim() || busy()} onClick={() => void save()}>
-                        {busy() ? <Spinner size={12} /> : "Save"}
-                    </button>
+                    <Show
+                        when={adding()}
+                        fallback={
+                            <div class="prow-actions">
+                                {/* Saving again is the key's own Save. */}
+                                <Show when={failure() && commandIn(failure()!.message)}>{fix(failure()!.message)}</Show>
+                                <Show when={p.pr.requiresKey && !p.pr.configured && p.pr.keyUrl}>
+                                    <button class="btn btn-sm btn-ghost" onClick={() => void openExternal(p.pr.keyUrl!)}>
+                                        Get a key
+                                    </button>
+                                </Show>
+                                <Show when={p.pr.requiresKey && !p.pr.configured}>
+                                    <button class="btn btn-sm" aria-expanded={adding()} onClick={() => setAdding(true)}>
+                                        Add key
+                                    </button>
+                                </Show>
+                                <Show when={removable()} fallback={<span class="prow-slot" />}>
+                                    <button class="icon-btn icon-btn-sm" data-tip="Remove key" aria-label={`Remove the ${p.pr.name} key`} onClick={() => setConfirmRemove(true)}>
+                                        <X size={13} />
+                                    </button>
+                                </Show>
+                            </div>
+                        }
+                    >
+                        <form
+                            class="prow-add"
+                            onSubmit={(e) => {
+                                e.preventDefault();
+                                void save();
+                            }}
+                        >
+                            <input
+                                class="input input-sm mono"
+                                type="password"
+                                autofocus
+                                aria-label={`${p.pr.name} key`}
+                                placeholder="Paste the key"
+                                value={key()}
+                                onInput={(e) => setKey(e.currentTarget.value)}
+                                onKeyDown={(e) => {
+                                    if (e.key !== "Escape") return;
+                                    // Its own: not also leaving Settings (App.tsx's Esc skips a handled key).
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    closeAdd();
+                                }}
+                            />
+                            <button type="button" class="btn btn-sm btn-primary" disabled={!key().trim() || busy()} onClick={() => void save()}>
+                                {busy() ? <Spinner size={12} /> : "Save"}
+                            </button>
+                            <button type="button" class="btn btn-sm btn-ghost" onClick={closeAdd}>
+                                Cancel
+                            </button>
+                        </form>
+                    </Show>
                 </div>
             </Show>
         </div>
@@ -822,12 +837,26 @@ function ProviderSections(p: { noSubscriptions?: boolean; localOnly?: boolean; s
         { title: "Web search", list: at.list().filter((p) => p.search) },
     ].filter((g) => g.list.length && (!p.localOnly || g.title === LOCAL));
     const keyBox = () => (
-        <div class="keyin">
-            <input class="input mono" type="password" aria-label="API key" placeholder="Paste a key from any provider" value={key()} onInput={(e) => setKey(e.currentTarget.value)} onKeyDown={(e) => e.key === "Enter" && void quickAdd()} />
-            <button class="btn btn-primary btn-sm" disabled={!key().trim() || busy()} onClick={() => void quickAdd()}>
-                {busy() ? <Spinner size={12} /> : "Add"}
-            </button>
-        </div>
+        <form
+            class="paste"
+            onSubmit={(e) => {
+                e.preventDefault();
+                void quickAdd();
+            }}
+        >
+            <div class="paste-line">
+                <input class="input mono" type="password" aria-label="API key" placeholder="Paste a key from any provider" value={key()} onInput={(e) => setKey(e.currentTarget.value)} />
+                <button type="submit" class="btn" disabled={!key().trim() || busy()}>
+                    <Show when={busy()}>
+                        <Spinner size={13} />
+                    </Show>
+                    Add
+                </button>
+            </div>
+            <p class="paste-note">
+                Kept on {p.synced ? "this computer and the servers you sync" : where()}, sent only to their provider. Custom endpoints: <code>/login custom</code> in the terminal app
+            </p>
+        </form>
     );
     // API keys always shows, for the box that adds one.
     const sections = () => p.localOnly || groups().some((g) => g.title === "API keys") ? groups() : [...groups().slice(0, 1), { title: "API keys", list: [] }, ...groups().slice(1)];
@@ -836,10 +865,10 @@ function ProviderSections(p: { noSubscriptions?: boolean; localOnly?: boolean; s
             {(g) => (
                 <Section
                     title={g.title === LOCAL && server() ? `On ${server()}` : g.title}
+                    caption={g.title === "Subscriptions" ? "Plans you use through their own CLI" : undefined}
                     class="prov-group"
-                    caption={g.title === "API keys" ? <>Kept on {p.synced ? "this computer and the servers you sync" : where()}, sent only to their provider. Custom endpoints: <code>/login custom</code> in the terminal app.</> : undefined}
+                    before={g.title === "API keys" ? keyBox() : undefined}
                 >
-                    <Show when={g.title === "API keys"}>{keyBox()}</Show>
                     <For each={g.list}>{(pr) => <ProviderRow pr={pr} />}</For>
                 </Section>
             )}
@@ -883,8 +912,8 @@ function Providers() {
     return (
         <>
             <Show when={withServers()}>
-                <Section title="Subscriptions" class="prov-group">
-                    <Suspense fallback={<div class="set-row"><Spinner size={12} /></div>}>
+                <Section title="Subscriptions" caption="Plans you use through their own CLI, on each computer" class="prov-group sg-card">
+                    <Suspense fallback={<div class="set-item"><Spinner size={12} /></div>}>
                         <SubscriptionGrid here={servers()?.HERE ?? ""} servers={listed().map((s) => s.name)} touched={() => servers()?.serverTouched() ?? 0} manage={(pr) => <ProviderRow pr={pr} />} />
                     </Suspense>
                 </Section>

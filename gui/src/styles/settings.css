@@ -924,12 +924,12 @@ a.btn {
 /* ---------- what Cavvy has beyond the design, in its pattern ---------- */
 
 /* The design's base resets these; Cavvy's doesn't. */
-:is(.settings-sheet, .settings-side) :is(h1, h2, h3, p, ul, dl, dd) {
+:where(.settings-sheet, .settings-side) :where(h1, h2, h3, p, ul, dl, dd) {
     margin: 0;
     padding: 0;
 }
 
-.settings-page ul {
+:where(.settings-page) :where(ul) {
     list-style: none;
 }
 
@@ -953,96 +953,3 @@ a.btn {
 .keys-problems li.error .keys-level {
     color: var(--red);
 }
-
-/* ---- Settings → Providers ------------------------------------------- */
-
-.keyin {
-        display: flex;
-        gap: calc(8 * var(--sp));
-        padding: calc(12 * var(--sp)) calc(14 * var(--sp));
-}
-
-.settings-page .keyin .input,
-.settings-page .prov-add .input {
-        flex: 1;
-        min-width: 0;
-        height: calc(30 * var(--sp));
-        border-radius: calc(8 * var(--sp));
-        font: 0.857rem var(--font-mono);
-}
-
-.prov-group {
-        overflow: visible;
-}
-
-.prov + .prov {
-        border-top: 0.5px solid var(--line);
-}
-
-.prov-line {
-        display: flex;
-        align-items: center;
-        gap: calc(12 * var(--sp));
-        min-height: calc(52 * var(--sp));
-        padding: calc(11 * var(--sp)) calc(14 * var(--sp));
-}
-
-/* Its own tile already: a provider's initial needs no second one inside. */
-.prov-logo .provider-mono {
-        background: none;
-}
-
-.prov-logo {
-        display: grid;
-        place-items: center;
-        width: calc(28 * var(--sp));
-        height: calc(28 * var(--sp));
-        flex: none;
-        border-radius: calc(8 * var(--sp));
-        background: var(--sheet);
-        box-shadow: 0 0 0 0.5px var(--line);
-        color: var(--fg);
-}
-
-.prov-lab {
-        flex: 1;
-        min-width: 0;
-}
-
-.prov-name {
-        display: flex;
-        align-items: center;
-        gap: calc(8 * var(--sp));
-        min-width: 0;
-        font-weight: 500;
-}
-
-.prov-sub {
-        margin-top: 1px;
-        font-size: 0.857rem;
-        color: var(--fg-3);
-}
-
-.prov-key {
-        font: 0.821rem var(--font-mono);
-        color: var(--fg-3);
-}
-
-.prov-end {
-        display: flex;
-        align-items: center;
-        justify-content: flex-end;
-        flex-wrap: wrap;
-        gap: calc(8 * var(--sp));
-        flex: none;
-        max-width: 55%;
-}
-
-
-
-.prov-add {
-        display: flex;
-        gap: calc(8 * var(--sp));
-        padding: 0 calc(14 * var(--sp)) calc(12 * var(--sp)) calc(54 * var(--sp));
-}
-
