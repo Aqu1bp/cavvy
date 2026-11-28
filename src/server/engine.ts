@@ -1904,7 +1904,7 @@ export class Engine {
     /** Sessions a suggested task's start hasn't decided on yet (startTaskOnce): not listed, shown or notified of. */
     private decidingTasks = new Set<string>();
     /** Worktrees a suggested task's start made and then failed, by origin key: the next start of it goes on in one still there. */
-    private taskWorktrees = new Map<string, { path: string; branch: string }>();
+    private taskWorktrees = new Map<string, { path: string; branch: string; commit?: string }>();
 
     /** The session a suggested task was started as here (loaded, or saved), by its origin key. */
     taskStartedFor(key: string): { sessionId: string; title: string; cwd: string } | undefined {
@@ -1920,14 +1920,20 @@ export class Engine {
     }
 
     /**
-     * The worktree an earlier failed start of `key` made, to go on in: only while it's there with no changes in it and
-     * no session in it (open here, closing, or held by a terminal). Otherwise forgotten, and a start makes its own.
+     * The worktree an earlier failed start of `key` made, to go on in: only while it's there at the commit it was left
+     * at (no commits since), with no changes in it and no session in it (open here, closing, or held by a terminal).
+     * Otherwise forgotten, and a start makes its own.
      */
     private async reusableTaskWorktree(key: string): Promise<string | undefined> {
         const w = this.taskWorktrees.get(key);
         if (!w) return undefined;
         const folders = [...[...this.runtimes.values()].flatMap((r) => r.folders), ...[...this.closingIn.values()].flat(), ...heldSessionFolders()];
-        const clean = isDir(w.path) && !folders.some(within(w.path)) && (await runGitAsync(w.path, ["status", "--porcelain"], 10_000).catch(() => undefined).then((r) => r?.code === 0 && !r.timedOut && !r.stdout.trim()));
+        const clean =
+            Boolean(w.commit) &&
+            isDir(w.path) &&
+            !folders.some(within(w.path)) &&
+            (await headOf(w.path)) === w.commit &&
+            (await runGitAsync(w.path, ["status", "--porcelain"], 10_000).catch(() => undefined).then((r) => r?.code === 0 && !r.timedOut && !r.stdout.trim()));
         if (clean) return w.path;
         this.taskWorktrees.delete(key);
         return undefined;
@@ -2002,7 +2008,7 @@ export class Engine {
         // The window may have lost the worktree an earlier failed start made (a reload while it ran): this one remembers.
         const remembered = !asked && p.worktree === true ? await this.reusableTaskWorktree(origin.key) : undefined;
         const resume = asked ?? remembered;
-        let made: { path: string; branch: string } | undefined;
+        let made: { path: string; branch: string; commit?: string } | undefined;
         if (p.worktree === true || resume) {
             const top = gitRoot(cwd);
             if (!top) throw new RpcError("This folder isn't in a Git repository, so it can't have a worktree.", "not_git");
@@ -2013,7 +2019,7 @@ export class Engine {
                 else {
                     // None asked for, or the one remembered is gone: a new one.
                     const r = await createWorktreeWithHooks({ path: cwd, branch: taskBranch(cwd, taskSlug(title)) }, this.o.log);
-                    made = { path: r.path, branch: r.branch };
+                    made = { path: r.path, branch: r.branch, commit: r.commit };
                 }
             } catch (e) {
                 if (e instanceof RpcError && e.code === "needs_trust") throw e;
@@ -2029,8 +2035,8 @@ export class Engine {
             there = candidate && isDir(candidate) && isInside(realPath(candidate), realPath(made.path)) ? candidate : made.path;
         }
         const worktree = made ? { path: made.path, branch: made.branch } : undefined;
-        // Kept until a start of it succeeds.
-        if (worktree) this.taskWorktrees.set(origin.key, worktree);
+        // Kept until a start of it succeeds, with the commit it's at (one gone on in is at the commit it was left at).
+        if (made) this.taskWorktrees.set(origin.key, { ...made, commit: made.commit ?? (await headOf(made.path)) });
         const failed = (e: unknown, sessionId?: string, code?: string): StartTaskResult => {
             const c = code ?? (e instanceof RpcError ? e.code : undefined);
             return { sessionId, title, cwd: there, ...(worktree ? { worktree } : {}), failed: { message: redact((e as Error).message), ...(c ? { code: c } : {}), ...(c === "needs_trust" ? { folder: (e as RpcError).folder ?? there } : {}) } };
@@ -4415,6 +4421,12 @@ function optText(v: unknown, name: string, max: number): string | undefined {
 }
 
 /** `cwd` is `dir` or inside it, as written or with symlinks resolved. */
+/** The commit a checkout is at; undefined when Git can't say. */
+async function headOf(dir: string): Promise<string | undefined> {
+    const r = await runGitAsync(dir, ["rev-parse", "HEAD"], 10_000).catch(() => undefined);
+    return r?.code === 0 && !r.timedOut ? r.stdout.trim() || undefined : undefined;
+}
+
 function within(dir: string): (cwd: string) => boolean {
     return (cwd) => isInside(resolve(cwd), resolve(dir)) || isInside(realPath(cwd), realPath(dir));
 }
