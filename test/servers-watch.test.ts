@@ -430,7 +430,7 @@ test("what a row offers is done here while the server can't be reached, kept thr
                 if (m.method === "sessions.list") return void ws.send(JSON.stringify({ id: m.id, result: m.params?.archived ? [] : [row("s1"), row("s2", { updatedAt: 1 }), row("s3", { updatedAt: 0 })] }));
                 if (!m.method.startsWith("session.")) return;
                 asked.push({ method: m.method, params: m.params });
-                ws.send(JSON.stringify(refuse ? { id: m.id, error: m.params.id === "gone" ? { message: "No session", code: "not_found" } : { message: "It's in use.", code: "in_use" } } : { id: m.id, result: null }));
+                ws.send(JSON.stringify(refuse ? { id: m.id, error: m.params.id === "s3" ? { message: "No session", code: "not_found" } : { message: "It's in use.", code: "in_use" } } : { id: m.id, result: null }));
             },
         },
     });
@@ -457,7 +457,7 @@ test("what a row offers is done here while the server can't be reached, kept thr
 
     // One the server refuses (gone there, say): the row shows what the server has.
     back.stop();
-    // And one for a session not listed here (a restart since, a long list), that the server no longer has.
+    // A listed one the server no longer has, and one not listed here (a restart since, a long list) that it can't delete now.
     pending = [{ method: "session.delete", params: { id: "s3" } }, { method: "session.delete", params: { id: "gone" } }];
     refuse = true;
     const shownAgain: SessionChange[] = [];
@@ -465,10 +465,9 @@ test("what a row offers is done here while the server can't be reached, kept thr
     stops.push(() => refused.stop());
     refused.start();
     await until("the refusal", () => (pending as unknown[]).length === 0);
-    expect(refused.overview().sessions.map((s) => s.id)).toContain("s3");
-    // Refused while in use: its row comes back, and nothing said it was gone; the one the server doesn't have is gone for good.
-    expect(shownAgain).toContainEqual({ session: expect.objectContaining({ id: "s3" }) });
-    expect(shownAgain.filter((c) => "remove" in c)).toEqual([{ remove: "gone" }]);
+    expect(refused.overview().sessions.map((s) => s.id)).not.toContain("s3");
+    // Not there: gone for good, whatever this machine kept of it. Refused while in use: not said to be gone.
+    expect(shownAgain.filter((c) => "remove" in c)).toEqual([{ remove: "s3" }]);
 });
 
 test("a delete sent without an answer, then undone, is brought back there too: the server may have done it", async () => {
