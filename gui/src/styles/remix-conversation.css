@@ -2033,7 +2033,7 @@ span.tool-target {
     list-style: none;
 }
 
-:where(.dock) .kbd-group {
+.kbd-group {
     display: inline-flex;
     gap: calc(2 * var(--sp));
     flex: none;
@@ -2409,47 +2409,15 @@ pre.si-term:focus-visible {
     font-size: calc(12.5 * var(--sp));
 }
 
-/* The bar sits in the composer's dock, outside the conversation the kit pieces above are scoped to: the ones it
-   uses, as the kit has them. */
-:where(.agentbar) .kbd-group {
-    display: inline-flex;
-    gap: calc(2 * var(--sp));
-    flex: none;
-}
 
-/* In a button, base.css's .btn kbd is the kit's .btn .kbd. */
-:where(.agentbar) .kbd {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: calc(18 * var(--sp));
-    height: calc(18 * var(--sp));
-    padding: 0 calc(4 * var(--sp));
-    border-radius: calc(4 * var(--sp));
-    box-shadow: inset 0 0 0 1px var(--line);
-    color: var(--text-3);
-    font-family: var(--font-ui);
-    font-size: calc(11 * var(--sp));
-    font-weight: 500;
-    line-height: 1;
-}
 
-:where(.agentbar) .btn-sm {
-    height: calc(26 * var(--sp));
-    padding: 0 calc(8 * var(--sp));
-    border-radius: var(--radius-s);
-    font-size: calc(12 * var(--sp));
-    gap: calc(5 * var(--sp));
-}
 
-:where(.agentbar) .btn-danger {
-    color: var(--red);
-}
 
-:where(.agentbar) .btn-danger:hover {
-    background: var(--red-soft);
-    box-shadow: inset 0 0 0 1px var(--red-line);
-}
+
+
+
+
+
 
 /* Over the tab of what it's asking, as the composer is. A narrow pane leaves the model out. */
 .agentbar {
