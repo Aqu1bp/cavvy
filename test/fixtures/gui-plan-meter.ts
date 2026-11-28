@@ -60,7 +60,7 @@ function mount(options: { plan?: number; reached?: boolean; unknown?: boolean; h
     /** How the words under the composer are toned: normal, warning or danger. */
     const tone = () => /\btone-(\w+)/.exec(trigger().props.class)?.[1];
     /** How far the card's bar is filled. */
-    const filled = () => all(root).find(n => n.tag === "i" && n.parent?.props.class?.startsWith("cx-bar"))?.props.style.width;
+    const filled = () => all(root).find(n => n.tag === "i" && n.parent?.props.class?.startsWith("bar "))?.props.style.width;
     return { setActiveId, root, calls, errors, notices, pending, setCatalog, setState, state, setLimits, trigger, button, show, open, setOpen, escape, tone, filled, wire, doc, dispose, settingsTab: () => settingsTab };
 }
 
@@ -112,7 +112,7 @@ test("the words are the context; their tone follows the context alone", () => {
         expect(all(m.root).filter(n => n.tag === "button")).toHaveLength(1);
         expect(m.tone()).toBe("normal");
         m.show();
-        expect(all(m.root).filter(n => n.tag === "h3").map(text)).toEqual(["Context"]);
+        expect(all(m.root).filter(n => n.props?.class === "ctx-name").map(text)).toEqual(["Context"]);
         m.setState({ ...m.state(), contextTokens: 150000 });
         expect(m.tone()).toBe("warning");
         m.setState({ ...m.state(), contextTokens: 180000 });
