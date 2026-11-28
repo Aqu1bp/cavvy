@@ -446,8 +446,8 @@
     align-items: center;
     gap: calc(12 * var(--sp));
     width: 100%;
-    min-height: calc(38 * var(--sp));
-    padding: calc(5 * var(--sp)) calc(8 * var(--sp)) calc(5 * var(--sp)) calc(10 * var(--sp));
+    min-height: calc(32 * var(--sp));
+    padding: calc(3 * var(--sp)) calc(8 * var(--sp)) calc(3 * var(--sp)) calc(10 * var(--sp));
     border-radius: var(--radius-sm);
     text-align: left;
     color: var(--fg-2);

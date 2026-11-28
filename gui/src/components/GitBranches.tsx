@@ -46,8 +46,8 @@ export function syncWords(s: GitSyncInfo | undefined): string {
 function Counts(p: { sync?: GitSyncInfo }) {
     return (
         <>
-            <Show when={p.sync?.ahead}>{(n) => <span class="br-n"><ArrowUp size={11} />{n()}</span>}</Show>
-            <Show when={p.sync?.behind}>{(n) => <span class="br-n"><ArrowDown size={11} />{n()}</span>}</Show>
+            <Show when={p.sync?.ahead}>{(n) => <span class="main-branch-n"><ArrowUp size={11} />{n()}</span>}</Show>
+            <Show when={p.sync?.behind}>{(n) => <span class="main-branch-n"><ArrowDown size={11} />{n()}</span>}</Show>
         </>
     );
 }
@@ -73,13 +73,13 @@ export function BranchChip(p: { handle: SessionHandle; branch: string }) {
     const words = () => syncWords(sync());
     return (
         <button
-            class="br br-btn"
+            class="main-branch"
             title={withShortcut(`${p.branch}${words() ? ` · ${words()}` : ""}. Switch branch`, "app:switchBranch")}
             aria-label={`Branch ${p.branch}${words() ? `, ${words()}` : ""}. Switch branch`}
             onClick={() => setGitDialog({ kind: "branch", cwd: st().cwd, sessionId: p.handle.id })}
         >
-            <GitBranch size={13} />
-            <span class="truncate">{p.branch}</span>
+            <GitBranch size={12} />
+            <span class="mono">{p.branch}</span>
             <Counts sync={sync()} />
         </button>
     );
