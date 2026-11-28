@@ -71,7 +71,8 @@ export const CHAT_WIDTHS: Record<Prefs["chatWidth"], number> = { narrow: 640, de
 
 export const PREF_DEFAULTS: Prefs = {
     scheme: "system",
-    glass: "glass",
+    // The design's opaque window; Glass and Tinted let the desktop through the rail.
+    glass: "solid",
     tint: "clear",
     contrast: "standard",
     density: "comfortable",

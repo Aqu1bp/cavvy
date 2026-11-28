@@ -26,8 +26,8 @@ function at(value: string | undefined, size: number): string {
 const KEY: [file: string, selector: string, property: string, at14: string][] = [
     ["base.css", ".hb", "height", "28px"],
     ["base.css", ".btn", "height", "32px"],
-    ["overlays.css", ".menu-item", "padding", "7px 10px"],
-    ["overlays.css", ".toggle.on .toggle-knob", "transform", "translateX(16px)"],
+    ["overlays.css", ".menu-item", "padding", "5px 9px"],
+    ["overlays.css", ".toggle.on .toggle-knob", "transform", "translateX(14px)"],
     ["sidebar.css", ".nav-row", "height", "32px"],
     ["sidebar.css", ".card-hit", "min-height", "32px"],
     ["composer.css", ".send", "width", "32px"],
@@ -38,7 +38,7 @@ const KEY: [file: string, selector: string, property: string, at14: string][] = 
     ["overlays.css", ".pal-row", "min-height", "38px"],
     ["toasts.css", ".toast", "min-height", "36px"],
     ["terminal.css", ".terminal-tab", "height", "28px"],
-    ["tokens.css", ":root", "--radius-sm", "8px"],
+    ["tokens.css", ":root", "--radius-sm", "6px"],
 ];
 
 test("--sp is a pixel at the text size: exactly 1px at 14", () => {
@@ -81,7 +81,7 @@ test("the terminal's text follows in whole pixels: 12px at 14", () => {
 
 // The window's frame, deliberately fixed: the traffic lights are native and don't scale.
 const FRAME: [file: string, selector: string, property: string, value: string][] = [
-    ["tokens.css", ":root", "--top-line", "34px"],
+    ["tokens.css", ":root", "--top-line", "26px"],
     ["tokens.css", ":root", "--header-h", "52px"],
     ["tokens.css", ":root", "--r-window", "16px"],
     ["tokens.css", ":root", "--r-sheet", "12px"],

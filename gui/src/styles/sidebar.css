@@ -39,15 +39,13 @@
     padding-top: var(--win-pad);
     border-radius: 0 var(--r-card) var(--r-card) 0;
     background: var(--rail-float);
-    -webkit-backdrop-filter: blur(30px) saturate(1.6);
-    backdrop-filter: blur(30px) saturate(1.6);
     box-shadow: var(--pop-shadow);
 }
 
 .sidebar .hb {
-    border-radius: calc(8 * var(--sp));
-    color: var(--fg-3);
-    transition: background 140ms, color 140ms, transform 160ms var(--ease);
+    border-radius: var(--radius-sm);
+    color: var(--fg-2);
+    transition: transform 80ms;
 }
 
 .sidebar .hb:hover:not(:disabled),
@@ -1242,7 +1240,7 @@
 }
 
 .resize-handle:hover {
-    background: linear-gradient(90deg, transparent 2px, var(--accent-border) 2px, var(--accent-border) 4px, transparent 4px);
+    background: linear-gradient(90deg, transparent 2px, var(--accent) 2px, var(--accent) 3px, transparent 3px);
 }
 
 /* ---- Several picked: the selection bar under the list ------------------
