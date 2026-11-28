@@ -1,286 +1,9 @@
-/* Overlays: menus and popovers, the command palette, dialogs and the find
-   bar. They float over the window, opaque (--ctl-strong) with the pop shadow:
-   10px corners for menus, 12px for the palette and dialogs. */
-
-/* An entrance: a short rise into place, once. */
-@keyframes ov-pop {
-    from {
-        opacity: 0;
-        transform: translateY(2px) scale(0.98);
-    }
-}
-
-@keyframes ov-fade {
-    from {
-        opacity: 0;
-    }
-}
-
-@keyframes ov-out {
-    to {
-        opacity: 0;
-    }
-}
-
-/* ---- Menus and popovers --------------------------------------------- */
-
-/* base.css keeps only what these don't set (position, overflow). */
-.popover {
-    z-index: 60;
-    min-width: calc(190 * var(--sp));
-    border-radius: calc(10 * var(--sp));
-    padding: calc(5 * var(--sp));
-    background: var(--ctl-strong);
-    box-shadow: var(--pop-shadow);
-    color: var(--fg);
-    animation: ov-pop 130ms var(--ease);
-    transform-origin: top left;
-}
-
-/* The copy a closed one leaves (ui/Popover.tsx fadeOut): gone in a blink. */
-.popover.closing {
-    animation: ov-out 90ms linear forwards;
-    pointer-events: none;
-}
+/* Overlays: the command palette, the find bar, the image viewer and the dialogs' own pieces. Menus, popovers,
+   dialogs and toasts themselves are the kit's (kit.css). */
 
 /* Opened from a dialog: over it, as one opened from the window is over the window. */
 .popover.over-dialog {
     z-index: 75;
-}
-
-.popover[data-side="top"] {
-    transform-origin: bottom left;
-}
-
-.popover[data-align="end"] {
-    transform-origin: top right;
-}
-
-.popover[data-side="top"][data-align="end"] {
-    transform-origin: bottom right;
-}
-
-.menu-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: calc(7 * var(--sp));
-    padding: calc(6 * var(--sp)) calc(9 * var(--sp)) calc(4 * var(--sp));
-    font-size: 0.821rem;
-    font-weight: 500;
-    color: var(--fg-3);
-}
-
-/* The item is kit.css's; a button for one starts its words at the left. */
-.menu-item {
-    text-align: left;
-    min-width: 0;
-}
-
-[data-density="compact"] .menu-item {
-    min-height: calc(26 * var(--sp));
-    padding-top: calc(3 * var(--sp));
-    padding-bottom: calc(3 * var(--sp));
-}
-
-.menu-item.danger svg {
-    color: var(--danger);
-}
-
-.menu-text {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-    min-width: 0;
-    flex: 1;
-}
-
-.menu-label {
-    font-weight: 500;
-}
-
-.menu-desc {
-    display: block;
-    font-size: 0.857rem;
-    line-height: 1.35;
-    font-weight: 400;
-    color: var(--fg-3);
-}
-
-/* What's chosen: a check in the accent. */
-.menu-check {
-    margin-left: auto;
-    color: var(--accent) !important;
-}
-
-.menu-item kbd {
-    margin-left: auto;
-}
-
-/* An item that opens a submenu (ui/Submenu.tsx): a chevron at its end, and filled while what it opened is out. */
-.menu-sub-chev {
-    margin-left: auto;
-    color: var(--fg-3) !important;
-}
-
-/* Beside its menu, over the menu's edge. */
-.popover.submenu {
-    z-index: 61;
-}
-
-.popover.submenu[data-side="left"] {
-    transform-origin: top right;
-}
-
-.menu-note {
-    padding: calc(6 * var(--sp)) calc(9 * var(--sp));
-    font-size: 0.857rem;
-    color: var(--fg-3);
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-/* ---- Shared controls (ui/bits) --------------------------------------- */
-
-/* Switch: 32×18, the knob slides across (its colour changes at once). */
-.toggle {
-    width: calc(32 * var(--sp));
-    height: calc(18 * var(--sp));
-    border-radius: var(--round);
-    background: var(--line-strong);
-    transition: background 0.14s;
-}
-
-.toggle.on {
-    background: var(--accent);
-}
-
-.toggle.danger.on {
-    background: var(--danger);
-}
-
-/* Can't be changed here. Off, the track stays and the knob greys, flat. On, it's faded as a disabled button is. */
-.toggle:disabled:not(.on) .toggle-knob {
-    background: var(--fg-4);
-    box-shadow: none;
-    opacity: 0.6;
-}
-
-.toggle.on:disabled {
-    opacity: 0.45;
-}
-
-.toggle-knob {
-    width: calc(14 * var(--sp));
-    height: calc(14 * var(--sp));
-    top: calc(2 * var(--sp));
-    left: calc(2 * var(--sp));
-    transition: transform 160ms var(--ease);
-}
-
-.toggle.on .toggle-knob {
-    transform: translateX(calc(14 * var(--sp)));
-}
-
-/* Segmented: kit.css's, on Cavvy's buttons with .on. */
-.segmented button {
-    justify-content: center;
-}
-
-/* Not available here: its tooltip says why. */
-.segmented button[aria-disabled="true"] {
-    opacity: 0.45;
-    cursor: default;
-}
-
-/* ---- Dialogs -------------------------------------------------------- */
-
-/* Under a dialog the window dims. The dialog sits in the middle of the window, the palette near its top. */
-.dialog-backdrop {
-    position: fixed;
-    inset: 0;
-    z-index: 70;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: calc(16 * var(--sp));
-    background: var(--overlay);
-    animation: ov-fade 160ms;
-}
-
-/* The box is the design's .dlg (kit.css): fixed in the window's middle. The palette hangs near the top instead. */
-.dialog-backdrop.top > .dlg {
-    top: 14vh;
-    transform: translateX(-50%);
-    animation-name: dlg-top-in;
-}
-
-/* kit.css's .dlg names "settings-in", which Settings uses for something else here: the design's own keyframes. */
-.dialog.dlg {
-    max-height: min(82vh, calc(100vh - 32 * var(--sp)));
-    overflow: hidden;
-    color: var(--fg);
-    animation-name: dlg-in;
-}
-
-@keyframes dlg-in {
-    from {
-        opacity: 0;
-        transform: translate(-50%, calc(-50% + 8px)) scale(0.985);
-    }
-}
-
-@keyframes dlg-top-in {
-    from {
-        opacity: 0;
-        transform: translate(-50%, 8px);
-    }
-}
-
-/* A footer whose buttons come in Cavvy's row (.dialog-actions, with its own spacer) takes the whole band. */
-.dlg-foot > .dialog-actions {
-    flex: 1;
-}
-
-.dialog-body {
-    line-height: 1.45;
-}
-
-/* A dialog with no head (it brings its own heading) starts its body clear of the top edge. */
-.dlg > .dlg-body:first-child {
-    padding-top: calc(16 * var(--sp));
-}
-
-/* The design resets paragraph margins everywhere; in its dialogs and menus here too. */
-:where(.dlg, .menu) p {
-    margin: 0;
-}
-
-.dialog-body > p {
-    margin: 0;
-    color: var(--fg-2);
-}
-
-/* What a dialog says can be copied (names, paths, warnings, errors); its buttons can't. */
-.dialog-body :is(button, [role="button"]) {
-    user-select: none;
-    -webkit-user-select: none;
-}
-
-/* The footer: a band across the dialog's foot, Cancel and the primary action at its trailing edge (choices before
-   them, a lone Cancel on the left). The buttons the body ends with take the same band, held at the foot while the
-   rest scrolls. */
-.dialog-body > .dialog-actions:last-child {
-    padding: calc(12 * var(--sp)) calc(16 * var(--sp));
-    border-top: 1px solid var(--line);
-    background: var(--rail-float);
-}
-
-.dialog-body > .dialog-actions:last-child {
-    position: sticky;
-    z-index: 1;
-    bottom: calc(-18 * var(--sp));
-    margin: calc(4 * var(--sp)) calc(-20 * var(--sp)) calc(-18 * var(--sp));
 }
 
 /* A form in the design's dialogs: fields a column, 12 apart. */
@@ -290,17 +13,9 @@
     gap: calc(12 * var(--sp));
 }
 
-.dialog-actions {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: calc(8 * var(--sp));
-    min-width: 0;
-}
-
-.dialog .panel-empty {
-    padding: calc(14 * var(--sp)) calc(4 * var(--sp));
-    color: var(--fg-3);
+/* The design resets paragraph margins everywhere; in its dialogs and menus here too. */
+:where(.dlg, .menu) p {
+    margin: 0;
 }
 
 /* ---- Command palette (⌘K) ------------------------------------------- */
@@ -464,7 +179,7 @@
     border-radius: var(--r-well);
     background: var(--card);
     box-shadow: var(--pop-shadow);
-    animation: ov-pop 160ms var(--ease);
+    animation: pop-in 160ms var(--ease);
     transform-origin: top right;
 }
 
@@ -849,7 +564,7 @@
     color: var(--fg-2);
 }
 
-.pg-row > .toggle,
+.pg-row > .switch,
 .pg-row > .hb,
 .pg-row > .btn {
     flex: none;
@@ -1842,10 +1557,12 @@
 .dialog-backdrop:has(> .image-viewer) {
     padding: 0;
     background: rgba(12, 11, 10, 0.86);
-    animation: ov-fade 140ms;
+    animation: fade-in 140ms;
 }
 
 .dialog.image-viewer {
+    inset: 0;
+    transform: none;
     width: 100% !important;
     height: 100%;
     max-width: none;

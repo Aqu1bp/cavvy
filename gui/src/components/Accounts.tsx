@@ -143,7 +143,7 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
             void work(async () => { await rpc.call("accounts.rename", { provider: p.provider.id, id: a.id, name: newName() }); setEditing(undefined); await refreshProviders().catch((e) => setActionError(message(e))); }, setRenameError);
         }}>
             <input class="input" autofocus ref={(el) => queueMicrotask(() => { if (el.isConnected) el.focus(); })} aria-label="New account name" aria-invalid={!!renameError()} aria-describedby={renameError() ? `${uid}-rename-error` : undefined} maxLength={64} disabled={busy()} value={newName()} onInput={(e) => { setNewName(e.currentTarget.value); setRenameError(undefined); }} />
-            <button type="button" class="btn ghost sm" disabled={busy()} onClick={() => { setEditing(undefined); back()?.focus(); }}>Cancel</button><button class="btn primary sm" disabled={busy()}>Save</button>
+            <button type="button" class="btn btn-ghost btn-sm" disabled={busy()} onClick={() => { setEditing(undefined); back()?.focus(); }}>Cancel</button><button class="btn btn-primary btn-sm" disabled={busy()}>Save</button>
             <Show when={renameError()}><span id={`${uid}-rename-error`} class="account-error" role="alert">{renameError()}</span></Show>
         </form>
     </Show>;
@@ -182,14 +182,14 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
                 <Show when={refreshing()}><Spinner size={12} /></Show>
                 <Show when={!installed() && (cli()?.installable && terminalActions.installCli ? !cli()?.installing : p.provider.keyUrl)}>
                     <Show when={cli()?.installable && terminalActions.installCli} fallback={<button class="link-btn" onClick={() => void openExternal(p.provider.keyUrl!)}>Install <ExternalLink size={11} /></button>}>
-                        <button class="btn secondary sm" title={cli()?.installError} onClick={install}>Install</button>
+                        <button class="btn btn-sm" title={cli()?.installError} onClick={install}>Install</button>
                     </Show>
                 </Show>
                 <Show when={installed() && p.provider.configured && (single()?.signedIn === false || single()?.free) && !single()?.invalid}>
-                    <button class="btn secondary sm" disabled={busy()} onClick={() => login(single()!)}>Sign in</button>
+                    <button class="btn btn-sm" disabled={busy()} onClick={() => login(single()!)}>Sign in</button>
                 </Show>
                 <Show when={installed() && !p.provider.configured && p.onConnect}>
-                    <button class="btn secondary sm" disabled={p.connecting} onClick={() => p.onConnect!()}>{p.connecting ? <Spinner size={12} /> : `Use my ${cli()?.plan ?? "plan"}`}</button>
+                    <button class="btn btn-sm" disabled={p.connecting} onClick={() => p.onConnect!()}>{p.connecting ? <Spinner size={12} /> : `Use my ${cli()?.plan ?? "plan"}`}</button>
                 </Show>
                 <Show when={installed()}>
                     <button ref={providerMenu} class="hb sm" aria-label={`${p.provider.name} actions`} aria-haspopup="menu" aria-expanded={menu() === ""} onClick={() => setMenu(menu() === "" ? undefined : "")}><MoreHorizontal size={16} /></button>
@@ -229,7 +229,7 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
                             const said = () => `Some of your ${p.provider.name} setup isn't shared with this account.\n\n${why()}`;
                             return <span class="account-sharing" role="img" tabIndex={0} aria-label={said()} title={said()}><Info size={14} /></span>;
                         }}</Show>
-                        <Show when={a.signedIn === false && !a.invalid}><button class="btn secondary sm" disabled={busy()} aria-label={`Sign in to ${a.name}`} onClick={() => login(a)}>Sign in</button></Show>
+                        <Show when={a.signedIn === false && !a.invalid}><button class="btn btn-sm" disabled={busy()} aria-label={`Sign in to ${a.name}`} onClick={() => login(a)}>Sign in</button></Show>
                         <Show when={isDefault(a)}><span class="account-default" role="img" aria-label="Default" title="Used for new sessions"><Check size={14} /></span></Show>
                         <button ref={anchor} class="hb sm account-more" disabled={busy()} aria-label={`Actions for ${a.name}`} aria-haspopup="menu" aria-expanded={menu() === a.id} onClick={() => setMenu(menu() === a.id ? undefined : a.id)}><MoreHorizontal size={16} /></button>
                         <Menu open={menu() === a.id} anchor={() => anchor} onClose={() => setMenu(undefined)} label={`${a.name} account actions`} width={200} align="end">{accountItems(a)}</Menu>
@@ -271,8 +271,8 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
                 <Show when={error()?.field === "form"}><span class="account-error" role="alert">{error()?.message}</span></Show>
                 {/* Cancel, then the form's own action, at the trailing edge, as in the app's dialogs and Settings' other forms. */}
                 <div class="account-actions">
-                    <button class="btn ghost sm" type="button" disabled={busy()} onClick={cancelAdd}>Cancel</button>
-                    <button class="btn primary sm" type="submit" disabled={busy()}>{busy() && <Spinner size={12} />}{busy() ? "Creating…" : "Create and sign in"}</button>
+                    <button class="btn btn-ghost btn-sm" type="button" disabled={busy()} onClick={cancelAdd}>Cancel</button>
+                    <button class="btn btn-primary btn-sm" type="submit" disabled={busy()}>{busy() && <Spinner size={12} />}{busy() ? "Creating…" : "Create and sign in"}</button>
                 </div>
             </form>
         </Show>
@@ -291,8 +291,8 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
             <Show when={removeInstanceError()}><p class="account-error" role="alert">{removeInstanceError()}</p></Show>
             <div class="dialog-actions">
                 <span class="grow" />
-                <button class="btn ghost" autofocus disabled={busy()} onClick={() => setRemovingInstance(undefined)}>Cancel</button>
-                <button class="btn danger" disabled={busy()} aria-busy={busy()} onClick={() => void work(async () => {
+                <button class="btn btn-ghost" autofocus disabled={busy()} onClick={() => setRemovingInstance(undefined)}>Cancel</button>
+                <button class="btn btn-danger-solid" disabled={busy()} aria-busy={busy()} onClick={() => void work(async () => {
                     // Read before the dialog closes: its accessor goes with it.
                     const { id, name } = i();
                     const r = await rpc.call("providers.removeInstance", { id });
@@ -310,8 +310,8 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
             <Show when={removeError()}><p class="account-error" role="alert">{removeError()}</p></Show>
             <div class="dialog-actions">
                 <span class="grow" />
-                <button class="btn ghost" autofocus disabled={busy()} onClick={() => setRemoving(undefined)}>Cancel</button>
-                <button class="btn danger" disabled={busy()} aria-busy={busy()} onClick={() => void work(async () => { await rpc.call("accounts.remove", { provider: p.provider.id, id: a().id, confirmedFolder: a().folder }); setRemoving(undefined); await refreshProviders().catch((e) => setActionError(message(e))); }, setRemoveError)}>{busy() ? "Removing…" : "Remove"}</button>
+                <button class="btn btn-ghost" autofocus disabled={busy()} onClick={() => setRemoving(undefined)}>Cancel</button>
+                <button class="btn btn-danger-solid" disabled={busy()} aria-busy={busy()} onClick={() => void work(async () => { await rpc.call("accounts.remove", { provider: p.provider.id, id: a().id, confirmedFolder: a().folder }); setRemoving(undefined); await refreshProviders().catch((e) => setActionError(message(e))); }, setRemoveError)}>{busy() ? "Removing…" : "Remove"}</button>
             </div>
         </Dialog>}</Show>
     </section>;

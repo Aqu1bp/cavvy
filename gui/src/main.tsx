@@ -34,9 +34,10 @@ import { start } from "./state/app";
 import { alignAnimations } from "./lib/stream-clock";
 import { gateLoops } from "./lib/loops";
 import { RenderBoundary } from "./components/ui/ErrorBoundary";
+import { Tooltips } from "./components/ui/Tooltip";
 import { App } from "./App";
 
 alignAnimations();
 gateLoops();
 start();
-render(() => <RenderBoundary app><App /></RenderBoundary>, document.getElementById("root")!);
+render(() => <RenderBoundary app><Tooltips /><App /></RenderBoundary>, document.getElementById("root")!);

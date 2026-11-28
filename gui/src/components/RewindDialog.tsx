@@ -271,7 +271,7 @@ export function RewindDialog() {
                                     <div class="rw-confirm">
                                         <AlertTriangle size={13} />
                                         <span>Restoring files marked “changed outside” loses the edits made to them since.</span>
-                                        <button class="btn danger sm" onClick={() => void go(confirming()!.code, confirming()!.conversation)}>
+                                        <button class="btn btn-danger-solid btn-sm" onClick={() => void go(confirming()!.code, confirming()!.conversation)}>
                                             Restore anyway
                                         </button>
                                     </div>
@@ -303,18 +303,18 @@ export function RewindDialog() {
                 <Show when={empty()}>
                     <span class="grow" />
                 </Show>
-                <button class="btn ghost" onClick={close}>
+                <button class="btn btn-ghost" onClick={close}>
                     {empty() ? "Close" : "Cancel"}
                 </button>
                 <Show when={!empty()}>
                     <span class="grow" />
-                    <button class="btn secondary" disabled={!plan() || busy() || !plan()!.restore.length} onClick={() => void go(true, false)}>
+                    <button class="btn" disabled={!plan() || busy() || !plan()!.restore.length} onClick={() => void go(true, false)}>
                         Code only
                     </button>
-                    <button class="btn secondary" disabled={!plan() || busy()} onClick={() => void go(false, true)}>
+                    <button class="btn" disabled={!plan() || busy()} onClick={() => void go(false, true)}>
                         Conversation only
                     </button>
-                    <button class="btn primary" disabled={!plan() || busy() || !plan()!.restore.length} onClick={() => void go(true, true)}>
+                    <button class="btn btn-primary" disabled={!plan() || busy() || !plan()!.restore.length} onClick={() => void go(true, true)}>
                         Restore both
                     </button>
                 </Show>

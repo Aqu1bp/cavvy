@@ -140,7 +140,7 @@ export default function SignInCard(p: { sessionId: string; it: SignInInteraction
                                         <Show
                                             when={r.state === "in"}
                                             fallback={
-                                                <button class="btn sm" disabled={sending()} aria-label={`Sign in to ${r.name}`} onClick={() => void send({ action: "pick", target: r.target })}>
+                                                <button class="btn btn-sm" disabled={sending()} aria-label={`Sign in to ${r.name}`} onClick={() => void send({ action: "pick", target: r.target })}>
                                                     Sign in
                                                 </button>
                                             }
@@ -168,7 +168,7 @@ export default function SignInCard(p: { sessionId: string; it: SignInInteraction
                         </Show>
                     </div>
                     <div class="itab-actions ask-row">
-                        <button class="btn primary" disabled={sending()} onClick={() => void send({ action: "retry" })}>
+                        <button class="btn btn-primary" disabled={sending()} onClick={() => void send({ action: "retry" })}>
                             Try again <kbd>1</kbd>
                         </button>
                         <Out />
@@ -182,7 +182,7 @@ export default function SignInCard(p: { sessionId: string; it: SignInInteraction
                     </Show>
                     <div class="itab-actions ask-row">
                         <Show when={!it().busy}>
-                            <button class="btn primary" disabled={sending()} onClick={() => void send({ action: "start" })}>
+                            <button class="btn btn-primary" disabled={sending()} onClick={() => void send({ action: "start" })}>
                                 Sign in <kbd>1</kbd>
                             </button>
                             <Show when={it().canToken}>
@@ -200,7 +200,7 @@ export default function SignInCard(p: { sessionId: string; it: SignInInteraction
                     </div>
                     <div class="itab-actions ask-row">
                         <Show when={it().url && !it().busy}>
-                            <button class={`btn ${it().open ? "primary" : ""}`} onClick={open}>
+                            <button class={`btn ${it().open ? "btn-primary" : ""}`} onClick={open}>
                                 <ExternalLink size={13} /> {it().open ? <>Open {host(it().site)}</> : "Open again"}
                                 <Show when={it().open}>
                                     <kbd>1</kbd>
@@ -226,12 +226,12 @@ export default function SignInCard(p: { sessionId: string; it: SignInInteraction
                         <Show
                             when={it().expired}
                             fallback={
-                                <button class="btn primary" onClick={open}>
+                                <button class="btn btn-primary" onClick={open}>
                                     <ExternalLink size={13} /> Open {host(it().site)} <kbd>1</kbd>
                                 </button>
                             }
                         >
-                            <button class="btn primary" disabled={sending()} onClick={() => void send({ action: "retry" })}>
+                            <button class="btn btn-primary" disabled={sending()} onClick={() => void send({ action: "retry" })}>
                                 New code <kbd>1</kbd>
                             </button>
                         </Show>
@@ -270,12 +270,12 @@ export default function SignInCard(p: { sessionId: string; it: SignInInteraction
                         <Show
                             when={it().ran}
                             fallback={
-                                <button class="btn primary" onClick={openTerminal}>
+                                <button class="btn btn-primary" onClick={openTerminal}>
                                     <SquareTerminal size={13} /> Open in terminal <kbd>1</kbd>
                                 </button>
                             }
                         >
-                            <button class="btn primary" disabled={sending()} onClick={() => void send({ action: "done" })}>
+                            <button class="btn btn-primary" disabled={sending()} onClick={() => void send({ action: "done" })}>
                                 Done <kbd>1</kbd>
                             </button>
                             <Show when={it().canSave}>
@@ -366,7 +366,7 @@ function Field(p: { it: SignInInteraction; label: string; placeholder: string; m
             </div>
             <div class="itab-actions ask-row">
                 <Show when={!p.masked}>{p.children}</Show>
-                <button class="btn primary" aria-busy={p.it.busy} disabled={!ready() || p.it.busy} onClick={() => void submit()}>
+                <button class="btn btn-primary" aria-busy={p.it.busy} disabled={!ready() || p.it.busy} onClick={() => void submit()}>
                     {p.action}
                 </button>
                 <Show when={p.masked}>{p.children}</Show>
@@ -454,7 +454,7 @@ export function ConfirmCard(p: { sessionId: string; it: ConfirmInteraction }) {
                 </Show>
             </div>
             <div class="itab-actions ask-row">
-                <button class="btn primary" disabled={busy()} onClick={() => void answer("yes")}>
+                <button class="btn btn-primary" disabled={busy()} onClick={() => void answer("yes")}>
                     {p.it.yes} <kbd>1</kbd>
                 </button>
                 <Show when={p.it.other}>

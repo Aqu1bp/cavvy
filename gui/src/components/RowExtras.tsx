@@ -130,8 +130,8 @@ function askCustom(ids: readonly string[]) {
                     <Show when={problem()}>{(p) => <p id="snz-problem" class="snz-problem" role="alert">{p()}</p>}</Show>
                     <div class="dialog-actions">
                         <span class="grow" />
-                        <button type="button" class="btn ghost" onClick={close}>Cancel</button>
-                        <button type="submit" class="btn primary">Snooze</button>
+                        <button type="button" class="btn btn-ghost" onClick={close}>Cancel</button>
+                        <button type="submit" class="btn btn-primary">Snooze</button>
                     </div>
                 </form>
             </Dialog>

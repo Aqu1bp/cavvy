@@ -14,6 +14,8 @@ const byClass = (root: Node, cls: string) => all(root).filter((n) => has(n, cls)
 const buttons = (root: Node) => all(root).filter((n) => n.tag === "button");
 const button = (root: Node, label: string) => buttons(root).find((n) => n.props["aria-label"] === label || text(n).trim() === label);
 const icon = () => null;
+/** solid-js/web's Portal, which the test renderer lacks: the toasts render where they're written. */
+const inPlace = (p: { children: unknown }) => p.children;
 const settle = () => Bun.sleep(0);
 
 /** A stand-in for state/app's toast store: just what the components read and call. */
@@ -44,8 +46,8 @@ const roomy = {
 
 /** ErrorCards.tsx loaded once: its places share which of them shows. */
 function cardsModule(s: ReturnType<typeof store>, settings: () => string | undefined = () => undefined, shellLayout: () => WindowLayout = () => windowLayout(roomy), dialogOpen: () => boolean = () => false) {
-    const ToastItem = component(strip(read("Toasts")), "ToastItem", { ...s.deps, CircleCheck: icon, Info: icon, TriangleAlert: icon, X: icon });
-    const ErrorCards = component(strip(read("ErrorCards")), "ErrorCards", { ...s.deps, ...errorText, settingsTab: settings, shellLayout, coversComposer, dialogOpen, ToastItem, CircleAlert: icon, Copy: icon, X: icon });
+    const ToastItem = component(strip(read("Toasts")), "ToastItem", { ...s.deps, X: icon });
+    const ErrorCards = component(strip(read("ErrorCards")), "ErrorCards", { ...s.deps, ...errorText, settingsTab: settings, shellLayout, coversComposer, dialogOpen, ToastItem, renderer: { ...solid, ...renderer, Portal: inPlace }, CircleAlert: icon, Copy: icon, X: icon });
     return (place: string) => mountWith(ErrorCards, place);
 }
 
@@ -66,7 +68,7 @@ test("errors show as cards with the whole message, and confirmations as pills ov
     const cards = mount("composer", s);
     try {
         // The pills: only the confirmation, in a polite region of its own.
-        const pills = byClass(cards.root, "toast-region")[0]!;
+        const pills = byClass(cards.root, "toasts")[0]!;
         expect(pills.props).toMatchObject({ role: "status", "aria-live": "polite" });
         expect(text(pills)).toContain("Session settled");
         expect(text(pills)).not.toContain("signed in");
@@ -132,8 +134,8 @@ test("the toast's actions are the card's buttons, the first primary, then Copy e
     try {
         const labels = buttons(cards.root).map((b) => b.props["aria-label"] ?? text(b).trim());
         expect(labels).toEqual(["Undo", "Details", "Copy error", "Dismiss"]);
-        expect(has(button(cards.root, "Undo")!, "primary")).toBe(true);
-        expect(has(button(cards.root, "Details")!, "ghost")).toBe(true);
+        expect(has(button(cards.root, "Undo")!, "btn-primary")).toBe(true);
+        expect(has(button(cards.root, "Details")!, "btn-ghost")).toBe(true);
         button(cards.root, "Details")!.props.onClick();
         expect(s.calls.ran).toEqual([[id, 1]]);
         await button(cards.root, "Copy error")!.props.onClick();
@@ -324,7 +326,7 @@ test("a CLI row that can't connect says why on the row, copies the command, and 
         expect(r.toasts).toEqual([["Copied codex login", "success"]]);
         // Checking again, still not signed in: the row flashes again.
         button(r.root, "Check again")!.props.onClick();
-        const check = buttons(r.root).find((b) => b.props.class === "btn primary sm")!;
+        const check = buttons(r.root).find((b) => b.props.class === "btn btn-primary btn-sm")!;
         expect(all(check).some((n) => n.tag === "spinner")).toBe(true);
         expect(text(check)).toBe("Checking");
         expect(check.props.disabled).toBe(true);

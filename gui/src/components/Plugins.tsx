@@ -266,7 +266,7 @@ export function Plugins() {
                     {/* The list didn't come (the machine didn't answer): not an empty one, which would offer to add a marketplace there. */}
                     <Match when={!info()}>
                         {empty(Puzzle, where() || windowMachine ? `Couldn't load ${where() || windowMachine}'s plugins` : "Couldn't load plugins", undefined, () => (
-                            <button class="btn secondary sm" onClick={() => (setLoading(true), void load())}>
+                            <button class="btn btn-sm" onClick={() => (setLoading(true), void load())}>
                                 Try again
                             </button>
                         ))}
@@ -277,14 +277,14 @@ export function Plugins() {
                                 <Store size={15} />
                                 <input ref={sourceEl} aria-label="Marketplace source" placeholder="owner/repo, git URL, folder or marketplace.json" value={source()} onInput={(e) => setSource(e.currentTarget.value)} onKeyDown={(e) => e.key === "Enter" && addMarketplace()} spellcheck={false} autocomplete="off" />
                             </label>
-                            <button class="btn primary sm" disabled={!source().trim() || Boolean(busy())} onClick={() => addMarketplace()}>
+                            <button class="btn btn-primary btn-sm" disabled={!source().trim() || Boolean(busy())} onClick={() => addMarketplace()}>
                                 {busy() === "market:add" && source().trim() ? <Spinner size={12} /> : "Add marketplace"}
                             </button>
                         </div>
                         <Show
                             when={markets().length}
                             fallback={empty(Store, "No marketplaces yet", "Add one above, or start with Anthropic's official catalog.", () => (
-                                <button class="btn secondary sm" disabled={Boolean(busy())} onClick={() => addMarketplace(SUGGESTED)}>
+                                <button class="btn btn-sm" disabled={Boolean(busy())} onClick={() => addMarketplace(SUGGESTED)}>
                                     {busy() === "market:add" ? <Spinner size={12} /> : `Add ${SUGGESTED}`}
                                 </button>
                             ))}
@@ -300,10 +300,10 @@ export function Plugins() {
                             when={markets().length}
                             fallback={empty(Store, "No marketplaces yet", "A marketplace is a catalog of plugins.", () => (
                                 <>
-                                    <button class="btn primary sm" disabled={Boolean(busy())} onClick={() => addMarketplace(SUGGESTED)}>
+                                    <button class="btn btn-primary btn-sm" disabled={Boolean(busy())} onClick={() => addMarketplace(SUGGESTED)}>
                                         {busy() === "market:add" ? <Spinner size={12} /> : "Add Anthropic's marketplace"}
                                     </button>
-                                    <button class="btn ghost sm" onClick={() => show("marketplaces")}>
+                                    <button class="btn btn-ghost btn-sm" onClick={() => show("marketplaces")}>
                                         Add another
                                     </button>
                                 </>
@@ -329,7 +329,7 @@ export function Plugins() {
                                 <Show
                                     when={discovered().length}
                                     fallback={empty(Search, query().trim() ? `No plugins match “${query().trim()}”` : `Nothing in ${category()}`, category() ? undefined : "Try a shorter word, or a category.", category() ? () => (
-                                        <button class="btn ghost sm" onClick={() => setCategory(undefined)}>
+                                        <button class="btn btn-ghost btn-sm" onClick={() => setCategory(undefined)}>
                                             Search all categories
                                         </button>
                                     ) : undefined)}
@@ -345,12 +345,12 @@ export function Plugins() {
                     <Match when={!installed().length}>
                         {available().length
                             ? empty(Puzzle, "No plugins installed", `${plural(available().length, "plugin")} ready to install.`, () => (
-                                  <button class="btn primary sm" onClick={() => show("discover")}>
+                                  <button class="btn btn-primary btn-sm" onClick={() => show("discover")}>
                                       Browse plugins
                                   </button>
                               ))
                             : empty(Puzzle, "No plugins installed", undefined, () => (
-                                  <button class="btn primary sm" onClick={() => show("marketplaces")}>
+                                  <button class="btn btn-primary btn-sm" onClick={() => show("marketplaces")}>
                                       Add a marketplace
                                   </button>
                               ))}
@@ -371,7 +371,7 @@ export function Plugins() {
                         </div>
                         <Show when={installed().some((p) => p.installed && !p.orphaned)}>
                             <div class="pg-after">
-                                <button class="btn ghost sm" disabled={Boolean(busy())} title="Refresh marketplaces and fetch newer versions" onClick={() => void act("update:all", { action: "update" })}>
+                                <button class="btn btn-ghost btn-sm" disabled={Boolean(busy())} title="Refresh marketplaces and fetch newer versions" onClick={() => void act("update:all", { action: "update" })}>
                                     {busy() === "update:all" ? <Spinner size={12} /> : <RefreshCw size={13} />} Check for updates
                                 </button>
                             </div>
@@ -407,7 +407,7 @@ function PluginCard(p: { plugin: PluginInfo; markets: PluginMarketplaceInfo[]; b
                     {cat().name}
                 </span>
                 <button
-                    class="btn ghost sm pg-install"
+                    class="btn btn-ghost btn-sm pg-install"
                     disabled={Boolean(p.busy)}
                     title="Install for you, in every project"
                     aria-label={`Install ${pl().name}`}
@@ -494,10 +494,10 @@ function PluginDetails(p: { plugin: PluginInfo; markets: PluginMarketplaceInfo[]
             </p>
             <div class="dialog-actions">
                 <span class="grow" />
-                <button class="btn ghost" onClick={p.onClose}>
+                <button class="btn btn-ghost" onClick={p.onClose}>
                     Cancel
                 </button>
-                <button class="btn primary" disabled={Boolean(p.busy)} onClick={() => void p.install(scope())}>
+                <button class="btn btn-primary" disabled={Boolean(p.busy)} onClick={() => void p.install(scope())}>
                     {installing() ? <Spinner size={13} /> : <Download size={14} />}
                     {installing() ? "Installing" : `Install ${SCOPE_DONE[scope()]}`}
                 </button>
@@ -563,7 +563,7 @@ function PluginRow(p: { plugin: PluginInfo; markets: PluginMarketplaceInfo[]; bu
             <Show
                 when={pl().installed}
                 fallback={
-                    <button class="btn secondary sm" disabled={Boolean(p.busy)} onClick={p.details}>
+                    <button class="btn btn-sm" disabled={Boolean(p.busy)} onClick={p.details}>
                         <Download size={13} /> Install…
                     </button>
                 }

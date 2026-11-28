@@ -245,7 +245,7 @@ export function McpDialog() {
             </Show>
             <div class="dialog-actions">
                 <span class="grow" />
-                <button class="btn ghost" onClick={close}>
+                <button class="btn btn-ghost" onClick={close}>
                     Close
                 </button>
             </div>
@@ -304,7 +304,7 @@ function Detail(p: DetailProps) {
                     </Show>
                     <div class="dialog-actions">
                         <Show when={p.s.approval?.state === "needs-approval"}>
-                            <button class="btn secondary" disabled={p.busy} onClick={() => p.reject(p.s)}>
+                            <button class="btn" disabled={p.busy} onClick={() => p.reject(p.s)}>
                                 Reject
                             </button>
                         </Show>
@@ -312,12 +312,12 @@ function Detail(p: DetailProps) {
                         <Show
                             when={p.list.userTrusted}
                             fallback={
-                                <button class="btn primary" disabled={p.busy || !p.list.trusted} onClick={() => p.trust()}>
+                                <button class="btn btn-primary" disabled={p.busy || !p.list.trusted} onClick={() => p.trust()}>
                                     Trust this folder…
                                 </button>
                             }
                         >
-                            <button class="btn primary" disabled={p.busy || !p.s.fingerprint || p.s.disabledInFile || !p.list.trusted} onClick={() => p.approve(p.s)}>
+                            <button class="btn btn-primary" disabled={p.busy || !p.s.fingerprint || p.s.disabledInFile || !p.list.trusted} onClick={() => p.approve(p.s)}>
                                 Approve and connect
                             </button>
                         </Show>
@@ -364,28 +364,28 @@ function Info(p: DetailProps) {
             <Show when={approved() || reconnectable() || needsAuth() || p.s.signedIn}>
                 <div class="dialog-actions">
                     <Show when={p.s.signedIn}>
-                        <button class="btn ghost" disabled={p.busy} onClick={() => p.signOut(p.s)}>
+                        <button class="btn btn-ghost" disabled={p.busy} onClick={() => p.signOut(p.s)}>
                             Sign out
                         </button>
                     </Show>
                     <Show when={revocable()}>
-                        <button class="btn ghost" disabled={p.busy} title="It stops, and asks for approval again" onClick={() => p.revoke(p.s)}>
+                        <button class="btn btn-ghost" disabled={p.busy} title="It stops, and asks for approval again" onClick={() => p.revoke(p.s)}>
                             Revoke approval
                         </button>
                     </Show>
                     <Show when={approved()}>
-                        <button class="btn ghost" disabled={p.busy} title="It stops, and stays off until you approve it again" onClick={() => p.reject(p.s)}>
+                        <button class="btn btn-ghost" disabled={p.busy} title="It stops, and stays off until you approve it again" onClick={() => p.reject(p.s)}>
                             Reject
                         </button>
                     </Show>
                     <span class="grow" />
                     <Show when={reconnectable()}>
-                        <button class="btn secondary" disabled={p.busy} onClick={() => p.reconnect(p.s)}>
+                        <button class="btn" disabled={p.busy} onClick={() => p.reconnect(p.s)}>
                             Reconnect
                         </button>
                     </Show>
                     <Show when={needsAuth()}>
-                        <button class="btn primary" disabled={p.busy} onClick={() => p.signIn(p.s)}>
+                        <button class="btn btn-primary" disabled={p.busy} onClick={() => p.signIn(p.s)}>
                             {p.signInLink ? "Sign in again…" : "Sign in…"}
                         </button>
                     </Show>

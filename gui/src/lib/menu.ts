@@ -151,7 +151,7 @@ export function mountMenu(panel: HTMLElement, behavior: MenuBehavior): () => voi
             items[current]?.click();
         } else if (e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey) {
             e.preventDefault();
-            const labels = items.map((el) => el.getAttribute("aria-label") ?? el.querySelector(".menu-label")?.textContent ?? el.textContent ?? "");
+            const labels = items.map((el) => el.getAttribute("aria-label") ?? el.querySelector(".menu-item-name")?.textContent ?? el.textContent ?? "");
             const next = typeahead(labels, current, e.key);
             if (next >= 0) focus(items[next]);
         }

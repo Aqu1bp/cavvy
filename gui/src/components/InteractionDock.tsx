@@ -175,7 +175,7 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
     });
     const Choice = (c: { o: PermissionInteraction["options"][number]; key: number }) => (
         <button
-            class={`btn ${c.o.id === "yes" ? "primary" : c.o.id === "no" ? "deny" : "wide"}`}
+            class={`btn ${c.o.id === "yes" ? "btn-primary" : c.o.id === "no" ? "deny" : "wide"}`}
             disabled={busy()}
             title={c.o.label.replaceAll("`", "")}
             onClick={() => {
@@ -384,7 +384,7 @@ function SecretCard(p: { sessionId: string; it: SecretInteraction }) {
                 </div>
             </div>
             <div class="itab-actions ask-row">
-                <button class="btn primary" aria-busy={busy()} disabled={!ready() || busy()} title={ready() ? undefined : `At least ${MIN_SECRET} characters`} onClick={() => void provide()}>
+                <button class="btn btn-primary" aria-busy={busy()} disabled={!ready() || busy()} title={ready() ? undefined : `At least ${MIN_SECRET} characters`} onClick={() => void provide()}>
                     Provide
                 </button>
                 <button class="btn" onClick={decline}>
@@ -446,7 +446,7 @@ function PlanCard(p: { sessionId: string; it: PlanInteraction }) {
                 </Show>
             </div>
             <div class="itab-actions ask-row plan-row">
-                <button class="btn primary" onClick={() => void approve("acceptEdits")}>
+                <button class="btn btn-primary" onClick={() => void approve("acceptEdits")}>
                     Approve, auto-accept edits <kbd>1</kbd>
                 </button>
                 <button class="btn" onClick={() => void approve("default")}>

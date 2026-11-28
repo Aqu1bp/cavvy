@@ -441,7 +441,7 @@ function ChangesCard(p: { turn: Turn; cwd: string; sessionId: string; busy: bool
                             </Show>
                             <span class="grow" />
                             {/* Keep recorded changes tied to this turn, even after later edits. */}
-                            <button class="btn sm" onClick={reviewTurn}>
+                            <button class="btn btn-sm" onClick={reviewTurn}>
                                 Review changes
                             </button>
                         </div>
@@ -486,7 +486,7 @@ function ChangesCard(p: { turn: Turn; cwd: string; sessionId: string; busy: bool
                                 <FolderGit2 size={12} />
                                 <span class="truncate mono">{one().branch ?? basename(one().path)}</span>
                             </span>
-                            <button class="btn sm" onClick={() => openWorktreeReview(one().path)}>
+                            <button class="btn btn-sm" onClick={() => openWorktreeReview(one().path)}>
                                 Review changes
                             </button>
                         </div>
@@ -558,7 +558,7 @@ function ChangesCard(p: { turn: Turn; cwd: string; sessionId: string; busy: bool
                                             <Show when={r.place.files !== undefined} fallback={<span class="stat" />}>
                                                 <Stat {...r.place} />
                                             </Show>
-                                            <button class="btn sm" onClick={() => (r.own ? reviewTurn() : openWorktreeReview((r.place as TurnPlace).path))}>
+                                            <button class="btn btn-sm" onClick={() => (r.own ? reviewTurn() : openWorktreeReview((r.place as TurnPlace).path))}>
                                                 Review
                                             </button>
                                         </div>

@@ -33,7 +33,7 @@ export function ProviderStack(p: { providers: readonly (string | undefined)[]; n
         return names.length ? `${what}: ${names.join(", ")}` : what;
     };
     return (
-        <span class="stack" role="img" aria-label={label()} title={label()}>
+        <span class="stack" role="img" aria-label={label()} data-tip={label()}>
             <For each={stack().shown}>
                 {(id) => (
                     <span class="av">

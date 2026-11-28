@@ -160,7 +160,7 @@ export function Popover(p: PopoverProps) {
                     role={p.role}
                     aria-label={p.label}
                     tabIndex={p.behavior ? -1 : undefined}
-                    class={`popover ${p.anchor()?.closest?.(".dialog") ? "over-dialog " : ""}${p.class ?? ""}`}
+                    class={`popover menu ${p.anchor()?.closest?.(".dlg") ? "over-dialog " : ""}${p.class ?? ""}`}
                     // As the design's menus mark themselves, so its rules for an open one and its side apply.
                     data-state="open"
                     style={{

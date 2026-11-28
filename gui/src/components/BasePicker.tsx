@@ -73,7 +73,7 @@ export function BasePicker(p: { value?: string; current?: string; bases: string[
                         <For each={rows()} fallback={<div class="menu-note">{p.bases.length ? "No branches match." : "No other branches."}</div>}>
                             {(b, i) => (
                                 <button class={`menu-item compact ${i() === sel() ? "sel" : ""}`} role="option" aria-selected={isCurrent(b)} onMouseMove={() => setSel(i())} onClick={() => choose(b)}>
-                                    <span class="menu-label mono truncate grow">{b.name}</span>
+                                    <span class="menu-item-name mono truncate grow">{b.name}</span>
                                     <Show when={isCurrent(b)}>
                                         <Check size={14} class="menu-check" />
                                     </Show>
@@ -146,8 +146,8 @@ export function CommitPicker(p: { value?: GitLogEntry; load: () => Promise<{ com
                                 {(c, i) => (
                                     <button class={`menu-item compact rv-commit ${i() === sel() ? "sel" : ""}`} role="option" aria-selected={c.sha === p.value?.sha} title={`${c.subject}\n${c.author} · ${new Date(c.time).toLocaleString()}${c.parents > 1 ? "\nMerge: shown against its first parent" : ""}`} onMouseMove={() => setSel(i())} onClick={() => choose(c)}>
                                         <span class="mono sha">{c.sha.slice(0, 7)}</span>
-                                        <span class="menu-label truncate grow">{c.subject}</span>
-                                        <span class="menu-desc when">{since(c.time) === "now" ? "now" : since(c.time)}</span>
+                                        <span class="menu-item-name truncate grow">{c.subject}</span>
+                                        <span class="menu-item-sub when">{since(c.time) === "now" ? "now" : since(c.time)}</span>
                                         <Show when={c.sha === p.value?.sha}>
                                             <Check size={14} class="menu-check" />
                                         </Show>

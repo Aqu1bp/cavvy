@@ -1,4 +1,4 @@
-import { createSignal, createUniqueId, onCleanup, onMount, Show, type JSX } from "solid-js";
+import { children, createSignal, createUniqueId, onCleanup, onMount, Show, type JSX } from "solid-js";
 import { Portal } from "solid-js/web";
 import { X } from "lucide-solid";
 import { focusMoved, tabWrap, userMovedFocus } from "../../lib/focus-trap";
@@ -18,7 +18,8 @@ export interface DialogProps {
     edge?: boolean;
     /** Opens near the top of the window (the command palette) instead of in its middle. */
     top?: boolean;
-    children: JSX.Element;
+    /** None: the dialog is its head and foot (a confirm). */
+    children?: JSX.Element;
     footer?: JSX.Element;
 }
 
@@ -44,6 +45,8 @@ const FOCUSABLE = "a[href], button:not([disabled]), input:not([disabled]), texta
 
 function DialogInner(p: DialogProps) {
     const titleId = createUniqueId();
+    const body = children(() => p.children);
+    const hasBody = () => body.toArray().some((c) => c !== undefined && c !== null && c !== false && c !== "");
     let box: HTMLDivElement | undefined;
     const previous = document.activeElement as HTMLElement | null;
     onMount(() => {
@@ -93,10 +96,11 @@ function DialogInner(p: DialogProps) {
     });
     return (
         <Portal>
-            <div class={`dialog-backdrop ${p.top ? "top" : ""}`} onPointerDown={(e) => e.target === e.currentTarget && p.onClose()}>
+            {/* The design's markup (.overlay, .dlg, .dlg-head …); the older names stay for what finds a dialog by them. */}
+            <div class={`overlay dialog-backdrop ${p.top ? "top" : ""}`} onPointerDown={(e) => e.target === e.currentTarget && p.onClose()}>
                 <div
                     ref={box}
-                    class={`dialog dlg ${p.class ?? ""}`}
+                    class={`dlg dialog ${p.class ?? ""}`}
                     style={{ width: `min(calc(${p.width ?? 520} * var(--sp)), calc(100vw - 32px))` }}
                     role="dialog"
                     aria-modal="true"
@@ -105,7 +109,7 @@ function DialogInner(p: DialogProps) {
                     onPointerDown={() => focusMoved(box!)}
                 >
                     <Show when={!p.bare}>
-                        <header class="dlg-head">
+                        <div class="dlg-head">
                             <div class="dlg-heading">
                                 <h2 class="dlg-title" id={titleId}>{p.title}</h2>
                                 <Show when={p.subtitle}>
@@ -115,11 +119,13 @@ function DialogInner(p: DialogProps) {
                             <button type="button" class="icon-btn icon-btn-sm dlg-close" onClick={() => p.onClose()} aria-label="Close">
                                 <X size={14} />
                             </button>
-                        </header>
+                        </div>
                     </Show>
-                    <div class={`dialog-body dlg-body selectable${p.edge ? " dlg-body-bare" : ""}`}>{p.children}</div>
+                    <Show when={hasBody()}>
+                        <div class={`dlg-body dialog-body selectable${p.edge ? " dlg-body-bare" : ""}`}>{body()}</div>
+                    </Show>
                     <Show when={p.footer}>
-                        <footer class="dlg-foot">{p.footer}</footer>
+                        <div class="dlg-foot">{p.footer}</div>
                     </Show>
                 </div>
             </div>

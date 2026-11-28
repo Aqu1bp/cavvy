@@ -314,7 +314,7 @@ export function paneTools(o: PaneToolsOptions): { menu: () => JSX.Element; bars:
     const item = (Icon: typeof Search, label: () => string, run: () => void, extra: () => { disabled?: boolean; kbd?: string; checked?: boolean } = () => ({})) => (
         <button role={extra().checked === undefined ? "menuitem" : "menuitemradio"} aria-checked={extra().checked} class="menu-item compact" disabled={extra().disabled} onClick={run}>
             <Icon size={14} />
-            <span class="menu-label grow">{label()}</span>
+            <span class="menu-item-name grow">{label()}</span>
             <Show when={extra().kbd}><kbd class="menu-kbd">{extra().kbd}</kbd></Show>
             <Show when={extra().checked}><Check size={14} /></Show>
         </button>

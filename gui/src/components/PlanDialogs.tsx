@@ -86,14 +86,14 @@ function ViewPlan(p: { info: PlanInfo; onClose: () => void; onSave: () => void; 
                 <Markdown text={p.info.plan} />
             </div>
             <div class="dialog-actions">
-                <button class="btn ghost" onClick={() => void copyText(p.info.plan).then((ok) => ok && toast("Copied the plan", "success"))}>
+                <button class="btn btn-ghost" onClick={() => void copyText(p.info.plan).then((ok) => ok && toast("Copied the plan", "success"))}>
                     <Copy size={14} /> Copy
                 </button>
                 <span class="grow" />
-                <button class="btn secondary" onClick={p.onSave}>
+                <button class="btn" onClick={p.onSave}>
                     <Save size={14} /> Save plan…
                 </button>
-                <button class="btn primary" disabled={!p.info.git} title={p.info.notGit} onClick={p.onWorktree}>
+                <button class="btn btn-primary" disabled={!p.info.git} title={p.info.notGit} onClick={p.onWorktree}>
                     <FolderGit2 size={14} /> Implement in a new worktree…
                 </button>
             </div>
@@ -182,18 +182,18 @@ function SavePlan(p: { sessionId: string; info: PlanInfo; busy: boolean; setBusy
                 </Show>
                 <div class="dialog-actions">
                     <span class="grow" />
-                    <button type="button" class="btn ghost" disabled={p.busy} onClick={p.onClose}>
+                    <button type="button" class="btn btn-ghost" disabled={p.busy} onClick={p.onClose}>
                         Cancel
                     </button>
                     <Show
                         when={exists() === path().trim() && exists()}
                         fallback={
-                            <button type="submit" class="btn primary" disabled={p.busy || !path().trim()}>
+                            <button type="submit" class="btn btn-primary" disabled={p.busy || !path().trim()}>
                                 {p.busy ? <Spinner size={12} /> : "Save"}
                             </button>
                         }
                     >
-                        <button type="submit" class="btn danger" disabled={p.busy}>
+                        <button type="submit" class="btn btn-danger-solid" disabled={p.busy}>
                             {p.busy ? <Spinner size={12} /> : "Replace"}
                         </button>
                     </Show>
@@ -314,12 +314,12 @@ function ImplementPlan(p: { sessionId: string; info: PlanInfo; busy: boolean; se
                         <span class="muted small">Checking out files…</span>
                     </Show>
                     <span class="grow" />
-                    <button type="button" class="btn ghost" disabled={p.busy} onClick={p.onClose}>
+                    <button type="button" class="btn btn-ghost" disabled={p.busy} onClick={p.onClose}>
                         {made() ? "Close" : "Cancel"}
                     </button>
                     <Switch
                         fallback={
-                            <button type="submit" class="btn primary" disabled={p.busy || !branch().trim()}>
+                            <button type="submit" class="btn btn-primary" disabled={p.busy || !branch().trim()}>
                                 {p.busy ? <Spinner size={12} /> : made() ? "Start the session" : "Create and start"}
                             </button>
                         }
@@ -328,7 +328,7 @@ function ImplementPlan(p: { sessionId: string; info: PlanInfo; busy: boolean; se
                             {(id) => (
                                 <button
                                     type="button"
-                                    class="btn primary"
+                                    class="btn btn-primary"
                                     onClick={() => {
                                         p.onClose();
                                         void activate(id());
@@ -339,12 +339,12 @@ function ImplementPlan(p: { sessionId: string; info: PlanInfo; busy: boolean; se
                             )}
                         </Match>
                         <Match when={error()?.code === "needs_trust"}>
-                            <button type="button" class="btn primary" disabled={p.busy} onClick={() => void start(error()?.folder ?? p.info.cwd)}>
+                            <button type="button" class="btn btn-primary" disabled={p.busy} onClick={() => void start(error()?.folder ?? p.info.cwd)}>
                                 {p.busy ? <Spinner size={12} /> : "Trust and continue"}
                             </button>
                         </Match>
                         <Match when={made()?.failed?.code === "needs_trust"}>
-                            <button type="submit" class="btn primary" disabled={p.busy}>
+                            <button type="submit" class="btn btn-primary" disabled={p.busy}>
                                 {p.busy ? <Spinner size={12} /> : "Trust and continue"}
                             </button>
                         </Match>

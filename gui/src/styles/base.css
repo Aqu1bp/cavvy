@@ -24,7 +24,7 @@ body,
    the cursor stays an arrow; content, code and fields are selectable. */
 body {
     font-family: var(--font-ui);
-    font-size: 0.929rem;
+    font-size: calc(13 * var(--sp));
     color: var(--fg);
     line-height: 1.45;
     -webkit-font-smoothing: antialiased;
@@ -406,107 +406,27 @@ h3 {
     }
 }
 
-/* ---- Buttons: kit.css has them; what Cavvy adds ---- */
+/* The kit's controls are in kit.css (the design's own). Here: Cavvy's pieces the design has no name for, drawn in
+   its language. */
 
-.btn kbd {
-    margin-left: calc(2 * var(--sp));
-    background: color-mix(in srgb, currentColor 14%, transparent);
-    box-shadow: none;
-    color: inherit;
-    opacity: 0.8;
-}
-
+/* The square icon buttons of the title line, the sidebar and the composer: the design's .icon-btn. */
 .hb {
     display: inline-grid;
     place-items: center;
     width: calc(28 * var(--sp));
     height: calc(28 * var(--sp));
-    border-radius: var(--radius-sm);
-    color: var(--fg-2);
+    border-radius: var(--radius-s);
+    color: var(--text-2);
     flex: none;
     transition: background 0.12s, color 0.12s;
 }
 
-.icon-btn:disabled {
-    opacity: 0.4;
-}
-
-.link-btn:disabled {
-    opacity: 0.45;
-}
-
-/* ---- Chips, tags, keys ---- */
-
-.chip {
-    display: inline-flex;
-    align-items: center;
-    gap: calc(4 * var(--sp));
-    height: calc(20 * var(--sp));
-    padding: 0 calc(7 * var(--sp));
-    border-radius: calc(5 * var(--sp));
-    background: var(--hover);
-    color: var(--fg-2);
-    font-size: 0.786rem;
-    font-weight: 500;
-    white-space: nowrap;
-    max-width: calc(240 * var(--sp));
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.chip.tiny {
-    height: calc(18 * var(--sp));
-    padding: 0 calc(6 * var(--sp));
-    border-radius: calc(4 * var(--sp));
-    font-size: 0.75rem;
-    gap: calc(3 * var(--sp));
-}
-
-.chip.warn {
-    background: var(--warn-soft);
-    color: var(--warn);
-}
-
-.chip.err {
-    background: var(--danger-soft);
-    color: var(--danger);
-}
-
-.chip.ok {
-    background: var(--ok-soft);
-    color: var(--ok);
-}
-
-kbd {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: calc(18 * var(--sp));
-    height: calc(18 * var(--sp));
-    padding: 0 calc(4 * var(--sp));
-    border-radius: calc(4 * var(--sp));
-    background: var(--sheet-2);
-    box-shadow: inset 0 0 0 1px var(--line);
-    color: var(--fg-3);
-    font-size: 0.786rem;
-    font-family: var(--font-ui);
-    font-weight: 500;
-    font-variant-numeric: tabular-nums;
-    line-height: 1;
-    flex: none;
-}
-
-/* The square icon buttons of the title line, the sidebar and the composer. */
 .hb:hover:not(:disabled),
 .hb.on,
-.hb[aria-expanded="true"] {
-    background: var(--hover);
-    color: var(--fg);
-}
-
+.hb[aria-expanded="true"],
 .hb[aria-pressed="true"] {
-    background: var(--hover);
-    color: var(--fg);
+    background: var(--fill-2);
+    color: var(--text);
 }
 
 .hb:disabled {
@@ -516,12 +436,48 @@ kbd {
 .hb.sm {
     width: calc(24 * var(--sp));
     height: calc(24 * var(--sp));
-    border-radius: calc(5 * var(--sp));
 }
 
 .hb.lg {
     width: calc(32 * var(--sp));
     height: calc(32 * var(--sp));
+}
+
+/* Words on a tint: the design's .tag. */
+.chip,
+.pill {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(4 * var(--sp));
+    flex: none;
+    height: calc(18 * var(--sp));
+    max-width: calc(240 * var(--sp));
+    padding: 0 calc(6 * var(--sp));
+    border-radius: calc(4 * var(--sp));
+    background: var(--fill-2);
+    color: var(--text-2);
+    font-size: calc(11 * var(--sp));
+    font-weight: 500;
+    line-height: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.chip:is(.warn, .err, .ok),
+.pill.warn {
+    background: var(--amber-soft);
+    color: var(--amber);
+}
+
+.chip.err {
+    background: var(--red-soft);
+    color: var(--red);
+}
+
+.chip.ok {
+    background: var(--green-soft);
+    color: var(--green);
 }
 
 /* Distinct project initials on a stable, high-contrast color. */
@@ -538,146 +494,28 @@ kbd {
     background: #515c6c;
 }
 
-/* A word on a tint or in an outline: Untrusted, a count, a state. */
-.pill {
+/* +12 −3 */
+.stat {
     display: inline-flex;
-    align-items: center;
-    gap: calc(4 * var(--sp));
-    height: calc(18 * var(--sp));
-    padding: 0 calc(6 * var(--sp));
-    border-radius: calc(4 * var(--sp));
-    font-size: 0.786rem;
-    font-weight: 500;
-    white-space: nowrap;
-    flex: none;
-    color: var(--fg-2);
-    background: var(--hover);
-}
-
-.pill.warn {
-    color: var(--warn);
-    background: var(--warn-soft);
-}
-
-.kbd-row {
-    display: inline-flex;
-    gap: calc(2 * var(--sp));
-    margin-left: auto;
-}
-
-/* ---- Fields ---- */
-
-/* The design's .input is kit.css's; a native <select> keeps this one. */
-select.select {
-    height: calc(32 * var(--sp));
-    border-radius: var(--pill);
-    border: 0;
-    background: var(--raised);
-    box-shadow: inset 0 0 0 1px var(--line-strong);
-    padding: 0 calc(10 * var(--sp));
-    min-width: 0;
-}
-
-select.select:focus {
-    box-shadow: inset 0 0 0 1px var(--accent), var(--ring);
-}
-
-.input:disabled {
-    opacity: 0.6;
-}
-
-textarea.input {
-    height: auto;
-    min-height: calc(84 * var(--sp));
-    padding: calc(8 * var(--sp)) calc(10 * var(--sp));
-    line-height: 1.5;
-}
-
-select.select {
-    padding-right: calc(28 * var(--sp));
-    appearance: none;
-    transition: background 0.12s;
-    font-weight: 500;
-    background-image: linear-gradient(45deg, transparent 50%, var(--fg-3) 50%), linear-gradient(135deg, var(--fg-3) 50%, transparent 50%);
-    background-position: calc(100% - 15 * var(--sp)) 50%, calc(100% - 10 * var(--sp)) 50%;
-    background-size: calc(5 * var(--sp)) calc(5 * var(--sp));
-    background-repeat: no-repeat;
-    max-width: calc(280 * var(--sp));
-}
-
-input[type="range"] {
-    accent-color: var(--accent);
-    width: calc(160 * var(--sp));
-}
-
-/* Checkboxes and radios: a 15px box with an outline; checked, the accent with a white mark. */
-input:is([type="checkbox"], [type="radio"]) {
-    appearance: none;
-    flex: none;
-    width: calc(15 * var(--sp));
-    height: calc(15 * var(--sp));
-    margin: 0;
-    border-radius: calc(4 * var(--sp));
-    background: var(--raised) center / 100% no-repeat;
-    box-shadow: inset 0 0 0 1px var(--line-strong);
-    transition: background 0.12s, box-shadow 0.12s;
-}
-
-input[type="radio"] {
-    border-radius: 50%;
-}
-
-input[type="checkbox"]:checked {
-    background-color: var(--accent);
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 8.2l2.6 2.6L12 5.4' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-    box-shadow: none;
-}
-
-input[type="checkbox"]:indeterminate {
-    background-color: var(--accent);
-    background-image: linear-gradient(white, white);
-    background-size: 50% 2px;
-    box-shadow: none;
-}
-
-input[type="radio"]:checked {
-    box-shadow: inset 0 0 0 calc(4.5 * var(--sp)) var(--accent);
-}
-
-input:is([type="checkbox"], [type="radio"]):disabled {
-    opacity: 0.45;
-}
-
-input:is([type="checkbox"], [type="radio"]):focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 1px;
-}
-
-.toggle {
-    position: relative;
-    flex: none;
-}
-
-.toggle-knob {
-    position: absolute;
-    border-radius: 50%;
-    background: #fff;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
-}
-
-.segmented button {
-    transition: color 0.12s, background 0.12s;
-    display: inline-flex;
-    align-items: center;
     gap: calc(6 * var(--sp));
+    flex: none;
+    font-family: var(--font-mono);
+    font-size: calc(11.5 * var(--sp));
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
     white-space: nowrap;
 }
 
-/* ---- Dots ---- */
+.stat :is(.add, .stat-add) {
+    color: var(--diff-add-text);
+}
 
-/* kit.css draws it; in a line of text it still takes its size. */
-.dot {
-    display: inline-block;
+.stat :is(.del, .stat-del) {
+    color: var(--diff-del-text);
+}
+
+.num {
+    font-variant-numeric: tabular-nums;
 }
 
 .ring {
@@ -733,7 +571,7 @@ select:focus-visible {
     }
 
     .navi.on:not(:focus-visible),
-    .segmented button.on:not(:focus-visible),
+    .segmented-item.on:not(:focus-visible),
     .menu-item.sel:not(:focus-visible),
     .menu-item.current:not(:focus-visible),
     .mr.sel,
@@ -742,25 +580,25 @@ select:focus-visible {
         outline-offset: -1px;
     }
 
-    .toggle {
+    .switch {
         border: 1px solid ButtonText;
         background: GrayText;
     }
 
-    .toggle.on {
+    .switch[aria-checked="true"] {
         background: Highlight;
     }
 
-    .toggle.on:not(:focus-visible) {
+    .switch[aria-checked="true"]:not(:focus-visible) {
         outline: 1px solid Highlight;
     }
 
-    .toggle-knob {
+    .switch-knob {
         border: 1px solid ButtonText;
         background: Canvas;
     }
 
-    .toggle.on .toggle-knob {
+    .switch[aria-checked="true"] .switch-knob {
         background: HighlightText;
     }
 

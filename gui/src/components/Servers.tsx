@@ -373,7 +373,7 @@ function AddServerDialog() {
                     <button type="button" class="btn" onClick={close}>
                         Cancel
                     </button>
-                    <button type="submit" form={formId} class="btn primary btn-primary" disabled={!name().trim() || !destination().trim()}>
+                    <button type="submit" form={formId} class="btn btn-primary" disabled={!name().trim() || !destination().trim()}>
                         Add
                     </button>
                 </Match>
@@ -383,7 +383,7 @@ function AddServerDialog() {
                             <button type="button" class="btn" onClick={() => setStep({ at: "form" })}>
                                 Cancel
                             </button>
-                            <button type="button" class="btn primary btn-primary" autofocus onClick={() => void add(t().unknown.fingerprints)}>
+                            <button type="button" class="btn btn-primary" autofocus onClick={() => void add(t().unknown.fingerprints)}>
                                 Trust
                             </button>
                         </>
@@ -393,7 +393,7 @@ function AddServerDialog() {
                     <button type="button" class="btn" onClick={() => void sync(false)}>
                         Not now
                     </button>
-                    <button type="button" class="btn primary btn-primary" autofocus onClick={() => void sync(true)}>
+                    <button type="button" class="btn btn-primary" autofocus onClick={() => void sync(true)}>
                         Sync
                     </button>
                 </Match>
@@ -403,7 +403,7 @@ function AddServerDialog() {
                             <button type="button" class="btn" onClick={close}>
                                 Close
                             </button>
-                            <button type="button" class="btn primary btn-primary" autofocus onClick={() => switchMachine(d().name)}>
+                            <button type="button" class="btn btn-primary" autofocus onClick={() => switchMachine(d().name)}>
                                 Open {d().name}
                             </button>
                         </>
@@ -413,7 +413,7 @@ function AddServerDialog() {
                     <button type="button" class="btn" onClick={close}>
                         Cancel
                     </button>
-                    <button type="button" class="btn primary btn-primary" autofocus onClick={() => setStep({ at: "form" })}>
+                    <button type="button" class="btn btn-primary" autofocus onClick={() => setStep({ at: "form" })}>
                         Back
                     </button>
                 </Match>
@@ -520,7 +520,7 @@ function MachineCover(p: { reconnect: () => void }) {
     };
     // Made anew wherever it's shown: one element can't be in two of the states below.
     const Back = () => (
-        <button type="button" class="btn ghost btn-ghost cover-back" onClick={() => switchMachine(undefined)}>
+        <button type="button" class="btn btn-ghost cover-back" onClick={() => switchMachine(undefined)}>
             <ArrowLeft size={14} />
             {HERE}
         </button>
@@ -580,7 +580,7 @@ function MachineCover(p: { reconnect: () => void }) {
                                     </button>
                                     <button
                                         type="button"
-                                        class="btn danger btn-danger-solid"
+                                        class="btn btn-danger-solid"
                                         onClick={() => {
                                             setBusy(undefined);
                                             void update(true);
@@ -621,7 +621,7 @@ function MachineCover(p: { reconnect: () => void }) {
                             actions={
                                 <button
                                     type="button"
-                                    class="btn primary btn-primary"
+                                    class="btn btn-primary"
                                     onClick={() => {
                                         trustMachine(i().unknown.fingerprints);
                                         retry();
@@ -640,7 +640,7 @@ function MachineCover(p: { reconnect: () => void }) {
                             back
                             body={i().problem ? <Problem problem={i().problem!} /> : undefined}
                             actions={
-                                <button type="button" class="btn primary btn-primary" onClick={() => void update()}>
+                                <button type="button" class="btn btn-primary" onClick={() => void update()}>
                                     Update {machine}
                                 </button>
                             }
@@ -653,7 +653,7 @@ function MachineCover(p: { reconnect: () => void }) {
                         back
                         body={<p class="cover-text">It was stopped there.</p>}
                         actions={
-                            <button type="button" class="btn primary btn-primary" onClick={retry}>
+                            <button type="button" class="btn btn-primary" onClick={retry}>
                                 Start
                             </button>
                         }
@@ -667,7 +667,7 @@ function MachineCover(p: { reconnect: () => void }) {
                             back
                             body={<Problem problem={i().problem} />}
                             actions={
-                                <button type="button" class="btn primary btn-primary" onClick={retry}>
+                                <button type="button" class="btn btn-primary" onClick={retry}>
                                     Try again
                                 </button>
                             }

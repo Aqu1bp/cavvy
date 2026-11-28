@@ -140,16 +140,16 @@ export function ReviewWorktreePicker(p: {
                                                 onClick={() => choose(w)}
                                             >
                                                 <FolderGit2 size={15} />
-                                                <span class="menu-text">
+                                                <span class="menu-item-text">
                                                     <span class="rv-wt-name">
-                                                        <span class="menu-label mono truncate">{worktreeLabel(w)}</span>
+                                                        <span class="menu-item-name mono truncate">{worktreeLabel(w)}</span>
                                                         <Show when={w.current}>
                                                             <span class="rv-wt-self">This session</span>
                                                         </Show>
                                                     </span>
-                                                    <span class="menu-desc mono truncate">{where(w, p.worktrees?.find((x) => x.main))}</span>
+                                                    <span class="menu-item-sub mono truncate">{where(w, p.worktrees?.find((x) => x.main))}</span>
                                                     <Show when={facts(w)}>
-                                                        <span class="menu-desc">{facts(w)}</span>
+                                                        <span class="menu-item-sub">{facts(w)}</span>
                                                     </Show>
                                                     <Show when={named().length}>
                                                         <span class="rv-wt-work">
