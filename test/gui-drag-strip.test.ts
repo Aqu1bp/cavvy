@@ -18,7 +18,7 @@ test("what only passes under the drag strip unseen cuts no hole in it", () => {
 
 test("the drag strip's rule names those parts as their components do", () => {
     expect(read("gui/src/components/Sidebar.tsx")).toContain('class="sidebar-list side-list"');
-    expect(read("gui/src/components/RightPanel.tsx")).toContain('class="insp-body panel-scroll"');
+    expect(read("gui/src/components/RightPanel.tsx")).toContain('class="inspector-body insp-body"');
     expect(read("gui/src/components/ReviewPane.tsx")).toContain('class="insp-body rv-body"');
     const settings = read("gui/src/components/Settings.tsx");
     expect(settings).toContain('<div class="set-in">');

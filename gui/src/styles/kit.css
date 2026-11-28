@@ -1413,6 +1413,7 @@ button.row:hover {
 }
 
 .blank-title {
+    margin: 0;
     color: var(--text-2);
     font-size: calc(13 * var(--sp));
 }

@@ -6,8 +6,8 @@
 // running ones, with how they ended, until cleared. The Agents tab lists each
 // sub-agent once (lib/background.ts agentRows), and a click opens it.
 
-import { createEffect, createMemo, createSignal, For, Show } from "solid-js";
-import { Bot, ChevronRight, Radar, Terminal, Workflow } from "lucide-solid";
+import { createEffect, createMemo, createSignal, For, Show, type JSX } from "solid-js";
+import { Bot, ChevronRight, Radar, Square, SquareTerminal, Workflow } from "lucide-solid";
 import type { SessionHandle } from "../state/app";
 import { app, loadAgentList } from "../state/app";
 import { clearBackground, openAgents, stopAgent, stopBackground } from "../state/actions";
@@ -28,9 +28,55 @@ export function uncleared(sessionId: string, rows: WorkRow[]): WorkRow[] {
     return gone.size ? rows.filter((r) => rowLive(r) || !gone.has(clearKey(r))) : rows;
 }
 
-function KindIcon(p: { kind: WorkRow["kind"] }) {
-    return p.kind === "shell" ? <Terminal size={14} /> : p.kind === "monitor" ? <Radar size={14} /> : p.kind === "agent" ? <Bot size={14} /> : <Workflow size={14} />;
+/** What a pane shows with nothing in it: one quiet line (the design's Empty). */
+export function Blank(p: { title: string }) {
+    return (
+        <div class="blank">
+            <p class="blank-title">{p.title}</p>
+        </div>
+    );
 }
+
+/** A section of a pane: its title and count, a fold for the finished ones, and its action on the right. */
+export function Group(p: { title: string; count?: number; fold?: { open: boolean; toggle: () => void }; tag?: JSX.Element; action?: JSX.Element; children: JSX.Element }) {
+    const open = () => !p.fold || p.fold.open;
+    const label = (
+        <>
+            <span class="bg-title">{p.title}</span>
+            <Show when={p.count !== undefined}>
+                <span class="bg-count num">{p.count}</span>
+            </Show>
+        </>
+    );
+    return (
+        <section class="bg-group">
+            <header class="bg-head">
+                <Show when={p.fold} fallback={label}>
+                    {(f) => (
+                        <button type="button" class="bg-fold" aria-expanded={f().open} onClick={() => f().toggle()}>
+                            <ChevronRight size={12} class="chev" data-open={f().open || undefined} />
+                            {label}
+                        </button>
+                    )}
+                </Show>
+                {p.tag}
+                <span class="grow" />
+                <Show when={open()}>{p.action}</Show>
+            </header>
+            {/* Folded, its rows stay made (hidden): opening it shows the same rows, nothing is drawn anew. */}
+            <div class="bg-rows" hidden={!open()} inert={!open()}>
+                {p.children}
+            </div>
+        </section>
+    );
+}
+
+function KindIcon(p: { kind: WorkRow["kind"] }) {
+    return p.kind === "shell" ? <SquareTerminal size={14} /> : p.kind === "monitor" ? <Radar size={14} /> : p.kind === "agent" ? <Bot size={14} /> : <Workflow size={14} />;
+}
+
+/** The icon's colour says how it stands: working (the accent), waiting on you, failed. */
+const STATE: Partial<Record<WorkRow["status"], string>> = { running: "working", waiting: "waiting", failed: "failed" };
 
 function Item(p: { handle: SessionHandle; at: Placed }) {
     const [stopping, setStopping] = createSignal(false);
@@ -39,14 +85,13 @@ function Item(p: { handle: SessionHandle; at: Placed }) {
     const target = () => stopTarget(r());
     const provider = () => rowProvider(r(), p.handle.view.state.model?.provider, p.handle.view.agents);
     const runner = () => (provider() ? runnerName({ provider: provider()! }, app.providers) : "Cavvy");
-    const command = () => r().kind === "shell" || r().kind === "monitor";
     // Who runs it: the provider and model for a sub-agent; a command's (or another task's) kind and runner.
     const who = () => (r().kind === "agent" ? [runner(), shortModelRef(r().agent?.model)].filter(Boolean).join(" · ") : `${kindName(r())} · ${runner()}`);
     // What it does now, in a few words (the whole call in its tooltip), while it runs; who ran it once it's over.
     const step = () => (live() && r().agent ? agentStep(r().agent!) : undefined);
     const doing = () => step()?.text;
     // A sub-agent's (or another task's) provider's mark, as the transcript's card draws it; a command's kind.
-    const mark = () => !command() && r().kind !== "workflow" && provider();
+    const mark = () => r().kind !== "shell" && r().kind !== "monitor" && r().kind !== "workflow" && provider();
     const stop = async () => {
         const t = target();
         if (!t) return;
@@ -58,28 +103,37 @@ function Item(p: { handle: SessionHandle; at: Placed }) {
             setStopping(false);
         }
     };
-    return (
-        <div class={`task k-${r().kind} ${target() ? "swap" : ""} ${r().agent ? "click" : ""} ${live() ? "" : "gone"} ${p.at.depth ? "child" : ""}`} style={p.at.depth ? { "--depth": Math.min(p.at.depth, 4) } : undefined}>
-            <Show when={r().agent}>{(a) => <button class="task-hit" aria-label={`Open ${r().label}`} onClick={() => openAgents(a().id)} />}</Show>
+    const text = (
+        <>
             {/* Who runs it is said on the second line, except while that says what it's doing. */}
-            <span class="ki" title={doing() ? who() : undefined}>
+            <span class="bg-icon" data-state={STATE[r().status]} title={doing() ? who() : undefined}>
                 <Show when={mark()} fallback={<KindIcon kind={r().kind} />}>
                     {(id) => <AgentMark provider={id()} class="pm" />}
                 </Show>
-                <span class={`nd st-${r().status}`} />
             </span>
-            <span class="tx">
-                <b class={r().kind === "shell" ? "mono" : ""}>{r().label}</b>
-                <span class={doing() ? "doing" : ""} title={step()?.full} aria-label={step()?.full}>
+            <span class="row-text">
+                <span class={r().kind === "shell" ? "row-title mono" : "row-title"}>{r().label}</span>
+                <span class="row-sub" title={step()?.full} aria-label={step()?.full}>
                     {doing() ?? who()}
                 </span>
             </span>
-            <span class={`meta ${rowTone(r()) ? `tone-${rowTone(r())}` : ""}`}>{rowMeta(r(), p.handle.view.state.shells, now(), duration, runner())}</span>
+            <span class="bg-when num" data-tone={rowTone(r()) || undefined}>
+                {rowMeta(r(), p.handle.view.state.shells, now(), duration, runner())}
+            </span>
+        </>
+    );
+    return (
+        <div class="bg-row" data-depth={p.at.depth || undefined} style={p.at.depth ? { "--depth": Math.min(p.at.depth, 4) } : undefined}>
+            <Show when={r().agent} fallback={<span class="bg-main bg-static">{text}</span>}>
+                {(a) => (
+                    <button type="button" class="bg-main" aria-label={`Open ${r().label}`} onClick={() => openAgents(a().id)}>
+                        {text}
+                    </button>
+                )}
+            </Show>
             <Show when={target()}>
-                <button class="act stop" title="Stop" aria-label={`Stop ${kindName(r()).toLowerCase()}: ${r().label}`} disabled={stopping()} onClick={() => void stop()}>
-                    <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
-                        <rect x="1" y="1" width="8" height="8" rx="2" fill="currentColor" />
-                    </svg>
+                <button type="button" class="icon-btn icon-btn-sm" title="Stop" data-tip-side="left" aria-label={`Stop ${kindName(r()).toLowerCase()}: ${r().label}`} disabled={stopping()} onClick={() => void stop()}>
+                    <Square size={9} fill="currentColor" stroke-width={0} />
                 </button>
             </Show>
         </div>
@@ -94,16 +148,17 @@ function Rows(p: { handle: SessionHandle; placed: Placed[] }) {
 
 /**
  * A tab's background work: Running, with Stop all behind a confirm when more than one can stop; then the
- * finished ones in a fold that opens and closes in place, with Clear finished. Not drawn when it has no rows.
+ * finished ones, folded while something runs, with Clear finished. Not drawn when it has no rows.
  * `rows`: the tab's, without those cleared (uncleared).
  */
 export function WorkList(p: { handle: SessionHandle; tab: WorkTab; rows: WorkRow[] }) {
     const [confirm, setConfirm] = createSignal(false);
-    /** The user's choice to show the finished ones; until then, shown when nothing runs. */
-    const [showDone, setShowDone] = createSignal<boolean>();
+    /** The user's choice to show the finished ones while something runs; until then, folded. */
+    const [showDone, setShowDone] = createSignal(false);
     const [held, setHeld] = createSignal<ReadonlySet<string>>();
     const sec = createMemo(() => workSection(p.rows, held()));
-    const expanded = () => showDone() ?? sec().running.length === 0;
+    const folds = createMemo(() => sec().running.length > 0);
+    const expanded = createMemo(() => !folds() || showDone());
     // Finished sub-agents the window was only told the number of (of turns it hasn't been sent): their rows are
     // asked for as the fold shows them.
     const more = () => (p.tab === "agents" ? p.handle.view.agentsMore : undefined);
@@ -125,46 +180,45 @@ export function WorkList(p: { handle: SessionHandle; tab: WorkTab; rows: WorkRow
         const tasks = backgroundOf(p.handle.view.state);
         if (endedAllCleared([...agentRows(tasks, p.handle.view.agents), ...commandRows(tasks)], new Set(keys))) void clearBackground(id);
     };
+    const failed = () => sec().failed + (more()?.failed ?? 0);
     return (
         <Show when={p.rows.length || more()}>
-            <div class="work" role="group" aria-label={p.tab === "agents" ? "Agents" : "Background commands"} onPointerEnter={() => setHeld(new Set(workSection(p.rows).finished.filter((x) => !x.depth).map((x) => x.row.key)))} onPointerLeave={() => setHeld(undefined)}>
+            <div class="bg-work" role="group" aria-label={p.tab === "agents" ? "Agents" : "Background commands"} onPointerEnter={() => setHeld(new Set(workSection(p.rows).finished.filter((x) => !x.depth).map((x) => x.row.key)))} onPointerLeave={() => setHeld(undefined)}>
                 <Show when={sec().running.length}>
-                    <div class="grp">
-                        <div class="sh">
-                            Running<span class="n">{sec().live}</span>
-                            <span class="grow" />
+                    <Group
+                        title="Running"
+                        count={sec().live}
+                        action={
                             <Show when={sec().stoppable > 1}>
-                                <button class="qbtn" onClick={() => setConfirm(true)}>
+                                <button type="button" class="btn btn-sm btn-ghost" onClick={() => setConfirm(true)}>
                                     Stop all
                                 </button>
                             </Show>
-                        </div>
+                        }
+                    >
                         <Rows handle={p.handle} placed={sec().running} />
-                    </div>
+                    </Group>
                 </Show>
                 <Show when={sec().finished.length || more()}>
-                    <div class="grp">
-                        <button class="divi" aria-expanded={expanded()} onClick={() => setShowDone(!expanded())}>
-                            <span>
-                                Finished<span class="n">{sec().finished.length + (more()?.count ?? 0)}</span>
-                            </span>
-                            <i />
-                            <Show when={sec().failed + (more()?.failed ?? 0)}>
-                                <span class="tag">{sec().failed + (more()?.failed ?? 0)} failed</span>
+                    <Group
+                        title="Finished"
+                        count={sec().finished.length + (more()?.count ?? 0)}
+                        fold={folds() ? { open: showDone(), toggle: () => setShowDone(!showDone()) } : undefined}
+                        tag={
+                            <Show when={failed()}>
+                                <span class="tag" data-tone="red">
+                                    {failed()} failed
+                                </span>
                             </Show>
-                            <ChevronRight size={14} class="chev" />
-                        </button>
-                        <div class={`fold-b ${expanded() ? "open" : ""}`} inert={!expanded()}>
-                            <div>
-                                <Rows handle={p.handle} placed={sec().finished} />
-                                <div class="clear-row">
-                                    <button class="link-btn" onClick={clear}>
-                                        Clear finished
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
+                        }
+                        action={
+                            <button type="button" class="btn btn-sm btn-ghost" onClick={clear}>
+                                Clear finished
+                            </button>
+                        }
+                    >
+                        <Rows handle={p.handle} placed={sec().finished} />
+                    </Group>
                 </Show>
             </div>
             <ConfirmDialog open={confirm()} title={`Stop all background ${what()}s?`} confirmLabel="Stop all" onClose={() => setConfirm(false)} onConfirm={stopAll}>

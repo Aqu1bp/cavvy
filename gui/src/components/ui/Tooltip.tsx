@@ -115,7 +115,7 @@ export function Tooltips() {
         }
 
         function place(el: Element, box: HTMLElement) {
-            const at = placeTip(el.getBoundingClientRect(), box.offsetWidth, box.offsetHeight, doc.documentElement.clientWidth, doc.documentElement.clientHeight);
+            const at = placeTip(el.getBoundingClientRect(), box.offsetWidth, box.offsetHeight, doc.documentElement.clientWidth, doc.documentElement.clientHeight, el.getAttribute("data-tip-side") === "left" ? "left" : undefined);
             box.style.left = `${at.left}px`;
             box.style.top = `${at.top}px`;
             box.dataset.side = at.side;

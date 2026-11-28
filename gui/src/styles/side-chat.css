@@ -17,20 +17,9 @@
     font-size: 1rem;
 }
 
-.side-chat .sc-head h2 {
-    text-transform: none;
-    white-space: nowrap;
-}
-
 /* At its narrowest, Bring back is its arrow. */
 .side-chat[data-narrow~="240"] .sc-back-l {
     display: none;
-}
-
-.side-chat .sc-head .btn {
-    display: inline-flex;
-    align-items: center;
-    gap: calc(5 * var(--sp));
 }
 
 /* The conversation and its composer fill what's under the title. */
@@ -52,10 +41,17 @@
     padding-bottom: calc(12 * var(--sp));
 }
 
-/* The empty view's one line, where the panel's other views put theirs. */
-.side-chat .sc-none {
-    padding: 0 calc(18 * var(--sp));
-    font-size: 0.929rem;
+/* With none open: its one line in the room above the composer (the design's Empty), the composer at the foot. */
+.side-chat .sc-empty {
+    flex: none;
+}
+
+.side-chat .sc-empty .stage {
+    position: relative;
+}
+
+.side-chat .sc-empty .composer-dock {
+    position: relative;
 }
 
 /* Its box sits where the session's does: the line under it ("4% context") keeps its room before there's a side chat. */

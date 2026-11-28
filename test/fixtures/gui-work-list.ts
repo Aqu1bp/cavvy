@@ -13,7 +13,7 @@ const list = source.slice(source.indexOf("/** Rows cleared from"), source.indexO
 const icon = () => node("icon");
 const WorkList = component(list, "WorkList", {
     ...background,
-    Bot: icon, ChevronRight: icon, Radar: icon, Terminal: icon, Workflow: icon,
+    Bot: icon, ChevronRight: icon, Radar: icon, SquareTerminal: icon, Square: icon, Workflow: icon,
     AgentMark: icon,
     agentStep,
     ConfirmDialog: () => node("dialog"),
@@ -34,10 +34,11 @@ const [agents, setAgents] = createSignal<any[]>([run("a"), run("b"), run("c")]);
 const handle = { id: "s1", view: { state: { shells: [], backgroundTasks: [] }, get agents() { return agents(); } } };
 const root = node("root");
 const dispose = renderer.render(() => WorkList({ handle, tab: "agents", get rows() { return background.agentRows([], agents()); } }), root);
-const rowNodes = () => all(root).filter((n) => String(n.props.class ?? "").startsWith("task "));
+const rowNodes = () => all(root).filter((n) => n.props.class === "bg-row");
 const rows = () => rowNodes().map((n) => text(n).match(/Explore (\w)/)![1]);
-const group = () => all(root).find((n) => n.props.class === "work")!;
-const fold = () => all(root).find((n) => String(n.props.class ?? "").startsWith("fold-b"));
+const group = () => all(root).find((n) => n.props.class === "bg-work")!;
+/** The Finished group's rows: the second group's. */
+const fold = () => all(root).filter((n) => n.props.class === "bg-rows")[1];
 const finish = (id: string) => setAgents(agents().map((a) => (a.id === id ? { ...a, status: "done", endedAt: 100 + agents().length } : a)));
 
 try {
@@ -61,11 +62,11 @@ try {
     group().props.onPointerLeave?.();
     expect(rows()).toEqual(["b", "c", "d", "a"]);
     expect(text(root)).toContain("Finished2");
-    expect(fold()!.props.class).toBe("fold-b ");
-    // The fold opens in place: its rows are the same elements, only its class changes.
+    expect(fold()!.props.hidden).toBe(true);
+    // The fold opens in place: its rows are the same elements, only shown now.
     const folded = rowNodes().slice(2);
-    all(root).find((n) => n.props.class === "divi")!.props.onClick();
-    expect(fold()!.props.class).toBe("fold-b open");
+    all(root).find((n) => n.props.class === "bg-fold")!.props.onClick();
+    expect(fold()!.props.hidden).toBe(false);
     expect(fold()!.props.inert).toBe(false);
     expect(rowNodes().slice(2)).toEqual(folded);
     expect(rowNodes()[2]).toBe(folded[0]);
@@ -91,7 +92,7 @@ try {
         expect(text(root2)).toContain("Finished5");
         expect(text(root2)).toContain("2 failed");
         expect(listAsked).toEqual([]);
-        all(root2).find((n) => n.props.class === "divi")!.props.onClick();
+        all(root2).find((n) => n.props.class === "bg-fold")!.props.onClick();
         expect(listAsked).toEqual(["s2"]);
         // They come: rows instead of a count.
         setList([run("x"), ...["p", "q", "r", "s", "u"].map((id, i) => run(id, { status: i < 2 ? "failed" : "done", endedAt: 50 + i, partial: true }))]);
