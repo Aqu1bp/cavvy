@@ -1,6 +1,6 @@
 import { createEffect, createMemo, createResource, createSignal, For, on, onCleanup, Show } from "solid-js";
 import { promptPreview } from "../lib/review-comments";
-import { AlertTriangle, FileMinus2, FilePen, FilePlus2, History } from "lucide-solid";
+import { AlertTriangle } from "lucide-solid";
 import type { RewindPlanInfo, RewindTargetInfo } from "@shared/protocol";
 import { app, connFor, handleFor, reportError, rpc, toast } from "../state/app";
 import { rewindOpen, rewindTarget, setRewindOpen } from "../state/ui";
@@ -187,7 +187,7 @@ export function RewindDialog() {
         }
     };
     return (
-        <Dialog open={rewindOpen()} onClose={close} title={empty() ? "Rewind" : "Rewind to before which prompt?"} width={620}>
+        <Dialog open={rewindOpen()} onClose={close} title={empty() ? "Rewind" : "Rewind to before which prompt?"} width={560} class="rw">
             <Show when={!busySession()} fallback={<div class="panel-empty">Wait for the response to finish, or stop it.</div>}>
                 <Show when={list()} fallback={<Spinner />}>
                     <Show when={list()!.length} fallback={<div class="panel-empty">Nothing to rewind to yet.</div>}>
@@ -195,10 +195,10 @@ export function RewindDialog() {
                             <For each={list()}>
                                 {(t, i) => (
                                     <button class={`rw-item ${chosen() === t.index ? "on" : ""}`} aria-pressed={chosen() === t.index} onClick={() => setChosen(t.index)}>
-                                        <History size={14} />
-                                        <span class="truncate">{promptPreview(t.text) || "(empty prompt)"}</span>
-                                        <Show when={changedLabel(t)}>{(label) => <span class="muted small">{label()}</span>}</Show>
-                                        <Show when={t.at}>{(at) => <time class="muted small rw-when" dateTime={new Date(at()).toISOString()} title={new Date(at()).toLocaleString()}>{times()[i()]}</time>}</Show>
+                                        <span class="radio-dot" />
+                                        <span class="rw-text">{promptPreview(t.text) || "(empty prompt)"}</span>
+                                        <Show when={changedLabel(t)}>{(label) => <span class="rw-changed">{label()}</span>}</Show>
+                                        <Show when={t.at}>{(at) => <time class="rw-changed" dateTime={new Date(at()).toISOString()} title={new Date(at()).toLocaleString()}>{times()[i()]}</time>}</Show>
                                     </button>
                                 )}
                             </For>
@@ -209,63 +209,64 @@ export function RewindDialog() {
                         <Show when={plan()}>
                             <div class="rw-plan">
                                 <Show when={plan()!.forked}>
-                                    <div class="rw-file warn">
+                                    <div class="rw-warn">
                                         <AlertTriangle size={13} />
-                                        <span class="small">Files changed before the fork can only be restored in the original session.</span>
+                                        <span>Files changed before the fork can only be restored in the original session.</span>
                                     </div>
                                 </Show>
                                 <Show when={plan()!.refused}>
-                                    <div class="rw-file warn">
+                                    <div class="rw-warn">
                                         <AlertTriangle size={13} />
-                                        <span class="small">{onlyOwnEdits(plan()!.refused!, plan()!.backends, plan()!.restore.length > 0)}</span>
+                                        <span>{onlyOwnEdits(plan()!.refused!, plan()!.backends, plan()!.restore.length > 0)}</span>
                                     </div>
                                 </Show>
                                 {/* With a refusal, its line says this too. */}
                                 <Show when={plan()!.backends?.length && !plan()!.whole && !plan()!.refused}>
-                                    <div class="rw-file warn">
+                                    <div class="rw-warn">
                                         <AlertTriangle size={13} />
-                                        <span class="small">
+                                        <span>
                                             What {names(plan()!.backends!)} changed in files isn't undone{plan()!.restore.length ? ", except in the files below" : ""}. Use git for that.
                                         </span>
                                     </div>
                                 </Show>
-                                <Show when={plan()!.restore.length} fallback={<Show when={!plan()!.refused}><div class="muted small">{plan()!.forked ? "No file changes to undo since the fork." : plan()!.tracked ? (plan()!.backends?.length && !plan()!.whole ? "Cavvy made no file changes to undo since then." : "No file changes to undo since then.") : "File changes from then can't be undone."}</div></Show>}>
+                                <Show when={plan()!.restore.length} fallback={<Show when={!plan()!.refused}><div class="rw-none">{plan()!.forked ? "No file changes to undo since the fork." : plan()!.tracked ? (plan()!.backends?.length && !plan()!.whole ? "Cavvy made no file changes to undo since then." : "No file changes to undo since then.") : "File changes from then can't be undone."}</div></Show>}>
                                     {/* Said only when it isn't the row's own count: changes since then, from later prompts or by hand. */}
                                     <Show when={listedCount() !== list()?.find((t) => t.index === chosen())?.files}>
-                                        <div class="small">{plan()!.whole ? `${plural(listedCount(), "file")} changed since then:` : `Cavvy changed ${plural(listedCount(), "file")} ${plan()!.forked ? "in this session since the fork" : "since then"}:`}</div>
+                                        <div class="rw-head">{plan()!.whole ? `${plural(listedCount(), "file")} changed since then:` : `Cavvy changed ${plural(listedCount(), "file")} ${plan()!.forked ? "in this session since the fork" : "since then"}:`}</div>
                                     </Show>
-                                    <For each={plan()!.restore}>
-                                        {(r) => (
-                                            <div class="rw-file">
-                                                {r.action === "delete" ? <FileMinus2 size={13} class="tone-del" /> : r.action === "create" ? <FilePlus2 size={13} /> : <FilePen size={13} />}
-                                                <span class="mono truncate">{r.path}</span>
-                                                <span class="muted small">{r.action === "delete" ? "delete" : r.action === "create" ? "recreate" : "restore"}</span>
-                                                <Show when={r.outside}>
-                                                    <span class="chip tiny warn">changed outside</span>
-                                                </Show>
-                                            </div>
-                                        )}
-                                    </For>
+                                    <div class="rw-files">
+                                        <For each={plan()!.restore}>
+                                            {(r) => (
+                                                <div class="rw-file">
+                                                    <span class={`rw-action ${r.action === "delete" ? "del" : ""}`}>{r.action === "delete" ? "Delete" : r.action === "create" ? "Recreate" : "Restore"}</span>
+                                                    <span class="mono truncate">{r.path}</span>
+                                                    <Show when={r.outside}>
+                                                        <span class="pill warn">changed outside</span>
+                                                    </Show>
+                                                </div>
+                                            )}
+                                        </For>
+                                    </div>
                                     <Show when={plan()!.more}>
-                                        <div class="muted small">and {plan()!.more} more</div>
+                                        <div class="rw-foot">and {plan()!.more} more</div>
                                     </Show>
                                 </Show>
                                 <For each={plan()!.skipped}>
                                     {(s) => (
-                                        <div class="rw-file warn">
+                                        <div class="rw-warn">
                                             <AlertTriangle size={13} />
                                             <span class="mono truncate">{s.path}</span>
-                                            <span class="small">{s.reason}</span>
+                                            <span>{s.reason}</span>
                                         </div>
                                     )}
                                 </For>
                                 {/* Said already by the line on why only Cavvy's edits can be restored. */}
                                 <Show when={!plan()!.whole && !plan()!.refused}>
-                                    <div class="muted small">Changes made by shell commands aren't undone.</div>
+                                    <div class="rw-foot">Changes made by shell commands aren't undone.</div>
                                 </Show>
                                 <Show when={confirming()}>
                                     <div class="rw-confirm">
-                                        <AlertTriangle size={14} />
+                                        <AlertTriangle size={13} />
                                         <span>Restoring files marked “changed outside” loses the edits made to them since.</span>
                                         <button class="btn danger sm" onClick={() => void go(confirming()!.code, confirming()!.conversation)}>
                                             Restore anyway
@@ -279,9 +280,9 @@ export function RewindDialog() {
             </Show>
             {/* Above the buttons: beside them, the row is too wide for the dialog. */}
             <Show when={canUndo.state === "ready" && canUndo() && !busySession()}>
-                <div>
+                <div class="rw-undo">
                     <button
-                        class="link-btn small"
+                        class="link-btn"
                         disabled={busy()}
                         onClick={() => {
                             const sid = id();

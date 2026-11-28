@@ -653,12 +653,12 @@
 
 .dots {
     display: flex;
-    gap: 3px;
+    gap: calc(3 * var(--sp));
 }
 
 .dots i {
-    width: 5px;
-    height: 5px;
+    width: calc(5 * var(--sp));
+    height: calc(5 * var(--sp));
     border-radius: 50%;
     background: var(--accent);
     opacity: 0.3;
@@ -694,9 +694,9 @@
 }
 
 .ldot {
-    width: 7px;
-    height: 7px;
-    margin: 0 5px 0 4px;
+    width: calc(7 * var(--sp));
+    height: calc(7 * var(--sp));
+    margin: 0 calc(5 * var(--sp)) 0 calc(4 * var(--sp));
     border-radius: 50%;
     background: var(--warn-mark);
 }
@@ -1430,7 +1430,7 @@
 }
 
 .run-h .stat {
-    margin-left: 2px;
+    margin-left: calc(2 * var(--sp));
 }
 
 /* Opened: the run's steps, a row each, on a hairline down their left. */
