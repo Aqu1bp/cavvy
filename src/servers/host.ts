@@ -589,7 +589,8 @@ async function hostLogin(id: string | undefined, accountId = "default"): Promise
             process.stderr.write(`${redact(st.problem)}\n`);
             return LOGIN_EXIT.problem;
         }
-        if (!st.signedIn) {
+        // On its free models only (OpenCode), asked to sign in: it signs in all the same.
+        if (!st.signedIn || st.free) {
             // With no terminal there's nowhere for its link to show or its code to be typed.
             if (!process.stdin.isTTY) return LOGIN_EXIT.notSignedIn;
             const command = loginCommand(def.id, accountId, { away: true });
@@ -599,7 +600,7 @@ async function hostLogin(id: string | undefined, accountId = "default"): Promise
             signingIn = false;
             st = await status();
             if (!st) return LOGIN_EXIT.problem;
-            if (!st.signedIn) return LOGIN_EXIT.notSignedIn;
+            if (!st.signedIn || st.free) return LOGIN_EXIT.notSignedIn;
         }
         // The Cavvy running here turns it on itself, so its models are offered at once. With none running (or one from
         // before it could be asked), it's turned on for the next one to find.

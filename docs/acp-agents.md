@@ -8,7 +8,7 @@ Supported: OpenCode and Grok Build.
 
 ### Setup
 
-1. Install [OpenCode](https://opencode.ai/docs). Its free models work without signing in. For others, sign in there: `opencode auth login`.
+1. Install [OpenCode](https://opencode.ai/docs). Its free models work without signing in, and Settings → Providers shows it as **Free** until it is. For others, sign in there: `opencode auth login`. The free models have a usage limit: once it's reached, OpenCode waits and tries again without a word, so Cavvy shows OpenCode's reason (read from its own log, which it starts it with `--print-logs` for) and **Stop** ends the turn.
 2. In Cavvy, `/login opencode` (`cavvy auth add opencode` from a shell, or **Use my OpenCode** in the desktop app's Settings → Providers). Cavvy starts `opencode acp` and checks that it answers, then turns it on.
 3. Pick a model in `/model`, like `opencode:opencode/big-pickle`. The list comes from `opencode models`, and model ids go to OpenCode as they are. The effort setting goes to OpenCode when the model has effort levels, and is ignored when it doesn't.
 
