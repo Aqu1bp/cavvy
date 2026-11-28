@@ -215,7 +215,7 @@ function home(o: { cwd?: string; needsTrust?: string[]; askTrust?: boolean; mode
     const tree = Home();
     const composer = elements(tree, "Composer")[0]!;
     const card = byClass(tree, "section", "home-card")[0]!;
-    return { tree, card, composer, hints: composer.props.under, lead: composer.props.lead, trusts, connected, tabs, cliProps };
+    return { tree, card, composer, hints: composer.props.under, trusts, connected, tabs, cliProps };
 }
 
 test("Home is a card asking what to work on, with the project, its folder and its worktree, and the three prefixes under the composer", () => {
@@ -329,28 +329,28 @@ test("a short column shows fewer terminal rows, down to none, and a card in a na
     expect(rows({ height: 800, needsTrust: [".mcp.json"], width: 500 })).toBe(2);
 });
 
-test("a folder with nothing to protect, not yet trusted, is asked about in a row at the top of the composer, by name: trusting it turns on checking edits", async () => {
-    const bar = (h: ReturnType<typeof home>) => (h.lead ? byClass(h.lead, "div", "home-ask")[0] ?? (h.lead.props?.class === "home-ask" ? h.lead : undefined) : undefined);
+test("a folder with nothing to protect, not yet trusted, is asked about in a card of its own: trusting it turns on checking edits", async () => {
+    const ask = (h: ReturnType<typeof home>) => byClass(h.tree, "section", "home-trust").find((c) => text(c).includes("check edits"));
     const h = home({ askTrust: true });
-    expect(byClass(h.tree, "section", "home-trust")).toEqual([]);
-    const tab = bar(h)!;
-    expect(tab.props["aria-label"]).toBe("Trust this folder");
-    expect(text(tab)).toContain("Trust cavvy?");
-    const [later, trust] = elements(tab, "button");
-    expect([text(later), text(trust)]).toEqual(["Not now", "Trust"]);
-    // Not in the card, where the folder and its branch are.
+    const card = ask(h)!;
+    expect(card.props["aria-label"]).toBe("Trust this folder");
+    expect(text(card)).toContain("Trust this folder to check edits?");
+    const [trust, later] = elements(card, "button");
+    expect([text(trust), text(later)]).toEqual(["Trust this folder", "Not now"]);
+    // Not in the composer, and not in the card where the folder and its branch are.
+    expect(h.composer.props.lead).toBeUndefined();
     expect(text(h.card)).not.toContain("Trust");
     later!.props.onClick();
     trust!.props.onClick();
     expect(h.trusts).toEqual([["/work/cavvy", false], ["/work/cavvy", true]]);
     // Trusted, or never asked: nothing.
-    expect(bar(home())).toBeUndefined();
+    expect(ask(home())).toBeUndefined();
     // No model yet: connecting one comes first.
-    expect(bar(home({ askTrust: true, models: [{ models: [] }] }))).toBeUndefined();
-    // Settings that can run commands are asked about by name, in the card: not in the bar as well.
+    expect(ask(home({ askTrust: true, models: [{ models: [] }] }))).toBeUndefined();
+    // Settings that can run commands are asked about by name, in their own card: not this one as well.
     const settings = home({ askTrust: true, needsTrust: [".mcp.json"] });
     expect(byClass(settings.tree, "section", "home-trust").length).toBe(1);
-    expect(bar(settings)).toBeUndefined();
+    expect(ask(settings)).toBeUndefined();
 });
 
 test("Home shows the error cards over the composer, where a session has them", () => {

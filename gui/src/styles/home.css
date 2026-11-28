@@ -83,8 +83,29 @@
 .home-value {
     min-width: 0;
     padding-right: calc(8 * var(--sp));
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     font-size: calc(12 * var(--sp));
     color: var(--fg);
+}
+
+/* The folder: the path gives way before the folder's own name does. */
+.home-path {
+    display: flex;
+}
+
+.home-path-dir {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.home-path-name {
+    flex: none;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 /* Where it runs: put in by the servers code (Servers.tsx mountWhere), laid out as the row's own. */
@@ -167,25 +188,9 @@
     gap: calc(8 * var(--sp));
 }
 
-/* Trusting it when only the edits' checks wait on it: a row at the top of the message box. */
-.home-ask {
-    display: flex;
-    align-items: center;
-    gap: calc(8 * var(--sp));
-    min-height: calc(36 * var(--sp));
-    padding: 0 calc(8 * var(--sp)) 0 calc(12 * var(--sp));
-    border-bottom: 1px solid var(--line);
-    font-size: calc(12.5 * var(--sp));
-    color: var(--fg-2);
-}
-
-.home-ask .truncate {
-    flex: 1;
-}
-
-.home-ask .ic {
-    flex: none;
-    color: var(--fg-3);
+/* Only a question: its buttons right under it. */
+.home-trust h2 + .home-trust-acts {
+    margin-top: calc(12 * var(--sp));
 }
 
 /* ---- Continue from your terminal ---- */

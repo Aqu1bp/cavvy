@@ -1681,101 +1681,10 @@ button.att-card:hover {
     border-top: 1px solid var(--line);
 }
 
-.pbtn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    flex: none;
-    gap: calc(8 * var(--sp));
-    height: calc(32 * var(--sp));
-    max-width: 100%;
-    min-width: 0;
-    padding: 0 calc(16 * var(--sp));
-    border-radius: var(--pill);
-    font-size: 0.964rem;
-    font-weight: 500;
-    white-space: nowrap;
-    color: var(--fg);
-    background: var(--press);
-    transition: transform 160ms var(--ease), background 140ms, opacity 140ms, color 140ms;
-}
-
-/* A button in a row of its own (a sign-in in a list, one put off above the message box). */
-.pbtn.sm {
-    height: calc(28 * var(--sp));
-    padding: 0 calc(12 * var(--sp));
-    font-size: 0.893rem;
-}
-
-.pbtn:has(> kbd) {
-    padding-right: calc(12 * var(--sp));
-}
-
-.pbtn:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--fg) 15%, transparent);
-}
-
-.pbtn:active:not(:disabled) {
-    transform: scale(0.96);
-}
-
-.pbtn.primary {
-    font-weight: 600;
-    color: var(--ink-fg);
-    background: var(--ink);
-}
-
-.pbtn.primary:hover:not(:disabled) {
-    background: var(--ink-hover);
-}
-
-/* The way out: words, no fill until pointed at. */
-.pbtn.quiet {
-    padding: 0 calc(12 * var(--sp));
-    color: var(--fg-2);
-    background: none;
-}
-
-.pbtn.quiet:hover:not(:disabled) {
-    color: var(--fg);
-    background: var(--hover);
-}
-
-.ask-row.plan-row.quiet-row .pbtn {
-    height: calc(28 * var(--sp));
-    font-size: 0.893rem;
-}
-
-.ask-row.plan-row.quiet-row .pbtn:first-child {
-    margin-left: calc(-12 * var(--sp));
-}
-
-.pbtn:disabled {
-    opacity: 0.45;
-}
-
 /* A permission's answers: one row, never wrapped, Deny at its far end. Short of room, the broader choice gives way
    (an ellipsis, the whole label on hover); Allow once and Deny stay whole. */
 .ask-row.perm-row {
     flex-wrap: nowrap;
-}
-
-.perm-row .pbtn.outlined {
-    flex: 0 1 auto;
-}
-
-.perm-row .pbtn.quiet {
-    margin-left: auto;
-    margin-right: calc(-6 * var(--sp));
-}
-
-.pbtn svg {
-    flex: none;
-    margin-right: calc(-2 * var(--sp));
-}
-
-.pbtn .mono {
-    font-size: 0.857rem;
 }
 
 /* A button's label on one line: its code (a rule list, a path) gives way first, so the words around it stay whole. */
@@ -1809,10 +1718,6 @@ button.att-card:hover {
     color: var(--fg-3);
     background: none;
     box-shadow: none;
-}
-
-.pbtn.primary kbd {
-    color: color-mix(in srgb, var(--ink-fg) 62%, transparent);
 }
 
 /* A question's options keep their key in a box: it's what you press, at the row's start. */
@@ -2973,14 +2878,6 @@ button.att-card:hover {
 /* ---- A narrow conversation column: labels give way to glyphs, rows stack ----- */
 
 :where(.main[data-narrow~="600"], .stage-pane[data-narrow~="600"]) {
-    .ask .pbtn kbd {
-        display: none;
-    }
-
-    .pbtn:has(> kbd) {
-        padding-right: calc(14 * var(--sp));
-    }
-
     .ask-row,
     .ask-row.plan-row {
         display: grid;
@@ -2990,40 +2887,6 @@ button.att-card:hover {
 
     .ask-row .grow {
         display: none;
-    }
-
-    /* Full width, and a long answer wraps rather than losing its end. */
-    .ask-row .pbtn {
-        width: 100%;
-        height: auto;
-        min-height: calc(30 * var(--sp));
-        padding-block: calc(5 * var(--sp));
-        line-height: 1.25;
-        white-space: normal;
-        text-align: center;
-    }
-
-    .ask-row .pbtn .plabel {
-        display: block;
-        overflow: visible;
-    }
-
-    .ask-row .pbtn .plabel > span {
-        white-space: normal;
-        overflow: visible;
-        overflow-wrap: anywhere;
-        text-overflow: clip;
-    }
-
-    .ask-row .pbtn.primary {
-        grid-column: 1 / -1;
-        order: -1;
-    }
-
-    /* A button left alone in its row (a question's Skip, with or without Answer above it) takes the row. */
-    .ask-row .pbtn:only-of-type,
-    .ask-row .pbtn.primary + .grow + .pbtn:last-child {
-        grid-column: 1 / -1;
     }
 
     .schedule-when,

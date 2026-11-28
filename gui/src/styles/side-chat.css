@@ -71,10 +71,6 @@
         grid-template-columns: 1fr;
     }
 
-    .ask-row.perm-row .pbtn.quiet {
-        margin: 0;
-    }
-
     .chg-head > .stat {
         display: none;
     }

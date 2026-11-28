@@ -480,7 +480,10 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                     </span>
                     {/* One line: the name, then what it stands for (or whose it is, its window and price) dimmed, cut first. */}
                     <span class="mr-text">
-                        <span class="mr-ic" aria-hidden="true"><ProviderIcon id={r.m.provider} name={providerName(r.m.provider)} size={14} /></span>
+                        {/* Whose it is, where the list mixes providers: Favorites and a search. */}
+                        <Show when={filter() === FAVORITES || q()}>
+                            <span class="mr-ic" aria-hidden="true"><ProviderIcon id={r.m.provider} name={providerName(r.m.provider)} size={14} /></span>
+                        </Show>
                         <span class="mr-name truncate">{name}</span>
                         {/* Its model limit reached: marked as an account at its limit is. */}
                         <Show when={stopped()}>
@@ -495,7 +498,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                     </Show>
                 </button>
                 <button onFocus={() => setSel(i)} class={`mr-star ${isFav(r.m.ref) ? "f" : ""}`} aria-pressed={isFav(r.m.ref)} title={isFav(r.m.ref) ? "Remove from Favorites" : "Add to Favorites"} aria-label={isFav(r.m.ref) ? `Remove ${name} from Favorites` : `Add ${name} to Favorites`} onClick={() => toggleFav(r.m.ref)}>
-                    <Star size={14} />
+                    <Star size={13} />
                 </button>
             </div>
         );
