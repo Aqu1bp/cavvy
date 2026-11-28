@@ -288,7 +288,7 @@ test("tray: a message already sent says so and the rows go back; a queue that ch
     try {
         t.press(20, "ArrowDown");
         await t.settle();
-        expect(t.toasts).toEqual(["That message has already been sent"]);
+        expect(t.toasts).toEqual(["Already sent"]);
         expect([10, 20, 30].map(t.transform)).toEqual([undefined, undefined, undefined]);
         expect(t.list.props.class).not.toContain("still");
 

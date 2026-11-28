@@ -61,12 +61,12 @@ export async function checkModelPicker(root: HTMLElement) {
     const rows = () => inPanel(".mr");
     const row = (name: string) => rows().find((r) => r.querySelector(".mr-name")?.textContent === name)!;
     // A filter by its name: its words, after the provider's icon (a letter, for a provider with no logo).
-    const filterName = (t: Element) => (t.querySelector(".truncate") ?? t).textContent?.trim();
+    const filterName = (t: Element) => (t.querySelector(".sr-only, .truncate") ?? t).textContent?.trim();
     const filter = (name: string) => inPanel(".mp-filters [role='tab']").find((t) => filterName(t) === name)!;
     // A subscription's account, at the end of the filters' row: one button naming the session's, which opens a short
     // list of them (each by its name, and a plan near its limit), then "Add account".
-    const acctButton = () => panel()?.querySelector<HTMLButtonElement>(".mp-bar .mp-acct-btn");
-    const list = () => panel()?.querySelector<HTMLElement>(".mp-bar .mp-acct-menu");
+    const acctButton = () => panel()?.querySelector<HTMLButtonElement>(".mp-cap .mp-acct-btn");
+    const list = () => panel()?.querySelector<HTMLElement>(".mp-cap .mp-acct-menu");
     const named = (b: Element) => b.querySelector(".truncate")?.textContent;
     const items = () => inPanel<HTMLButtonElement>(".mp-acct-menu [role='menuitemradio']");
     const item = (name: string) => items().find((b) => named(b) === name)!;
@@ -112,9 +112,9 @@ export async function checkModelPicker(root: HTMLElement) {
         const filterCurrent = filter("Claude Code");
         check(/current model/.test(filterCurrent.getAttribute("aria-label") ?? ""), "screen readers hear which provider has the current model");
         check(!panel()!.querySelector(".mp-filters .bar, .mp-filters .mp-f-cur, .mp-filters .mp-f.cur"), "the filters have no current-provider marker");
-        // The provider's icon and its name, nothing more.
-        check([...filterCurrent.children].every((c) => c.matches(".provider-icon, .truncate")) && filterName(filterCurrent) === "Claude Code", `a filter is its icon and name, no mark and no pill (${filterCurrent.innerHTML.slice(0, 200)})`);
-        check(bg(filterCurrent) === "rgba(0, 0, 0, 0)", "the open filter has no fill");
+        // The provider's icon, its name for screen readers, nothing more.
+        check([...filterCurrent.children].every((c) => c.matches(".provider-icon, .provider-mono, .sr-only")) && filterName(filterCurrent) === "Claude Code", `a filter is its icon and name, no mark and no pill (${filterCurrent.innerHTML.slice(0, 200)})`);
+        check(bg(filterCurrent) !== "rgba(0, 0, 0, 0)", "the open filter is filled");
 
         // The keyboard highlight is apart from the current model: both shown at once, and different.
         const down = new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true });
@@ -128,7 +128,7 @@ export async function checkModelPicker(root: HTMLElement) {
         check(current.querySelector(".mr-mark svg") && !highlighted.querySelector(".mr-mark svg"), "the check stays on the current model");
         const hint = highlighted.querySelector("kbd")!;
         check(getComputedStyle(hint).opacity === "1" && hint.checkVisibility() && hint.textContent?.endsWith("3"), `the highlighted row shows its shortcut (${hint.textContent})`);
-        check(getComputedStyle(plain.querySelector(".mr-star")!).opacity === "0" && getComputedStyle(highlighted.querySelector(".mr-star")!).opacity === "1", "stars are quiet until the row is highlighted");
+        check(getComputedStyle(plain.querySelector(".mr-star")!).opacity === "1" && getComputedStyle(highlighted.querySelector(".mr-star")!).opacity === "1", "every row shows its star");
 
         // Search still matches ids, though names don't show them: "haiku-4-5" isn't in Haiku 4.5's name. Results sit
         // under their provider's name.
@@ -150,7 +150,7 @@ export async function checkModelPicker(root: HTMLElement) {
         const filterFavorites = filter("Favorites");
         filterMock.click();
         await settle(200);
-        check(filterMock.classList.contains("on") && filterMock.getAttribute("aria-selected") === "true" && getComputedStyle(filterMock).color !== getComputedStyle(filterFavorites).color && rows().length === 2, "the open filter's words are brighter than the others', and the list is its provider's alone");
+        check(filterMock.classList.contains("on") && filterMock.getAttribute("aria-selected") === "true" && getComputedStyle(filterMock).color !== getComputedStyle(filterFavorites).color && rows().length === 2, "the open filter is brighter than the others, and the list is its provider's alone");
         check(row("local-7b"), "a model with no name goes by its id");
         check(!filterCurrent.classList.contains("on") && bg(filterCurrent) === bg(filterFavorites) && getComputedStyle(filterCurrent).color === getComputedStyle(filterFavorites).color, "the current model's provider has no mark while another list is open");
         filterCurrent.click();
