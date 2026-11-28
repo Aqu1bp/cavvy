@@ -503,11 +503,6 @@ function bridge() {
         holding++;
     });
     ipcMain.on("focus_window", (e) => fromGui(e) && raiseWindow());
-    ipcMain.handle("pick_folder", async (e, o: { defaultPath?: string; title?: string }) => {
-        if (!fromGui(e) || !win) return null;
-        const r = await dialog.showOpenDialog(win, { properties: ["openDirectory", "createDirectory"], defaultPath: typeof o?.defaultPath === "string" ? o.defaultPath : undefined, title: typeof o?.title === "string" ? o.title : undefined });
-        return r.canceled ? null : (r.filePaths[0] ?? null);
-    });
     ipcMain.handle("open_external", (e, url: string) => {
         if (fromGui(e) && typeof url === "string" && /^(https?:|mailto:)/i.test(url)) return shell.openExternal(url);
     });

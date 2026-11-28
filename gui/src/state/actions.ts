@@ -7,7 +7,7 @@ import { sessionCount, sessionNames } from "../lib/rail-select";
 import type { ArchiveResult, CliSessionInfo, EditorInfo, EffortLevel, FollowUpMode, GitCommitHead, Interaction, InteractionResponse, PermissionModeId, ProviderInfo } from "@shared/protocol";
 import { RpcError, type Rpc } from "../lib/rpc";
 import { UNDO_DELETE_MS } from "../lib/toasts";
-import { copyText, machine, pickFolder } from "../lib/platform";
+import { copyText, machine } from "../lib/platform";
 import { toWire, type Attachment } from "../lib/attachments";
 import { activate, agentReady, app, awayMachine, awayUnopened, createSession, homeAt, type HomeAt, homeCwdAfter, homeHere, homeOn, homeOnMachine, machineFor, rpcFor, setHomeAwayMode, updateHomeSettings, revealBackground, dropHandle, forkMakingOf, forkSession, handleFor, importCliSession, markSeen, refreshModels, refreshProjects, refreshProviders, refreshSessions, refreshSettings, reportError, requestTrust, rpc, serversUi, setApp, toast } from "./app";
 import type { ReviewScope } from "./changes";
@@ -74,11 +74,8 @@ function toHome(id: string) {
     requestComposerFocus();
 }
 
-/** Choose a folder: the native picker in the desktop app, ours in the browser. */
-export async function chooseFolder(o: { title?: string; action?: string; start?: string } = {}): Promise<string | undefined> {
-    const native = await pickFolder(o.start ?? app.homeCwd, o.title).catch(() => undefined);
-    if (native === null) return undefined;
-    if (native) return native;
+/** Choose a folder in Cavvy's own panel (FolderPicker.tsx), in the desktop app too: never the system's. */
+export function chooseFolder(o: { title?: string; action?: string; start?: string } = {}): Promise<string | undefined> {
     return new Promise((resolve) => setFolderPickerOpen({ then: resolve, ...o }));
 }
 
