@@ -236,7 +236,7 @@ export class MachineWatch {
     /** Its sessions written down a moment after they change: one write for a burst of changes. */
     private keepTimer?: ReturnType<typeof setTimeout>;
     private keepSoon() {
-        if (!this.o.kept || this.keepTimer) return;
+        if (!this.o.kept || this.keepTimer || this.forgotten) return;
         this.keepTimer = setTimeout(() => {
             this.keepTimer = undefined;
             this.o.kept?.write([...this.sessions.values()].map((s) => this.resting(s)));
@@ -301,7 +301,17 @@ export class MachineWatch {
     }
 
     private savePending() {
-        this.o.pending?.write(this.pending);
+        if (!this.forgotten) this.o.pending?.write(this.pending);
+    }
+
+    /** Removed from this Cavvy: nothing waits for it, and nothing of it is written down again. */
+    private forgotten = false;
+    forget() {
+        this.forgotten = true;
+        this.pending = [];
+        clearTimeout(this.pendingTimer);
+        clearTimeout(this.keepTimer);
+        this.keepTimer = undefined;
     }
 
     /** A session's row as it is now said again: gone while it's being deleted. */
@@ -325,6 +335,12 @@ export class MachineWatch {
         clearTimeout(this.pendingTimer);
         while (this.pending.length && this.isConnected() && !this.stopped) {
             const c = (this.sending = this.pending[0]!);
+            // Once on its way, the server may have it whatever happens next (an answer lost, this app quit): an Undo
+            // then brings it back there.
+            if (c.method === "session.delete" && !c.tried) {
+                c.tried = true;
+                this.savePending();
+            }
             let took: boolean;
             try {
                 await this.request(c.method, c.params, MAX_ANSWER);
@@ -333,10 +349,6 @@ export class MachineWatch {
                 // Not now (it went away, it's busy): tried again later, in the same order.
                 if (!(e as { theirs?: boolean }).theirs) {
                     this.sending = undefined;
-                    if (c.method === "session.delete" && !c.tried) {
-                        c.tried = true;
-                        this.savePending();
-                    }
                     if (this.isConnected() && !this.stopped) {
                         this.pendingTimer = setTimeout(() => void this.flush(), PENDING_RETRY_MS);
                         (this.pendingTimer as { unref?: () => void }).unref?.();
@@ -354,7 +366,7 @@ export class MachineWatch {
                 // before the change is let go, so a restart in between can't bring back what was.
                 if (s && c.method === "session.delete") this.sessions.delete(id);
                 else if (s) this.sessions.set(id, changed(s, c));
-                this.o.kept?.write([...this.sessions.values()].map((x) => this.resting(x)));
+                if (!this.forgotten) this.o.kept?.write([...this.sessions.values()].map((x) => this.resting(x)));
             }
             this.pending = this.pending.filter((x) => x !== c);
             this.savePending();

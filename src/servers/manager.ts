@@ -165,6 +165,7 @@ export class ServerLinks {
         const names = new Set(listServers().map((s) => s.name));
         for (const [name, w] of this.watches) {
             if (names.has(name)) continue;
+            w.forget();
             w.stop();
             this.watches.delete(name);
             rmSync(keptFile(name), { force: true });
@@ -655,6 +656,7 @@ export class ServerLinks {
         const w = this.watches.get(name);
         const leaving = getServer(name)?.sync === true && w?.overview().state === "connected" ? w : undefined;
         if (leaving) {
+            leaving.forget();
             this.watches.delete(name);
             rmSync(keptFile(name), { force: true });
             rmSync(pendingFile(name), { force: true });
