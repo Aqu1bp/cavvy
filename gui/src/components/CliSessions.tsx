@@ -98,19 +98,33 @@ export function CliSessions(p: { cwd: string; rows?: number }) {
         </div>
     );
 
-    /** A row of "Show all". */
+    /** A row of "Show all": the design's dialog row, its button the action. */
     const item = (s: CliSessionInfo) => (
-        <button class="cl-item" disabled={busy() === s.id} title={`${name(s)} · ${(now(), agoText(s.updatedAt))} · ${count(s)}`} onClick={() => act(s)}>
-            <span class="cli-pv"><ProviderIcon id={s.source} name={name(s)} size={15} /></span>
-            <span class="cli-main">
-                <span class="cl-title truncate">{s.title}</span>
-                <Show when={busy() === s.id} fallback={<Show when={s.recent}><span class="cli-meta"><span class="cli-live" title={STILL_OPEN}>Still open in a terminal</span></span></Show>}>
-                    <span class="cli-meta">Importing…</span>
+        <li class="row cli-row" title={`${name(s)} · ${(now(), agoText(s.updatedAt))} · ${count(s)}`}>
+            <ProviderIcon id={s.source} name={name(s)} size={15} />
+            <span class="row-text">
+                <span class="row-title cli-title">{s.title}</span>
+                <Show when={busy() === s.id} fallback={<Show when={s.recent}><span class="row-sub" title={STILL_OPEN}>Still open in a terminal</span></Show>}>
+                    <span class="row-sub">Importing…</span>
                 </Show>
             </span>
-            <span class={enabled(s) ? "btn sm cl-act" : "cli-off cl-act"}>{enabled(s) ? "Import" : "Turn on in Settings"}</span>
-        </button>
+            <Show
+                when={enabled(s)}
+                fallback={
+                    <button type="button" class="link-btn" onClick={() => act(s)}>
+                        Turn on in Settings
+                    </button>
+                }
+            >
+                <button type="button" class="btn btn-sm cli-btn" disabled={busy() === s.id} onClick={() => act(s)}>
+                    Import
+                </button>
+            </Show>
+        </li>
     );
+    /** Whose sessions they are, as the design says it: "Claude Code and Codex". */
+    const names = () => [...new Set(fresh().map(name))].sort().join(" and ") || "Terminal";
+    const project = () => p.cwd.replace(/\/+$/, "").split("/").pop() || p.cwd;
 
     return (
         <>
@@ -130,24 +144,32 @@ export function CliSessions(p: { cwd: string; rows?: number }) {
                 open={all()}
                 onClose={() => setAll(false)}
                 title="Continue from your terminal"
+                subtitle={`${names()} sessions started in ${project()}.`}
                 width={540}
-                class="cli-dialog"
+                edge
                 footer={
-                    <div class="dialog-actions">
-                        <For each={more()}>{(m) => <div class="cl-note">{m.more} more {m.name} {m.more === 1 ? "session" : "sessions"} not shown</div>}</For>
-                        <span class="grow" />
-                        <button class="btn" onClick={() => setAll(false)}>Done</button>
-                    </div>
+                    <>
+                        <Show when={more().length}>
+                            <span class="dlg-foot-note">{more().map((m) => `${m.more} more ${m.name} ${m.more === 1 ? "session" : "sessions"}`).join(", ")} not shown</span>
+                        </Show>
+                        <button type="button" class="btn" onClick={() => setAll(false)}>
+                            Done
+                        </button>
+                    </>
                 }
             >
-                <div class="cl-list">
-                    <Show when={list.loading || sessions().length}>
+                <Show
+                    when={list.loading || sessions().length}
+                    fallback={
+                        <div class="blank">
+                            <p class="blank-title">Couldn't list terminal sessions.</p>
+                        </div>
+                    }
+                >
+                    <ul class="dlg-rows">
                         <For each={fresh()}>{item}</For>
-                    </Show>
-                    <Show when={!list.loading && !sessions().length}>
-                        <p class="cl-none">Couldn't list terminal sessions.</p>
-                    </Show>
-                </div>
+                    </ul>
+                </Show>
             </Dialog>
         </>
     );

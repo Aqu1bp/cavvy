@@ -206,7 +206,7 @@
     font-size: calc(13 * var(--sp));
 }
 
-.cli-row {
+.cli-sessions .cli-row {
     display: flex;
     align-items: center;
     gap: calc(10 * var(--sp));
@@ -218,16 +218,16 @@
     transition: background 0.1s;
 }
 
-.cli-row:last-child {
+.cli-sessions .cli-row:last-child {
     border-radius: 0 0 var(--r-card) var(--r-card);
 }
 
-.cli-row:hover,
-.cli-row:focus-visible {
+.cli-sessions .cli-row:hover,
+.cli-sessions .cli-row:focus-visible {
     background: var(--hover);
 }
 
-.cli-row:focus-visible {
+.cli-sessions .cli-row:focus-visible {
     box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 40%, transparent);
 }
 
@@ -248,7 +248,7 @@
     min-width: 0;
 }
 
-.cli-title {
+.cli-sessions .cli-title {
     font-weight: 500;
     color: var(--fg);
 }
@@ -291,56 +291,32 @@
     color: var(--accent-text);
 }
 
-/* ---- Show all: every terminal session of the project, a row each across the dialog ---- */
-.dialog.cli-dialog .dialog-body {
-    gap: 0;
-    padding: 0;
-}
-
-.cl-list {
+/* ---- Show all: every terminal session of the project (the design's dialogs.css; its list drops the browser's
+   margins, which the design resets globally) ---- */
+.dlg-rows {
     display: flex;
     flex-direction: column;
-    max-height: min(calc(380 * var(--sp)), 56vh);
-    overflow-y: auto;
+    margin: 0;
+    padding: 0;
+    list-style: none;
 }
 
-.cl-item {
-    display: flex;
-    align-items: center;
-    gap: calc(10 * var(--sp));
-    min-width: 0;
-    min-height: calc(48 * var(--sp));
-    padding: calc(6 * var(--sp)) calc(16 * var(--sp)) calc(6 * var(--sp)) calc(20 * var(--sp));
-    text-align: left;
-    transition: background 0.1s;
+.dlg-rows .row {
+    padding-left: calc(20 * var(--sp));
+    padding-right: calc(16 * var(--sp));
 }
 
-.cl-item + .cl-item {
-    border-top: 1px solid var(--line);
-}
-
-.cl-item:hover:not(:disabled) {
-    background: var(--hover);
-}
-
-.cl-title {
-    font-weight: 450;
-}
-
-.cl-act.btn {
+.cli-btn {
     min-width: calc(66 * var(--sp));
 }
 
-.cl-note {
-    font-size: calc(12 * var(--sp));
-    color: var(--fg-3);
+/* Tall enough for the second line, so a row doesn't grow when it starts importing. */
+.cli-row {
+    min-height: calc(48 * var(--sp));
 }
 
-.cl-none {
-    margin: 0;
-    padding: calc(28 * var(--sp)) calc(20 * var(--sp));
-    text-align: center;
-    color: var(--fg-3);
+.cli-title {
+    font-weight: 450;
 }
 
 /* ---- The composer, at the foot ---- */
@@ -401,21 +377,10 @@
     }
 }
 
-/* ---- Recent projects (the Project row's menu): a check, the name over its path, when it was opened ---- */
-.recent-menu .menu-item {
-    align-items: flex-start;
-}
 
-.recent-path,
-.recent-when {
-    font-size: calc(12 * var(--sp));
-    color: var(--fg-3);
-}
-
-.recent-when {
-    flex: none;
-}
-
-.recent-menu .menu-ico svg {
-    color: var(--accent-text);
+/* ---- Recent projects (the Project row's menu): nothing opened yet ---- */
+.menu-none {
+    padding: calc(6 * var(--sp)) calc(9 * var(--sp));
+    color: var(--text-3);
+    font-size: calc(12.5 * var(--sp));
 }

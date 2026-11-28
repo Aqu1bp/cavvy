@@ -424,7 +424,7 @@ function AddServerDialog() {
     // Made once per step: the dialog reads it twice (whether there's one, then to show it).
     const footer = children(foot);
     return (
-        <Dialog open={addServerOpen()} onClose={close} title={title()} subtitle={sub()} footer={footer()} width={480} top class="dlg-top">
+        <Dialog open={addServerOpen()} onClose={close} title={title()} subtitle={sub()} footer={footer()} width={480} class="dlg-top">
             <Switch>
                 <Match when={step().at === "form"}>
                     <form

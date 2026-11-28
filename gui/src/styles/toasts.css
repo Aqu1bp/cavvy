@@ -18,7 +18,7 @@
     font-size: 1.35rem;
 }
 
-.splash p {
+.splash > p {
     max-width: calc(440 * var(--sp));
     margin: 0;
     line-height: 1.6;

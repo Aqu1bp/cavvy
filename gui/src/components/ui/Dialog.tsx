@@ -14,6 +14,8 @@ export interface DialogProps {
     bare?: boolean;
     /** A bare dialog's name: the id of the heading its content brings. */
     labelledBy?: string;
+    /** The body runs edge to edge (a list): the design's .dlg-body-bare. */
+    edge?: boolean;
     /** Opens near the top of the window (the command palette) instead of in its middle. */
     top?: boolean;
     children: JSX.Element;
@@ -103,21 +105,21 @@ function DialogInner(p: DialogProps) {
                     onPointerDown={() => focusMoved(box!)}
                 >
                     <Show when={!p.bare}>
-                        <div class="dialog-head dlg-head">
+                        <header class="dlg-head">
                             <div class="dlg-heading">
-                                <div class="dialog-title dlg-title" id={titleId}>{p.title}</div>
+                                <h2 class="dlg-title" id={titleId}>{p.title}</h2>
                                 <Show when={p.subtitle}>
-                                    <div class="dialog-sub dlg-sub selectable">{p.subtitle}</div>
+                                    <p class="dlg-sub selectable">{p.subtitle}</p>
                                 </Show>
                             </div>
-                            <button class="icon-btn dialog-close dlg-close" onClick={() => p.onClose()} aria-label="Close">
-                                <X size={16} />
+                            <button type="button" class="icon-btn icon-btn-sm dlg-close" onClick={() => p.onClose()} aria-label="Close">
+                                <X size={14} />
                             </button>
-                        </div>
+                        </header>
                     </Show>
-                    <div class="dialog-body dlg-body selectable">{p.children}</div>
+                    <div class={`dialog-body dlg-body selectable${p.edge ? " dlg-body-bare" : ""}`}>{p.children}</div>
                     <Show when={p.footer}>
-                        <div class="dialog-foot dlg-foot">{p.footer}</div>
+                        <footer class="dlg-foot">{p.footer}</footer>
                     </Show>
                 </div>
             </div>

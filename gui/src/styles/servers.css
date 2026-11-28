@@ -4,9 +4,12 @@
 /* ---------- shared: forms, host keys, progress ---------- */
 
 /* A dialog that changes height between steps hangs from a fixed top edge, so it doesn't re-centre.
-   (Cavvy's dialog is centred by its backdrop: the edge is the backdrop's padding.) */
-.dialog-backdrop.top:has(> .dlg-top) {
-    padding-top: 21vh;
+   (Its keyframes, dlg-top-in, are overlays.css's: the palette uses them too.) */
+.dlg.dlg-top {
+    top: 21vh;
+    max-height: calc(79vh - 32 * var(--sp));
+    transform: translateX(-50%);
+    animation: dlg-top-in 0.18s var(--ease);
 }
 
 .form-stack .input.mono::placeholder {
@@ -302,65 +305,9 @@
 
 /* ---------- from the design's kit: what these dialogs use that Cavvy's kit names otherwise ---------- */
 
-.machine-menu .menu-check {
-    display: inline-flex;
-    width: calc(14 * var(--sp));
-    height: calc(18 * var(--sp));
-    align-items: center;
-    flex: none;
-    margin-left: 0;
-    color: var(--accent);
-}
-
-.machine-menu .menu-item-name {
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.machine-menu .menu-item-note {
-    flex: none;
-    color: var(--text-3);
-    font-size: calc(12 * var(--sp));
-}
-
-/* The check is the accent, as the design's menus have it (Cavvy's menu items colour every icon otherwise). */
-.machine-menu .menu-check svg {
-    color: inherit;
-}
-
-/* A progress bar (the design's kit .bar), where these dialogs show one. */
-:is(.progress, .progress-inline) .bar {
-    position: relative;
-    flex: 1;
-    height: calc(4 * var(--sp));
-    min-width: calc(40 * var(--sp));
-    border-radius: calc(2 * var(--sp));
-    background: var(--fill-2);
-    overflow: hidden;
-}
-
-:is(.progress, .progress-inline) .bar > i {
-    position: absolute;
-    inset: 0 auto 0 0;
-    border-radius: calc(2 * var(--sp));
-    background: var(--accent);
-}
-
 /* The design leaves out a body with nothing in it; Cavvy's dialog always has one. */
 .dlg-top .dlg-body:empty {
     display: none;
-}
-
-.dlg-top:has(> .dlg-body:empty) .dlg-heading {
-    padding-bottom: calc(14 * var(--sp));
-}
-
-.icon-btn.icon-btn-sm {
-    width: calc(24 * var(--sp));
-    height: calc(24 * var(--sp));
 }
 
 /* Cavvy has a third button on a server's row (sync): its column is a button wider. */
@@ -380,12 +327,18 @@
     color: color-mix(in srgb, var(--rail-fg-2) 72%, transparent);
 }
 
+:where(.cover-card) p {
+    margin: 0;
+}
+
 /* Where the cover goes: in the window's splash, or over a window that had been on its server. */
 .server-cover {
     display: flex;
     flex: 1;
     align-self: stretch;
     min-height: 0;
+    /* The splash it sits in centres its text. */
+    text-align: start;
 }
 
 .server-over {
