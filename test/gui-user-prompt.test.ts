@@ -57,7 +57,7 @@ test("shortPrompt: one line of under 60 characters", () => {
     expect(shortPrompt("a\nb")).toBe(false);
 });
 
-test("the bubble's styles: at the right, as wide as its text, its actions over the gap and shown by opacity alone", () => {
+test("the bubble's styles: at the right, as wide as its text, its actions always there and in the flow", () => {
     // The design's rules (remix-conversation.css), as they are.
     const t = css("remix-conversation.css");
     expect(decl(t, ".msg-user", "align-items")).toBe("flex-end");
@@ -66,14 +66,11 @@ test("the bubble's styles: at the right, as wide as its text, its actions over t
     // Rounded, its corner by the column's edge tucked in.
     expect(decl(t, ".bubble", "border-radius")).toBe("calc(14 * var(--sp)) calc(14 * var(--sp)) calc(4 * var(--sp)) calc(14 * var(--sp))");
     expect(decl(t, ".bubble", "background")).toBe("var(--bubble)");
-    // Absolutely placed under the bubble: showing them moves nothing.
-    expect(decl(t, ".msg-actions", "position")).toBe("absolute");
-    expect(decl(t, ".msg-actions", "top")).toBe("100%");
-    expect(decl(t, ".msg-actions", "opacity")).toBe("0");
-    expect(decl(t, ".msg-actions", "transition")).toBe("opacity 0.12s");
-    expect(decl(t, ".msg-user:hover .msg-actions", "opacity")).toBe("1");
-    expect(decl(t, ".msg-user:focus-within .msg-actions", "opacity")).toBe("1");
-    // The gap they're laid over is the turn's.
+    // In the flow under the bubble, always shown: nothing below can run under them.
+    expect(decl(t, ".msg-actions", "position")).toBeUndefined();
+    expect(decl(t, ".msg-actions", "opacity")).toBeUndefined();
+    expect(decl(t, ".msg-user:hover .msg-actions", "opacity")).toBeUndefined();
+    // The gap between a turn's parts.
     expect(decl(t, ".turn", "gap")).toBe("calc(12 * var(--sp))");
 });
 

@@ -526,6 +526,11 @@
     margin-right: calc(6 * var(--sp));
 }
 
+/* A line with no words (its call is a row already): its time alone after the dots, with no dot before it. */
+.layer .lend:first-child::before {
+    content: none;
+}
+
 /* Waiting on the user: the design's amber label, in its own weight. */
 .layer .lbl.live-label {
     font-weight: 400;
@@ -1371,6 +1376,15 @@
 
 .cmd-row.bg .cmd-h .ic {
     color: var(--fg);
+}
+
+/* Under way: the live dots in the accent, as a running row's icon is; left running in the background, quieter. */
+.cmd-h .ic > .spinner {
+    color: var(--accent);
+}
+
+.cmd-row.bg .cmd-h .ic > .spinner {
+    color: var(--fg-3);
 }
 
 /* What it's for, in the model's words: said like any row's verb ("Read", "Search"), not brighter. */

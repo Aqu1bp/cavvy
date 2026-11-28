@@ -32,7 +32,7 @@ import {
     Smartphone,
     SquareTerminal,
     Wrench,
-    X, Ban, GitCommitHorizontal, ArrowUpFromLine, GitPullRequestArrow } from "lucide-solid";
+    X, Ban, Brain, GitCommitHorizontal, ArrowUpFromLine, GitPullRequestArrow } from "lucide-solid";
 import type { AgentRun, Block, ThinkingBlock, TodoEntry, ToolBlock } from "@shared/protocol";
 import { duration, firstChangedLine, plural, sleepSeconds, stripAnsi } from "../../lib/format";
 import { commandDescription, isLive, resultEchoes, runningVerb, sameInARow, shortModelRef, toolKind, toolLabel } from "../../lib/tool-words";
@@ -326,8 +326,10 @@ export function ActivityGroup(p: GroupProps) {
 }
 
 /**
- * The model's reasoning, as a quiet row: "Thought for 41s", opening into the text. While it's written, the turn's
- * live line shows it (with its latest line); Settings → Show thinking hides finished ones.
+ * The model's reasoning, as a row of the work's list like a call's: its icon, "Thought for 41s", and a chevron that
+ * opens it to the text. While it's written, the turn's live line shows it (with its latest line); Settings → Show
+ * thinking hides finished ones. Its own `.steps` around it, so it's drawn as the rows are wherever it is (between a
+ * run's calls, or before or after them).
  */
 export function Thinking(p: { block: ThinkingBlock; live: boolean }) {
     const [open, setOpen] = createSignal(false);
@@ -341,14 +343,24 @@ export function Thinking(p: { block: ThinkingBlock; live: boolean }) {
     const preview = () => p.block.text.trim().split("\n").filter(Boolean).slice(-2).join(" ");
     return (
         <Show when={prefs.showThinking || p.live}>
-            <div ref={(el) => enterRow(el, motionMs(STAGGER_MS))} class={`think thinking ${p.live ? "live" : ""}`} data-open={open() || undefined}>
-                <button class="tools-head" onPointerEnter={fetch} onFocus={fetch} onClick={() => (fetch(), setOpen(!open()))} aria-expanded={open()}>
-                    <span class={p.live ? "shimmer" : undefined}>{label()}<Show when={p.live}><Shine text={label()} /></Show></span>
-                    <ChevronRight size={13} class="chev" data-open={open() || undefined} />
-                </button>
-                <Show when={open()} fallback={<Show when={p.live && preview()}><p class="think-text thinking-peek">{preview()}</p></Show>}>
-                    <p class="think-text">{p.block.text.trim()}</p>
-                </Show>
+            <div class="steps">
+                <div ref={(el) => enterRow(el, motionMs(STAGGER_MS))} class={`tool thinking ${p.live ? "live" : ""}`} data-state={p.live ? "running" : "done"} data-open={open() || undefined}>
+                    <div class="tool-head">
+                        <button class="tool-row tool-line" onPointerEnter={fetch} onFocus={fetch} onClick={() => (fetch(), setOpen(!open()))} aria-expanded={open()}>
+                            <span class="tool-icon">
+                                <Brain size={14} />
+                            </span>
+                            <span class={p.live ? "tool-verb shimmer" : "tool-verb"}>{label()}<Show when={p.live}><Shine text={label()} /></Show></span>
+                            <span class="tool-meta" />
+                            <ChevronRight size={13} class="chev" data-open={open() || undefined} />
+                        </button>
+                    </div>
+                    <Show when={open()} fallback={<Show when={p.live && preview()}><p class="think-text thinking-peek">{preview()}</p></Show>}>
+                        <div class="tool-detail">
+                            <p class="think-text">{p.block.text.trim()}</p>
+                        </div>
+                    </Show>
+                </div>
             </div>
         </Show>
     );
@@ -912,7 +924,7 @@ function EditCardContent(p: { tool: ToolBlock }) {
                 }}
             >
                 <span class="tcard-ic">
-                    <Show when={!live()} fallback={<Spinner size={12} class="tone-accent" />}>
+                    <Show when={!live()} fallback={<Spinner size={14} class="tone-accent" />}>
                         <Show when={t().diff?.status === "added" || (t().name === "Write" && !t().diff)} fallback={<FilePen size={14} />}>
                             <FilePlus2 size={14} />
                         </Show>
@@ -1131,7 +1143,7 @@ function CommandCardContent(p: { tool: ToolBlock }) {
                 <span class="cmd-what">
                     <span class="ic" title={t().sandboxed ? "Ran in the sandbox" : undefined}>
                         <Show when={live() || background()} fallback={<SquareTerminal size={14} />}>
-                            <Spinner size={12} />
+                            <Spinner size={14} />
                         </Show>
                     </span>
                     <span class="sr-only" data-find-skip>{label().verb}{" "}</span>

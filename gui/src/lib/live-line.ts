@@ -6,7 +6,7 @@
 // pace at which rows that land together come in.
 
 import type { Block, Interaction, ThinkingBlock, ToolBlock, Turn } from "@shared/protocol";
-import { sleepSeconds, turnDuration } from "./format";
+import { sleepSeconds, tildify, turnDuration } from "./format";
 import { firstStep, liveCommand } from "./command-row";
 import { commandDescription, isLive, runningVerb, toolLabel } from "./tool-words";
 
@@ -35,6 +35,8 @@ export interface LiveLineState {
     toolId?: string;
     /** The whole of it, on hover. Never a command: a long one made a wall of a tooltip; its row opens to it, with Copy. */
     title?: string;
+    /** Said by a row already (a call a steer's turn before this one shows): the line draws no words, only that it's working and for how long. */
+    bare?: boolean;
 }
 
 /** Labels that say more than "Working": the turn (or the session, between turns) is in a special state. */
@@ -50,10 +52,33 @@ export interface LiveInput {
     interactions: Interaction[];
     /** Settings → Show thinking: the thought itself on the line, or only "Thinking". */
     showThinking: boolean;
+    /** The session's folder and the home folder: a file is named from the first, else from ~/ (linePath). */
+    cwd?: string;
+    home?: string;
+    /** A turn a steer ended (heldTurns) shows a call still under way as its row: what the session is doing is that call. */
+    rowsLive?: boolean;
+}
+
+/** Where the line names files from (LiveInput). */
+type Where = Pick<LiveInput, "cwd" | "home">;
+
+/** A file as the line names it: from the session's folder when it's in it, else from ~/ when it's in the home folder, else whole. */
+export function linePath(path: string, where: Where = {}): string {
+    const root = where.cwd?.replace(/\/+$/, "");
+    if (root && path.startsWith(`${root}/`) && path.length > root.length + 1) return path.slice(root.length + 1);
+    return tildify(path, where.home?.replace(/\/+$/, ""));
+}
+
+/** A call's argument as the line says it: the file it's about (its input's path, as the argument starts) named by linePath. */
+function argOf(t: ToolBlock, arg: string | undefined, where: Where): string | undefined {
+    if (!arg?.startsWith("/")) return arg;
+    const i = t.input ?? {};
+    const path = [i.file_path, i.notebook_path, i.path].find((v): v is string => typeof v === "string" && v.startsWith("/") && arg.startsWith(v));
+    return path ? linePath(path, where) + arg.slice(path.length) : arg;
 }
 
 /** What a request for the user is waiting on, in the line's words. */
-function waitLabel(i: Interaction): { label: string; detail?: string; mono?: boolean } {
+function waitLabel(i: Interaction, where: Where): { label: string; detail?: string; mono?: boolean } {
     switch (i.kind) {
         case "question":
             return { label: "Waiting for your answer" };
@@ -69,7 +94,7 @@ function waitLabel(i: Interaction): { label: string; detail?: string; mono?: boo
             // A command by what it's for, else its first step (the card has all of it); no command or file: what the card
             // asks, in its words (never the call as code, "BrowserAct(click e4)").
             const words = i.command !== undefined ? i.description?.trim() : undefined;
-            const what = words ? undefined : i.command !== undefined ? firstStep(i.command) : i.path;
+            const what = words ? undefined : i.command !== undefined ? firstStep(i.command) : i.path && linePath(i.path, where);
             return { label: "Waiting for approval", detail: words || what || i.heading, mono: Boolean(what) };
         }
     }
@@ -112,14 +137,15 @@ export function stepOf(t: ToolBlock | undefined): string | undefined {
     return last ? (last.length > 80 ? `${last.slice(0, 79)}…` : last) : undefined;
 }
 
-function toolState(t: ToolBlock): LiveLineState {
-    const { verb, arg } = toolLabel(t);
+function toolState(t: ToolBlock, where: Where): LiveLineState {
+    const { verb, arg: whole } = toolLabel(t);
+    const arg = argOf(t, whole, where);
     const description = commandDescription(t);
     const command = t.name === "Bash" ? String(t.input?.command ?? "").trim() : "";
     // A command reads as its description, else its first step: all of it is too long for a line (the card shows it).
     if (t.status === "awaiting") {
         const asks = t.name === "AskUserQuestion" || t.name === "ExitPlanMode";
-        return { key: `wait:${t.id}`, kind: "wait", label: runningVerb(t), detail: asks ? undefined : command ? (description ?? firstStep(command)) : [verb, arg].filter(Boolean).join(" "), toolId: t.id, title: command ? undefined : arg };
+        return { key: `wait:${t.id}`, kind: "wait", label: runningVerb(t), detail: asks ? undefined : command ? (description ?? firstStep(command)) : [verb, arg].filter(Boolean).join(" "), toolId: t.id, title: command ? undefined : whole };
     }
     if (t.status === "streaming") {
         return { key: `tool:${t.id}:streaming`, kind: "tool", label: runningVerb(t), detail: t.name === "Bash" && arg ? firstStep(arg) : arg, mono: true, since: t.startedAt, toolId: t.id };
@@ -134,7 +160,7 @@ function toolState(t: ToolBlock): LiveLineState {
     }
     // A search's query is words, not code. A call that may say what it's at (a server being set up) is handed over
     // for that: its steps aren't read here, where reading them would have every one redo this over the whole turn.
-    return { ...base, label: runningVerb(t), detail: arg, mono: !t.agent && !WORDS.has(t.name), steps: t.status === "running" && t.name !== "Task" && t.name !== "Agent" && !t.agent ? t : undefined, title: arg };
+    return { ...base, label: runningVerb(t), detail: arg, mono: !t.agent && !WORDS.has(t.name), steps: t.status === "running" && t.name !== "Task" && t.name !== "Agent" && !t.agent ? t : undefined, title: whole };
 }
 
 /**
@@ -145,7 +171,7 @@ function toolState(t: ToolBlock): LiveLineState {
 export function liveLine(o: LiveInput): LiveLineState | undefined {
     const pending = o.interactions[0];
     if (pending) {
-        const w = waitLabel(pending);
+        const w = waitLabel(pending, o);
         // Timed from when it was asked, not from when the session was opened.
         return { key: `wait:${pending.id}`, kind: "wait", ...w, since: pending.since };
     }
@@ -161,10 +187,10 @@ export function liveLine(o: LiveInput): LiveLineState | undefined {
     if (last?.t === "shell" && last.running) return undefined;
     const tools = o.blocks.filter((b): b is ToolBlock => b.t === "tool" && isLive(b));
     const asking = tools.find((t) => t.status === "awaiting");
-    if (asking) return toolState(asking);
+    if (asking) return toolState(asking, o);
     // The latest call under way: running before one still arriving or waiting for it.
     const current = tools.findLast((t) => t.status === "running") ?? tools.at(-1);
-    if (current) return toolState(current);
+    if (current) return toolState(current, o);
     if (last?.t === "text" && a?.label === "Writing") return undefined;
     if (last?.t === "thinking" && last.durationMs === undefined && (!a || a.label === "Thinking")) {
         const b = last as ThinkingBlock;
@@ -174,6 +200,8 @@ export function liveLine(o: LiveInput): LiveLineState | undefined {
     // Writing, but the text hasn't arrived yet: the caret will say so in a moment.
     if (a.label === "Writing") return undefined;
     if (a.label === "Thinking") return { key: "think", kind: "think", label: "Thinking", since: a.since };
+    // The call it's on is a row in the turn a steer ended, which says what it is: here only that it works, and how long.
+    if (o.rowsLive) return { key: "work:rows", kind: "work", label: "Working", bare: true, since: a.since };
     return { key: `work:${a.label}`, kind: "work", label: a.label, detail: a.detail, since: a.since, title: a.detail };
 }
 

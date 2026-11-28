@@ -261,7 +261,7 @@ export function FileViewer(p: { handle: SessionHandle }) {
                     </Match>
                     <Match when={!shown() || (file.loading && shown()!.rel !== target()?.path && shown()!.path !== target()?.path)}>
                         <div class="blank">
-                            <Spinner class="blank-spinner" />
+                            <p class="blank-title">Loading…</p>
                         </div>
                     </Match>
                     <Match when={shown()?.kind === "text" && markdown() && !raw() && shown()}>

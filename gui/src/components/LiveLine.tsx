@@ -155,9 +155,12 @@ export function LiveLine(p: { state: LiveLineState | undefined; hint?: string; s
                     {/* What the line says, for a screen reader: only the current state, not the one rolling away. A command's
                         line is a button, named by it: what it's for and the command. */}
                     <span class="sr-only">{command() ? [showing()?.label, showing()?.detail].filter(Boolean).join(": ") : (stepOf(showing()?.steps) ?? showing()?.label)}</span>
-                    {/* Three dots while it works, the light sweeping the label too; an amber dot when it waits on the user. */}
+                    {/* Three dots while it works, the light sweeping the label too; an amber dot when it waits on the user. The
+                        dots are made again with each state, in the frame its label's light starts: their steps then land
+                        on the light's (remix-conversation.css .working-dots), so the two moving together draw no more windows than
+                        the light alone. */}
                     <span class="lic" aria-hidden="true">
-                        <Show when={showing()?.kind === "wait"} fallback={<span class="working-dots"><i /><i /><i /></span>}>
+                        <Show when={showing()?.kind === "wait"} fallback={<Show when={current()} keyed>{(_layer: Layer) => <span class="working-dots"><i /><i /><i /></span>}</Show>}>
                             <span class="live-wait" />
                         </Show>
                     </span>
@@ -226,15 +229,18 @@ function LayerRow(p: { layer: Layer; hint?: string; isOpen: (id: string) => bool
         <div ref={el} class={`layer k-${s().kind} ${p.layer.leaving() ? "leaving" : ""}`} title={s().title} aria-hidden="true">
             {/* A soft light crosses the label and rests, the words holding still: a bright copy of the label for each place
                 the light stops at, each shown for its step (transcript.css). */}
+            {/* Said by a row already (bare): no words, only the dots and its time. */}
             <Show when={s().kind !== "wait"} fallback={<span class="lbl live-label">{s().label}</span>}>
-                <span class="lbl shim">
-                    {label()}
-                    <span class="lights" data-find-skip>
-                        {LIGHT_STEPS.map((k) => (
-                            <span style={`--k:${k}`}>{label()}</span>
-                        ))}
+                <Show when={!s().bare}>
+                    <span class="lbl shim">
+                        {label()}
+                        <span class="lights" data-find-skip>
+                            {LIGHT_STEPS.map((k) => (
+                                <span style={`--k:${k}`}>{label()}</span>
+                            ))}
+                        </span>
                     </span>
-                </span>
+                </Show>
             </Show>
             <Show when={!at() && s().detail}>
                 {/* Find counts a running call's argument (find.ts): it's here while the call runs. */}

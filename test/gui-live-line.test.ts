@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { backgroundWait, dwellLeft, DWELL_MS, glideFrom, GLIDE_MAX, heldTurns, lineTone, liveLine, specialActivity, stepOf, urgent, workedLabel, workSegments, type LiveInput } from "../gui/src/lib/live-line";
+import { backgroundWait, dwellLeft, DWELL_MS, glideFrom, GLIDE_MAX, heldTurns, linePath, lineTone, liveLine, specialActivity, stepOf, urgent, workedLabel, workSegments, type LiveInput } from "../gui/src/lib/live-line";
 
 // The running turn's live line (gui/src/lib/live-line.ts): what it says, which turns a steer keeps open, what a
 // folded turn says, and the glide's arithmetic. LiveLine.tsx, TurnView.tsx and Transcript.tsx draw from these.
@@ -17,6 +17,36 @@ test("a request waiting on the user comes first, in its own words", () => {
     expect(line({ interactions: [{ kind: "secret", id: "s", name: "GITHUB_TOKEN" } as any] })).toMatchObject({ label: "Waiting for a secret", detail: "GITHUB_TOKEN" });
     // Timed from when it was asked: a session opened 20 minutes into the wait says so, not "0s".
     expect(line({ interactions: [{ kind: "question", id: "q", since: 1234 } as any] })).toMatchObject({ since: 1234 });
+});
+
+test("a file is named from the session's folder, else from ~/, else whole; the hover keeps all of it", () => {
+    const where = { cwd: "/Users/me/repo", home: "/Users/me" };
+    const edit = (path: string, title = `Edit(${path})`) => tool({ name: "Edit", title, input: { file_path: path } });
+    expect(line({ blocks: [edit("/Users/me/repo/src/math.ts")], ...where })).toMatchObject({ label: "Editing", detail: "src/math.ts", title: "/Users/me/repo/src/math.ts" });
+    expect(line({ blocks: [edit("/Users/me/notes/todo.md")], ...where })).toMatchObject({ detail: "~/notes/todo.md" });
+    expect(line({ blocks: [edit("/private/tmp/x/math.ts")], ...where })).toMatchObject({ detail: "/private/tmp/x/math.ts" });
+    // A folder whose name only starts the same isn't inside it; a trailing slash on the folder doesn't matter.
+    expect(line({ blocks: [edit("/Users/me/repo2/a.ts")], ...where })).toMatchObject({ detail: "~/repo2/a.ts" });
+    expect(linePath("/Users/me/repo/a.ts", { cwd: "/Users/me/repo/" })).toBe("a.ts");
+    // What follows the path in the argument stays (a range), and an argument that isn't the call's path is left alone.
+    expect(line({ blocks: [tool({ title: "Read(/Users/me/repo/a.ts:10-20)", input: { file_path: "/Users/me/repo/a.ts" } })], ...where })).toMatchObject({ detail: "a.ts:10-20" });
+    expect(line({ blocks: [tool({ name: "Grep", title: "Grep(/Users/me/repo/x)", input: { pattern: "/Users/me/repo/x" } })], ...where })).toMatchObject({ detail: "/Users/me/repo/x" });
+    // Waiting for approval to write a file: the same.
+    expect(line({ interactions: [{ kind: "permission", id: "a", title: "Write", path: "/Users/me/repo/b.ts" } as any], ...where })).toMatchObject({ label: "Waiting for approval", detail: "b.ts" });
+});
+
+test("a call a steer's turn before shows as its row isn't named again: the line has no words, only its time", () => {
+    const activity = { label: "Running bun run typecheck", since: 77 };
+    expect(line({ activity, rowsLive: true })).toMatchObject({ kind: "work", label: "Working", bare: true, since: 77 });
+    expect(line({ activity, rowsLive: true })?.detail).toBeUndefined();
+    // Without such a row, the activity says itself.
+    expect(line({ activity })).toMatchObject({ label: "Running bun run typecheck" });
+    expect(line({ activity })?.bare).toBeUndefined();
+    // What this turn does itself still says itself: its own call, a thought, a request for the user.
+    expect(line({ blocks: [tool({})], activity, rowsLive: true })).toMatchObject({ kind: "tool", label: "Reading" });
+    expect(line({ activity: { label: "Thinking", since: 1 }, rowsLive: true })).toMatchObject({ kind: "think", label: "Thinking" });
+    expect(line({ interactions: [{ kind: "question", id: "q" } as any], rowsLive: true })).toMatchObject({ kind: "wait" });
+    expect(line({ activity: { label: "Writing", since: 1 }, rowsLive: true })).toBeUndefined();
 });
 
 test("special states (a retry, a compaction, a wait on background work) say themselves over the step under way", () => {

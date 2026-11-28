@@ -10,6 +10,7 @@ import { AGAIN, anchoredTop, atBottom, FAR, STAGED, onBuildAgain, firstBelow, fi
 import { turnAt } from "../lib/find";
 import { FOLLOW_ROOM, ROOM_KEPT, ROOM_WRITTEN_MS, roomFor } from "../lib/follow";
 import { GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity } from "../lib/live-line";
+import { isLive } from "../lib/tool-words";
 import { BuiltFromEnd, DrawnAgain, revealing, wordsFlowing } from "../lib/reveal";
 import { onStep } from "../lib/stream-clock";
 import { observeWorkRendering } from "../lib/work-rendering";
@@ -1391,6 +1392,11 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; aside?: boole
 
     /** Finished turns a steer carried on, while the chain still runs: they stay open until it ends. */
     const held = createMemo(() => heldTurns(turns()));
+    /** A call still under way in one of them: its row says what it is, so the live line under the last turn doesn't again. */
+    const heldLive = createMemo(() => {
+        const ids = held();
+        return ids.size > 0 && turns().some((t) => ids.has(t.id) && t.blocks.some((b) => b.t === "tool" && isLive(b)));
+    });
     const running = () => Boolean(p.handle.view.state.busy && turns().at(-1)?.status === "running");
 
     const forkFrom = (t: Turn) => {
@@ -1597,7 +1603,7 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; aside?: boole
                         {/* As <For>, without keeping turns let go of (lib/keyed-list.ts). */}
                         <KeyedList each={visible()}>{(t) => <>
                             <TurnView turn={t} state={p.handle.view.state} agents={p.handle.view.agents} last={t === turns()[turns().length - 1]} onRewind={p.aside ? undefined : rewind} onFork={p.aside ? undefined : () => forkFrom(t)}
-                                workOpen={openWork.has(t.id)} keepWorkOpen={() => !stick()} onWorkOpen={(open) => open ? openWork.add(t.id) : openWork.delete(t.id)} onToggleWork={toggleWork} held={held().has(t.id)} onElement={track} onFold={fold} gone={goneFlag(t.id)[0]} />
+                                workOpen={openWork.has(t.id)} keepWorkOpen={() => !stick()} onWorkOpen={(open) => open ? openWork.add(t.id) : openWork.delete(t.id)} onToggleWork={toggleWork} held={held().has(t.id)} rowsLive={t === turns()[turns().length - 1] ? heldLive : undefined} onElement={track} onFold={fold} gone={goneFlag(t.id)[0]} />
                             <Show when={p.handle.view.gap?.after === t.id && p.handle.view.gap}>{(g) => <LaterTurns count={g().count} fill={() => fillGap(p.handle, PAGE, (n) => setShown((s) => s + n)).then((r) => (trimAbove(), r))} root={() => scroller} />}</Show>
                         </>}</KeyedList>
                     </CardFoldsProvider>

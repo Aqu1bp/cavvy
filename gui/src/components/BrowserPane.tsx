@@ -537,12 +537,12 @@ export function BrowserPane(p: { handle: SessionHandle }) {
                     />
                 </Show>
                 <Show when={!native && tab() && (!connected() || !hasPicture())}>
-                    <div class="br-status" role="status"><Spinner size={13} />{connected() ? "Loading page…" : "Reconnecting browser…"}</div>
+                    <div class="br-status" role="status">{connected() ? "Loading page…" : "Reconnecting browser…"}</div>
                 </Show>
                 <Show when={!tab()}>
                     <div class="blank">
                         <Show when={status() === "starting"}>
-                            <Spinner size={14} class="blank-spinner" />
+                            <Spinner size={16} class="blank-spinner" />
                         </Show>
                         <p class="blank-title">{status() === "unavailable" ? "No browser to run" : status() === "starting" ? "Starting the browser…" : status() === "crashed" ? "The browser stopped" : "No page open"}</p>
                         <Show when={(status() === "unavailable" || status() === "crashed") && state()?.error}>

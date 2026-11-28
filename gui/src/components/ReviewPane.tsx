@@ -51,7 +51,7 @@ const key = (f: Row) => f.pathToken ?? f.path;
 
 const changeOf = (f: Row): GitFileDiff["change"] => f.change ?? f.status;
 
-/** What the file is, when its letter doesn't say: "Symbolic link", "Renamed from …". */
+/** What the file is, beside its name, when there is more to say: "Symbolic link", "Renamed from …". */
 function fileTag(f: Row): string | undefined {
     if (f.kind === "link") return "Symbolic link";
     // Its diff, when there is one, is of what git stores (an LFS pointer, say), not the file on disk.
@@ -71,14 +71,14 @@ const BLURB: Record<ViewItem["scope"], string> = {
     cavvy: "Only what Cavvy's edit tools changed",
 };
 
-/** Git's letter, the tile's tone, and the word: M, A, D as the design has them; R and T on the modified tone. */
-const KIND: Record<GitFileDiff["change"], [string, string, string]> = {
-    modified: ["M", "modified", "Modified"],
-    added: ["A", "added", "Added"],
-    untracked: ["A", "added", "New"],
-    deleted: ["D", "deleted", "Deleted"],
-    renamed: ["R", "modified", "Renamed"],
-    typechange: ["T", "modified", "Type changed"],
+/** What happened to a file, in a word: the files menu's note, and the header's name for a screen reader (no letter tiles: owner). */
+const KIND: Record<GitFileDiff["change"], string> = {
+    modified: "Modified",
+    added: "Added",
+    untracked: "New",
+    deleted: "Deleted",
+    renamed: "Renamed",
+    typechange: "Type changed",
 };
 const kindOf = (f: Row) => KIND[changeOf(f)] ?? KIND.modified;
 
@@ -335,16 +335,13 @@ function FilesMenu(p: { label: string; files: Row[]; more?: string; comments: (f
                     <For each={p.files}>
                         {(f) => (
                             <button class="menu-item" role="menuitem" title={f.from ? `${f.from} → ${f.path}` : f.path} onClick={() => pick(() => p.onJump(f))}>
-                                <span class="cfile-kind" data-kind={kindOf(f)[1]} aria-hidden="true">
-                                    {kindOf(f)[0]}
-                                </span>
                                 <span class="path menu-item-name">
                                     <Show when={dirOf(f.path)}>
                                         <span class="path-dir">{dirOf(f.path)}</span>
                                     </Show>
                                     <span class="path-base">{nameOf(f.path)}</span>
                                 </span>
-                                <span class="menu-item-note">{kindOf(f)[2]}</span>
+                                <span class="menu-item-note">{kindOf(f)}</span>
                                 <Show when={p.comments(f)}>
                                     {(n) => (
                                         <span class="rv-file-comments" aria-label={plural(n(), "comment")}>
@@ -484,7 +481,7 @@ const selectionIn = (el: Element) => {
 };
 
 /**
- * One file in the stack: a sticky header (fold, git's letter, name and folder, comments, +a −d, open) over
+ * One file in the stack: a sticky header (fold, name and folder, comments, +a −d, open) over
  * its diff. The diff is drawn once the file nears the view, and put away when it's far and nothing's under
  * way in it (a comment being written, the focus, a selection); a box its last height stands in for it.
  */
@@ -631,7 +628,7 @@ function FileCard(p: {
                 <button
                     class="cfile-toggle"
                     aria-expanded={!p.closed}
-                    aria-label={`${p.closed ? "Show" : "Fold"} ${p.file.path}`}
+                    aria-label={`${p.closed ? "Show" : "Fold"} ${p.file.path}, ${kind().toLowerCase()}`}
                     title={`${p.file.from ? `${p.file.from} → ${p.file.path}` : p.file.path}\n${p.closed ? "Show" : "Fold"} (⌥-click: every file)`}
                     onClick={(e) => {
                         e.stopPropagation();
@@ -639,9 +636,6 @@ function FileCard(p: {
                     }}
                 >
                     <ChevronRight size={13} class="chev" data-open={!p.closed || undefined} />
-                    <span class="cfile-kind" data-kind={kind()[1]} aria-label={kind()[2]}>
-                        {kind()[0]}
-                    </span>
                     <span class="path">
                         <Show when={dirOf(p.file.path)}>
                             <span class="path-dir">{dirOf(p.file.path)}</span>
@@ -689,7 +683,7 @@ function FileCard(p: {
                             when={!shown().deferred}
                             fallback={
                                 <div class="rf-wait selectable">
-                                    <Show when={!full.loading && full()?.error} fallback={<Spinner size={14} />}>
+                                    <Show when={!full.loading && full()?.error} fallback={<span class="dim">Loading…</span>}>
                                         {full()!.error}{" "}
                                         <button class="link-btn" onClick={() => void refetch()}>
                                             Try again
@@ -1199,7 +1193,7 @@ function DiffReader(p: { handle: SessionHandle }) {
                     </Show>
                     <Show when={askedFor() && !asked()?.file}>
                         <div class="note selectable">
-                            <Show when={!unlisted.loading && asked()?.error} fallback={<Spinner size={13} />}>
+                            <Show when={!unlisted.loading && asked()?.error} fallback={<span class="note-body dim">Loading…</span>}>
                                 <span class="note-body">
                                     {picked()?.path}: {asked()!.error}
                                 </span>
@@ -1234,7 +1228,7 @@ function DiffReader(p: { handle: SessionHandle }) {
                 <Show when={!files().length && !asked()?.file}>
                     <Show when={!error()} fallback={<ErrorNote error={error()!} base={base()} onReset={() => setBase(undefined)} />}>
                         <div class="blank selectable">
-                            <Show when={view()} fallback={<Spinner class="blank-spinner" />}>
+                            <Show when={view()} fallback={<p class="blank-title">Loading…</p>}>
                                 <p class="blank-title">{empty()}</p>
                             </Show>
                         </div>

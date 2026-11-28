@@ -472,31 +472,35 @@ span.tool-target {
     height: calc(5 * var(--sp));
     border-radius: 50%;
     background: var(--accent);
-    /* Stepped on the stream clock's grid (the design's ease-in-out, 1.2s, with its rise at 30%), and paused with
-       the window's other decoration (perf-rules). */
-    animation: bounce 1.2s steps(6) infinite;
+    /* The design's bounce, a wave a dot after another, then a rest while the label's light rests too: on the light's
+       2.4 s, every step in its sweep (light-step: one each 50 ms, 50 to 1200 ms in), so the dots add no window drawn
+       to the light's (perf: 21 a second waiting on a command with the design's 1.2 s bounce, 12 with the light alone).
+       Paused with the window's other decoration (perf-rules). */
+    animation: live-dot 2.4s steps(6) infinite;
     animation-play-state: var(--decor);
 }
 
+/* Each a step behind the one before, as the design's 0.15 s; started there, not after a wait (a delay would show it
+   whole until then). */
 .working-dots i:nth-child(2) {
-    animation-delay: 0.15s;
+    animation-delay: calc(150ms - 2400ms);
 }
 
 .working-dots i:nth-child(3) {
-    animation-delay: 0.3s;
+    animation-delay: calc(300ms - 2400ms);
 }
 
-@keyframes bounce {
-  0%,
-  50%,
-  100% {
-    opacity: 0.3;
-    transform: translateY(0);
-  }
-  25% {
-    opacity: 1;
-    transform: translateY(-3px);
-  }
+@keyframes live-dot {
+    0%,
+    25%,
+    100% {
+        opacity: 0.3;
+        transform: translateY(0);
+    }
+    12.5% {
+        opacity: 1;
+        transform: translateY(-3px);
+    }
 }
 
 .working-time {
@@ -627,29 +631,18 @@ span.tool-target {
     font-size: calc(13 * var(--sp));
 }
 
-/* Time, copy and rewind appear with the pointer, in the gap under the bubble. */
+/* Copy and Rewind, always there under the bubble, in the flow: what comes next starts below them. Their glyphs line
+   up with the bubble's right edge (a 28 px button around a 14 px glyph: 7 px either side). */
 .msg-actions {
-    position: absolute;
-    top: 100%;
-    right: 0;
-    z-index: 2;
     display: flex;
     align-items: center;
     gap: calc(2 * var(--sp));
-    height: calc(24 * var(--sp));
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 0.12s;
+    margin: calc(-4 * var(--sp)) calc(-7 * var(--sp)) 0 0;
 }
 
-.msg-user:hover .msg-actions,
-.msg-user:focus-within .msg-actions {
-    opacity: 1;
-    pointer-events: auto;
-}
-
+/* A sub-agent's task (Agents.tsx): when it was handed over, its text on the bubble's edge. */
 .msg-time {
-    margin-right: calc(6 * var(--sp));
+    margin-right: calc(7 * var(--sp));
     color: var(--text-3);
     font-size: calc(11.5 * var(--sp));
     font-variant-numeric: tabular-nums;
@@ -660,28 +653,19 @@ span.tool-target {
     pointer-events: none;
 }
 
+/* Under a finished turn: Copy, Fork and when the response came in, always there, the first glyph on the prose's left edge. */
 .turn-foot {
-    position: absolute;
-    top: 100%;
-    left: calc(-7 * var(--sp));
-    z-index: 2;
     display: flex;
+    align-items: center;
     gap: calc(2 * var(--sp));
-    height: calc(22 * var(--sp));
-    margin-top: calc(2 * var(--sp));
-    opacity: 0;
-    transition: opacity 0.12s;
-}
-
-.turn-foot-last {
-    position: static;
     margin: calc(-6 * var(--sp)) 0 calc(-6 * var(--sp)) calc(-7 * var(--sp));
 }
 
-.turn:hover .turn-foot,
-.turn-foot:focus-within,
-.turn-foot-last {
-    opacity: 1;
+.turn-time {
+    margin-left: calc(6 * var(--sp));
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
+    font-variant-numeric: tabular-nums;
 }
 
 .peer {
@@ -714,7 +698,6 @@ span.tool-target {
 /* ---------- work log ---------- */
 
 .worklog,
-.think,
 .agents,
 .say {
     margin: calc(-3 * var(--sp)) 0;

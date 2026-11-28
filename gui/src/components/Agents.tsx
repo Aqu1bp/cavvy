@@ -134,7 +134,7 @@ export function AgentView(p: { handle: SessionHandle; agent: AgentRun }) {
     const line = createMemo(() => {
         if (!live(a())) return undefined;
         if (a().status === "waiting") return { key: "wait", kind: "wait" as const, label: "Waiting for you" };
-        return liveLine({ blocks: a().blocks, activity: undefined, interactions: [], showThinking: prefs.showThinking });
+        return liveLine({ blocks: a().blocks, activity: undefined, interactions: [], showThinking: prefs.showThinking, cwd: st().cwd, home: app.hello?.homeDir });
     });
     /** What it's waiting on you for (its own sub-agents' requests too): answered here as in the session. */
     const asks = () => st().interactions.filter((i) => i.kind === "permission" && i.agentId !== undefined && within(p.handle.view.agents, i.agentId, a().id));

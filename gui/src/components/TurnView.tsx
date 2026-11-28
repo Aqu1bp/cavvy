@@ -1,6 +1,7 @@
 import { RenderBoundary } from "./ui/ErrorBoundary";
 import { createComputed, createEffect, createMemo, createResource, createSignal, For, Index, Match, on, onCleanup, Show, Switch, untrack } from "solid-js";
-import { AlertTriangle, ArrowUpRight, BellRing, ChevronRight, Clock, CornerDownRight, Folder, FolderGit2, MessageSquareText, Square, ExternalLink, SquareTerminal } from "lucide-solid";
+import { AlertTriangle, ArrowUpRight, BellRing, ChevronRight, Clock, CornerDownRight, Folder, FolderGit2, GitFork, MessageSquareText, RotateCcw, Square, ExternalLink, SquareTerminal } from "lucide-solid";
+import { tip } from "../lib/tip";
 import type { AgentRun, Block, CompactBlock, FileDiff as Diff, ImportedBlock, NoticeBlock, PeerBlock, SessionState, ShellBlock, TextBlock, ThinkingBlock, Turn, TurnPlace } from "@shared/protocol";
 import { basename, firstChangedLine, plural, promptTime, shortPrompt, stripAnsi, tildify } from "../lib/format";
 import { cardShape, incompleteLine, PLACES_SHOWN, placeRows, placesTotal, WHO_NAMED, workers, type OwnPlace } from "../lib/turn-places";
@@ -132,6 +133,7 @@ function PeerQuote(p: { from: { id: string; title: string }; /** The session it 
 export function UserPrompt(p: { turn: Turn; sessionId?: string; onRewind?: (index: number) => void }) {
     const [expanded, setExpanded] = createSignal(false);
     const raw = () => p.turn.prompt?.text ?? "";
+    const canRewind = () => p.turn.prompt?.index != null && Boolean(p.onRewind) && !p.turn.archived;
     /** What was typed, and the review comments sent with it (drawn as cards, not markup). */
     const parts = createMemo(() => splitComments(raw()));
     const text = () => parts().text;
@@ -159,8 +161,7 @@ export function UserPrompt(p: { turn: Turn; sessionId?: string; onRewind?: (inde
             </div>
         );
     }
-    // At the right, as wide as its text: attachments above it, and under it (over the gap, on hover
-    // or focus) when it was sent, Copy and Rewind.
+    // At the right, as wide as its text: attachments above it, and under it, always there, Copy and Rewind.
     return (
         <div class={`msg-user ${p.turn.prompt?.steered ? "steered" : ""}`}>
             {/* Sent while the turn before ran, and joined it at its next step (that turn ended for it). */}
@@ -219,23 +220,18 @@ export function UserPrompt(p: { turn: Turn; sessionId?: string; onRewind?: (inde
                     </For>
                 </div>
             </Show>
+            <Show when={raw().trim() || canRewind()}>
             <div class="msg-actions" data-find-skip>
-                <Show when={p.turn.startedAt}>
-                    {(at) => (
-                        <time class="msg-time" dateTime={new Date(at()).toISOString()} title={new Date(at()).toLocaleString()}>
-                            {promptTime(at())}
-                        </time>
-                    )}
-                </Show>
                 <Show when={raw().trim()}>
-                    <CopyButton text={raw} label="Copy prompt" words="Copy prompt" />
+                    <CopyButton text={raw} label="Copy prompt" />
                 </Show>
-                <Show when={p.turn.prompt?.index != null && p.onRewind && !p.turn.archived}>
-                    <button class="copy-btn" aria-label="Rewind to before this prompt" onClick={() => p.onRewind!(p.turn.prompt!.index!)}>
-                        Rewind to before this prompt
+                <Show when={canRewind()}>
+                    <button class="icon-btn" {...tip("Rewind to before this prompt")} aria-label="Rewind to before this prompt" onClick={() => p.onRewind!(p.turn.prompt!.index!)}>
+                        <RotateCcw size={14} />
                     </button>
                 </Show>
             </div>
+            </Show>
         </div>
     );
 }
@@ -636,6 +632,8 @@ type TurnViewProps = {
     onToggleWork?: (el: HTMLElement, toggle: () => void) => void;
     /** Ended by a steer whose turn (or one after it) still runs: its work stays open until that chain ends. */
     held?: boolean;
+    /** A turn such a steer ended shows a call still under way as a row (Transcript): the live line doesn't name it again. */
+    rowsLive?: () => boolean;
     /** The turn's element, once (Transcript tracks how far it is from the view, and finds it by id). */
     onElement?: (el: HTMLElement, turnId: string) => void;
     /** The work, faded out, folds away now (`fold`): Transcript keeps what's in sight from jumping as it does. */
@@ -673,7 +671,7 @@ function TurnViewContent(p: TurnViewProps) {
     const live = () => running() && p.last && p.state.busy;
     const writing = () => live() && p.state.activity?.label === "Writing";
     // The turn's one indicator, at its end: what's under way now (nothing while the answer streams).
-    const line = createMemo(() => (live() ? liveLine({ blocks: p.turn.blocks, activity: p.state.activity, interactions: p.state.interactions, showThinking: prefs.showThinking }) : undefined));
+    const line = createMemo(() => (live() ? liveLine({ blocks: p.turn.blocks, activity: p.state.activity, interactions: p.state.interactions, showThinking: prefs.showThinking, cwd: p.state.cwd, home: app.hello?.homeDir, rowsLive: p.rowsLive?.() }) : undefined));
     const lastBlockId = () => p.turn.blocks[p.turn.blocks.length - 1]?.id;
     /** The thought being written: the live line shows it, not a row. */
     const liveThought = (b: ThinkingBlock) => line()?.kind === "think" && b.durationMs === undefined && b.id === lastBlockId();
@@ -893,16 +891,26 @@ function TurnViewContent(p: TurnViewProps) {
                                 <span class="stopped-line" />
                             </div>
                         </Show>
-                        <div class={`turn-foot ${p.last ? "turn-foot-last" : ""}`}>
+                        <Show when={reply().trim() || (p.onFork && !p.turn.archived) || p.turn.endedAt}>
+                        <div class="turn-foot" data-find-skip>
                             <Show when={reply().trim()}>
-                                <CopyButton text={reply} label="Copy response" words="Copy response" />
+                                <CopyButton text={reply} label="Copy response" />
                             </Show>
                             <Show when={p.onFork && !p.turn.archived}>
-                                <button class="copy-btn" onClick={() => p.onFork?.()}>
-                                    Fork from here
+                                <button class="icon-btn" {...tip("Fork from here")} aria-label="Fork from here" onClick={() => p.onFork?.()}>
+                                    <GitFork size={14} />
                                 </button>
                             </Show>
+                            {/* When the response came in. */}
+                            <Show when={p.turn.endedAt}>
+                                {(at) => (
+                                    <time class="turn-time" dateTime={new Date(at()).toISOString()} {...tip(new Date(at()).toLocaleString())}>
+                                        {promptTime(at())}
+                                    </time>
+                                )}
+                            </Show>
                         </div>
+                        </Show>
                     </Show>
                     <Show when={live()}>
                         <LiveLine state={line()} stop />

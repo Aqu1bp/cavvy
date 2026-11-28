@@ -1,4 +1,5 @@
 import { boundary } from "../helpers/render-boundary";
+import { tip } from "../../gui/src/lib/tip";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import * as solid from "../../gui/node_modules/solid-js/dist/solid.js";
@@ -26,6 +27,8 @@ const scope = {
     // Each state here is a moment of its own, long after the last: the line moves on at once (its dwell is gui-fast-pacing's).
     dwellLeft: () => 0,
     ActivityGroup: stub, Markdown: stub, CopyButton: stub, Spinner: stub, Thinking: stub, Notice: stub,
+    // The drawn tooltips (lib/tip.ts), and the app with no server hello (no home folder to name files from).
+    tip, app: {},
     // The run's line (Activity.tsx): here just what it opens into, the steps' rows.
     WorkRun: (p: any) => p.children,
     // A running command opens to its row's block (Activity.tsx), kept in the rows' folds.
@@ -174,7 +177,19 @@ try {
     const ends = all(stopped).filter((n) => hasClass(n, "end-note"));
     assert.equal(ends.length, 1, "a stopped turn with no output shows the stop line");
     assert.ok(text(ends[0]!).includes("Stopped"));
+    // Under it, when it ended: the time, as a prompt's time is written.
+    const times = all(stopped).filter((n) => hasClass(n, "turn-time"));
+    assert.equal(times.length, 1, "a finished turn says when it ended");
+    assert.equal(text(times[0]!), format.promptTime(1200));
     disposeStopped();
+    // A call a steer's turn before shows as its row (Transcript's rowsLive): the line under this turn names nothing.
+    const steered = node("root");
+    const disposeSteered = renderer.render(() => TurnView({ turn: { id: "steered", status: "running", archived: true, startedAt: 1000, prompt: { text: "also lint", steered: true }, blocks: [] }, state: { ...state(), busy: true, interactions: [], activity: { label: "Running bun run typecheck", since: 2000 } }, last: true, rowsLive: () => true } as never), steered);
+    const bare = all(steered).filter((n) => hasClass(n, "layer"));
+    assert.equal(bare.length, 1, "one line");
+    assert.ok(!text(bare[0]!).includes("typecheck") && !text(bare[0]!).includes("Running"), `no words on it: "${text(bare[0]!)}"`);
+    assert.ok(text(bare[0]!).endsWith("s"), `its time alone: "${text(bare[0]!)}"`);
+    disposeSteered();
     // A command it started that outlasts it: the line doesn't say nothing ran.
     const ran = (task: Record<string, unknown>) => {
         const root = node("root");
