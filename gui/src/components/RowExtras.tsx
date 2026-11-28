@@ -130,8 +130,8 @@ function askCustom(ids: readonly string[]) {
                     <Show when={problem()}>{(p) => <p id="snz-problem" class="snz-problem" role="alert">{p()}</p>}</Show>
                     <div class="dialog-actions">
                         <span class="grow" />
-                        <button type="button" class="btn ghost" onClick={close}>Cancel</button>
-                        <button type="submit" class="btn primary">Snooze</button>
+                        <button type="button" class="btn btn-ghost" onClick={close}>Cancel</button>
+                        <button type="submit" class="btn btn-primary">Snooze</button>
                     </div>
                 </form>
             </Dialog>
@@ -169,7 +169,7 @@ function BulkItems(p: { plan: BulkPlan; close: () => void; clear: () => void }) 
     const n = (ids: readonly string[]) => sessionCount(ids.length);
     return (
         <>
-            <div class="menu-head">{n(plan.delete)} selected</div>
+            <div class="menu-label">{n(plan.delete)} selected</div>
             <Show when={plan.settle.length}>
                 <button role="menuitem" class="menu-item compact" onClick={() => (p.close(), void settleSessions(plan.settle, true))}>
                     <CheckCheck size={14} /> Settle {n(plan.settle)}

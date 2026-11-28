@@ -398,7 +398,6 @@ function Appearance() {
                 {/* The scheme picks which of a theme's looks shows, so it sits with them; a theme with one look sets it. */}
                 <Row title="Color scheme" desc={forcedScheme() ? `${themeTraits()?.name ?? "This theme"} is ${forcedScheme()} only.` : undefined} changed={prefs.scheme !== PREF_DEFAULTS.scheme} reset={() => setPrefs("scheme", PREF_DEFAULTS.scheme)}>
                     <Segmented
-                        size="sm"
                         label="Color scheme"
                         value={prefs.scheme}
                         onChange={(v) => setPrefs("scheme", v)}
@@ -429,7 +428,6 @@ function Appearance() {
                 <Show when={!scened()}>
                     <Row title="Window" desc="How much of your desktop shows through the sidebar." changed={prefs.glass !== PREF_DEFAULTS.glass} reset={() => setPrefs("glass", PREF_DEFAULTS.glass)}>
                         <Segmented
-                            size="sm"
                             label="Window"
                             value={prefs.glass}
                             onChange={(v) => setPrefs("glass", v)}
@@ -452,7 +450,6 @@ function Appearance() {
                 </Show>
                 <Row title="Contrast" desc="Stronger text and edges." changed={prefs.contrast !== PREF_DEFAULTS.contrast} reset={() => setPrefs("contrast", PREF_DEFAULTS.contrast)}>
                     <Segmented
-                        size="sm"
                         label="Contrast"
                         value={prefs.contrast}
                         onChange={(v) => setPrefs("contrast", v)}
@@ -484,7 +481,6 @@ function Appearance() {
                 </div>
                 <Row title="Density" desc="Row and header height across the app." changed={prefs.density !== PREF_DEFAULTS.density} reset={() => setPrefs("density", PREF_DEFAULTS.density)}>
                     <Segmented
-                        size="sm"
                         label="Density"
                         value={prefs.density}
                         onChange={(v) => setPrefs("density", v)}
@@ -496,7 +492,6 @@ function Appearance() {
                 </Row>
                 <Row title="Chat width" desc="How wide the conversation can grow on a big window." changed={prefs.chatWidth !== PREF_DEFAULTS.chatWidth} reset={() => setPrefs("chatWidth", PREF_DEFAULTS.chatWidth)}>
                     <Segmented
-                        size="sm"
                         label="Chat width"
                         value={prefs.chatWidth}
                         onChange={(v) => setPrefs("chatWidth", v)}
@@ -505,7 +500,6 @@ function Appearance() {
                 </Row>
                 <Row title="Panel animations" desc="Panels and menus. Your system's reduced-motion setting always wins." changed={prefs.motion !== PREF_DEFAULTS.motion} reset={() => setPrefs("motion", PREF_DEFAULTS.motion)}>
                     <Segmented
-                        size="sm"
                         label="Panel animations"
                         value={prefs.motion}
                         onChange={(v) => setPrefs("motion", v)}
@@ -631,14 +625,14 @@ function ProviderRow(p: { pr: ProviderInfo }) {
         <>
             <Show when={commandIn(message)}>
                 {(command) => (
-                    <button class="btn ghost sm" onClick={() => void copyCommand(command())}>
+                    <button class="btn btn-ghost btn-sm" onClick={() => void copyCommand(command())}>
                         <Copy size={13} />
                         Copy command
                     </button>
                 )}
             </Show>
             <Show when={retry}>
-                <button class="btn primary sm" disabled={busy()} onClick={() => retry!()}>
+                <button class="btn btn-primary btn-sm" disabled={busy()} onClick={() => retry!()}>
                     <Show when={busy()} fallback="Check again">
                         <Spinner size={12} />
                         Checking
@@ -735,7 +729,7 @@ function ProviderRow(p: { pr: ProviderInfo }) {
                                                 Get a key <ExternalLink size={11} />
                                             </button>
                                         </Show>
-                                        <button class="btn secondary sm" aria-expanded={adding()} onClick={() => setAdding(!adding())}>
+                                        <button class="btn btn-sm" aria-expanded={adding()} onClick={() => setAdding(!adding())}>
                                             Add key
                                         </button>
                                     </Show>
@@ -752,7 +746,7 @@ function ProviderRow(p: { pr: ProviderInfo }) {
             <Show when={adding()}>
                 <div class="prov-add">
                     <input class="input mono" type="password" autofocus aria-label={`${p.pr.name} key`} placeholder={`Paste your ${p.pr.name} key`} value={key()} onInput={(e) => setKey(e.currentTarget.value)} onKeyDown={(e) => e.key === "Enter" && void save()} />
-                    <button class="btn primary sm" disabled={!key().trim() || busy()} onClick={() => void save()}>
+                    <button class="btn btn-primary btn-sm" disabled={!key().trim() || busy()} onClick={() => void save()}>
                         {busy() ? <Spinner size={12} /> : "Save"}
                     </button>
                 </div>
@@ -796,7 +790,7 @@ function ProviderSections(p: { noSubscriptions?: boolean; localOnly?: boolean; s
     const keyBox = () => (
         <div class="keyin">
             <input class="input mono" type="password" aria-label="API key" placeholder="Paste a key from any provider" value={key()} onInput={(e) => setKey(e.currentTarget.value)} onKeyDown={(e) => e.key === "Enter" && void quickAdd()} />
-            <button class="btn primary sm" disabled={!key().trim() || busy()} onClick={() => void quickAdd()}>
+            <button class="btn btn-primary btn-sm" disabled={!key().trim() || busy()} onClick={() => void quickAdd()}>
                 {busy() ? <Spinner size={12} /> : "Add"}
             </button>
         </div>
@@ -979,11 +973,11 @@ function Shortcuts() {
                     desc={<a href={KEYBINDINGS_DOCS} onClick={(e) => { e.preventDefault(); void openExternal(KEYBINDINGS_DOCS); }}>File format</a>}
                 >
                     <span class="sc-file-actions">
-                        <Show when={exists()} fallback={<button class="btn sm" disabled={creating()} onClick={() => void create()}><Plus size={14} /> Create file</button>}>
-                            <button class="btn sm" onClick={() => void copyPath()}><Copy size={14} /> Copy path</button>
+                        <Show when={exists()} fallback={<button class="btn btn-sm" disabled={creating()} onClick={() => void create()}><Plus size={14} /> Create file</button>}>
+                            <button class="btn btn-sm" onClick={() => void copyPath()}><Copy size={14} /> Copy path</button>
                         </Show>
                         <Show when={canReveal && exists()}>
-                            <button class="btn sm" onClick={() => void revealPath(path())}><FolderOpen size={14} /> Show</button>
+                            <button class="btn btn-sm" onClick={() => void revealPath(path())}><FolderOpen size={14} /> Show</button>
                         </Show>
                     </span>
                 </Row>
@@ -1026,17 +1020,17 @@ function Updates() {
                         <Show when={!v().busy && v().action} fallback={<Show when={v().busy}><Spinner size={16} class="upd-spin" /></Show>}>
                             {(a) => (
                                 <>
-                                    <button class="btn sm" disabled={asking()} onClick={() => void check()}>Check now</button>
+                                    <button class="btn btn-sm" disabled={asking()} onClick={() => void check()}>Check now</button>
                                     <Show when={v().notes}>
-                                        {(url) => <button class="btn ghost sm" onClick={() => void openExternal(url())}>Release notes <ExternalLink size={12} /></button>}
+                                        {(url) => <button class="btn btn-ghost btn-sm" onClick={() => void openExternal(url())}>Release notes <ExternalLink size={12} /></button>}
                                     </Show>
                                     <Show when={a() === "update"}>
-                                        <button class="btn primary sm" disabled={update.pending()} onClick={update.request}>
+                                        <button class="btn btn-primary btn-sm" disabled={update.pending()} onClick={update.request}>
                                             <Download size={14} /> Update &amp; restart
                                         </button>
                                     </Show>
                                     <Show when={a() === "restart"}>
-                                        <button class="btn primary sm" disabled={update.pending()} onClick={update.request}>
+                                        <button class="btn btn-primary btn-sm" disabled={update.pending()} onClick={update.request}>
                                             <RotateCcw size={14} /> Restart
                                         </button>
                                     </Show>
@@ -1060,7 +1054,7 @@ function Updates() {
                         <div class="upd-error" role="alert">
                             <CircleAlert size={14} />
                             <span>{u().failed}</span>
-                            <Show when={canReveal && u().log}><button class="btn ghost sm" onClick={() => void revealPath(u().log!)}>Show log</button></Show>
+                            <Show when={canReveal && u().log}><button class="btn btn-ghost btn-sm" onClick={() => void revealPath(u().log!)}>Show log</button></Show>
                         </div>
                     </Show>
                     <Show when={!u().updating && u().error}>

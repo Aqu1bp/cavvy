@@ -344,10 +344,10 @@ function AddServerDialog() {
                                 <input class="input" value={identity()} onInput={(e) => setIdentity(e.currentTarget.value)} placeholder="Optional" autocapitalize="off" spellcheck={false} />
                             </label>
                             <div class="server-actions">
-                                <button type="button" class="btn secondary" onClick={close}>
+                                <button type="button" class="btn" onClick={close}>
                                     Cancel
                                 </button>
-                                <button type="submit" class="btn primary" disabled={!name().trim() || !destination().trim()}>
+                                <button type="submit" class="btn btn-primary" disabled={!name().trim() || !destination().trim()}>
                                     Add
                                 </button>
                             </div>
@@ -373,10 +373,10 @@ function AddServerDialog() {
                                 <h2 id={titleId}>Trust {s().unknown.host}?</h2>
                                 <HostKey unknown={s().unknown} />
                                 <div class="server-actions">
-                                    <button class="btn secondary" onClick={() => setStep({ at: "form" })}>
+                                    <button class="btn" onClick={() => setStep({ at: "form" })}>
                                         Cancel
                                     </button>
-                                    <button class="btn primary" onClick={() => void add(s().unknown.fingerprints)}>
+                                    <button class="btn btn-primary" onClick={() => void add(s().unknown.fingerprints)}>
                                         Trust
                                     </button>
                                 </div>
@@ -391,10 +391,10 @@ function AddServerDialog() {
                                 </h2>
                                 <p class="muted">Settings, skills, plugins and API keys. Sign-ins stay on each machine.</p>
                                 <div class="server-actions">
-                                    <button class="btn secondary" onClick={() => void sync(false)}>
+                                    <button class="btn" onClick={() => void sync(false)}>
                                         Not now
                                     </button>
-                                    <button class="btn primary" autofocus onClick={() => void sync(true)}>
+                                    <button class="btn btn-primary" autofocus onClick={() => void sync(true)}>
                                         Sync
                                     </button>
                                 </div>
@@ -414,10 +414,10 @@ function AddServerDialog() {
                                     </ul>
                                 </Show>
                                 <div class="server-actions">
-                                    <button class="btn secondary" onClick={close}>
+                                    <button class="btn" onClick={close}>
                                         Close
                                     </button>
-                                    <button class="btn primary" onClick={() => switchMachine(s().name)}>
+                                    <button class="btn btn-primary" onClick={() => switchMachine(s().name)}>
                                         Open {s().name}
                                     </button>
                                 </div>
@@ -430,10 +430,10 @@ function AddServerDialog() {
                                 <h2 id={titleId}>Couldn't add {name().trim() || "the server"}</h2>
                                 <Problem problem={s().problem} />
                                 <div class="server-actions">
-                                    <button class="btn secondary" onClick={close}>
+                                    <button class="btn" onClick={close}>
                                         Cancel
                                     </button>
-                                    <button class="btn primary" onClick={() => setStep({ at: "form" })}>
+                                    <button class="btn btn-primary" onClick={() => setStep({ at: "form" })}>
                                         Back
                                     </button>
                                 </div>
@@ -474,7 +474,7 @@ function MachineCover(p: { reconnect: () => void }) {
     };
     // Made anew wherever it's shown: one element can't be in two of the states below.
     const Back = () => (
-        <button class="btn secondary" onClick={() => switchMachine(undefined)}>
+        <button class="btn" onClick={() => switchMachine(undefined)}>
             {HERE}
         </button>
     );
@@ -506,11 +506,11 @@ function MachineCover(p: { reconnect: () => void }) {
                     <h2>Stop work on {machine} to update?</h2>
                     <p class="muted">{busy()}</p>
                     <div class="server-actions">
-                        <button class="btn secondary" onClick={() => setBusy(undefined)}>
+                        <button class="btn" onClick={() => setBusy(undefined)}>
                             Cancel
                         </button>
                         <button
-                            class="btn danger"
+                            class="btn btn-danger-solid"
                             onClick={() => {
                                 setBusy(undefined);
                                 void update(true);
@@ -542,7 +542,7 @@ function MachineCover(p: { reconnect: () => void }) {
                             <div class="server-actions">
                                 <Back />
                                 <button
-                                    class="btn primary"
+                                    class="btn btn-primary"
                                     onClick={() => {
                                         trustMachine(i().unknown.fingerprints);
                                         retry();
@@ -562,7 +562,7 @@ function MachineCover(p: { reconnect: () => void }) {
                             <Show when={i().problem}>{(p) => <Problem problem={p()} />}</Show>
                             <div class="server-actions">
                                 <Back />
-                                <button class="btn primary" onClick={() => void update()}>
+                                <button class="btn btn-primary" onClick={() => void update()}>
                                     Update {machine}
                                 </button>
                             </div>
@@ -575,7 +575,7 @@ function MachineCover(p: { reconnect: () => void }) {
                     <p class="muted">It was stopped there.</p>
                     <div class="server-actions">
                         <Back />
-                        <button class="btn primary" onClick={retry}>
+                        <button class="btn btn-primary" onClick={retry}>
                             Start
                         </button>
                     </div>
@@ -588,7 +588,7 @@ function MachineCover(p: { reconnect: () => void }) {
                             <Problem problem={i().problem} />
                             <div class="server-actions">
                                 <Back />
-                                <button class="btn primary" onClick={retry}>
+                                <button class="btn btn-primary" onClick={retry}>
                                     Try again
                                 </button>
                             </div>

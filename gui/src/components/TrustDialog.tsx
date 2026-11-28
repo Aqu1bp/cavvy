@@ -46,10 +46,10 @@ export function TrustDialog() {
                     <p class="muted">Its configuration ({info()!.needsTrust.join(", ")}) can run commands on {(trustRequest()?.on ?? machine) || "this computer"} and let the agent act without asking.</p>
                 </Show>
                 <div class="trust-actions">
-                    <button class="btn secondary" onClick={() => upgrade() ? cancel() : void decide(false)}>
+                    <button class="btn" onClick={() => upgrade() ? cancel() : void decide(false)}>
                         {upgrade() ? "Cancel" : "Ignore its configuration"}
                     </button>
-                    <button class="btn primary" onClick={() => void decide(true)}>
+                    <button class="btn btn-primary" onClick={() => void decide(true)}>
                         Trust this folder
                     </button>
                 </div>

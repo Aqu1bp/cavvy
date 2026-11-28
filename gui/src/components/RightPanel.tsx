@@ -40,7 +40,7 @@ function WorkspaceButton(p: { handle: SessionHandle }) {
                 <FolderGit2 size={16} />
             </button>
             <Menu label="Workspace actions" open={menu()} anchor={() => btn} onClose={close} align="end" width={244}>
-                <div class="menu-head insp-ws" title={tildify(st().cwd, app.hello?.homeDir)}>
+                <div class="menu-label insp-ws" title={tildify(st().cwd, app.hello?.homeDir)}>
                     <span class="truncate">{st().projectName}</span>
                     <Show when={st().branch}>
                         <span class="insp-ws-br truncate" title="Git branch">

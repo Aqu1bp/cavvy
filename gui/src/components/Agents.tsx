@@ -254,11 +254,11 @@ export function AgentView(p: { handle: SessionHandle; agent: AgentRun }) {
                                 {model()}<Show when={a().effort}>{(effort) => ` · ${effort()}`}</Show>
                             </span>
                             <span class="grow" />
-                            <button class="btn sm" onClick={back} title={parent() ? `Back to ${parentName()}` : "Back to session"}>
+                            <button class="btn btn-sm" onClick={back} title={parent() ? `Back to ${parentName()}` : "Back to session"}>
                                 <ArrowLeft size={13} /> Back <kbd>Esc</kbd>
                             </button>
                             <Show when={live(a()) && a().taskId}>
-                                <button class="btn sm deny" onClick={() => void stopAgent(p.handle.id, a().id)}>
+                                <button class="btn btn-sm deny" onClick={() => void stopAgent(p.handle.id, a().id)}>
                                     <svg width="9" height="9" viewBox="0 0 10 10" aria-hidden="true">
                                         <rect width="10" height="10" rx="2" fill="currentColor" />
                                     </svg>

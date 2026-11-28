@@ -159,7 +159,7 @@
     color: var(--accent);
 }
 
-.rv-vm .menu-label.truncate {
+.rv-vm .menu-item-name.truncate {
     display: block;
 }
 

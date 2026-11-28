@@ -118,7 +118,7 @@ export function ProjectScripts(p: { cwd: string; sessionId?: string }) {
                 </Show>
             </div>
             <Popover open={open()} anchor={() => anchor} onClose={close} align="end" width={320} class="scripts-menu">
-                <div class="menu-head">Project scripts</div>
+                <div class="menu-label">Project scripts</div>
                 <Show when={failed()}>
                     <div class="menu-note tone-err scripts-note">{failed()}</div>
                 </Show>
@@ -139,14 +139,14 @@ export function ProjectScripts(p: { cwd: string; sessionId?: string }) {
                         <div class={`script-row ${confirming() === s.id ? "confirming" : ""}`}>
                             <button class="menu-item compact script-run" title={`Run in a new terminal: ${s.command}`} disabled={offline()} onClick={() => run(s)}>
                                 <ScriptGlyph icon={s.icon} size={14} />
-                                <span class="menu-text">
+                                <span class="menu-item-text">
                                     <span class="script-name">
-                                        <span class="menu-label truncate">{s.name}</span>
+                                        <span class="menu-item-name truncate">{s.name}</span>
                                         <Show when={s.runOnWorktreeCreate}>
                                             <span class="dbadge script-badge" title="Runs in each worktree you create from Cavvy">Setup</span>
                                         </Show>
                                     </span>
-                                    <span class="menu-desc mono truncate">{s.command}</span>
+                                    <span class="menu-item-sub mono truncate">{s.command}</span>
                                 </span>
                             </button>
                             <span class="script-acts">
@@ -168,8 +168,8 @@ export function ProjectScripts(p: { cwd: string; sessionId?: string }) {
                                         </>
                                     }
                                 >
-                                    <button class="btn danger sm" onClick={() => void remove(s)}>Delete</button>
-                                    <button class="btn ghost sm" onClick={() => setConfirming(undefined)}>Keep</button>
+                                    <button class="btn btn-danger-solid btn-sm" onClick={() => void remove(s)}>Delete</button>
+                                    <button class="btn btn-ghost btn-sm" onClick={() => setConfirming(undefined)}>Keep</button>
                                 </Show>
                             </span>
                         </div>
@@ -273,9 +273,9 @@ function ScriptDialog(p: { cwd: string; link: Rpc; online: boolean; scripts: Pro
                 <div class="script-field-error" role="alert">{error()}</div>
             </Show>
             <div class="dialog-actions">
-                <button class="btn ghost" onClick={p.onClose}>Cancel</button>
+                <button class="btn btn-ghost" onClick={p.onClose}>Cancel</button>
                 <span class="grow" />
-                <button class="btn primary" disabled={!ready() || !p.online} onClick={() => void save()}>
+                <button class="btn btn-primary" disabled={!ready() || !p.online} onClick={() => void save()}>
                     {p.editing?.script ? "Save" : "Add script"}
                 </button>
             </div>

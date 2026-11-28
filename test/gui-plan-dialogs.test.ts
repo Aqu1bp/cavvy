@@ -142,8 +142,8 @@ test("Archive only is focused by default, and an ineligible worktree has no remo
     const calls: any[] = [];
     const d = archiveDialog(false, async (method, params) => { calls.push({ method, params }); return null; });
     try {
-        expect(d.nodes.filter((n) => n.props.class === "btn danger")).toHaveLength(0);
-        const safe = d.nodes.find((n) => n.props.class === "btn primary");
+        expect(d.nodes.filter((n) => n.props.class === "btn btn-danger-solid")).toHaveLength(0);
+        const safe = d.nodes.find((n) => n.props.class === "btn btn-primary");
         expect(safe.props.autofocus).toBe(true);
         safe.props.onClick();
         await settle();
@@ -157,7 +157,7 @@ test("Archive only prevents double submission and keeps the dialog on failure", 
     let calls = 0;
     const d = archiveDialog(true, () => { calls++; return pending.promise; });
     try {
-        const safe = d.nodes.find((n) => n.props.class === "btn primary");
+        const safe = d.nodes.find((n) => n.props.class === "btn btn-primary");
         safe.props.onClick();
         safe.props.onClick();
         expect(calls).toBe(1);
@@ -179,12 +179,12 @@ test("archive removal forwards an ignored-files token only after the second expl
             : { archived: true, removed: true, closed: true };
     });
     try {
-        d.nodes.find((n) => n.props.class === "btn danger").props.onClick();
+        d.nodes.find((n) => n.props.class === "btn btn-danger-solid").props.onClick();
         await settle();
         expect(d.results).toHaveLength(0);
         expect(d.closes).toBe(0);
         expect(calls).toEqual([{ id: "session", archived: true, removeWorktree: true, deleteIgnored: undefined }]);
-        d.nodes.filter((n) => n.props.class === "btn danger").at(-1).props.onClick();
+        d.nodes.filter((n) => n.props.class === "btn btn-danger-solid").at(-1).props.onClick();
         await settle();
         expect(calls[1].deleteIgnored).toBe("shown-files");
         expect(d.results).toEqual([{ id: "session", archived: true, removed: true, closed: true }]);

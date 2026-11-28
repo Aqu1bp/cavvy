@@ -4,6 +4,7 @@ import type { ToolBlock } from "@shared/protocol";
 import { ActivityGroup } from "../src/components/blocks/Activity";
 import "../src/styles/tokens.css";
 import "../src/styles/base.css";
+import "../src/styles/kit.css";
 import "../src/styles/transcript.css";
 // The app's other styles are on the page too (a class of the same name there once made rows taller).
 import "../src/styles/panel.css";

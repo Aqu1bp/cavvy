@@ -134,7 +134,7 @@ export function EnvEditor(p: { rows: EnvRow[]; onChange: (rows: EnvRow[]) => voi
                     );
                 }}
             </Index>
-            <button ref={addButton} type="button" class="btn ghost sm env-add" disabled={p.disabled} onClick={add}>
+            <button ref={addButton} type="button" class="btn btn-ghost btn-sm env-add" disabled={p.disabled} onClick={add}>
                 <Plus size={13} />
                 Add variable
             </button>
@@ -147,10 +147,10 @@ function Actions(p: { busy: boolean; blocked: boolean; label: string; onCancel: 
     return (
         <div class="dialog-actions">
             <span class="grow" />
-            <button type="button" class="btn ghost" disabled={p.busy} onClick={() => p.onCancel()}>
+            <button type="button" class="btn btn-ghost" disabled={p.busy} onClick={() => p.onCancel()}>
                 Cancel
             </button>
-            <button type="button" class="btn primary" disabled={p.busy || p.blocked} aria-busy={p.busy} onClick={() => p.onSave()}>
+            <button type="button" class="btn btn-primary" disabled={p.busy || p.blocked} aria-busy={p.busy} onClick={() => p.onSave()}>
                 {p.busy ? <Spinner size={12} /> : p.label}
             </button>
         </div>

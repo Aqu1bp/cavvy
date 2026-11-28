@@ -9,6 +9,7 @@ import { buildComment, type ReviewComment } from "../src/lib/review-comments";
 import { textRanges } from "../src/lib/find";
 import "../src/styles/tokens.css";
 import "../src/styles/base.css";
+import "../src/styles/kit.css";
 import "../src/styles/transcript.css";
 
 const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 30));
@@ -118,7 +119,7 @@ export async function checkDiffComments(root: HTMLElement) {
         await settle();
         ta = await type(root, "Both changed");
         // Esc on the box's buttons closes the box too, not the pane.
-        const cancel = root.querySelector<HTMLButtonElement>(".dc-box .btn.ghost")!;
+        const cancel = root.querySelector<HTMLButtonElement>(".dc-box .btn.btn-ghost")!;
         cancel.focus();
         const escButton = key(cancel, "Escape");
         await settle();
@@ -146,7 +147,7 @@ export async function checkDiffComments(root: HTMLElement) {
         key(rows, "Enter");
         await settle();
         ta = await type(root, "From the keyboard");
-        root.querySelector<HTMLButtonElement>(".dc-box .btn.primary")!.click();
+        root.querySelector<HTMLButtonElement>(".dc-box .btn.btn-primary")!.click();
         await settle();
         const kb = s.list()[1]!;
         check(kb.start.side === "new" && kb.start.line === 1 && kb.end.side === "old" && kb.end.line === 3, `keyboard comment covers new 1 to old 3 (${JSON.stringify([kb.start, kb.end])})`);
@@ -231,7 +232,7 @@ export async function checkDiffComments(root: HTMLElement) {
         s.setList((l) => l.map((c) => ({ ...c })));
         await settle();
         check(editBox()?.value === "Changed, not saved" && document.activeElement === editBox(), "and another window's write to the comments");
-        const save = root.querySelector<HTMLButtonElement>(".dc-box[data-edit] .btn.primary")!;
+        const save = root.querySelector<HTMLButtonElement>(".dc-box[data-edit] .btn.btn-primary")!;
         save.focus();
         const escSave = key(save, "Escape");
         await settle();

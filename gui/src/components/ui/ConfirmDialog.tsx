@@ -30,19 +30,25 @@ export function ConfirmDialog(p: {
             setBusy(false);
         }
     };
+    // The design's confirm: the question, one sentence under it, the buttons in the foot.
     return (
-        <Dialog open={p.open} onClose={close} title={p.title} width={460}>
-            <p>{p.children}</p>
-            <div class="dialog-actions">
-                <span class="grow" />
-                <button class="btn ghost" autofocus onClick={close}>
-                    {/* Once confirmed it can't be undone from here: closing leaves it running, and its result still shows. */}
-                    {isBusy() ? "Close" : "Cancel"}
-                </button>
-                <button class="btn danger" disabled={isBusy()} aria-busy={isBusy()} onClick={() => void confirm()}>
-                    {p.confirmLabel}
-                </button>
-            </div>
-        </Dialog>
+        <Dialog
+            open={p.open}
+            onClose={close}
+            title={p.title}
+            subtitle={p.children}
+            width={400}
+            footer={
+                <>
+                    <button class="btn" autofocus onClick={close}>
+                        {/* Once confirmed it can't be undone from here: closing leaves it running, and its result still shows. */}
+                        {isBusy() ? "Close" : "Cancel"}
+                    </button>
+                    <button class="btn btn-danger-solid" disabled={isBusy()} aria-busy={isBusy()} onClick={() => void confirm()}>
+                        {p.confirmLabel}
+                    </button>
+                </>
+            }
+        />
     );
 }

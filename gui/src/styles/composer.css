@@ -3274,7 +3274,7 @@ button.att-card:hover {
     margin-top: 0;
 }
 
-.mode-menu .menu-head kbd {
+.mode-menu .menu-label kbd {
     height: auto;
     padding: calc(3 * var(--sp)) calc(5 * var(--sp));
     font-size: 0.75rem;

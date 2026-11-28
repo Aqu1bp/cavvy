@@ -11,6 +11,8 @@ function dialogs() {
     let id = 0;
     const scope = {
         node, Show: "Show", Portal: "Portal", X: "X",
+        // solid-js's children(): the resolved children, and as a list.
+        children: (fn: () => unknown) => Object.assign(fn, { toArray: () => [fn()].flat() }),
         createUniqueId: () => `title-${++id}`,
         onMount() {}, onCleanup() {}, createSignal: (v: unknown) => [() => v, () => undefined], document: { activeElement: null },
     };
@@ -23,7 +25,8 @@ test("standard dialogs reference their own visible title, including simultaneous
     for (const title of ["Commit", "Delete conversation", "MCP servers", "Rewind"]) {
         const tree = render({ title, onClose() {}, children: "Content" });
         const dialog = elements(tree, "div").find((n) => n.props.role === "dialog")!;
-        const heading = elements(tree, "div").find((n) => n.props.id === dialog.props["aria-labelledby"])!;
+        // The design's heading (.dlg-title) is an h2.
+        const heading = elements(tree, "h2").find((n) => n.props.id === dialog.props["aria-labelledby"])!;
         expect(heading.children).toEqual([title]);
         expect(dialog.props["aria-modal"]).toBe("true");
         ids.add(heading.props.id);

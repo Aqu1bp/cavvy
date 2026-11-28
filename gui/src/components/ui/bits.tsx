@@ -4,8 +4,8 @@ import { copyText } from "../../lib/platform";
 
 export function Kbd(p: { keys: string }) {
     return (
-        <span class="kbd-row">
-            <For each={p.keys.split("+")}>{(k) => <kbd>{k}</kbd>}</For>
+        <span class="kbd-group">
+            <For each={p.keys.split("+")}>{(k) => <kbd class="kbd">{k}</kbd>}</For>
         </span>
     );
 }
@@ -38,7 +38,7 @@ export function CopyButton(p: { text: () => string; label?: string; class?: stri
     return (
         <button
             class={`${p.words ? "copy-btn" : "icon-btn"} ${p.class ?? ""}`}
-            title={p.words ? undefined : (p.label ?? "Copy")}
+            data-tip={p.words ? undefined : (p.label ?? "Copy")}
             aria-label={p.label ?? "Copy"}
             onClick={async (e) => {
                 e.stopPropagation();
@@ -65,8 +65,7 @@ export function Ring(p: { value: number; size?: number; stroke?: number; title?:
     const tone = () => p.tone === "danger" ? "var(--danger)" : p.tone === "warning" ? "var(--warn)" : p.tone === "normal" ? (p.neutral ? "var(--fg-2)" : "var(--accent)")
         : (v() >= 0.85 ? "var(--danger)" : v() >= 0.7 ? "var(--warn)" : p.neutral ? "var(--fg-2)" : "var(--accent)");
     return (
-        <svg class="ring" width={size} height={size} viewBox={`0 0 ${size} ${size}`} role="img" aria-label={p.title}>
-            <title>{p.title}</title>
+        <svg class="ring" width={size} height={size} viewBox={`0 0 ${size} ${size}`} role="img" aria-label={p.title} data-tip={p.title}>
             <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={p.neutral ? "color-mix(in srgb, var(--fg-2) 28%, transparent)" : "var(--line-strong)"} stroke-width={stroke} />
             <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={tone()} stroke-width={stroke} stroke-linecap="round" stroke-dasharray={`${c * v()} ${c}`} transform={`rotate(-90 ${size / 2} ${size / 2})`} />
         </svg>
@@ -77,8 +76,8 @@ export function Ring(p: { value: number; size?: number; stroke?: number; title?:
 /** `disabled`: can't be changed here (the row says why); shown as it acts, which may not be the saved choice. */
 export function Toggle(p: { checked: boolean; onChange: (v: boolean) => void; label?: string; tone?: "danger"; disabled?: boolean }) {
     return (
-        <button class={`toggle ${p.checked ? "on" : ""} ${p.tone ?? ""}`} role="switch" aria-checked={p.checked} aria-label={p.label} disabled={p.disabled} onClick={() => p.onChange(!p.checked)}>
-            <span class="toggle-knob" />
+        <button class="switch" role="switch" aria-checked={p.checked} aria-label={p.label} data-danger={p.tone === "danger" || undefined} disabled={p.disabled} onClick={() => p.onChange(!p.checked)}>
+            <span class="switch-knob" />
         </button>
     );
 }
@@ -87,10 +86,10 @@ export function Toggle(p: { checked: boolean; onChange: (v: boolean) => void; la
  *  `name`: the option's accessible name, when its label alone doesn't say it (an icon, a bare count). */
 export function Segmented<T extends string>(p: { value: T; options: { value: T; label: JSX.Element; name?: string; title?: string; disabled?: boolean }[]; onChange: (v: T) => void; label?: string; size?: "sm" | "md" }) {
     return (
-        <div class={`segmented seg-${p.size ?? "md"}`} role="radiogroup" aria-label={p.label}>
+        <div class={`segmented seg-${p.size ?? "md"} ${p.size === "sm" ? "segmented-sm" : ""}`} role="radiogroup" aria-label={p.label}>
             <For each={p.options}>
                 {(o) => (
-                    <button role="radio" aria-checked={p.value === o.value} aria-disabled={o.disabled || undefined} aria-label={o.name} class={p.value === o.value ? "on" : ""} title={o.title} onClick={() => !o.disabled && p.onChange(o.value)}>
+                    <button role="radio" aria-checked={p.value === o.value} aria-disabled={o.disabled || undefined} aria-label={o.name} class={`segmented-item ${p.value === o.value ? "on" : ""}`} data-tip={o.title} onClick={() => !o.disabled && p.onChange(o.value)}>
                         {o.label}
                     </button>
                 )}

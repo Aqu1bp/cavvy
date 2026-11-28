@@ -47,7 +47,7 @@ function dialog(onConfirm: () => Promise<void>, busy: () => boolean = () => fals
     let disposed = false;
     const [open, setOpen] = solid.createSignal(true);
     const c = component(dialogSource.slice(dialogSource.indexOf("export function")), "ConfirmDialog", {
-        Dialog: (p: any) => { dialogProps = p; return p.children; },
+        Dialog: (p: any) => { dialogProps = p; return [p.subtitle, p.footer]; },
     });
     let dispose!: () => void;
     solid.createRoot((d: () => void) => {
@@ -59,8 +59,8 @@ function dialog(onConfirm: () => Promise<void>, busy: () => boolean = () => fals
         });
     });
     return {
-        cancel: c.nodes.find((n) => n.props.class === "btn ghost"),
-        confirm: c.nodes.find((n) => n.props.class === "btn danger"),
+        cancel: c.nodes.find((n) => n.props.class === "btn"),
+        confirm: c.nodes.find((n) => n.props.class === "btn btn-danger-solid"),
         close: () => dialogProps.onClose(), // Shared by Dialog's Escape, X and backdrop handlers.
         get open() { return dialogProps.open; },
         get closes() { return closes; },

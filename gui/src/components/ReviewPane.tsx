@@ -214,28 +214,28 @@ function ViewMenu(p: {
             </button>
             <Menu label="Which changes" open={open()} anchor={() => anchor} onClose={() => setOpen(false)} placement="bottom" align="start" width={340} maxHeight={620}>
                 <div class="rv-vm">
-                    <div class="menu-head">Changes</div>
+                    <div class="menu-label">Changes</div>
                     <For each={p.menu.views}>
                         {(v) => (
                             <Radio on={v.on} disabled={v.disabled} onPick={() => p.onView(v.scope)}>
-                                <span class="menu-text">
-                                    <span class="menu-label">{v.label}</span>
-                                    <Show when={v.desc}>{(d) => <span class="menu-desc">{d()}</span>}</Show>
+                                <span class="menu-item-text">
+                                    <span class="menu-item-name">{v.label}</span>
+                                    <Show when={v.desc}>{(d) => <span class="menu-item-sub">{d()}</span>}</Show>
                                 </span>
                             </Radio>
                         )}
                     </For>
                     <Show when={p.menu.turns.length}>
                         <div class="menu-sep" />
-                        <div class="menu-head">Recorded turns</div>
+                        <div class="menu-label">Recorded turns</div>
                         <For each={p.menu.turns}>
                             {(t) => (
                                 <Radio on={t.on} disabled={t.disabled} title={`${t.prompt}\n${new Date(t.startedAt).toLocaleString()}`} onPick={() => p.onTurn(t.id)}>
-                                    <span class="menu-text">
-                                        <span class="menu-label truncate">
+                                    <span class="menu-item-text">
+                                        <span class="menu-item-name truncate">
                                             {t.label} · {t.prompt}
                                         </span>
-                                        <span class="menu-desc">{t.disabled ?? (since(t.startedAt) === "now" ? "Just now" : `${since(t.startedAt)} ago`)}</span>
+                                        <span class="menu-item-sub">{t.disabled ?? (since(t.startedAt) === "now" ? "Just now" : `${since(t.startedAt)} ago`)}</span>
                                     </span>
                                 </Radio>
                             )}
@@ -243,7 +243,7 @@ function ViewMenu(p: {
                     </Show>
                     <Show when={p.worktreesShown}>
                         <div class="menu-sep" />
-                        <div class="menu-head">Worktree</div>
+                        <div class="menu-label">Worktree</div>
                         <Show when={!p.error} fallback={<div class="menu-note">{p.error}</div>}>
                             <Show when={p.worktrees} fallback={<div class="menu-note">{p.loading ? "Loading worktrees…" : "No worktrees."}</div>}>
                                 <For each={shortList()}>
@@ -256,15 +256,15 @@ function ViewMenu(p: {
                                         };
                                         return (
                                             <Radio on={isOn(w)} disabled={usable(w) ? undefined : facts(w)} title={`${w.path}${facts(w) ? `\n${facts(w)}` : ""}`} onPick={() => p.onWorktree(w.current ? undefined : w.path)}>
-                                                <span class="menu-text">
+                                                <span class="menu-item-text">
                                                     <span class="rv-wt-name">
-                                                        <span class="menu-label mono truncate">{worktreeLabel(w)}</span>
+                                                        <span class="menu-item-name mono truncate">{worktreeLabel(w)}</span>
                                                         <Show when={w.current}>
                                                             <span class="rv-wt-self">This session</span>
                                                         </Show>
                                                     </span>
                                                     <Show when={who()}>
-                                                        <span class="menu-desc truncate">{who()}</span>
+                                                        <span class="menu-item-sub truncate">{who()}</span>
                                                     </Show>
                                                 </span>
                                             </Radio>
@@ -274,7 +274,7 @@ function ViewMenu(p: {
                                 <Show when={(p.worktrees?.length ?? 0) > shortList().length}>
                                     <button class="menu-item rv-vm-item" role="menuitem" onClick={() => pick(() => setEvery(true))}>
                                         <span class="rv-vm-check" />
-                                        <span class="menu-label">Every worktree… ({p.worktrees!.length})</span>
+                                        <span class="menu-item-name">Every worktree… ({p.worktrees!.length})</span>
                                     </button>
                                 </Show>
                             </Show>
@@ -341,10 +341,10 @@ function FilesMenu(p: { label: string; files: Row[]; more?: string; comments: (f
                     </Show>
                     <div class="menu-sep" />
                     <div class="rv-fl-foot">
-                        <button class="btn ghost sm" role="menuitem" onClick={() => pick(() => p.onFoldAll(false))}>
+                        <button class="btn btn-ghost btn-sm" role="menuitem" onClick={() => pick(() => p.onFoldAll(false))}>
                             Show every file
                         </button>
-                        <button class="btn ghost sm" role="menuitem" onClick={() => pick(() => p.onFoldAll(true))}>
+                        <button class="btn btn-ghost btn-sm" role="menuitem" onClick={() => pick(() => p.onFoldAll(true))}>
                             Fold every file
                         </button>
                     </div>
@@ -1215,13 +1215,13 @@ function DiffReader(p: { handle: SessionHandle }) {
                 <div class="insp-foot">
                     <Show when={shownScope() === "uncommitted"}>
                         <span class="grow" title={commitDisabled()}>
-                            <button class="btn ghost" disabled={Boolean(commitDisabled())} onClick={() => setCommitRequest({ id: id(), paths: commitPaths() })}>
+                            <button class="btn btn-ghost" disabled={Boolean(commitDisabled())} onClick={() => setCommitRequest({ id: id(), paths: commitPaths() })}>
                                 <GitCommitHorizontal size={14} /> Commit…
                             </button>
                         </span>
                     </Show>
                     <span class="grow" title={commitUnavailable(p.handle)?.replace(/committing/g, "pushing")}>
-                        <button class="btn primary" disabled={Boolean(commitUnavailable(p.handle))} onClick={() => setPublishRequest(id())}>
+                        <button class="btn btn-primary" disabled={Boolean(commitUnavailable(p.handle))} onClick={() => setPublishRequest(id())}>
                             <GitPullRequestArrow size={14} /> Push…
                         </button>
                     </span>
