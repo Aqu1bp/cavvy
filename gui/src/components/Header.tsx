@@ -4,7 +4,7 @@
 // the terminal, the side panel and the session's menu.
 
 import { createEffect, createMemo, createResource, createSignal, For, lazy, on, Show, Suspense, type JSX } from "solid-js";
-import { Archive, ChevronDown, X, Copy, Ellipsis, FileDiff, FolderGit2, FolderOpen, GitBranch, Hand, History, PanelBottom, PanelLeft, PanelRight, Pencil, Search, Share, ShieldAlert, Shrink, Sparkles, SquareArrowOutUpRight, SquarePen, SquareTerminal, Trash2 } from "lucide-solid";
+import { Archive, ChevronDown, ClipboardCopy, Code, Copy, Ellipsis, FileDiff, FolderGit2, GitBranch, Hand, History, Minimize2, PanelBottom, PanelLeft, PanelRight, Pencil, Search, ShieldAlert, Sparkles, SquarePen, TerminalSquare, Trash2, X } from "lucide-solid";
 import type { SessionSummary, WorkingIn } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
 import { app, machineFor, reportError, rpc, toast } from "../state/app";
@@ -101,10 +101,10 @@ export function NeedsYou(p: { waiting: SessionSummary[] }) {
  */
 export function TitleBar(p: { children: JSX.Element; end?: JSX.Element }) {
     return (
-        <header class={`header ${isDesktop && os === "macos" ? "traffic" : ""} ${prefs.sidebar ? "" : "rail-off"}`}>
+        <header class={`main-head header ${isDesktop && os === "macos" ? "traffic" : ""} ${prefs.sidebar ? "" : "rail-off"}`}>
             {/* Opens and closes with the rail's slide (header.css): the inner box keeps the buttons' own width. */}
             <div class="bar-rail">
-                <div class="bar-rail-in">
+                <div class="bar-rail-in main-head-lead">
                     <RailButtons />
                 </div>
             </div>
@@ -112,7 +112,7 @@ export function TitleBar(p: { children: JSX.Element; end?: JSX.Element }) {
                 {p.children}
             </nav>
             <span class="grow" />
-            <div class="bar-end">{p.end}</div>
+            {p.end}
         </header>
     );
 }
@@ -123,10 +123,13 @@ export function RailButtons() {
     const waiting = createMemo(() => (needsPlace({ railShown: shellLayout().railShown, settings: Boolean(settingsTab()) }) === "title" ? needsYou([...app.sessions, ...app.archived], inFront({ activeId: app.activeId, settings: false, agentFocus: agentFocus() }), besideInFront(false)) : []));
     return (
         <>
-            <button class={`hb head-rail-btn ${waiting().length ? "has-wait" : ""}`} title={withShortcut(waiting().length ? "Show sidebar: a session needs you" : "Show sidebar", "app:toggleSidebar")} aria-label={waiting().length ? "Show sidebar, a session needs you" : "Show sidebar"} onClick={toggleSidebar}>
+            <button class="icon-btn head-rail-btn" title={withShortcut(waiting().length ? "Show sidebar: a session needs you" : "Show sidebar", "app:toggleSidebar")} aria-label={waiting().length ? "Show sidebar, a session needs you" : "Show sidebar"} onClick={toggleSidebar}>
                 <PanelLeft size={16} />
+                <Show when={waiting().length}>
+                    <span class="rail-dot" data-tone="amber" />
+                </Show>
             </button>
-            <button class="hb" title={withShortcut("New session", "app:newSession")} aria-label="New session" onClick={() => (setSettingsTab(undefined), newSession(app.homeCwd))}>
+            <button class="icon-btn" title={withShortcut("New session", "app:newSession")} aria-label="New session" onClick={() => (setSettingsTab(undefined), newSession(app.homeCwd))}>
                 <SquarePen size={16} />
             </button>
         </>
@@ -209,8 +212,8 @@ function ChangesChip(p: { handle: SessionHandle }) {
                         <FileDiff size={15} />
                         {/* Only the sides that changed: "+18", not "+18 −0"; the mark alone when no line did. */}
                         <span class="stat">
-                            <span class="add" hidden={!c().added}>+{c().added}</span>
-                            <span class="del" hidden={!c().removed}>−{c().removed}</span>
+                            <span class="stat-add" hidden={!c().added}>+{c().added}</span>
+                            <span class="stat-del" hidden={!c().removed}>−{c().removed}</span>
                         </span>
                     </button>
             )}
@@ -224,7 +227,7 @@ export function ClosePane() {
     return (
         <Show when={pane.split() && pane.id}>
             {(id) => (
-                <button class="hb" title="Remove from split" aria-label="Remove from split" onClick={() => closePane(id())}>
+                <button class="icon-btn" title="Remove from split" aria-label="Remove from split" onClick={() => closePane(id())}>
                     <X size={16} />
                 </button>
             )}
@@ -261,14 +264,14 @@ export function Header(p: { handle?: SessionHandle; title?: string }) {
                                 <ProjectScripts cwd={cwd()} sessionId={st()?.id} />
                             )}
                         </Show>
-                        <button class={`hb win ${terminalOpen() ? "on" : ""}`} title={withShortcut("Terminal", "app:toggleTerminal")} aria-label="Toggle terminal" aria-pressed={terminalOpen()} disabled={!st()?.cwd && !app.homeCwd} onClick={() => setTerminalOpen(!terminalOpen())}>
+                        <button class="icon-btn head-win" data-active={terminalOpen() || undefined} title={withShortcut("Terminal", "app:toggleTerminal")} aria-label="Toggle terminal" aria-pressed={terminalOpen()} disabled={!st()?.cwd && !app.homeCwd} onClick={() => setTerminalOpen(!terminalOpen())}>
                             <PanelBottom size={16} />
                         </button>
                         <Show when={st()}>
-                            <button class={`hb win ${panelOn() ? "on" : ""}`} title={withShortcut("Side panel", "app:togglePanel")} aria-label="Toggle panel" aria-pressed={panelOn()} onClick={() => (pane.wasFocused() ? togglePanel() : setPrefs("panel", true))}>
+                            <button class="icon-btn head-win" data-active={panelOn() || undefined} title={withShortcut("Side panel", "app:togglePanel")} aria-label="Toggle panel" aria-pressed={panelOn()} onClick={() => (pane.wasFocused() ? togglePanel() : setPrefs("panel", true))}>
                                 <PanelRight size={16} />
                             </button>
-                            <button ref={moreBtn} class="hb" title="More" aria-label="Session actions" aria-haspopup="menu" aria-expanded={menuOpen()} onClick={() => (setMenuOpen(!menuOpen()), menuOpen() && void refreshEditors())}>
+                            <button ref={moreBtn} class="icon-btn" title="More" aria-label="Session actions" aria-haspopup="menu" aria-expanded={menuOpen()} onClick={() => (setMenuOpen(!menuOpen()), menuOpen() && void refreshEditors())}>
                                 <Ellipsis size={16} />
                             </button>
                         </Show>
@@ -355,14 +358,14 @@ export function Header(p: { handle?: SessionHandle; title?: string }) {
                                 <ShieldAlert size={12} /> Untrusted
                             </span>
                         </Show>
-                        <Menu label="Session actions" open={menuOpen()} anchor={() => moreBtn} onClose={close} align="end" width={244}>
+                        <Menu label="Session actions" class="menu" open={menuOpen()} anchor={() => moreBtn} onClose={close} align="end" width={225}>
                             <For
                                 each={[
                                     { icon: Pencil, label: "Rename", run: () => void (close(), setEditing(true)) },
                                     { icon: Sparkles, label: "Regenerate title", run: () => void (close(), import("./RowExtras").then((m) => m.regenerateTitle(s().id))) },
                                     { icon: History, label: "Rewind…", run: () => void (close(), setRewindOpen(true)) },
                                     {
-                                        icon: Shrink,
+                                        icon: Minimize2,
                                         label: "Compact conversation",
                                         // An idle compaction gives way to the user's own.
                                         disabled: s().busy && !s().activity?.idle,
@@ -372,38 +375,46 @@ export function Header(p: { handle?: SessionHandle; title?: string }) {
                                 ] as MenuEntry[]}
                             >
                                 {(it) => (
-                                    <button role="menuitem" class="menu-item compact" disabled={it.disabled} onClick={it.run}>
-                                        <it.icon size={14} /> <span class="menu-label">{it.label}</span>
-                                        <Show when={it.kbd && shortcut(it.kbd)}>{(k) => <kbd class="menu-kbd">{keyText(k())}</kbd>}</Show>
+                                    <button role="menuitem" class="menu-item" disabled={it.disabled} onClick={it.run}>
+                                        <it.icon size={14} />
+                                        <span class="menu-item-name">{it.label}</span>
+                                        <Show when={it.kbd && shortcut(it.kbd)}>{(k) => <span class="kbd-group" aria-hidden="true"><For each={k().split("+")}>{(key) => <kbd class="kbd">{keyText(key)}</kbd>}</For></span>}</Show>
                                     </button>
                                 )}
                             </For>
                             <div class="menu-sep" />
-                            <button role="menuitem" class="menu-item compact" onClick={() => (close(), void exportSession(s().id))}>
-                                <Share size={14} /> Copy as Markdown
+                            <button role="menuitem" class="menu-item" onClick={() => (close(), void exportSession(s().id))}>
+                                <ClipboardCopy size={14} />
+                                <span class="menu-item-name">Copy as Markdown</span>
                             </button>
-                            <button role="menuitem" class="menu-item compact" onClick={() => void copy(resumeCommand(s().id, s().cwd), "Copied the resume command")}>
-                                <SquareTerminal size={14} /> Copy resume command
+                            <button role="menuitem" class="menu-item" onClick={() => void copy(resumeCommand(s().id, s().cwd), "Copied the resume command")}>
+                                <TerminalSquare size={14} />
+                                <span class="menu-item-name">Copy resume command</span>
                             </button>
                             <Show when={s().workingIn ? s().workingIn!.branch : s().branch}>
                                 {(branch) => (
-                                    <button role="menuitem" class="menu-item compact" onClick={() => void copy(branch(), `Copied ${branch()}`)}>
-                                        <Copy size={14} /> Copy branch name
+                                    <button role="menuitem" class="menu-item" onClick={() => void copy(branch(), `Copied ${branch()}`)}>
+                                        <GitBranch size={14} />
+                                        <span class="menu-item-name">Copy branch name</span>
                                     </button>
                                 )}
                             </Show>
-                            <button role="menuitem" class="menu-item compact" title={s().cwd} onClick={() => void copy(s().cwd, `Copied ${tildify(s().cwd, app.hello?.homeDir)}`)}>
-                                <FolderOpen size={14} /> Copy folder path
+                            <button role="menuitem" class="menu-item" title={s().cwd} onClick={() => void copy(s().cwd, `Copied ${tildify(s().cwd, app.hello?.homeDir)}`)}>
+                                <Copy size={14} />
+                                <span class="menu-item-name">Copy folder path</span>
                             </button>
-                            <button role="menuitem" class="menu-item compact" title={s().cwd} onClick={() => (close(), void openInEditor(s().cwd, undefined, { folder: true, sessionId: s().id }))}>
-                                <SquareArrowOutUpRight size={14} /> Open project in {editorName() ?? "editor"}
+                            <button role="menuitem" class="menu-item" title={s().cwd} onClick={() => (close(), void openInEditor(s().cwd, undefined, { folder: true, sessionId: s().id }))}>
+                                <Code size={14} />
+                                <span class="menu-item-name">Open project in {editorName() ?? "editor"}</span>
                             </button>
                             <div class="menu-sep" />
-                            <button role="menuitem" class="menu-item compact" onClick={() => (close(), void archive(s().id, true))}>
-                                <Archive size={14} /> Archive
+                            <button role="menuitem" class="menu-item" onClick={() => (close(), void archive(s().id, true))}>
+                                <Archive size={14} />
+                                <span class="menu-item-name">Archive</span>
                             </button>
-                            <button role="menuitem" class="menu-item compact danger" disabled={!p.handle?.view.turns.length} onClick={() => (close(), deleteOpen(p.handle))}>
-                                <Trash2 size={14} /> Delete
+                            <button role="menuitem" class="menu-item danger" data-danger disabled={!p.handle?.view.turns.length} onClick={() => (close(), deleteOpen(p.handle))}>
+                                <Trash2 size={14} />
+                                <span class="menu-item-name">Delete</span>
                             </button>
                         </Menu>
                     </>

@@ -1,76 +1,8 @@
-/* ---- Project scripts (title line): the design's .scripts, in the title bar's capsule ---- */
+/* ---- Project scripts (title line): the menu, as the mock's terminal.css has it. Its button is in header.css. ---- */
 
-/* Run the last-used script | open the menu. */
-.scripts {
-    display: inline-flex;
-    flex: none;
-    height: calc(28 * var(--sp));
-    border-radius: calc(6 * var(--sp));
+.scripts-menu {
+    width: calc(284 * var(--sp));
 }
-
-.scripts-run,
-.scripts-more {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    height: calc(28 * var(--sp));
-    color: var(--fg-2);
-    transition: background 0.12s, color 0.12s;
-}
-
-.scripts-run {
-    width: calc(28 * var(--sp));
-    border-radius: calc(6 * var(--sp)) 0 0 calc(6 * var(--sp));
-}
-
-/* No script yet, but something to say about the file: the menu alone. */
-.scripts-run.solo {
-    border-radius: calc(6 * var(--sp));
-}
-
-.scripts-more {
-    width: calc(16 * var(--sp));
-    border-radius: 0 calc(6 * var(--sp)) calc(6 * var(--sp)) 0;
-    color: var(--fg-3);
-}
-
-.scripts:hover :is(.scripts-run, .scripts-more),
-.scripts[data-open] :is(.scripts-run, .scripts-more) {
-    background: var(--sheet-2);
-}
-
-.scripts :is(.scripts-run, .scripts-more):hover:not(:disabled),
-.scripts .scripts-more[aria-expanded="true"],
-.scripts .scripts-run.solo[aria-expanded="true"] {
-    background: var(--hover);
-    color: var(--fg);
-}
-
-.scripts-run:disabled {
-    opacity: 0.4;
-}
-
-/* A project with none: adding one, in words. */
-.scripts-add {
-    display: inline-flex;
-    align-items: center;
-    gap: calc(6 * var(--sp));
-    flex: none;
-    height: calc(28 * var(--sp));
-    padding: 0 calc(9 * var(--sp)) 0 calc(7 * var(--sp));
-    border-radius: calc(6 * var(--sp));
-    color: var(--fg-2);
-    font-weight: 500;
-    white-space: nowrap;
-    transition: background 0.12s, color 0.12s;
-}
-
-.scripts-add:hover:not(:disabled) {
-    background: var(--hover);
-    color: var(--fg);
-}
-
-/* The menu (.scripts-menu): a row per script, its actions at its end. */
 
 .scripts-row {
     display: flex;
@@ -83,7 +15,7 @@
 
 .scripts-row:hover,
 .scripts-row:focus-within {
-    background: var(--sheet-2);
+    background: var(--fill-1);
 }
 
 .scripts-row-main {
@@ -95,32 +27,31 @@
     height: calc(30 * var(--sp));
     padding: 0 calc(6 * var(--sp)) 0 calc(9 * var(--sp));
     border-radius: calc(6 * var(--sp));
-    text-align: left;
 }
 
-.scripts-row-main:hover:not(:disabled) {
-    background: var(--hover);
+.scripts-row-main:hover {
+    background: var(--fill-2);
 }
 
 .scripts-row-icon {
     display: inline-flex;
     flex: none;
-    color: var(--fg-2);
+    color: var(--text-2);
 }
 
 .scripts-row-name {
     font-weight: 500;
 }
 
-.scripts-row .hb {
-    color: var(--fg-3);
+.scripts-row .icon-btn {
+    color: var(--text-3);
 }
 
-.scripts-row .hb:hover:not(:disabled) {
-    color: var(--fg);
+.scripts-row .icon-btn:hover {
+    color: var(--text);
 }
 
-.scripts-row .hb:disabled {
+.scripts-row .icon-btn:disabled {
     opacity: 0.35;
     background: none;
 }
@@ -128,7 +59,7 @@
 .scripts-row-confirm {
     gap: calc(6 * var(--sp));
     padding: calc(2 * var(--sp)) calc(3 * var(--sp)) calc(2 * var(--sp)) calc(9 * var(--sp));
-    background: var(--sheet-2);
+    background: var(--fill-1);
 }
 
 .scripts-confirm {
@@ -136,17 +67,8 @@
     font-weight: 500;
 }
 
-/* What the menu says above its rows: none yet, a file it can't read. */
-.scripts-note {
-    white-space: normal;
-    line-height: 1.45;
-}
-
+/* Cavvy's: what the menu says above its rows (none yet, a file it can't read), as the menu's own notes are. */
 .scripts-note code {
-    padding: 0 calc(4 * var(--sp));
-    border-radius: calc(4 * var(--sp));
-    background: var(--sheet-2);
     font-family: var(--font-mono);
-    font-size: 0.95em;
     white-space: nowrap;
 }

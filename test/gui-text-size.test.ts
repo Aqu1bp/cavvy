@@ -61,7 +61,7 @@ for (const [file, selector, property, at14] of KEY) {
 test("an icon drawn at size={14} is 14px at 14 and 18px at 18, but not on the window's top line", () => {
     // parseRules splits the selector at the comma inside :not().
     const rule = sheets["base.css"]!.find((r) => r.selectors[0] === ':where(svg[width="14"]:not(.side-top *');
-    expect(rule?.selectors).toEqual([':where(svg[width="14"]:not(.side-top *', ".header .hb *))"]);
+    expect(rule?.selectors).toEqual([':where(svg[width="14"]:not(.side-top *', ".header .icon-btn *))"]);
     expect([14, 18].map((size) => at(rule!.decls.get("width"), size))).toEqual(["14px", "18px"]);
     expect(at(rule!.decls.get("height"), 18)).toBe("18px");
 });
@@ -87,7 +87,7 @@ const FRAME: [file: string, selector: string, property: string, value: string][]
     ["tokens.css", ":root", "--r-sheet", "12px"],
     ["tokens.css", ":root", "--gutter", "8px"],
     ["shell.css", ".app", "--win-pad", "0px"],
-    ["header.css", ".header .hb", "height", "28px"],
+    ["header.css", ".header .icon-btn", "height", "28px"],
     ["sidebar.css", ".side-top .hb", "width", "28px"],
     ["sidebar.css", ".side-top .hb", "height", "28px"],
     ["sidebar.css", ".resize-handle", "width", "6px"],
@@ -109,7 +109,8 @@ const SIZING = /^(width|height|min-width|min-height|max-width|max-height|padding
 /** Selectors whose sizes are the window's frame, or depend on it, by file. */
 const FRAME_RULES: Record<string, RegExp> = {
     "base.css": /^(html|::-webkit-scrollbar.*)$/,
-    "header.css": /^(\.header|\.header::before|\.header\.rail-off|\.header\.traffic\.rail-off|\[data-rail="overlay"\] \.header(\.traffic)?|\.bar-rail.*|\.header \.hb|\.insp-lead \.(hb|has-wait(::after)?)|\.head-rail-btn\.has-wait::after|\.bar-end|\.head-tools( \.hb)?|\.head-changes)$/,
+    // The bar and the controls in it (the rail's, the tools, the changes and scripts buttons) are the frame's fixed size.
+    "header.css": /^(\.main-head|\.header|\.header\.rail-off|\.header\.traffic\.rail-off|\[data-rail="overlay"\] \.header(\.traffic)?|\.bar-rail.*|\.header \.icon-btn|\.insp-lead \.icon-btn|(\.head-rail-btn )?\.rail-dot|\.head-tools( \.icon-btn)?|\.head-changes|\.scripts(-run|-more|-add)?)$/,
     // A floating or filling inspector is placed by lib/layout.ts's px (FLOAT_TOP, its gap, floatBottom).
     // Full screen with the sidebar hidden: the title bar's buttons and the rows after them clear the traffic lights.
     // The title bar over a session stops short of its scrollbar (its padding is the bar's, less the scrollbar's width).

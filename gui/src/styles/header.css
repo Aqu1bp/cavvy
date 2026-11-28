@@ -1,7 +1,16 @@
-/* ---- Title bar: the design's .main-head ---------------------------------
-   The project, the title and its branch on the left; one bordered capsule of
-   tools at the far end; a hairline under it. (Where the bar sits in the
-   window is the shell's.) */
+/* ---- Title bar ----------------------------------------------------------
+   The design's own rules (the mock's sidebar.css "main header" and head.css,
+   cascaded into one rule per selector), on Cavvy's frame: the bar's height,
+   its top line and the rail's slide are the window's (below). Sizes that sit
+   with text are calc(N * var(--sp)); the bar and its tools are the frame. */
+
+.main-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: none;
+    border-bottom: 1px solid var(--line);
+}
 
 /* Its content sits on the window's top line (--top-line, tokens.css), level
    with the traffic lights and the rail's buttons. The bar starts --win-pad
@@ -10,14 +19,9 @@
 .header {
     position: relative;
     z-index: 5;
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    flex: none;
     min-width: 0;
     height: var(--header-h);
     padding: max(0px, 2 * (var(--top-line) - var(--win-pad, 8px)) - var(--header-h)) 10px 0 20px;
-    border-bottom: 1px solid var(--line);
     user-select: none;
     -webkit-user-select: none;
     /* With the window's tracks (shell.css): the bar's top padding grows as the sheet's inset closes, so what's on the
@@ -51,6 +55,7 @@
     overflow: hidden;
 }
 
+/* With the rail hidden the window's traffic lights sit over the header: leave them room. */
 .header.rail-off,
 [data-rail="overlay"] .header {
     padding-left: 18px;
@@ -73,47 +78,35 @@
     transition-delay: 0s;
 }
 
-/* The design's .icon-btn, at the title bar's (and the side panel's lead's) fixed size. */
-.header .hb,
-.insp-lead .hb {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
+/* The design's .icon-btn, at the frame's fixed size (the side panel's lead has the rail's two when it's full screen). */
+.header .icon-btn,
+.insp-lead .icon-btn {
     width: 28px;
     height: 28px;
-    border-radius: 6px;
-    color: var(--fg-2);
-    transition: background 0.12s, color 0.12s;
 }
 
-.header .hb:hover:not(:disabled),
-.insp-lead .hb:hover:not(:disabled),
-.header .hb[aria-expanded="true"],
-.header .hb[aria-pressed="true"] {
-    background: var(--hover);
-    color: var(--fg);
-}
-
-/* A session needs you while the rail that lists it is hidden: an amber dot on Show sidebar (the design's .rail-dot). */
-.head-rail-btn,
-.insp-lead .has-wait {
+.head-rail-btn {
     position: relative;
 }
 
-.head-rail-btn.has-wait::after,
-.insp-lead .has-wait::after {
-    content: "";
+.rail-dot {
     position: absolute;
     top: 5px;
     right: 5px;
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background: color-mix(in srgb, var(--warn) 55%, #f5a623);
-    box-shadow: 0 0 0 1.5px var(--sheet);
+    background: var(--accent);
+    box-shadow: 0 0 0 1.5px var(--bg-side);
 }
 
-/* ---- Title: .main-title ------------------------------------------------- */
+.rail-dot[data-tone="amber"] {
+    background: var(--amber-strong);
+}
+
+.head-rail-btn .rail-dot {
+    box-shadow: 0 0 0 1.5px var(--bg);
+}
 
 .main-title {
     display: flex;
@@ -122,59 +115,58 @@
     min-width: 0;
 }
 
-/* The project (a button: a new session there), and in a sub-agent's view each step back. */
 .main-project {
-    display: inline-flex;
-    align-items: center;
-    gap: calc(6 * var(--sp));
     flex: none;
     max-width: calc(220 * var(--sp));
-    margin-left: calc(-5 * var(--sp));
     padding: calc(3 * var(--sp)) calc(5 * var(--sp));
-    border-radius: calc(6 * var(--sp));
-    color: var(--fg-3);
+    margin-left: calc(-5 * var(--sp));
+    border-radius: var(--radius-s);
+    color: var(--text-3);
     font-size: 0.929rem;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
 }
 
-button:is(.main-project, .main-branch):hover {
-    background: var(--sheet-2);
-    color: var(--fg);
+button.main-project:hover {
+    background: var(--fill-1);
+    color: var(--text);
 }
 
 .main-slash {
     flex: none;
-    color: var(--fg-4);
+    color: var(--text-4);
 }
 
-.main-title-btn,
-.main-title .bc.current {
-    flex: 0 1 auto;
-    min-width: calc(72 * var(--sp));
-    margin: 0 0 0 calc(-2 * var(--sp));
-    padding: calc(3 * var(--sp)) calc(4 * var(--sp));
+.main-title-btn {
+    min-width: 0;
+    margin-left: calc(-6 * var(--sp));
+    padding: calc(3 * var(--sp)) calc(6 * var(--sp));
+    border-radius: var(--radius-s);
     font-size: 1rem;
     font-weight: 600;
     letter-spacing: -0.01em;
-    white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    cursor: default;
+    white-space: nowrap;
 }
 
-/* Home: no session yet. */
+button.main-title-btn:hover {
+    background: var(--fill-1);
+}
+
 .main-title-none {
-    color: var(--fg-3);
+    color: var(--text-3);
     font-weight: 500;
 }
 
-/* A sub-agent's view: where you are, in the title's voice, after its mark. */
-.main-title .bc.current {
-    display: inline-flex;
-    align-items: center;
-    gap: calc(6 * var(--sp));
+h1.main-title-btn {
+    flex: 0 1 auto;
+    min-width: calc(72 * var(--sp));
+    margin: 0;
+    padding: calc(3 * var(--sp)) calc(4 * var(--sp));
+    margin-left: calc(-2 * var(--sp));
+    cursor: default;
 }
 
 .main-rename {
@@ -184,17 +176,15 @@ button:is(.main-project, .main-branch):hover {
     margin-left: calc(-6 * var(--sp));
     padding: 0 calc(6 * var(--sp));
     border: 0;
-    border-radius: calc(6 * var(--sp));
-    background: var(--card);
-    box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+    border-radius: var(--radius-s);
+    background: var(--surface);
+    box-shadow: inset 0 0 0 1px var(--focus), 0 0 0 3px color-mix(in srgb, var(--focus) 18%, transparent);
     outline: none;
     font-size: 1rem;
     font-weight: 600;
     letter-spacing: -0.01em;
 }
 
-/* The branch, or the worktree the agent works in. Cavvy's opens the branch dialog (GitBranches.tsx), so it's a
-   button too: the project's hover, and the counts ahead of and behind its upstream after the name. */
 .main-branch {
     display: inline-flex;
     align-items: center;
@@ -203,7 +193,7 @@ button:is(.main-project, .main-branch):hover {
     min-width: 0;
     margin-left: calc(6 * var(--sp));
     overflow: hidden;
-    color: var(--fg-3);
+    color: var(--text-3);
     font-size: 0.821rem;
     white-space: nowrap;
 }
@@ -217,17 +207,16 @@ button:is(.main-project, .main-branch):hover {
     flex: none;
 }
 
+/* Cavvy's branch opens the branch dialog: the project's hover, and its counts ahead of and behind its upstream. */
+button.main-branch:hover {
+    background: var(--fill-1);
+    color: var(--text);
+}
+
 button.main-branch {
     margin-left: calc(1 * var(--sp));
     padding: calc(3 * var(--sp)) calc(5 * var(--sp));
-    border-radius: calc(6 * var(--sp));
-}
-
-.main-branch-n {
-    display: inline-flex;
-    align-items: center;
-    flex: none;
-    font-variant-numeric: tabular-nums;
+    border-radius: var(--radius-s);
 }
 
 /* A narrow column: the title has the room, not a stub of the branch. */
@@ -244,22 +233,13 @@ button.main-branch {
     margin-left: calc(4 * var(--sp));
     padding: 0 calc(7 * var(--sp)) 0 calc(6 * var(--sp));
     border-radius: calc(5 * var(--sp));
-    background: var(--warn-soft);
-    color: var(--warn);
+    background: var(--amber-soft);
+    color: var(--amber);
     font-size: 0.821rem;
     font-weight: 500;
 }
 
-/* ---- Tools: one capsule (.head-tools) at the far end -------------------- */
-
-.bar-end {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    min-width: 0;
-    flex: none;
-}
-
+/* One capsule of tools. */
 .head-tools {
     display: flex;
     align-items: center;
@@ -267,12 +247,19 @@ button.main-branch {
     flex: none;
     height: 32px;
     padding: 0 2px;
-    border-radius: 8px;
+    border-radius: var(--radius-m);
     box-shadow: inset 0 0 0 1px var(--line-strong);
 }
 
-.head-tools .hb {
+.head-tools .icon-btn {
     width: 30px;
+    height: 28px;
+}
+
+/* The design's open trigger ([data-state="open"] there, its menu's button here). */
+.head-tools .icon-btn[aria-expanded="true"] {
+    background: var(--fill-2);
+    color: var(--text);
 }
 
 .head-changes {
@@ -281,35 +268,32 @@ button.main-branch {
     gap: 7px;
     height: 28px;
     padding: 0 8px;
-    border-radius: 6px;
-    color: var(--fg-2);
+    border-radius: var(--radius-s);
+    color: var(--text-2);
     transition: background 0.12s, color 0.12s;
 }
 
 .head-changes:hover,
 .head-changes[aria-pressed="true"] {
-    background: var(--hover);
-    color: var(--fg);
+    background: var(--fill-2);
+    color: var(--text);
 }
 
-/* ---- Needs you, in Settings' top line (the design's .needs-btn) ---------
-   Settings covers the rail, where they're listed: one session by name, or how
-   many. Narrow, the words go. */
+/* ---- Needs you, in Settings' top line (the design's settings.css .needs-btn) ---- */
 
 .needs-btn {
     display: inline-flex;
     align-items: center;
     gap: calc(7 * var(--sp));
-    flex: 0 1 auto;
-    min-width: 0;
+    flex: none;
     max-width: calc(420 * var(--sp));
     height: calc(28 * var(--sp));
     margin-right: calc(4 * var(--sp));
     padding: 0 calc(10 * var(--sp)) 0 calc(8 * var(--sp));
-    border-radius: calc(6 * var(--sp));
-    background: var(--warn-soft);
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warn) 30%, transparent);
-    color: var(--warn);
+    border-radius: var(--radius-s);
+    background: var(--amber-soft);
+    box-shadow: inset 0 0 0 1px var(--amber-line);
+    color: var(--amber);
     font-size: 0.893rem;
     font-weight: 500;
     transition: background 0.12s;
@@ -317,7 +301,7 @@ button.main-branch {
 
 .needs-btn:hover,
 .needs-btn[aria-expanded="true"] {
-    background: color-mix(in srgb, var(--warn) 22%, transparent);
+    background: color-mix(in srgb, var(--amber-soft) 80%, var(--amber-strong));
 }
 
 .needs-btn > svg {
@@ -329,19 +313,14 @@ button.main-branch {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    color: var(--fg);
+    color: var(--text);
 }
 
 .needs-btn-word {
     flex: none;
 }
 
-.needs-btn b {
-    font-weight: 600;
-    font-variant-numeric: tabular-nums;
-}
-
-/* One session: its count shows only when its name doesn't (under 600px: just the hand and how many). */
+/* Narrow: one session's count shows in place of its name and the words. */
 .needs-one {
     display: none;
 }
@@ -358,19 +337,77 @@ button.main-branch {
     display: inline;
 }
 
-/* A shortcut at the end of a menu row (the session menu's Find). */
-.menu-kbd {
-    margin-left: auto;
-}
-
 /* A session of two side by side, narrow (the room its title bar has: Panes.tsx data-bar): the title keeps the room.
    The project before it and the branch after it go first; then the window's own toggles (the terminal, the side panel), as they have
    shortcuts and are in the command palette; then the count of changed lines, the project's scripts, and the changes
    button (Review changes is in the conversation). */
 .stage-pane[data-bar~="640"] .header :is(.main-project, .main-slash, .main-branch),
-.stage-pane[data-bar~="440"] .header .hb.win,
+.stage-pane[data-bar~="440"] .header .head-win,
 .stage-pane[data-bar~="440"] .header .head-changes .stat,
 .stage-pane[data-bar~="360"] .header .scripts,
 .stage-pane[data-bar~="240"] .header .head-changes {
     display: none;
+}
+
+/* ---- Project scripts (the mock's terminal.css "project scripts") ---------- */
+
+.scripts {
+    display: inline-flex;
+    flex: none;
+    height: 28px;
+    border-radius: var(--radius-s);
+}
+
+.scripts-run,
+.scripts-more {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 28px;
+    color: var(--text-2);
+    transition: background 0.12s, color 0.12s;
+}
+
+.scripts-run {
+    width: 28px;
+    border-radius: var(--radius-s) 0 0 var(--radius-s);
+}
+
+.scripts-more {
+    width: 16px;
+    border-radius: 0 var(--radius-s) var(--radius-s) 0;
+    color: var(--text-3);
+}
+
+.scripts:hover .scripts-run,
+.scripts:hover .scripts-more,
+.scripts[data-open] .scripts-run,
+.scripts[data-open] .scripts-more {
+    background: var(--fill-1);
+}
+
+.scripts .scripts-run:hover,
+.scripts .scripts-more:hover,
+.scripts .scripts-more[aria-expanded="true"] {
+    background: var(--fill-2);
+    color: var(--text);
+}
+
+.scripts-add {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex: none;
+    height: 28px;
+    padding: 0 9px 0 7px;
+    border-radius: var(--radius-s);
+    color: var(--text-2);
+    font-weight: 500;
+    white-space: nowrap;
+    transition: background 0.12s, color 0.12s;
+}
+
+.scripts-add:hover {
+    background: var(--fill-2);
+    color: var(--text);
 }
