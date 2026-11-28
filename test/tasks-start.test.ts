@@ -50,7 +50,7 @@ const call = <T = any>(method: string, params: Record<string, unknown>) => engin
 
 type Rt = Awaited<ReturnType<typeof engine.createSession>>;
 const turns = (rt: Rt) => rt.snapshot().turns;
-async function suggestingSession(mode: "acceptEdits" | "plan" | "bypassPermissions" = "acceptEdits") {
+async function suggestingSession(mode: "default" | "acceptEdits" | "plan" | "bypassPermissions" = "acceptEdits") {
     const rt = await engine.createSession(project, { mode });
     await rt.ready;
     (client as any).subs.add(rt.id);
@@ -59,7 +59,7 @@ async function suggestingSession(mode: "acceptEdits" | "plan" | "bypassPermissio
     return rt;
 }
 const origin = (rt: Rt, sid: string) => ({ key: `${rt.id}#${sid}`, session: rt.id, title: "Reading auth" });
-const params = (rt: Rt, s: SuggestionState, o: Record<string, unknown> = {}) => ({ cwd: project, title: s.title, prompt: s.prompt, model: "mock:mock-opus", mode: rt.mode, origin: origin(rt, s.id), ...o });
+const params = (rt: Rt, s: SuggestionState, o: Record<string, unknown> = {}) => ({ cwd: project, title: s.title, prompt: s.prompt, model: "mock:mock-opus", origin: origin(rt, s.id), ...o });
 
 describe("an API model suggests a task", () => {
     test("the card's record lands in the session's state and file; the agent carries on; the sidebar and notification count it", async () => {
@@ -116,14 +116,13 @@ describe("the card's actions (session.suggestion)", () => {
 });
 
 describe("tasks.start", () => {
-    test("checks before making anything: folder, model, effort, mode", async () => {
+    test("checks before making anything: folder, model, effort", async () => {
         const rt = await suggestingSession();
         const s = rt.snapshot().state.suggestions![0]!;
         const before = engine.runtimes.size;
         await expect(call("tasks.start", params(rt, s, { cwd: join(project, "nope") }))).rejects.toMatchObject({ code: "no_folder" });
         await expect(call("tasks.start", params(rt, s, { model: "nobody:x" }))).rejects.toMatchObject({ code: "model_unavailable" });
         await expect(call("tasks.start", params(rt, s, { effort: "huge" }))).rejects.toMatchObject({ code: "effort_unavailable" });
-        await expect(call("tasks.start", params(rt, s, { mode: "yolo" }))).rejects.toMatchObject({ code: "invalid_mode" });
         await expect(call("tasks.start", params(rt, s, { worktree: true }))).rejects.toMatchObject({ code: "not_git" });
         // A folder with configuration that runs commands, not trusted: the window asks the user, for that folder.
         const configured = realpathSync(tempDir("tasks-config-"));
@@ -133,7 +132,7 @@ describe("tasks.start", () => {
         expect(engine.runtimes.size).toBe(before);
     });
 
-    test("a session as the user's: titled, its prompt the user's message with where it came from out of sight, no freer than the suggester; a repeat finds it, after a restart too", async () => {
+    test("a session as the user's: titled, its prompt the user's message with where it came from out of sight, in the folder's default mode; a repeat finds it, after a restart too", async () => {
         const rt = await suggestingSession("bypassPermissions");
         const s = rt.snapshot().state.suggestions![0]!;
         await call("session.suggestion", { id: rt.id, suggestionId: s.id, action: "claim" });
@@ -142,7 +141,7 @@ describe("tasks.start", () => {
         expect(r).toMatchObject({ title: s.title, cwd: project });
         const n = engine.runtimes.get(r.sessionId!)!;
         expect(n.title).toBe(s.title);
-        // Bypass asks less than the folder's default (Manual): it gets the default.
+        // A Bypass suggester, a Manual default: Manual.
         expect(n.mode).toBe("default");
         // Attributed to the user, not the suggesting session.
         expect(n.session.meta.startedBy).toBeUndefined();
@@ -172,14 +171,15 @@ describe("tasks.start", () => {
         expect(after).toMatchObject({ sessionId: r.sessionId, existing: true, cwd: project });
     });
 
-    test("plan counts as ask; a stricter folder default wins", async () => {
+    test("the folder's default mode, whatever the suggesting session's is", async () => {
         const rt = await suggestingSession("plan");
         const s = rt.snapshot().state.suggestions![0]!;
         const r = await call<StartTaskResult>("tasks.start", params(rt, s));
         expect(engine.runtimes.get(r.sessionId!)!.mode).toBe("default");
         const rt2 = await suggestingSession("acceptEdits");
         const s2 = rt2.snapshot().state.suggestions![0]!;
-        const r2 = await call<StartTaskResult>("tasks.start", params(rt2, s2, { mode: "acceptEdits" }));
+        // A mode from an older window is ignored.
+        const r2 = await call<StartTaskResult>("tasks.start", params(rt2, s2, { mode: "bypassPermissions" }));
         expect(engine.runtimes.get(r2.sessionId!)!.mode).toBe("default");
     });
 
@@ -206,7 +206,7 @@ describe("tasks.start", () => {
         expect(snap.state.suggestions![0]).toMatchObject({ id: s.id, state: "pending" });
         // Claimed, started elsewhere meanwhile (here: by this machine), and the window gone before it said so.
         await call("session.suggestion", { id, suggestionId: s.id, action: "claim" });
-        const r = await call<StartTaskResult>("tasks.start", { cwd: project, title: s.title, prompt: s.prompt, model: "mock:mock-opus", mode: "default", origin: { key: `${id}#${s.id}`, session: id, title: "x" } });
+        const r = await call<StartTaskResult>("tasks.start", { cwd: project, title: s.title, prompt: s.prompt, model: "mock:mock-opus", origin: { key: `${id}#${s.id}`, session: id, title: "x" } });
         age();
         await engine.handle(client, "session.close", { id });
         await until(() => !engine.runtimes.has(id));
@@ -224,13 +224,13 @@ describe("tasks.start", () => {
             const drafts: any[] = [];
             const watcher = { subs: new Set<string>(), send: (m: any) => m.type === "draft" && drafts.push(m) } as never;
             engine.clients.add(watcher);
-            const r = await engine.handle(watcher, "tasks.start", { cwd: blocked, title: "Fix it", prompt: "Fix the thing.", model: "mock:mock-opus", mode: "default", origin: { key: "s0#hook", session: "s0", title: "x" } }) as StartTaskResult;
+            const r = await engine.handle(watcher, "tasks.start", { cwd: blocked, title: "Fix it", prompt: "Fix the thing.", model: "mock:mock-opus", origin: { key: "s0#hook", session: "s0", title: "x" } }) as StartTaskResult;
             await until(() => drafts.length > 0);
             expect(drafts[0]).toMatchObject({ sessionId: r.sessionId, text: "Fix the thing." });
             expect(engine.runtimes.get(r.sessionId!)!.session.messageCount).toBe(0);
             expect(drafts.length).toBe(1);
             // Nothing is in it: Start again makes another, not "already started".
-            const again = await engine.handle(watcher, "tasks.start", { cwd: blocked, title: "Fix it", prompt: "Fix the thing.", model: "mock:mock-opus", mode: "default", origin: { key: "s0#hook", session: "s0", title: "x" } }) as StartTaskResult;
+            const again = await engine.handle(watcher, "tasks.start", { cwd: blocked, title: "Fix it", prompt: "Fix the thing.", model: "mock:mock-opus", origin: { key: "s0#hook", session: "s0", title: "x" } }) as StartTaskResult;
             expect(again.existing).toBeUndefined();
             expect(again.sessionId).not.toBe(r.sessionId);
             engine.clients.delete(watcher);
@@ -250,7 +250,7 @@ describe("tasks.start", () => {
             const drafts: any[] = [];
             const watcher = { subs: new Set<string>(), send: (m: any) => m.type === "draft" && drafts.push(m) } as never;
             engine.clients.add(watcher);
-            const start = { cwd: folder, title: "Fix it", prompt: "Fix the other thing.", model: "mock:mock-opus", mode: "default", origin: { key: "s0#hook2", session: "s0", title: "x" } };
+            const start = { cwd: folder, title: "Fix it", prompt: "Fix the other thing.", model: "mock:mock-opus", origin: { key: "s0#hook2", session: "s0", title: "x" } };
             const r = (await engine.handle(watcher, "tasks.start", start)) as StartTaskResult;
             const n = engine.runtimes.get(r.sessionId!)!;
             await n.send("FOLLOWUP: Fix the other thing. And more.");
@@ -284,18 +284,20 @@ describe("tasks.start", () => {
         expect(note).toContain("send a message to session box/abc-1 (SendToSession, or send_to_session among Cavvy's tools)");
     });
 
-    test("the suggesting session's own mode counts when it's here, whatever the window says", async () => {
+    test("a default that asks less than the suggesting session: the default", async () => {
         const free = realpathSync(tempDir("tasks-free-"));
         dirs.push(free);
         const settings = join(iso.home, "settings.json");
         const was = readFileSync(settings, "utf-8");
-        // A folder whose default asks less than Accept edits.
         writeFileSync(settings, JSON.stringify({ ...JSON.parse(was), permissions: { allowBypass: true, defaultMode: "bypassPermissions" } }));
         try {
-            const rt = await suggestingSession("acceptEdits");
+            // A Manual suggester, a Bypass default: Bypass, as a session the user makes there gets.
+            const rt = await suggestingSession("default");
             const s = rt.snapshot().state.suggestions![0]!;
-            const r = await call<StartTaskResult>("tasks.start", params(rt, s, { cwd: free, mode: "bypassPermissions" }));
-            expect(engine.runtimes.get(r.sessionId!)!.mode).toBe("acceptEdits");
+            const r = await call<StartTaskResult>("tasks.start", params(rt, s, { cwd: free, mode: "default" }));
+            const made = await call<SessionSnapshot>("session.create", { cwd: free });
+            expect(made.state.mode).toBe("bypassPermissions");
+            expect(engine.runtimes.get(r.sessionId!)!.mode).toBe("bypassPermissions");
         } finally {
             writeFileSync(settings, was);
         }
@@ -337,7 +339,7 @@ describe("tasks.start", () => {
         git(repo, "init", "-q", "-b", "main");
         git(repo, "add", ".");
         git(repo, "commit", "-qm", "initial");
-        const o = (key: string) => ({ cwd: join(repo, "app"), title: "Login button misaligned", prompt: "Fix it.", model: "mock:mock-opus", mode: "default", worktree: true, origin: { key, session: "s0", title: "x" } });
+        const o = (key: string) => ({ cwd: join(repo, "app"), title: "Login button misaligned", prompt: "Fix it.", model: "mock:mock-opus", worktree: true, origin: { key, session: "s0", title: "x" } });
         const a = await call<StartTaskResult>("tasks.start", o("s0#a"));
         expect(a.worktree?.branch).toBe("fix/login-button-misaligned");
         // In the same sub-folder of the worktree as the suggester worked in.

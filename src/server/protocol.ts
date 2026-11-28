@@ -799,8 +799,6 @@ export interface StartTaskParams {
     /** "provider:model". */
     model: string;
     effort?: EffortLevel;
-    /** The suggesting session's mode: the new one runs in the stricter of it (plan counts as ask) and the folder's default. */
-    mode: PermissionModeId;
     /** In a new managed worktree of the folder's repository, on an automatic branch `fix/<slug>` (`-2`, `-3` if taken). */
     worktree?: boolean;
     /** A managed worktree an earlier attempt made (StartTaskResult.worktree.path), to start in instead of making one. */
@@ -810,10 +808,10 @@ export interface StartTaskParams {
 
 /**
  * Checks fail before anything is made, as an RpcError with one of these codes (needs_trust carries the folder):
- * no_folder, needs_trust, model_unavailable, effort_unavailable, not_git, worktree_failed, invalid_mode.
+ * no_folder, needs_trust, model_unavailable, effort_unavailable, not_git, worktree_failed.
  * `failed` is only for failures after something was made: the worktree (resume it), or the session too (open it).
  */
-export type StartTaskCode = "no_folder" | "needs_trust" | "model_unavailable" | "effort_unavailable" | "not_git" | "worktree_failed" | "invalid_mode" | "send_failed";
+export type StartTaskCode = "no_folder" | "needs_trust" | "model_unavailable" | "effort_unavailable" | "not_git" | "worktree_failed" | "send_failed";
 
 export interface StartTaskResult {
     sessionId?: string;

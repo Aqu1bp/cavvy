@@ -1922,7 +1922,7 @@ export class Engine {
      * session's own start (session-peers.ts): no startedBy, no hourly bound. Never relayed, and never among what a
      * server may ask the user's computer for (far-peers.ts). One with the same origin key started before is returned
      * instead (`existing`). Checks first (folder, trust, model, effort), then as implementPlan does: a worktree when
-     * asked (on fix/<slug>, -2, -3 where taken), the session there, its title, and the prompt as the user's message.
+     * asked (on fix/<slug>, -2, -3 where taken), the session there in the folder's default mode (as session.create without one), its title, and the prompt as the user's message.
      */
     private async startTask(client: EngineClient, p: Record<string, any>): Promise<StartTaskResult> {
         // What the window says of the suggesting session (another machine's word, when it's on a server) goes into the
@@ -1957,23 +1957,17 @@ export class Engine {
         const ref = text(p.model, "model", 300);
         const effort = optText(p.effort, "effort", 20);
         if (effort && !EFFORT_LEVELS.includes(effort as Effort)) throw new RpcError(`${effort} isn't an effort level.`, "effort_unavailable");
-        if (!PERMISSION_MODES.includes(p.mode)) throw new RpcError("That isn't a permission mode.", "invalid_mode");
         const cwd = resolve(expandHome(text(p.cwd, "cwd", 4096)));
         if (!isDir(cwd)) throw new RpcError(`No folder ${cwd} here.`, "no_folder");
         // A folder with configuration that runs commands needs the user's trust first (as opening it would).
-        let ws: Workspace;
         try {
-            ws = this.workspaceFor(cwd);
+            this.workspaceFor(cwd);
         } catch (e) {
             if (e instanceof RpcError && e.code === "needs_trust") throw new RpcError(e.message, "needs_trust", e.folder ?? cwd);
             throw e;
         }
         await this.checkTaskModel(ref, effort);
-        // The suggesting session's mode (as the window says, and as it is when it's here), plan counting as ask, or the
-        // folder's default (where it runs): whichever asks the user more.
-        const ask = (m: PermissionMode): PermissionMode => (m === "plan" ? "default" : m);
         const suggester = origin.machine ? undefined : this.runtimes.get(origin.session);
-        const asked = suggester ? narrowerMode(ask(p.mode as PermissionMode), ask(suggester.mode)) : ask(p.mode as PermissionMode);
         const resume = optText(p.resume, "resume", 4096);
         let made: { path: string; branch: string } | undefined;
         if (p.worktree === true || resume) {
@@ -2010,8 +2004,8 @@ export class Engine {
         try {
             // On the suggesting session's Claude Code and Codex accounts, when it's on this machine.
             const accounts = suggester ? Object.fromEntries(ACCOUNT_PROVIDERS.map((provider) => [provider, suggester.session.accountId(provider)])) : undefined;
-            const mode = narrowerMode(asked, this.defaultMode(there === cwd ? ws : this.workspaceFor(there)));
-            next = await this.createSession(there, { mode, accounts, suggestedBy: origin });
+            // No mode: the folder's default, as a session the user makes there gets (session.create).
+            next = await this.createSession(there, { accounts, suggestedBy: origin });
         } catch (e) {
             if (!made) throw e;
             return failed(e);
