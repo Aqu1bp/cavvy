@@ -19,6 +19,7 @@ const { portableMcpEntry } = await import("../src/servers/copy");
 const { applyStateSync, isSafeRemoteUrl, localSyncState, readSyncedStateDigest, secretMcpEntry, syncAllTo, syncStateTo } = await import("../src/servers/sync-state");
 const { draftServer, getServer, saveServer, setServerSync } = await import("../src/servers/store");
 const { installState, installing } = await import("../src/servers/sync-install");
+const { agentCli } = await import("../src/backends/defs");
 
 afterAll(() => iso.cleanup());
 
@@ -593,6 +594,28 @@ test("with sync on, a CLI the server lacks is installed there by its own install
         expect(after.unchanged).toBeUndefined();
         expect(after.missingClis).toEqual(["grok"]);
         expect(after.installing).toBeUndefined();
+        const again = await syncStateTo(ask, { includeSecrets: false, installMissing: true });
+        expect(again.unchanged).toBe(true);
+        expect(again.installing).toBeUndefined();
+
+        // The server gets a new installer for it (an update): this computer's state hasn't changed, and the next
+        // sync installs it all the same. Its record from before the update doesn't say installs were asked for.
+        const recordFile = join(serverHome, "synced-state.json");
+        const { installMissing: _, ...older } = JSON.parse(readFileSync(recordFile, "utf-8"));
+        writeFileSync(recordFile, JSON.stringify(older));
+        const def = agentCli("grok")!;
+        const was = def.cli.installCommand;
+        def.cli.installCommand = `mkdir -p "${join(userHome, "tools")}" && printf "#!/bin/sh\\n" > "${grok}" && chmod +x "${grok}"`;
+        try {
+            const updated = await syncStateTo(ask, { includeSecrets: false, installMissing: true });
+            expect(updated.unchanged).toBeUndefined();
+            await inHome(serverHome, async () => {
+                while (installing().length) await Bun.sleep(20);
+            });
+            expect(existsSync(grok)).toBe(true);
+        } finally {
+            def.cli.installCommand = was;
+        }
     } finally {
         process.env.PATH = prev.PATH;
         if (prev.HOME === undefined) delete process.env.HOME;

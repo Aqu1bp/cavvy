@@ -36,7 +36,7 @@ import { allProviders, BUILTIN_PROVIDERS, customEnvKey, readAgentConfig, readPro
 import { matchesSecretPattern } from "../util/secret-patterns";
 import { CLI_SIGN_IN_TOKEN, isProtectedCredentialPath, localHost, packageSpec, portableMcpEntry, portableRule, RUNNER_FLAGS, RUNNERS, SETTINGS_KEYS, SUBSCRIPTION_OAUTH_TOKEN } from "./copy";
 import { syncTo, type SyncFilesResult } from "./sync";
-import { installing, startInstall } from "./sync-install";
+import { installing, startInstall, wouldInstall } from "./sync-install";
 
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 const stableJson = (v: unknown): string => {
@@ -545,6 +545,8 @@ interface SyncedStateRecord {
     installedClis?: string[];
     /** CLIs last requested by the Mac that weren't installed yet. */
     missingClis?: string[];
+    /** The last state taken asked for those to be installed (sync on). Unknown in a record from before it was kept. */
+    installMissing?: boolean;
     settings: Record<string, string>;
     /** Only rules INSERTED/OWNED by sync: pre-existing server rules are never added here. */
     rules: { allow: string[]; ask: string[]; deny: string[] };
@@ -581,6 +583,7 @@ export function readSyncedStateRecord(): SyncedStateRecord {
             ...(typeof v.digest === "string" ? { digest: v.digest } : {}),
             ...(Array.isArray(v.installedClis) ? { installedClis: v.installedClis.filter((x: unknown): x is string => typeof x === "string") } : {}),
             ...(Array.isArray(v.missingClis) ? { missingClis: v.missingClis.filter((x: unknown): x is string => typeof x === "string") } : {}),
+            ...(typeof v.installMissing === "boolean" ? { installMissing: v.installMissing } : {}),
             settings: v.settings && typeof v.settings === "object" ? v.settings : {},
             rules: {
                 allow: Array.isArray(v.rules?.allow) ? v.rules.allow.filter((x: unknown): x is string => typeof x === "string") : [],
@@ -669,9 +672,12 @@ export async function readSyncedStateDigest(signIns = true): Promise<SyncRemoteS
     const missingClis = (r.missingClis ?? []).filter((id) => !installed.includes(id));
     const needsSignIn = signIns ? await collectNeedsSignIn(trackedClis) : [];
     const now = installing();
+    // One missing that would be installed now (this server restarted since its installer failed, or has a new
+    // installer): the computer's state, though unchanged, is asked for again, and taking it installs it.
+    const retry = r.installMissing !== false && missingClis.some(wouldInstall);
     return {
         // One being installed: asked for again once it's there, which a changed list of CLIs above sees to.
-        ...(r.digest && sameClis ? { digest: r.digest } : {}),
+        ...(r.digest && sameClis && !retry ? { digest: r.digest } : {}),
         missingClis,
         ...(now.length ? { installing: now } : {}),
         needsSignIn,
@@ -1396,6 +1402,7 @@ export async function applyStateSync(digest: unknown, raw: unknown, o: { signIns
 
             record.agents = nextAgentRec;
             record.missingClis = [...missingClis].sort();
+            record.installMissing = p.installMissing === true;
         }
 
         // 4b. Named copies of a CLI (Claude Code · OpenRouter): one sync added, while unchanged here, follows the
