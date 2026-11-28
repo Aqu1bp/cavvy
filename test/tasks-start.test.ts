@@ -116,6 +116,21 @@ describe("the card's actions (session.suggestion)", () => {
     });
 });
 
+/** A repository whose UserPromptSubmit hook refuses BLOCKME, and a start of it in a new worktree; `done` puts the settings back. */
+function refusingRepo() {
+    const repo = realpathSync(tempDir("tasks-hook-repo-"));
+    dirs.push(repo);
+    writeFileSync(join(repo, "README.md"), "base\n");
+    git(repo, "init", "-q", "-b", "main");
+    git(repo, "add", ".");
+    git(repo, "commit", "-qm", "initial");
+    const settings = join(iso.home, "settings.json");
+    const was = readFileSync(settings, "utf-8");
+    writeFileSync(settings, JSON.stringify({ ...JSON.parse(was), hooks: { UserPromptSubmit: [{ command: "grep -q BLOCKME || exit 0; echo 'not today' >&2; exit 2" }] } }));
+    const start = { cwd: repo, title: "Fix the header", prompt: "BLOCKME", model: "mock:mock-opus", worktree: true, origin: { key: `s0#hook-${repo.slice(-6)}`, session: "s0", title: "x" } };
+    return { repo, start, done: () => writeFileSync(settings, was) };
+}
+
 describe("tasks.start", () => {
     test("checks before making anything: folder, model, effort", async () => {
         const rt = await suggestingSession();
@@ -324,45 +339,76 @@ describe("tasks.start", () => {
         const was = readFileSync(settings, "utf-8");
         // It refuses no sooner than 3 s in, within its own timeout; the bound is cut to 0.5 s here.
         writeFileSync(settings, JSON.stringify({ ...JSON.parse(was), hooks: { UserPromptSubmit: [{ command: "sleep 3; echo 'not today' >&2; exit 2", timeout: 20 }] } }));
+        // Kept redacted, as a transcript keeps it.
+        const token = `ghp_${"a".repeat(36)}`;
+        const kept = "Fix it. [REDACTED github-token]";
         const o = (engine as any).o;
         o.taskVerdictMaxMs = 500;
         try {
             const drafts: any[] = [];
             const watcher = { subs: new Set<string>(), send: (m: any) => m.type === "draft" && drafts.push(m) } as never;
             engine.clients.add(watcher);
-            const r = (await engine.handle(watcher, "tasks.start", { cwd: folder, title: "Fix it", prompt: "Fix it.", model: "mock:mock-opus", origin: { key: "s0#hook-slow", session: "s0", title: "x" } })) as StartTaskResult;
+            const r = (await engine.handle(watcher, "tasks.start", { cwd: folder, title: "Fix it", prompt: `Fix it. ${token}`, model: "mock:mock-opus", origin: { key: "s0#hook-slow", session: "s0", title: "x" } })) as StartTaskResult;
             const n = engine.runtimes.get(r.sessionId!)!;
             // Answered before the hook did.
             expect(r.failed).toBeUndefined();
             expect(drafts).toEqual([]);
             expect(n.busy).toBe(true);
             await until(() => drafts.length > 0 && n.idle);
-            expect(drafts).toEqual([expect.objectContaining({ sessionId: n.id, text: "Fix it." })]);
+            expect(drafts).toEqual([expect.objectContaining({ sessionId: n.id, text: kept })]);
+            expect(readFileSync(join(iso.home, "gui.json"), "utf-8")).not.toContain(token);
             // Empty, but still there for the card to open: loaded and listed.
             expect(n.session.messageCount).toBe(0);
             expect(engine.runtimes.get(n.id)).toBe(n);
             expect(((await engine.handle(watcher, "sessions.list", {})) as { id: string }[]).some((x) => x.id === n.id)).toBe(true);
-            // Closed once no window shows it, and after a restart: still listed, and opened, the prompt is back in its box.
-            const reopen = async (e: typeof engine) => {
+            // Closed once no window shows it, and after a restart: still listed, and the prompt goes back in its box once
+            // to each window (a reload is another), until a window's box has it.
+            const win = () => {
                 const got: any[] = [];
-                const w = { subs: new Set<string>(), send: (m: any) => m.type === "draft" && got.push(m) } as never;
+                const w = { subs: new Set<string>(), send: (m: any) => m.type === "draft" && got.push(m) } as any;
+                return { w, got };
+            };
+            const open = async (e: typeof engine, w: any) => {
                 e.clients.add(w);
                 expect(((await e.handle(w, "sessions.list", {})) as { id: string; title: string }[]).find((x) => x.id === n.id)).toMatchObject({ title: "Fix it" });
-                const snap = (await e.handle(w, "session.open", { id: n.id })) as SessionSnapshot;
-                expect(snap.state.id).toBe(n.id);
-                expect(got).toEqual([expect.objectContaining({ sessionId: n.id, text: "Fix it." })]);
+                expect(((await e.handle(w, "session.open", { id: n.id })) as SessionSnapshot).state.id).toBe(n.id);
+            };
+            const close = async (e: typeof engine, w: any) => {
                 await e.handle(w, "session.close", { id: n.id });
-                e.clients.delete(w);
                 await until(() => !e.runtimes.has(n.id));
             };
-            await engine.handle(watcher, "session.close", { id: n.id });
-            await until(() => !engine.runtimes.has(n.id));
-            await reopen(engine);
+            await close(engine, watcher);
+            // The window that was sent it at the refusal, opening it three times: not again.
+            for (let k = 0; k < 3; k++) {
+                await open(engine, watcher);
+                await close(engine, watcher);
+            }
+            expect(drafts).toHaveLength(1);
+            // A reload (another window), three times too: once.
+            const a = win();
+            for (let k = 0; k < 3; k++) {
+                await open(engine, a.w);
+                await close(engine, a.w);
+            }
+            expect(a.got).toEqual([expect.objectContaining({ sessionId: n.id, text: kept })]);
             engine.clients.delete(watcher);
+            engine.clients.delete(a.w);
+            // After a restart: still listed, and the prompt still kept.
             await engine.stop();
             engine = new Engine({ listModels: async () => [] });
             engine.clients.add(client);
-            await reopen(engine);
+            const b = win();
+            await open(engine, b.w);
+            expect(b.got).toEqual([expect.objectContaining({ sessionId: n.id, text: kept })]);
+            // Its box has it now (the window keeps it): a window opening it later isn't sent it, so a cleared box stays clear.
+            await engine.handle(b.w, "session.draft", { id: n.id, present: true });
+            await close(engine, b.w);
+            const c = win();
+            await open(engine, c.w);
+            expect(c.got).toEqual([]);
+            await close(engine, c.w);
+            engine.clients.delete(b.w);
+            engine.clients.delete(c.w);
         } finally {
             delete o.taskVerdictMaxMs;
             writeFileSync(settings, was);
@@ -398,17 +444,8 @@ describe("tasks.start", () => {
     });
 
     test("refused in a new worktree: the worktree stays, and Start again starts in it", async () => {
-        const repo = realpathSync(tempDir("tasks-hook-repo-"));
-        dirs.push(repo);
-        writeFileSync(join(repo, "README.md"), "base\n");
-        git(repo, "init", "-q", "-b", "main");
-        git(repo, "add", ".");
-        git(repo, "commit", "-qm", "initial");
-        const settings = join(iso.home, "settings.json");
-        const was = readFileSync(settings, "utf-8");
-        writeFileSync(settings, JSON.stringify({ ...JSON.parse(was), hooks: { UserPromptSubmit: [{ command: "grep -q BLOCKME || exit 0; echo 'not today' >&2; exit 2" }] } }));
+        const { start, repo, done } = refusingRepo();
         try {
-            const start = { cwd: repo, title: "Fix the header", prompt: "BLOCKME", model: "mock:mock-opus", worktree: true, origin: { key: "s0#hook-wt", session: "s0", title: "x" } };
             const r = await call<StartTaskResult>("tasks.start", start);
             expect(r.sessionId).toBeUndefined();
             expect(r.failed).toMatchObject({ code: "blocked", message: "Prompt blocked by hook: not today" });
@@ -418,6 +455,14 @@ describe("tasks.start", () => {
             expect(again.failed).toBeUndefined();
             expect(again.worktree).toEqual(r.worktree);
             expect(engine.runtimes.get(again.sessionId!)!.ws.cwd).toBe(r.worktree!.path);
+        } finally {
+            done();
+        }
+    });
+
+    test("a remembered worktree with changes in it, or a session in it, isn't gone on in: a new one is made", async () => {
+        const { start, repo, done } = refusingRepo();
+        try {
             // One remembered isn't gone on in once there are changes in it, or a session is in it: a new one is made.
             const other = { ...start, origin: { key: "s0#hook-wt2", session: "s0", title: "x" } };
             const first = await call<StartTaskResult>("tasks.start", other);
@@ -429,6 +474,14 @@ describe("tasks.start", () => {
             const busy = await call<StartTaskResult>("tasks.start", other);
             expect(busy.worktree!.path).not.toBe(dirty.worktree!.path);
             expect(engine.runtimes.get(open.id)).toBe(open);
+        } finally {
+            done();
+        }
+    });
+
+    test("nor one whose branch has commits since, or one since removed", async () => {
+        const { start, repo, done } = refusingRepo();
+        try {
             // Nor once its branch has commits of its own since: a new one is made, the commit left where it is.
             const third = { ...start, origin: { key: "s0#hook-wt3", session: "s0", title: "x" } };
             const left = await call<StartTaskResult>("tasks.start", third);
@@ -448,7 +501,35 @@ describe("tasks.start", () => {
             expect(fresh.failed?.code).toBe("blocked");
             expect(fresh.worktree!.path).not.toBe(kept.worktree!.path);
         } finally {
-            writeFileSync(settings, was);
+            done();
+        }
+    });
+
+    test("the window's own worktree path is held to the same checks", async () => {
+        const { start, repo, done } = refusingRepo();
+        try {
+            // The window's own path (as the card sends it after a refusal) is held to the same checks: changes in it, a
+            // commit since, a session in it: a new one each time.
+            const fifth = { ...start, origin: { key: "s0#hook-wt5", session: "s0", title: "x" } };
+            const w1 = await call<StartTaskResult>("tasks.start", fifth);
+            writeFileSync(join(w1.worktree!.path, "README.md"), "changed\n");
+            const w2 = await call<StartTaskResult>("tasks.start", { ...fifth, resume: w1.worktree!.path });
+            expect(w2.failed?.code).toBe("blocked");
+            expect(w2.worktree!.path).not.toBe(w1.worktree!.path);
+            writeFileSync(join(w2.worktree!.path, "MORE.md"), "mine\n");
+            git(w2.worktree!.path, "add", ".");
+            git(w2.worktree!.path, "commit", "-qm", "the user's");
+            const w3 = await call<StartTaskResult>("tasks.start", { ...fifth, resume: w2.worktree!.path });
+            expect(w3.worktree!.path).not.toBe(w2.worktree!.path);
+            const inW3 = await engine.createSession(w3.worktree!.path);
+            const w4 = await call<StartTaskResult>("tasks.start", { ...fifth, resume: w3.worktree!.path });
+            expect(w4.worktree!.path).not.toBe(w3.worktree!.path);
+            expect(engine.runtimes.get(inW3.id)).toBe(inW3);
+            // A clean one, at its commit, with no session: gone on in.
+            const w5 = await call<StartTaskResult>("tasks.start", { ...fifth, resume: w4.worktree!.path });
+            expect(w5.worktree).toEqual(w4.worktree);
+        } finally {
+            done();
         }
     });
 
