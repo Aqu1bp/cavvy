@@ -1,0 +1,114 @@
+/* ---- MCP servers (McpDialog): the mock's dialogs.css "MCP servers". Each server a row that opens in place to
+   what it runs and what can be done with it. */
+
+.mcp-banner {
+    flex: none;
+    padding: calc(10 * var(--sp)) calc(16 * var(--sp));
+    border-bottom: 1px solid var(--line);
+}
+
+.mcp-list {
+    display: flex;
+    flex-direction: column;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.mcp-item + .mcp-item {
+    border-top: 1px solid var(--line);
+}
+
+.mcp-row {
+    display: flex;
+    align-items: center;
+    gap: calc(9 * var(--sp));
+    width: 100%;
+    min-height: calc(40 * var(--sp));
+    padding: 0 calc(16 * var(--sp)) 0 calc(14 * var(--sp));
+    transition: background 0.1s;
+}
+
+.mcp-row:hover,
+.mcp-item[data-open] > .mcp-row {
+    background: var(--fill-1);
+}
+
+.mcp-row:focus-visible {
+    outline-offset: -2px;
+}
+
+.mcp-name {
+    font-weight: 500;
+}
+
+.mcp-source {
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
+}
+
+.mcp-source.mono {
+    font-size: calc(11.5 * var(--sp));
+}
+
+.mcp-status {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(6 * var(--sp));
+    flex: none;
+    font-size: calc(12.5 * var(--sp));
+    white-space: nowrap;
+}
+
+.mcp-status .spinner {
+    color: var(--text-3);
+}
+
+.mcp-detail {
+    display: flex;
+    flex-direction: column;
+    gap: calc(10 * var(--sp));
+    padding: calc(10 * var(--sp)) calc(16 * var(--sp)) calc(14 * var(--sp)) calc(36 * var(--sp));
+    border-top: 1px solid var(--line);
+    animation: fade-in 0.15s;
+}
+
+.mcp-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: calc(6 * var(--sp));
+}
+
+.mcp-actions:empty {
+    display: none;
+}
+
+.mcp-empty {
+    min-height: calc(180 * var(--sp));
+}
+
+/* Cavvy's: what approving means, what's masked, a server turned off in its file; and how many weren't listed. */
+.mcp-meaning,
+.mcp-omitted {
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
+}
+
+.mcp-omitted {
+    border-top: 1px solid var(--line);
+    border-bottom: 0;
+}
+
+/* An error keeps its lines, and scrolls when it's long. */
+.mcp-error {
+    max-height: calc(160 * var(--sp));
+    overflow-y: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+/* Each argument on its own line, its spaces kept. */
+.mcp-arg {
+    white-space: pre-wrap;
+}

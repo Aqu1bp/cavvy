@@ -4,7 +4,6 @@
 // row here offers to open it.
 
 import { createEffect, createSignal, For, on, Show } from "solid-js";
-import { ArchiveRestore } from "lucide-solid";
 import type { TrashedSessionSummary } from "@shared/protocol";
 import { activate, reportError, restoredFrom, rpc } from "../state/app";
 import { deletedOpen, setDeletedOpen } from "../state/ui";
@@ -55,35 +54,49 @@ export function RecentlyDeleted() {
         }
     };
     return (
-        <Dialog open={deletedOpen()} onClose={close} title="Recently deleted" subtitle="Deleted sessions are kept for 7 days." width={480} class="deleted-dialog">
-            <Show when={list()?.length || !more() ? list() : undefined} fallback={<div class="deleted-empty"><Spinner /></div>}>
+        <Dialog
+            open={deletedOpen()}
+            onClose={close}
+            title="Recently deleted"
+            subtitle="Deleted sessions are kept for 7 days."
+            width={520}
+            edge
+            footer={[
+                <Show when={silent().length && list()?.length}>
+                    <span class="dlg-foot-note">Not shown: {silent().join(", ")}.</span>
+                </Show>,
+                <button class="btn" onClick={close}>
+                    Done
+                </button>,
+            ]}
+        >
+            <Show when={list()?.length || !more() ? list() : undefined} fallback={<div class="blank"><Spinner size={14} class="blank-spinner" /></div>}>
                 {(items) => (
-                    <Show when={items().length} fallback={<div class="deleted-empty">{silent().length ? `Not shown: ${silent().join(", ")}.` : "Nothing deleted in the past week."}</div>}>
-                        <ul class="deleted-list">
+                    <Show when={items().length} fallback={<div class="blank"><p class="blank-title">{silent().length ? `Not shown: ${silent().join(", ")}.` : "Nothing deleted in the past week."}</p></div>}>
+                        <ul class="dlg-rows">
                             <For each={items()}>
                                 {(s) => {
                                     const back = () => restored().has(s.id);
                                     return (
-                                        <li class={`deleted-row ${back() ? "back" : ""}`}>
-                                            <div class="deleted-text">
-                                                <span class="deleted-title truncate">{s.title}</span>
-                                                <span class="deleted-meta truncate">
+                                        <li class={`row ${back() ? "back" : ""}`}>
+                                            <span class="row-text">
+                                                <span class="row-title">{s.title}</span>
+                                                <span class="row-sub">
                                                     {s.machine ? `${s.machine} · ` : ""}{s.projectName ? `${s.projectName} · ` : ""}
                                                     {back() ? "Restored" : `Deleted ${ago(s.deletedAt) === "now" ? "just now" : `${ago(s.deletedAt)} ago`}`}
                                                 </span>
-                                            </div>
+                                            </span>
                                             <Show
                                                 when={back()}
                                                 fallback={
-                                                    <button class="btn btn-sm" disabled={busy() !== undefined} onClick={() => void restore(s.id, s.machine)}>
-                                                        <Show when={busy() === s.id} fallback={<ArchiveRestore size={14} />}>
-                                                            <Spinner />
+                                                    <button class="btn btn-sm rd-btn" aria-label={busy() === s.id ? "Restoring" : undefined} disabled={busy() !== undefined} onClick={() => void restore(s.id, s.machine)}>
+                                                        <Show when={busy() === s.id} fallback="Restore">
+                                                            <Spinner size={12} />
                                                         </Show>
-                                                        Restore
                                                     </button>
                                                 }
                                             >
-                                                <button class="btn btn-sm" onClick={() => (close(), s.machine && restoredFrom(s.id, s.machine), void activate(s.id))}>
+                                                <button class="btn btn-sm rd-btn" onClick={() => (close(), s.machine && restoredFrom(s.id, s.machine), void activate(s.id))}>
                                                     Open
                                                 </button>
                                             </Show>
@@ -91,7 +104,6 @@ export function RecentlyDeleted() {
                                     );
                                 }}
                             </For>
-                            <Show when={silent().length}><li class="deleted-row" role="status"><span class="deleted-meta">Not shown: {silent().join(", ")}.</span></li></Show>
                         </ul>
                     </Show>
                 )}
