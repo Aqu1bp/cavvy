@@ -647,6 +647,28 @@ button.menu-item:focus-visible {
     padding-left: calc(8 * var(--sp));
 }
 
+/* A single-choice menu with no check column (ModePicker): the chosen row is drawn as the rail draws the open
+   session (a fill; in light, the raised card), its name heavier; the keyboard's row has a ring, so focus and the
+   choice never look alike. Names and descriptions line up with the menu's heading. */
+.menu-choice .menu-item[aria-checked="true"] {
+    background: var(--fill-2);
+}
+
+[data-theme="light"] .menu-choice .menu-item[aria-checked="true"] {
+    background: var(--surface);
+    box-shadow: var(--shadow-card);
+}
+
+.menu-choice .menu-item[aria-checked="true"] .menu-item-name {
+    color: var(--text);
+    font-weight: 550;
+}
+
+.menu-choice button.menu-item:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+    outline-offset: -2px;
+}
+
 /* An item that opens a submenu (ui/Submenu.tsx): a chevron at its end. */
 .menu-sub-chev {
     margin-left: auto;
