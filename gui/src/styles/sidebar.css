@@ -423,12 +423,14 @@
     color: var(--text-4);
 }
 
-/* Hover actions sit over the age, on the row's own ground. */
+/* Hover actions sit over the age, on the row's own ground. Shown by visibility, not display: pointing along the
+   list (a wheel scroll passes every row under the pointer) then lays nothing out. */
 .srow-actions {
     position: absolute;
     top: calc(4 * var(--sp));
     right: calc(4 * var(--sp));
-    display: none;
+    display: flex;
+    visibility: hidden;
     gap: 1px;
     border-radius: var(--radius-s);
     background: var(--fill-2);
@@ -438,7 +440,12 @@
 .srow:hover .srow-actions,
 .srow[data-menu-open] .srow-actions,
 .srow-actions:focus-within {
-    display: flex;
+    visibility: visible;
+}
+
+/* A session being forked has none (Sidebar.tsx hides them). */
+.srow-actions[hidden] {
+    display: none;
 }
 
 .srow:hover .srow-meta,
