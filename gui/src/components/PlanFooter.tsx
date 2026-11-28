@@ -31,12 +31,12 @@ export function PlanFooter(p: { recent: () => string[] }) {
 function PlanGauge(p: { plan: RailPlan }) {
     const fill = () => (p.plan.reached ? 100 : Math.max(0, Math.min(100, p.plan.pct ?? 0)));
     return (
-        <span class="pl-g">
+        <span class="ring" data-tone={p.plan.reached ? "red" : p.plan.tone === "danger" ? "red" : p.plan.tone === "warn" ? "amber" : undefined}>
             <svg viewBox="0 0 20 20" aria-hidden="true">
-                <circle class="pl-track" cx="10" cy="10" r="9" />
+                <circle class="ring-track" cx="10" cy="10" r="9" />
                 <Show when={fill() > 0}>
                     {/* A sliver at least, so 1% still shows. */}
-                    <circle class="pl-arc" cx="10" cy="10" r="9" pathLength="100" stroke-dasharray={`${Math.max(4, fill())} 100`} transform="rotate(-90 10 10)" />
+                    <circle class="ring-value" cx="10" cy="10" r="9" pathLength="100" stroke-dasharray={`${Math.max(4, fill())} 100`} transform="rotate(-90 10 10)" />
                 </Show>
             </svg>
             <ProviderIcon id={p.plan.provider} name={p.plan.name} size={11} />
@@ -71,7 +71,7 @@ function PlanRow(p: { plans: RailPlan[]; check: () => void }) {
         if (!row) return;
         batch(() => (setFolded(0), setTight(false), setBare(false)));
         if (p.plans.length < 2) return setBare(row.scrollWidth > row.clientWidth + 0.5);
-        const chips = [...row.querySelectorAll<HTMLElement>(".pl:not(.more)")];
+        const chips = [...row.querySelectorAll<HTMLElement>(".plan-chip:not(.more)")];
         const widths = () => chips.map((c) => c.getBoundingClientRect().width);
         const gap = () => parseFloat(getComputedStyle(row!).columnGap) || 0;
         const style = getComputedStyle(row);
@@ -95,25 +95,24 @@ function PlanRow(p: { plans: RailPlan[]; check: () => void }) {
         <>
             <button ref={row} class={`plans ${tight() ? "tight" : ""}`} aria-label={label()} aria-haspopup="dialog" aria-expanded={open()} onClick={() => (!open() && p.check(), setOpen(!open()))}>
                 <For each={p.plans}>{(plan, i) => (
-                    <span class={`pl ${plan.reached ? "danger" : plan.tone} ${plan.stale ? "stale" : ""}`} hidden={hidden(i())} title={plan.detail}>
+                    <span class={`plan-chip ${plan.stale ? "stale" : ""}`} hidden={hidden(i())} title={plan.detail}>
                         <PlanGauge plan={plan} />
                         <Show when={plan.pct !== undefined}>
-                            <span class="pl-v">
+                            <span class="plan-pct" data-tone={plan.reached ? "red" : plan.tone === "danger" ? "red" : plan.tone === "warn" ? "amber" : undefined}>
                                 {plan.pct}<small>%</small>
-                                <Show when={solo() && !bare() && (plan.reached ? plan.lifts && `· resets ${plan.lifts}` : plan.window?.toLowerCase())}>{(w) => <span class="pl-w"> {w()}</span>}</Show>
+                                <Show when={solo() && !bare() && (plan.reached ? plan.lifts && `· resets ${plan.lifts}` : plan.window?.toLowerCase())}>{(w) => <span class="plan-reset"> {w()}</span>}</Show>
                             </span>
                         </Show>
                     </span>
                 )}</For>
                 {/* Always there, to be measured: out of the row (and unseen) while nothing is folded. */}
-                <span ref={more} class={`pl more ${folded() ? "" : "measure"}`} aria-hidden={folded() ? undefined : "true"}>+{Math.max(1, folded())}</span>
+                <span ref={more} class={`plan-chip more ${folded() ? "" : "measure"}`} aria-hidden={folded() ? undefined : "true"}>+{Math.max(1, folded())}</span>
             </button>
             {/* Inside the rail, edge to edge with its footer (and the rows above), however wide the rail is. */}
-            <Menu kind="dialog" label="Plan usage" open={open()} anchor={() => row} span={() => row?.closest<HTMLElement>(".side-foot") ?? undefined} onClose={() => setOpen(false)} placement="top" class="plans-card">
-                <div class="menu-head">Plan usage</div>
+            <Menu kind="dialog" label="Plan usage" open={open()} anchor={() => row} span={() => row?.closest<HTMLElement>(".sidebar-foot") ?? undefined} onClose={() => setOpen(false)} placement="top" class="plans-card">
+                <div class="plan-card-title">Plan usage</div>
                 <PlanCardPlans plans={p.plans} />
-                <div class="menu-sep" />
-                <button class="menu-item compact" onClick={() => (setOpen(false), setSettingsTab("usage"))}>Usage and accounts…</button>
+                <button class="link-btn plan-link" onClick={() => (setOpen(false), setSettingsTab("usage"))}>Usage and accounts…</button>
             </Menu>
         </>
     );

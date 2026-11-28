@@ -97,48 +97,58 @@
 }
 
 /* The servers that can't be reached as they are, between the sidebar's list and its foot (components/OtherMachines.tsx). */
-.sidebar .others {
+.server-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
     flex: none;
-    margin: 0 calc(-10 * var(--sp));
-    padding: calc(4 * var(--sp)) calc(8 * var(--sp));
+    padding: calc(6 * var(--sp));
     border-top: 1px solid var(--line);
 }
 
-.sidebar .others:empty {
+.server-rows:empty {
     display: none;
 }
 
-.others .om-h {
+.server-row {
     display: flex;
     align-items: center;
     gap: calc(8 * var(--sp));
-    width: 100%;
-    height: calc(32 * var(--sp));
-    padding: 0 calc(8 * var(--sp));
+    height: calc(28 * var(--sp));
+    padding: 0 calc(9 * var(--sp));
     border-radius: calc(6 * var(--sp));
-    color: var(--rail-fg);
-    font-weight: 500;
-    text-align: left;
+    font-size: 0.893rem;
+    transition: background 0.1s;
 }
 
-.others .om-h:hover {
+.server-row:hover {
     background: var(--rail-hover);
 }
 
-.others .om-h > svg {
+.server-row-icon {
     flex: none;
     color: var(--fg-3);
 }
 
-.others .om-n {
-    flex: none;
-    margin-left: auto;
-    color: var(--danger);
-    font-size: 0.857rem;
-    font-weight: 400;
+.server-row-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 500;
 }
 
-.others .om-n.warn {
+.server-row-word {
+    flex: none;
+    margin-left: auto;
+    font-size: 0.857rem;
+}
+
+.server-row-word[data-tone="red"] {
+    color: var(--danger);
+}
+
+.server-row-word[data-tone="amber"] {
     color: var(--warn);
 }
 
