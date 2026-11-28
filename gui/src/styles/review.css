@@ -205,34 +205,6 @@
     text-underline-offset: 2px;
 }
 
-.cfile-kind {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    flex: none;
-    width: calc(18 * var(--sp));
-    height: calc(18 * var(--sp));
-    border-radius: calc(5 * var(--sp));
-    font-family: var(--font-mono);
-    font-size: calc(11 * var(--sp));
-    font-weight: 600;
-}
-
-.cfile-kind[data-kind="modified"] {
-    background: var(--amber-soft);
-    color: var(--amber);
-}
-
-.cfile-kind[data-kind="added"] {
-    background: var(--green-soft);
-    color: var(--green);
-}
-
-.cfile-kind[data-kind="deleted"] {
-    background: var(--red-soft);
-    color: var(--red);
-}
-
 .cfile .diff {
     border-radius: 0 0 calc(10 * var(--sp)) calc(10 * var(--sp));
     background: transparent;
