@@ -108,6 +108,9 @@
     font-size: calc(11.5 * var(--sp));
     font-weight: 500;
     font-variant-numeric: tabular-nums;
+    /* Cavvy's base.css .stat sets line-height 1 and nowrap (its font shorthand), which the design's .stat leaves alone. */
+    line-height: inherit;
+    white-space: inherit;
 }
 
 .stat-add {
@@ -1380,6 +1383,8 @@ span.tool-target {
 }
 
 .chg-files {
+    /* The design's reset of every list (its base.css). */
+    margin: 0;
     border-top: 1px solid var(--line);
     padding: calc(3 * var(--sp)) 0;
 }
@@ -1731,9 +1736,6 @@ span.tool-target {
 .dock-stat {
     margin-left: calc(8 * var(--sp));
     font-weight: 500;
-    /* Cavvy's base.css .stat sets line-height 1 and nowrap (its font shorthand), which the design's .stat leaves alone. */
-    line-height: inherit;
-    white-space: inherit;
 }
 
 .dock-sub {
@@ -2057,10 +2059,11 @@ span.tool-target {
     line-height: 1;
 }
 
-:where(.dock) .icon-btn {
+:where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .icon-btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    border-radius: var(--radius-s);
 }
 
 :where(.dock) .input.mono {

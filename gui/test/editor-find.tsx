@@ -121,7 +121,7 @@ export async function checkEditorFind(root: HTMLElement) {
         setFindQuery("edited.ts");
         await settle();
         check(count() === "1 of 1" && textRanges(col, "edited.ts").length === 1, "changed-files card doesn't add another match");
-        const changedAction = col.querySelector<HTMLButtonElement>(".chg .row-open")!;
+        const changedAction = col.querySelector<HTMLButtonElement>(".chg .open-editor")!;
         check(changedAction.closest("[data-find-skip]"), "changed-files editor action is excluded from find");
         changedAction.click();
         check(opened.at(-1)?.path === "src/edited.ts" && opened.at(-1)?.line === 9 && opened.at(-1)?.sessionId === sessionId, "changed-files action keeps its session, path and line");

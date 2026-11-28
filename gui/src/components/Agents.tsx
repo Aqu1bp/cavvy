@@ -208,9 +208,9 @@ export function AgentView(p: { handle: SessionHandle; agent: AgentRun }) {
                             </div>
                             <div class="turn agent-reply">
                                 <Show when={!live(a()) && items().length}>
-                                    <button class="fold acts-h worked" aria-expanded={unfolded()} onClick={() => setUnfolded(!unfolded())}>
-                                        <ChevronRight size={14} class="chev" />
+                                    <button class="tools-head worklog-head fold worked" aria-expanded={unfolded()} onClick={() => setUnfolded(!unfolded())}>
                                         <span class="num">Worked for {elapsed(a())}</span>
+                                        <ChevronRight size={13} class="chev" data-open={unfolded() || undefined} />
                                     </button>
                                 </Show>
                                 <Show when={a().dropped && showWork()}>

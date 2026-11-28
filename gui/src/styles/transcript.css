@@ -346,58 +346,6 @@
     min-width: 0;
 }
 
-/* A disclosure line: "Read 3 files and searched once", "Worked for 1m 12s", "Thought for 41s" (the remix's .tools-head). */
-.acts-h,
-.run-h,
-.ag-head {
-    align-self: flex-start;
-    display: inline-flex;
-    align-items: center;
-    gap: calc(7 * var(--sp));
-    max-width: calc(100% + 7 * var(--sp));
-    margin-left: calc(-7 * var(--sp));
-    padding: calc(4 * var(--sp)) calc(7 * var(--sp));
-    border-radius: var(--radius-sm);
-    font-size: 0.929rem;
-    color: var(--fg-2);
-    text-align: left;
-    white-space: nowrap;
-    overflow: hidden;
-    transition: background 0.12s, color 0.12s;
-}
-
-.acts-h:hover,
-.run-h:hover,
-.ag-head:hover {
-    background: var(--hover);
-    color: var(--fg);
-}
-
-.acts-h .chev,
-.run-h .chev,
-.ag-head .chev {
-    flex: none;
-    color: var(--fg-3);
-    transition: transform 0.14s var(--ease);
-}
-
-.acts.open > .acts-h .chev,
-.run.open > .run-h .chev,
-.fold[aria-expanded="true"] .chev,
-.ag-head[aria-expanded="true"] .chev {
-    transform: rotate(90deg);
-}
-
-.acts-h .spinner {
-    flex: none;
-    margin: 0 1px;
-}
-
-.acts-h .wtext {
-    min-width: 0;
-}
-
-.acts-h code,
 .wtext code {
     font: 0.857rem var(--font-mono);
     padding: 1px calc(5 * var(--sp));
@@ -406,12 +354,8 @@
     color: var(--fg-2);
 }
 
-.acts-h .stat {
-    font-size: 0.857rem;
-}
-
 /* Come in as the turn it ends finishes, not each time a finished one is built. */
-.acts-h.worked.arrived {
+.worklog-head.arrived {
     animation: fade 220ms var(--ease);
 }
 
@@ -440,8 +384,6 @@
 /* The design's .live and .working (remix-conversation.css), with the states stacked in one cell of a grid so they
    crossfade in place: the glyph, the state, Esc. */
 .live-line {
-    display: flex;
-    flex-direction: column;
     min-width: 0;
 }
 
@@ -594,6 +536,12 @@
 
 .layer .lend > * + *::before {
     margin-right: calc(6 * var(--sp));
+}
+
+/* Waiting on the user: the design's amber label, in its own weight. */
+.layer .lbl.live-label {
+    font-weight: 400;
+    color: var(--amber);
 }
 
 .live-label {
@@ -765,7 +713,7 @@
 .wseg {
     /* A row's inset from the card's edge, the slot its icon sits in, and the gap after it. */
     --row-x: calc(8 * var(--sp));
-    --row-ic: calc(16 * var(--sp));
+    --row-ic: calc(14 * var(--sp));
     --row-gap: calc(8 * var(--sp));
     --row-h: calc(30 * var(--sp));
     display: flex;
@@ -835,8 +783,8 @@
 }
 
 .steps .tool-head:hover,
-.steps .tool.open > .tool-head {
-    background: var(--hover);
+.steps .tool[data-open] > .tool-head {
+    background: var(--fill-1);
 }
 
 .steps .tool-icon {
@@ -998,7 +946,6 @@
 }
 
 .tool-head:hover > .row-open,
-.chg-file:hover > .row-open,
 .diff-head:hover > .row-open,
 .tcard-h:hover > .row-open,
 .row-open:focus-visible {
@@ -1217,7 +1164,7 @@
 .edit-card > .tcard-h[role="button"]:hover,
 .edit-card.open > .tcard-h,
 .edit-card > .tcard-h:focus-visible {
-    background: var(--hover);
+    background: var(--fill-1);
 }
 
 .edit-card > .tcard-h:focus-visible {
@@ -1425,7 +1372,7 @@
 .cmd-row > .cmd-h:hover,
 .cmd-row.open > .cmd-h,
 .cmd-row > .cmd-h:focus-visible {
-    background: var(--hover);
+    background: var(--fill-1);
 }
 
 .cmd-row > .cmd-h:focus-visible {

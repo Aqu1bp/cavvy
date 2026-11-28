@@ -33,7 +33,7 @@ const KEY: [file: string, selector: string, property: string, at14: string][] = 
     ["composer.css", ".send", "width", "32px"],
     ["composer.css", ".uq-row", "height", "34px"],
     ["remix-conversation.css", ".tool-row", "height", "30px"],
-    ["transcript.css", ".acts-h", "padding", "4px 7px"],
+    ["remix-conversation.css", ".tools-head", "padding", "4px 7px"],
     ["remix-conversation.css", ".codeblock-body", "padding", "12px 14px"],
     ["overlays.css", ".pal-row", "min-height", "38px"],
     ["toasts.css", ".toast", "min-height", "36px"],

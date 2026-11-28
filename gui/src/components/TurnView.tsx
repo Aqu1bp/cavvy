@@ -464,7 +464,7 @@ function ChangesCard(p: { turn: Turn; cwd: string; sessionId: string; busy: bool
                                         </button>
                                         <Stat {...f} />
                                         <Show when={f.status !== "deleted"}>
-                                            <button class="icon-btn icon-btn-sm open-editor row-open" title="Open in editor" aria-label={`Open ${f.path} in editor`} onClick={() => void openInEditor(f.path, f.line, { sessionId: p.sessionId, gitToken: f.pathToken })}>
+                                            <button class="icon-btn icon-btn-sm open-editor" title="Open in editor" aria-label={`Open ${f.path} in editor`} onClick={() => void openInEditor(f.path, f.line, { sessionId: p.sessionId, gitToken: f.pathToken })}>
                                                 <ExternalLink size={13} />
                                             </button>
                                         </Show>
