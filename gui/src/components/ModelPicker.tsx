@@ -217,11 +217,6 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
         const all = new Map(groups().flatMap((g) => g.models.map((m) => [m.ref, m] as const)));
         return prefs.favoriteModels.map((ref) => all.get(ref)).filter((m): m is ModelSummary => Boolean(m));
     });
-    // The panel's height (px at text size 14): the search box, filters and foot, and the longest of the lists a tab
-    // shows (Favorites or one provider's), so it keeps one height from tab to tab and a short list isn't left in a
-    // tall panel. At most seven and a half rows, so a cut-off row says there's more: a longer list scrolls, and the
-    // search finds the rest.
-    const fit = createMemo(() => Math.max(200, Math.min(104 + (p.compare ? 40 : 0) + 7.5 * 35, 104 + (p.compare ? 40 : 0) + Math.max(1, favorites().length, ...groups().map((g) => g.models.length)) * 35)));
     const group = () => groups().find((g) => g.provider === filter());
     /** One provider's models, or the favorites; searching looks through every provider's, under its name. */
     const sections = createMemo((): Section[] => {
@@ -622,7 +617,9 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                 width={348}
                 maxHeight={480}
                 minHeight={view() === "effort" ? 0 : 200}
-                class="menu mp"
+                // The models: one height (model-picker.css .mp-fixed), whatever the tab, the search or how many rows; the
+                // rows scroll in it. The effort view keeps its own size.
+                class={view() === "models" ? `menu mp mp-fixed${p.compare ? " mp-has-foot" : ""}` : "menu mp"}
                 exit
             >
                 <Show when={view() === "effort"}>
@@ -649,7 +646,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                 </Show>
                 <Show when={view() === "models"}>
                 {/* A click anywhere else in the picker closes the accounts list. */}
-                <div class="mp-models" style={{ "--mp-fit": fit() }} onPointerDown={(e) => acctOpen() && !acctEl?.contains(e.target as Node) && setAcctOpen(false)}>
+                <div class="mp-models" onPointerDown={(e) => acctOpen() && !acctEl?.contains(e.target as Node) && setAcctOpen(false)}>
                     <div class="mp-search">
                         {/* Back to the effort, where the picker opened on it. */}
                         <Show when={hasEffortView()} fallback={<Search size={14} class="mp-search-icon" />}>
