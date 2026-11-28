@@ -6,13 +6,13 @@ import { join } from "node:path";
 
 const read = (p: string) => readFileSync(join(import.meta.dir, "..", p), "utf8");
 
-test("the agent's note shows only while its turn runs, and is never cut", () => {
+test("the agent's note shows only while its turn runs, on a line of its own under the address", () => {
     const pane = read("gui/src/components/BrowserPane.tsx");
     expect(pane).toContain('status() === "agent" && app.sessions.find((s) => s.id === id())?.status === "running"');
     expect(pane).toContain("<Show when={agentUsing()}>");
-    const css = read("gui/src/styles/browser.css");
-    expect(css).toMatch(/\.br-tabs \.br-who \{\s*flex: none;/);
-    expect(css).toMatch(/@container \(width < 360px\) \{\s*\.br-tabs \.br-who \.truncate \{/);
+    expect(pane.indexOf('<div class="br-who"')).toBeGreaterThan(pane.indexOf('<div class="br-bar">'));
+    const css = read("gui/src/styles/browser-pane.css");
+    expect(css).toMatch(/\.br-who \{[^}]*white-space: nowrap;/);
 });
 
 test("a new tab puts the cursor in the address bar", () => {

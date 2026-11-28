@@ -440,9 +440,7 @@
 }
 
 [data-lead] .inspector-head,
-[data-lead] .rv-h,
-[data-lead] .br-bar,
-[data-lead] .sim-bar {
+[data-lead] .rv-h {
     padding-left: calc(92px - var(--win-pad, 8px) + 76px);
 }
 

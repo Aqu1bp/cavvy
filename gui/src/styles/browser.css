@@ -1,406 +1,5 @@
-/* ---- The Browser pane (BrowserPane), a tab of the side panel ----
-   An address bar and the session's tabs over the page, which is a canvas the server's frames are drawn on.
-   Under the page: a note when the person has taken the tab (and how to hand it back), or a dialog the page asks. */
-
-/* The pane fills the panel's body: the page takes what the bars leave. */
-.insp-body.br-body {
-    padding: 0;
-    overflow: hidden;
-    display: flex;
-    flex-direction: column;
-}
-
-.br-body > .pane {
-    flex: 1;
-    min-height: 0;
-    display: flex;
-}
-
-.browser-pane {
-    display: flex;
-    flex-direction: column;
-    flex: 1;
-    min-width: 0;
-    min-height: 0;
-}
-
-.br-bar {
-    display: flex;
-    align-items: center;
-    gap: calc(2 * var(--sp));
-    padding: calc(12 * var(--sp)) calc(10 * var(--sp)) calc(6 * var(--sp));
-    flex: none;
-}
-
-.br-bar .hb {
-    border-radius: var(--pill);
-}
-
-.br-address {
-    flex: 1;
-    min-width: 0;
-    margin-left: calc(4 * var(--sp));
-}
-
-.br-address input {
-    width: 100%;
-    height: calc(28 * var(--sp));
-    padding: 0 calc(12 * var(--sp));
-    border: 0;
-    border-radius: var(--pill);
-    background: var(--sheet-2);
-    color: var(--fg);
-    font: inherit;
-    text-overflow: ellipsis;
-}
-
-.br-address input::placeholder {
-    color: var(--fg-4);
-}
-
-.br-address input:disabled {
-    opacity: 0.5;
-}
-
-/* Under the tabs, opened from the pane's menu (BrowserTools.tsx): find in page, and the page's size and zoom. */
-.br-strip {
-    display: flex;
-    align-items: center;
-    gap: calc(2 * var(--sp));
-    padding: 0 calc(10 * var(--sp)) calc(6 * var(--sp));
-    flex: none;
-    font-size: 0.857rem;
-    color: var(--fg-2);
-}
-
-/* The size and zoom: too narrow for one row, the zoom goes to a second. */
-.br-strip.br-size {
-    flex-wrap: wrap;
-    row-gap: calc(4 * var(--sp));
-    container-type: inline-size;
-}
-
-/* Too narrow for "Shown at 77%" beside the size and zoom: it's left out, so the strip stays one row and doesn't take
-   the page's height (which would change the figure, and leave a size typed again shown smaller than before). */
-@container (max-width: 400px) {
-    .br-strip-note:not(.refused),
-    .br-strip-note + .br-strip-count {
-        display: none;
-    }
-
-    /* What a side takes, said whole: on a row of its own under the size, while the side typed is refused. */
-    .br-strip-note.refused {
-        order: 1;
-        flex-basis: 100%;
-    }
-}
-
-/* The zoom and the way back to filling the pane, at the row's end: they wrap together. */
-.br-strip-end {
-    display: flex;
-    align-items: center;
-    gap: calc(2 * var(--sp));
-    flex: none;
-    margin-left: auto;
-}
-
-.br-strip .hb {
-    border-radius: var(--pill);
-}
-
-.br-strip-ic {
-    flex: none;
-    margin: 0 calc(2 * var(--sp)) 0 calc(4 * var(--sp));
-    color: var(--fg-3);
-}
-
-.br-strip input {
-    height: calc(26 * var(--sp));
-    padding: 0 calc(10 * var(--sp));
-    border: 0;
-    border-radius: var(--pill);
-    background: var(--sheet-2);
-    color: var(--fg);
-    font: inherit;
-}
-
-.br-find-input {
-    flex: 1;
-    min-width: 0;
-}
-
-.br-strip input.br-side {
-    width: calc(50 * var(--sp));
-    min-width: calc(40 * var(--sp));
-    flex: 0 1 auto;
-    padding: 0 calc(4 * var(--sp));
-    text-align: center;
-    font-variant-numeric: tabular-nums;
-}
-
-/* A side the page can't have, kept as typed (as the app's other fields mark a refused value). */
-.br-strip input.br-side[aria-invalid="true"] {
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 70%, transparent);
-}
-
-/* After the size: how small it's drawn to fit, or what a side takes. The fit is the first thing to give way when the pane
-   is narrow: it never wraps the strip to a second row (which would take the page's height, and change the fit it reports). */
-.br-strip-note {
-    flex: 1 1 0;
-    min-width: 0;
-    padding-left: calc(4 * var(--sp));
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: var(--fg-3);
-    font-variant-numeric: tabular-nums;
-}
-
-/* The words beside their figure, by the zoom. */
-.br-strip-note:not(.refused) {
-    text-align: right;
-}
-
-.br-strip-note + .br-strip-count {
-    color: var(--fg-3);
-}
-
-.br-strip-note.refused {
-    color: var(--danger);
-}
-
-.br-strip-count,
-.br-strip-zoom {
-    flex: none;
-    font-variant-numeric: tabular-nums;
-    white-space: nowrap;
-}
-
-.br-strip-label {
-    padding-left: calc(4 * var(--sp));
-}
-
-.br-strip-zoom {
-    min-width: calc(40 * var(--sp));
-    padding: calc(3 * var(--sp)) calc(4 * var(--sp));
-    border-radius: var(--pill);
-    color: var(--fg-2);
-}
-
-.br-strip-zoom:hover {
-    background: var(--hover);
-}
-
-.br-tabs {
-    display: flex;
-    align-items: center;
-    gap: calc(2 * var(--sp));
-    padding: 0 calc(10 * var(--sp)) calc(6 * var(--sp));
-    flex: none;
-    overflow-x: auto;
-    scrollbar-width: none;
-    container-type: inline-size;
-}
-
-.br-tab {
-    display: inline-flex;
-    align-items: center;
-    flex: 0 1 calc(150 * var(--sp));
-    min-width: calc(60 * var(--sp));
-    height: calc(26 * var(--sp));
-    border-radius: var(--pill);
-    color: var(--fg-3);
-    font-weight: 500;
-    transition: background var(--dur-fast), color var(--dur-fast);
-}
-
-.br-tab:hover {
-    background: var(--hover);
-    color: var(--fg-2);
-}
-
-.br-tab.on {
-    background: var(--sheet-2);
-    color: var(--fg);
-}
-
-.br-tab-main {
-    flex: 1;
-    min-width: 0;
-    height: 100%;
-    padding: 0 calc(2 * var(--sp)) 0 calc(10 * var(--sp));
-    text-align: left;
-    color: inherit;
-    overflow: hidden;
-}
-
-/* A block, so a long title ends in an ellipsis inside its tab rather than running under the next thing. */
-.br-tab-main .truncate {
-    display: block;
-}
-
-.br-tab-x {
-    display: inline-grid;
-    place-items: center;
-    flex: none;
-    width: calc(20 * var(--sp));
-    height: calc(20 * var(--sp));
-    margin-right: calc(3 * var(--sp));
-    border-radius: 50%;
-    color: var(--fg-4);
-}
-
-.br-tab-x:hover {
-    background: var(--hover);
-    color: var(--fg);
-}
-
-.br-who {
-    display: inline-flex;
-    align-items: center;
-    gap: calc(6 * var(--sp));
-    flex: 0 1 auto;
-    min-width: 0;
-    padding-left: calc(8 * var(--sp));
-    color: var(--fg-3);
-    font-size: 0.857rem;
-    white-space: nowrap;
-}
-
-/* The page: the canvas fills it, and the bars of a pane with no page open sit over it. */
-.br-view {
-    position: relative;
-    flex: 1;
-    min-height: 0;
-    background: var(--sheet-2);
-    border-top: 0.5px solid var(--line);
-    overflow: hidden;
-}
-
-.br-canvas {
-    position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 100%;
-    cursor: default;
-    outline: none;
-}
-
-.br-canvas:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: -2px;
-}
-
-.br-blank {
-    position: absolute;
-    inset: 0;
-    display: grid;
-    place-items: center;
-    overflow: auto;
-}
-
-.br-note {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: calc(8 * var(--sp));
-    padding: calc(8 * var(--sp)) calc(10 * var(--sp));
-    flex: none;
-    border-top: 0.5px solid var(--line);
-}
-
-.br-note-text {
-    flex: 1 1 calc(160 * var(--sp));
-    min-width: 0;
-    color: var(--fg-2);
-    line-height: 1.4;
-    overflow-wrap: anywhere;
-}
-
-.br-note input {
-    flex: 1 1 calc(120 * var(--sp));
-    min-width: 0;
-    height: calc(28 * var(--sp));
-    padding: 0 calc(12 * var(--sp));
-    border: 0;
-    border-radius: var(--pill);
-    background: var(--sheet-2);
-    color: var(--fg);
-    font: inherit;
-}
-
-.br-note .btn {
-    flex: none;
-}
-
-.br-dialog {
-    position: absolute;
-    left: calc(8 * var(--sp));
-    right: calc(8 * var(--sp));
-    bottom: calc(8 * var(--sp));
-    z-index: 1;
-    border: 0;
-    border-radius: var(--radius-md);
-    background: var(--sheet);
-    box-shadow: var(--sheet-shadow);
-}
-
-/* The agent is driving this tab. */
-/* Beside the tabs, whole or not at all: the tabs give way first, and in a strip too narrow for both the dot alone
-   shows (the words stay for screen readers). */
-.br-tabs .br-who {
-    flex: none;
-}
-
-@container (width < 360px) {
-    .br-tabs .br-who .truncate {
-        position: absolute;
-        width: 1px;
-        height: 1px;
-        overflow: hidden;
-        clip-path: inset(50%);
-    }
-}
-
-.br-dot {
-    width: calc(7 * var(--sp));
-    height: calc(7 * var(--sp));
-    border-radius: 50%;
-    flex: none;
-    background: var(--accent);
-}
-
-/* A real editable focus target lets the OS deliver IME and dead-key compositions. */
-.br-keyboard {
-    position: absolute;
-    left: 0;
-    bottom: 0;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    border: 0;
-    opacity: 0;
-    resize: none;
-}
-.br-view:focus-within { outline: 2px solid var(--accent); outline-offset: -2px; }
-.br-blank .blank { max-width: 32ch; padding: calc(24 * var(--sp)); text-align: center; }
-
-.br-connection {
-    position: absolute;
-    left: 50%;
-    top: calc(16 * var(--sp));
-    transform: translateX(-50%);
-    display: flex;
-    align-items: center;
-    gap: calc(8 * var(--sp));
-    padding: calc(8 * var(--sp)) calc(12 * var(--sp));
-    border: 1px solid var(--line);
-    border-radius: var(--pill);
-    background: var(--sheet-2);
-    color: var(--fg-2);
-    pointer-events: none;
-    white-space: nowrap;
-}
+/* ---- The browser outside its pane: the desktop app's page views and the floating browser ----
+   The Browser and Simulator panes themselves are browser-pane.css and simulator.css, loaded with them. */
 
 /* The Electron app's tab pages (BrowserHostLayer): over the pane when shown, under the window's menus and
    dialogs; otherwise a clipped pixel behind everything, still rendering. */
@@ -424,10 +23,10 @@
 }
 
 /* Watched in the floating view: the page is for looking at; a click on it opens the pane (FloatingBrowser).
-   Rounded as its frame's inside is (.br-float-page). */
+   Its foot rounded as the card's is (.br-float-page): the card's edge is the only one at its corners. */
 .br-host-tab.shown.fit {
     pointer-events: none;
-    border-radius: calc(var(--radius-md) - var(--br-float-inset));
+    border-radius: 0 0 var(--br-float-r) var(--br-float-r);
 }
 
 .br-host-tab.fit .br-host-view {
@@ -440,10 +39,9 @@ body.resizing .br-host-tab {
 }
 
 /* The agent's browser floating over the chat (FloatingBrowser): pinned at the top right, as wide as it's been made
-   (within the room it has). Its page box, inside a thin frame of the card, is drawn over by the real page: the page
-   rounded inside the frame, so the card's own edge is the only one at its corners. */
+   (within the room it has). The design's card: the page's title over the page, which is drawn over its box. */
 :root {
-    --br-float-inset: calc(5 * var(--sp));
+    --br-float-r: calc(10 * var(--sp));
 }
 
 .br-float {
@@ -487,52 +85,57 @@ body.resizing .br-host-tab {
 .br-float-card {
     display: flex;
     flex-direction: column;
-    padding: 0 var(--br-float-inset) var(--br-float-inset);
-    border-radius: var(--radius-md);
+    border-radius: var(--br-float-r);
+    background: var(--surface);
+    box-shadow: var(--shadow-pop);
+    overflow: hidden;
 }
 
-/* The remix's .br-float-head: the page's title, then its host in a quieter tone. */
-.br-float-bar {
+.br-float-head {
     display: flex;
     align-items: center;
     gap: calc(2 * var(--sp));
+    flex: none;
     height: calc(34 * var(--sp));
-    padding: 0 0 0 calc(6 * var(--sp));
+    padding: 0 calc(5 * var(--sp)) 0 calc(11 * var(--sp));
+    border-bottom: 1px solid var(--line);
 }
 
 .br-float-title {
-    flex: 0 1 auto;
+    flex: 1;
     min-width: 0;
     margin: 0 calc(4 * var(--sp)) 0 calc(8 * var(--sp));
-    font-size: 0.893rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: calc(12.5 * var(--sp));
     font-weight: 500;
 }
 
-/* Gives way first when the bar is short. */
+/* With the page's host after it, the host takes the room and gives way first. */
+.br-float-title:has(+ .br-float-host) {
+    flex: 0 1 auto;
+}
+
 .br-float-host {
-    flex: 0 100 auto;
+    flex: 1 100 0;
     min-width: 0;
-    color: var(--fg-3);
-    font-size: 0.857rem;
+    margin-right: calc(4 * var(--sp));
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
 }
 
-.br-float-bar .hb {
-    color: var(--fg-3);
-}
-
-.br-float-bar .hb:hover {
-    color: var(--fg);
-}
-
-/* Live while the agent's turn runs: the dot breathes; afterwards (the view lingers a moment) it's still and grey. */
+/* The agent is driving the page: its dot pulses while its turn runs; afterwards (the view lingers a moment, a tab's dot
+   stays a moment) it's still and grey. */
 .br-live {
     flex: none;
-    width: calc(6 * var(--sp));
-    height: calc(6 * var(--sp));
-    margin-right: calc(1 * var(--sp));
+    width: calc(7 * var(--sp));
+    height: calc(7 * var(--sp));
     border-radius: 50%;
-    background: var(--fg-4);
-    transition: background 200ms;
+    background: var(--text-4);
 }
 
 .br-live.on {
@@ -543,9 +146,10 @@ body.resizing .br-host-tab {
 
 /* The agent's page is 1280×800: the box keeps that shape. */
 .br-float-page {
+    position: relative;
+    display: block;
     aspect-ratio: 1280 / 800;
-    border-radius: calc(var(--radius-md) - var(--br-float-inset));
-    background: var(--sheet-2);
+    background: #fff;
     cursor: pointer;
 }
 
@@ -555,16 +159,16 @@ body.resizing .br-host-tab {
 }
 
 .br-float-edge.left {
-    top: var(--radius-md);
-    bottom: var(--radius-md);
+    top: var(--br-float-r);
+    bottom: var(--br-float-r);
     left: calc(-4 * var(--sp));
     width: calc(9 * var(--sp));
     cursor: ew-resize;
 }
 
 .br-float-edge.bottom {
-    left: var(--radius-md);
-    right: var(--radius-md);
+    left: var(--br-float-r);
+    right: var(--br-float-r);
     bottom: calc(-4 * var(--sp));
     height: calc(9 * var(--sp));
     cursor: ns-resize;
@@ -580,8 +184,8 @@ body.resizing .br-host-tab {
     outline: none;
 }
 
-/* Its handle: an arc around the corner, just outside it (its center the corner's: the grip is 7 past the card's
-   corner, which is --radius-md round), while the pointer is on the view, during a drag, and when the keyboard is on it. */
+/* Its handle: an arc around the corner, just outside it, while the pointer is on the view, during a drag, and when
+   the keyboard is on it. In the accent, as the design's resize edges are. */
 .br-float-arc {
     position: absolute;
     inset: 0;
@@ -591,9 +195,9 @@ body.resizing .br-host-tab {
     stroke: currentColor;
     stroke-width: 3;
     stroke-linecap: round;
-    color: var(--fg-3);
+    color: var(--text-3);
     opacity: 0;
-    transition: opacity 160ms, color 160ms;
+    transition: opacity 0.15s, color 0.15s;
 }
 
 .br-float:hover .br-float-arc,
@@ -605,5 +209,5 @@ body.resizing .br-host-tab {
 .br-float-grip:hover .br-float-arc,
 .br-float.resizing .br-float-arc,
 .br-float-grip:focus-visible .br-float-arc {
-    color: var(--fg-2);
+    color: var(--accent);
 }
