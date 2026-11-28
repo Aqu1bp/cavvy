@@ -14,8 +14,11 @@ import type { SyncRunResult } from "./sync-state";
 const QUEUED = ["session.rename", "session.pin", "session.settle", "session.archive", "session.neverSettle", "session.snooze", "session.delete"] as const;
 /** A change to a session there, made here while the server couldn't be reached: sent to it, in order, once it's back. */
 export interface PendingChange {
-    method: (typeof QUEUED)[number];
+    /** Or, for a delete that was sent and not answered, then undone: a restore. */
+    method: (typeof QUEUED)[number] | "session.restore";
     params: Record<string, unknown> & { id: string };
+    /** Sent once without an answer: the server may have it. */
+    tried?: true;
 }
 /** Changes waiting for a server that's away: only so many (past that, another isn't taken). */
 const MAX_PENDING = 1000;
@@ -25,10 +28,10 @@ const PENDING_RETRY_MS = 5000;
 /** A pending change as written down, checked as it's read back. */
 function pendingChange(v: unknown): PendingChange | undefined {
     const o = (v && typeof v === "object" ? v : {}) as { method?: unknown; params?: unknown };
-    const method = QUEUED.find((m) => m === o.method);
+    const method = [...QUEUED, "session.restore" as const].find((m) => m === o.method);
     const params = o.params && typeof o.params === "object" && !Array.isArray(o.params) ? (o.params as Record<string, unknown>) : undefined;
     if (!method || typeof params?.id !== "string" || !/^[\w.-]{1,120}$/.test(params.id)) return undefined;
-    return { method, params: params as PendingChange["params"] };
+    return { method, params: params as PendingChange["params"], ...((o as { tried?: unknown }).tried === true ? { tried: true as const } : {}) };
 }
 
 /** A session with a pending change made to it, as it will be once the server has it. */
@@ -44,12 +47,13 @@ function changed(s: SessionSummary, c: PendingChange): SessionSummary {
             return { ...s, settled: p.settled === true };
         case "session.archive":
             // Archived, a snooze has nothing left to bring back (engine.ts setFlag).
-            return p.archived === true ? { ...s, archived: true, snoozedUntil: undefined } : { ...s, archived: false };
+            return p.archived === true ? { ...s, archived: true, snoozedUntil: undefined, woke: undefined } : { ...s, archived: false };
         case "session.neverSettle":
             return p.on === true ? { ...s, neverSettle: true } : { ...s, neverSettle: undefined };
         case "session.snooze":
             return typeof p.until === "number" && Number.isFinite(p.until) ? { ...s, snoozedUntil: p.until } : { ...s, snoozedUntil: undefined };
         case "session.delete":
+        case "session.restore":
             return s;
     }
 }
@@ -329,6 +333,10 @@ export class MachineWatch {
                 // Not now (it went away, it's busy): tried again later, in the same order.
                 if (!(e as { theirs?: boolean }).theirs) {
                     this.sending = undefined;
+                    if (c.method === "session.delete" && !c.tried) {
+                        c.tried = true;
+                        this.savePending();
+                    }
                     if (this.isConnected() && !this.stopped) {
                         this.pendingTimer = setTimeout(() => void this.flush(), PENDING_RETRY_MS);
                         (this.pendingTimer as { unref?: () => void }).unref?.();
@@ -341,11 +349,11 @@ export class MachineWatch {
             this.sending = undefined;
             const id = c.params.id;
             const s = this.sessions.get(id);
-            if (took && s) {
+            if (took) {
                 // What it is there now, without waiting to hear it: the row doesn't go back and forth. Written down
                 // before the change is let go, so a restart in between can't bring back what was.
-                if (c.method === "session.delete") this.sessions.delete(id);
-                else this.sessions.set(id, changed(s, c));
+                if (s && c.method === "session.delete") this.sessions.delete(id);
+                else if (s) this.sessions.set(id, changed(s, c));
                 this.o.kept?.write([...this.sessions.values()].map((x) => this.resting(x)));
             }
             this.pending = this.pending.filter((x) => x !== c);
@@ -414,7 +422,8 @@ export class MachineWatch {
         // Deleted here while the server was away, and brought back (Undo) before it was sent: it never goes.
         const undone = method === "session.restore" ? this.pending.find((c) => c !== this.sending && c.method === "session.delete" && c.params.id === id) : undefined;
         if (undone) {
-            this.pending = this.pending.filter((c) => c !== undone);
+            // Sent before without an answer, it may be done there: brought back there too, once it's reached.
+            this.pending = this.pending.flatMap((c) => (c !== undone ? [c] : undone.tried ? [{ method: "session.restore" as const, params: { id } }] : []));
             this.savePending();
             this.reshow(id);
             return Promise.resolve(null);

@@ -462,3 +462,29 @@ test("what a row offers is done here while the server can't be reached, kept thr
     await until("the refusal", () => (pending as unknown[]).length === 0);
     expect(refused.overview().sessions.map((s) => s.id)).toContain("s3");
 });
+
+test("a delete sent without an answer, then undone, is brought back there too: the server may have done it", async () => {
+    const row = { id: "s1", title: "s1", cwd: "/srv/app", projectName: "app", status: "idle", updatedAt: 2, createdAt: 1, messages: 2, pinned: false, settled: false, archived: false, live: false };
+    let pending: unknown = [{ method: "session.delete", params: { id: "s1" } }];
+    const store = { read: () => JSON.parse(JSON.stringify(pending)), write: (c: unknown) => void (pending = c) };
+    // It takes the delete, then goes away before it answers.
+    const srv = Bun.serve({
+        port: 0,
+        fetch: (req, s) => (s.upgrade(req) ? undefined : new Response("no")),
+        websocket: {
+            message(ws, raw) {
+                const m = JSON.parse(String(raw));
+                if (m.method === "sessions.list") return void ws.send(JSON.stringify({ id: m.id, result: m.params?.archived ? [] : [row] }));
+                if (m.method === "session.delete") ws.close();
+            },
+        },
+    });
+    const watch = new MachineWatch("box", { reach: async () => ({ status: "connected", url: `ws://127.0.0.1:${srv.port}/ws`, token: "t" }), changed: () => {}, notice: () => {}, retryMs: [60_000], kept: { read: () => [row], write: () => {} }, pending: store });
+    stops.push(() => (watch.stop(), void srv.stop(true)));
+    watch.start();
+    await until("the delete to be tried", () => (pending as { tried?: boolean }[])[0]?.tried === true);
+    await until("it to be away", () => watch.overview().state !== "connected");
+    expect(await watch.call("session.restore", { id: "s1" })).toBeNull();
+    expect(pending).toEqual([{ method: "session.restore", params: { id: "s1" } }]);
+    expect(watch.overview().sessions.map((s) => s.id)).toEqual(["s1"]);
+});
