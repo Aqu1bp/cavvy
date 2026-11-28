@@ -188,15 +188,11 @@ export function RewindDialog() {
         }
     };
     const actions = (
-        <div class="dialog-actions">
-            <Show when={empty()}>
-                <span class="grow" />
-            </Show>
-            <button class="btn btn-ghost" onClick={close}>
+        <>
+            <button class={`btn btn-ghost ${empty() ? "" : "dlg-foot-left"}`} onClick={close}>
                 {empty() ? "Close" : "Cancel"}
             </button>
             <Show when={!empty()}>
-                <span class="grow" />
                 <button class="btn" disabled={!plan() || busy() || !plan()!.restore.length} onClick={() => void go(true, false)}>
                     Code only
                 </button>
@@ -207,7 +203,7 @@ export function RewindDialog() {
                     Restore both
                 </button>
             </Show>
-        </div>
+        </>
     );
     return (
         <Dialog open={rewindOpen()} onClose={close} title={empty() ? "Rewind" : "Rewind to before which prompt?"} width={560} class="rw" footer={actions}>

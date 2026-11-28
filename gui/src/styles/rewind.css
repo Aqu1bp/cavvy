@@ -217,3 +217,8 @@
 .dialog.rw .panel-empty {
     padding: calc(14 * var(--sp)) calc(20 * var(--sp));
 }
+
+/* The design's dialogs.css: what goes first in the foot, at its left. */
+.dlg-foot-left {
+    margin-right: auto;
+}

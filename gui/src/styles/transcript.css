@@ -543,13 +543,6 @@
     color: var(--fg-3);
 }
 
-/* After the reply: copy and fork, shown when the turn is pointed at. */
-
-.turn:hover .turn-foot .copy-btn,
-.turn:has(+ .transcript-end) .turn-foot .copy-btn,
-.turn-foot .copy-btn:focus-visible {
-    opacity: 1;
-}
 
 .nw-src {
     flex: none;
