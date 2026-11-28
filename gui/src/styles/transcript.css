@@ -139,11 +139,17 @@
 }
 
 /* The row find is showing: all of its command, title or summary, not cut short. */
-.tool.found .tool-line .truncate,
-.agr.found .truncate,
+.tool.found .tool-target,
+.tool.found .tool-meta .truncate,
+.agent-row.found :is(.agent-name, .agent-sub),
 .tcard.found .tcard-h .truncate {
     white-space: normal;
     overflow-wrap: anywhere;
+}
+
+.tool.found .tool-row {
+    height: auto;
+    min-height: calc(30 * var(--sp));
 }
 
 /* A turn opened from a search: marked for a moment. */

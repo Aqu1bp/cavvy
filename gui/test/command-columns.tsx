@@ -5,6 +5,8 @@ import { ActivityGroup } from "../src/components/blocks/Activity";
 import "../src/styles/tokens.css";
 import "../src/styles/base.css";
 import "../src/styles/transcript.css";
+import "../src/styles/remix-conversation.css";
+
 // The app's other styles are on the page too (a class of the same name there once made rows taller).
 import "../src/styles/panel.css";
 
@@ -32,7 +34,7 @@ export async function checkCommandColumns(target: HTMLElement) {
     box.className = "wseg";
     // The rows of an opened run, in its card (Activity.tsx WorkRun): the columns are the card's.
     const card = box.appendChild(document.createElement("div"));
-    card.className = "run-rows";
+    card.className = "tools-list run-rows";
     const html = document.documentElement.style;
     const dispose = render(() => rows.map((t) => <ActivityGroup tools={[t]} steps={[t]} card="command" turnRunning={false} flat />), card);
     try {

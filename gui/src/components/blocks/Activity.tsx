@@ -696,12 +696,12 @@ function ToolRowContent(p: ToolRowProps) {
                     <span class={shines() ? "tool-verb wverb shimmer" : p.activity && isLive(p.tool) ? "tool-verb wverb" : "tool-verb"} data-find-skip={isLive(p.tool) || undefined}>{p.activity && isLive(p.tool) ? runningVerb(p.tool) : label().verb}<Show when={shines()}><Shine text={runningVerb(p.tool)} /></Show></span>{!isLive(p.tool) && " "}
                     <Show when={label().arg}>
                         {(arg) => (
-                            <Switch fallback={<span class="tool-target tool-target-plain tool-arg" data-find-skip={p.tool.status === "streaming" || undefined}>{arg()}</span>}>
+                            <Switch fallback={<span class={`tool-target tool-target-plain tool-arg ${p.activity ? "warg" : ""}`} data-find-skip={p.tool.status === "streaming" || undefined}>{arg()}</span>}>
                                 <Match when={targetKind(p.tool) === "path"}>
-                                    <span class="tool-target tool-arg" data-find-skip={p.tool.status === "streaming" || undefined}><Path path={arg()} /></span>
+                                    <span class={`tool-target tool-arg ${p.activity ? "warg" : ""}`} data-find-skip={p.tool.status === "streaming" || undefined}><Path path={arg()} /></span>
                                 </Match>
                                 <Match when={targetKind(p.tool) === "code"}>
-                                    <code class="tool-target tool-arg" data-find-skip={p.tool.status === "streaming" || undefined}>{arg()}</code>
+                                    <code class={`tool-target tool-arg ${p.activity ? "warg" : ""}`} data-find-skip={p.tool.status === "streaming" || undefined}>{arg()}</code>
                                 </Match>
                             </Switch>
                         )}

@@ -56,7 +56,7 @@ function setup(blocks: any[], expanded = true, agents: any[] = [], session?: str
         Markdown: () => node("markdown"), Spinner: icon,
         // What a Copy would copy, read when it's pressed.
         CopyButton: (p: any) => { const n = icon(); n.props.label = p.label; n.props.copy = p.text; return n; }, openReview: () => {}, openInEditor: () => {},
-        ...Object.fromEntries(["AlertTriangle", "Bot", "Check", "ChevronDown", "ChevronRight", "ClipboardList", "FileDiff", "FilePen", "FilePlus2", "FileText", "FolderTree", "Globe", "Hand", "ListChecks", "MessageCircleQuestion", "Plug", "Radar", "Search", "ShieldCheck", "SquareArrowOutUpRight", "SquareTerminal", "Wrench", "X", "Brain"].map((name) => [name, icon])),
+        ...Object.fromEntries(["AlertTriangle", "Bot", "Check", "ChevronDown", "ChevronRight", "ClipboardList", "FileDiff", "FilePen", "FilePlus2", "FileText", "FolderTree", "Globe", "Hand", "ListChecks", "MessageCircleQuestion", "Plug", "Radar", "Search", "ShieldCheck", "SquareArrowOutUpRight", "SquareTerminal", "Wrench", "X", "Brain", "Ban", "ExternalLink"].map((name) => [name, icon])),
     };
     // One copy of the module, as the app has: its components share its state (the command cards' folds).
     // The live line opens a running command into the rows' block and folds (a historical source may have neither).

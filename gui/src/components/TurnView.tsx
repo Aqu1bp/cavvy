@@ -644,6 +644,10 @@ type TurnViewProps = {
     gone?: () => boolean;
 };
 
+/** Finished turns whose work stayed open as they ended, drawn where it was rather than in the work log's box (by session and turn). */
+const keptFlat = new Set<string>();
+const KEPT_FLAT = 400;
+
 export function TurnView(p: TurnViewProps) {
     return <RenderBoundary raw={() => p.turn}><TurnViewContent {...p} /></RenderBoundary>;
 }
@@ -679,22 +683,45 @@ function TurnViewContent(p: TurnViewProps) {
     // the reader's open work is kept open before the <Show> would take it away (and remount it).
     const foldable = createMemo(() => !running() && !p.held);
     const [unfolded, setUnfolded] = createSignal(p.workOpen ?? prefs.expandActivity);
-    const unfold = (open: boolean) => { setUnfolded(open); p.onWorkOpen?.(open); };
+    // The work log's box holds its rows only when they're drawn in it: a turn built finished, or one whose work was
+    // folded since. A turn that finishes with its work open keeps its rows where they are (built again in the box,
+    // the last turn's rows would all be drawn again as it ends, a long turn's 200 calls in some 160 ms). Set where the
+    // work is put away, not read from whether it shows: that dips for a moment as a turn ends with its work kept open.
+    // Kept so across a switch to another session and back: built again, it's where the reader left it.
+    const flatKey = `${untrack(() => p.state.id)}:${p.turn.id}`;
+    const [boxed, setBoxed0] = createSignal(untrack(foldable) && !keptFlat.has(flatKey));
+    const setBoxed = (box: boolean) => {
+        setBoxed0(box);
+        if (box) keptFlat.delete(flatKey);
+        else if (keptFlat.add(flatKey).size > KEPT_FLAT) keptFlat.delete(keptFlat.values().next().value!);
+    };
+    const unfold = (open: boolean) => {
+        setUnfolded(open);
+        p.onWorkOpen?.(open);
+        if (!open && untrack(foldable)) setBoxed(true);
+    };
     // Fading out before it folds: the work's last moment on screen, then "Worked for".
     const [folding, setFolding] = createSignal(false);
     /** It finished here, in view of the reader: "Worked for" comes in (not on a turn built finished: a page of them). */
     const [arrived, setArrived] = createSignal(false);
     // Run before DOM effects can remove the work the reader is inspecting.
+    // As it finishes, its work stays drawn if it's kept open or fades out first: said by a memo, so what reads it
+    // never sees the work gone for a moment before the computation below has set either (it would build the rows again).
+    const bridged = createMemo(on(foldable, (value, previous) => previous === false && value && !untrack(unfolded) && (Boolean(p.keepWorkOpen?.()) || motionMs(200) > 0)));
+    const [settled, setSettled] = createSignal(false);
     createComputed(on(foldable, (value, previous) => {
+        if (!value) (setBoxed(false), setSettled(false));
         if (previous === false && value) setArrived(true);
         if (previous !== false || !value || untrack(unfolded)) return;
-        if (p.keepWorkOpen?.()) return unfold(true);
+        if (p.keepWorkOpen?.()) return void (unfold(true), setSettled(true));
         const ms = motionMs(200);
-        if (!ms) return;
+        if (!ms) return void setBoxed(true);
         setFolding(true);
-        setTimeout(() => (article && p.onFold ? p.onFold(article, () => setFolding(false)) : setFolding(false)), ms);
+        setSettled(true);
+        const folded = () => (setFolding(false), setBoxed(true));
+        setTimeout(() => (article && p.onFold ? p.onFold(article, folded) : folded()), ms);
     }));
-    const showWork = () => !foldable() || unfolded() || folding();
+    const showWork = () => !foldable() || unfolded() || folding() || (bridged() && !settled());
     // Opened by a click, a long log goes in a screenful at a time: the first rows at once, the rest in the frames after,
     // below them (200 calls drawn in the click took 160 ms). Opened any other way (Find, put back as it was), all at once.
     const [drawnSegs, setDrawnSegs] = createSignal(Infinity);
@@ -804,14 +831,6 @@ function TurnViewContent(p: TurnViewProps) {
             <ChevronRight size={13} class="chev" data-open={unfolded() || undefined} />
         </button>
     );
-    // The work log's box holds its rows only when they're drawn in it: a turn built finished, or one whose work was
-    // folded since. A turn that finishes with its work open keeps its rows where they are (built again in the box,
-    // the last turn's rows would all be drawn again as it ends, a long turn's 200 calls in some 160 ms).
-    const [boxed, setBoxed] = createSignal(untrack(foldable));
-    createComputed(() => {
-        if (!foldable()) setBoxed(false);
-        else if (!showWork()) setBoxed(true);
-    });
     // Who started it, for screen readers: read once (a turn's prompt never changes sender), as a live read here would
     // rebuild the turn's work each time the turn is replaced.
     const said = untrack(() => p.turn.prompt?.from) ? "Another session said" : "You said";
@@ -845,18 +864,17 @@ function TurnViewContent(p: TurnViewProps) {
                     {/* Notices from before its first step, where they happened: above "Worked for". */}
                     <Index each={segs().slice(0, lead())}>{(seg, i) => renderSeg(seg, i)}</Index>
                     <Show when={foldable() && hasWork() && !folding()}>
-                        <Show when={boxed()} fallback={foldButton()}>
-                            {/* The design's work log: its line, and opened, its rows on a rail. What isn't work (a plan's
-                                card, a notice) stays out of it, after it, as it shows with the work folded. */}
-                            <div class="worklog" data-open={showWork() || undefined}>
-                                {foldButton()}
-                                <Show when={showWork()}>
-                                    <div class="worklog-body">
-                                        <For each={logged().inside}>{(n) => renderSeg(() => segs()[n]!, n)}</For>
-                                    </div>
-                                </Show>
-                            </div>
-                        </Show>
+                        {/* The design's work log: its line, and opened, its rows on a rail. What isn't work (a plan's card,
+                            a notice) stays out of it, after it, as it shows with the work folded. The line is the same
+                            element either way, so a click keeps it where it was. */}
+                        <div class="worklog" data-open={(boxed() && showWork()) || undefined}>
+                            {foldButton()}
+                            <Show when={boxed() && showWork()}>
+                                <div class="worklog-body">
+                                    <For each={logged().inside}>{(n) => renderSeg(() => segs()[n]!, n)}</For>
+                                </div>
+                            </Show>
+                        </div>
                     </Show>
                     {/* Keyed by place: what stays out of the box is the same row in either case, not built again. */}
                     <For each={boxed() && hasWork() ? logged().outside : logged().all}>{(n) => renderSeg(() => segs()[n]!, n)}</For>
