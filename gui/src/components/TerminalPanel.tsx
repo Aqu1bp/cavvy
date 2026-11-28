@@ -1,5 +1,5 @@
 import { batch, createEffect, createMemo, createSignal, For, lazy, on, onCleanup, Show, untrack } from "solid-js";
-import { ChevronDown, KeyRound, Maximize2, Minimize2, Play, Plus, X } from "lucide-solid";
+import { KeyRound, Maximize2, Minimize2, PanelBottomClose, Play, Plus, X } from "lucide-solid";
 import "../styles/terminal.css";
 import { app, connOn, reportError, rpc, toast } from "../state/app";
 import { RpcError, type Rpc } from "../lib/rpc";
@@ -265,7 +265,7 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean; on?: string; 
                 </div>
                 <span class="terminal-cwd mono" title={p.cwd}>{tildify(p.cwd ?? "", app.hello?.homeDir)}</span>
                 <button class="icon-btn icon-btn-sm" title={terminalMax() ? "Restore" : "Maximize"} aria-label={terminalMax() ? "Restore terminal size" : "Maximize terminal"} aria-pressed={terminalMax()} onClick={() => setTerminalMax(!terminalMax())}>{terminalMax() ? <Minimize2 size={13} /> : <Maximize2 size={13} />}</button>
-                <button class="icon-btn icon-btn-sm" title={withShortcut("Hide terminal", "app:toggleTerminal")} aria-label="Hide terminal" onClick={() => setTerminalOpen(false)}><ChevronDown size={14} /></button>
+                <button class="icon-btn icon-btn-sm" title={withShortcut("Hide terminal", "app:toggleTerminal")} aria-label="Hide terminal" onClick={() => setTerminalOpen(false)}><PanelBottomClose size={14} /></button>
             </header>
             <div class="terminal-body">
                 <Show when={!currentTabs().length}>
