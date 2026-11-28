@@ -51,8 +51,8 @@ test("the empty top strip moves the window in every state, whatever is laid over
         "terminal maximized: its toolbar": path(...shell, "div.sheet", "section.terminal-panel.max", "div.terminal-toolbar"),
         "terminal maximized: the folder in its toolbar": path(...shell, "div.sheet", "section.terminal-panel.max", "div.terminal-toolbar", "span.terminal-cwd.truncate"),
         "terminal maximized: beside its tabs": path(...shell, "div.sheet", "section.terminal-panel.max", "div.terminal-toolbar", "div.terminal-tabs"),
-        "Settings: the page beside its column": path(...shell, "div.sheet", "main.main", "div.settings-host", "div.settings-page"),
-        "Settings: its heading": path(...shell, "div.sheet", "main.main", "div.settings-host", "div.settings-page", "div.set-in", "div.set-top", "h2"),
+        "Settings: the page beside its column": path(...shell, "div.sheet", "main.main", "div.settings-host", "div.settings-sheet", "div.settings-main", "div.settings-page"),
+        "Settings: its heading": path(...shell, "div.sheet", "main.main", "div.settings-host", "div.settings-sheet", "header.main-head.settings-top", "h2.settings-top-title"),
         "Home": path(...shell, "div.sheet", "main.main", "div.keep", "div.home", "div.home-col"),
         "not connected": path("html", "body", "div", "div.app", "div.splash"),
     };

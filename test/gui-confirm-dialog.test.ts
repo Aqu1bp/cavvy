@@ -172,7 +172,7 @@ for (const fail of [false, true]) {
         const noop = () => ({});
         const c = component(generalSource, "General", {
             app: { settings: {}, conn: "closed" }, editors: () => [], mod: "Ctrl",
-            Section: noop, Row: noop, Toggle: noop, ModelSelect: noop, SelectButton: noop,
+            Section: noop, Row: noop, Toggle: noop, ModelSelect: noop, Select: noop, StopSlider: noop, effortLevels: () => [],
             ConfirmDialog: (p: any) => { confirmProps = p; return {}; },
             rpc: { call: (method: string, params: unknown) => {
                 expect(method).toBe("settings.update");
@@ -257,7 +257,7 @@ for (const fail of [false, true]) {
         const noop = () => ({});
         const c = component(generalSource, "General", {
             app: { settings: {}, conn: "closed" }, editors: () => [], mod: "Ctrl",
-            Section: noop, Row: noop, Toggle: noop, ModelSelect: noop, SelectButton: noop,
+            Section: noop, Row: noop, Toggle: noop, ModelSelect: noop, Select: noop, StopSlider: noop, effortLevels: () => [],
             ConfirmDialog: (p: any) => { confirmProps = p; return {}; },
             rpc: { call: () => { calls++; return request.promise; } },
             setApp() {}, reportError() {},
