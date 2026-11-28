@@ -1785,35 +1785,9 @@
 
 /* ---- Code blocks ---------------------------------------------------- */
 
-.code {
-    position: relative;
-    border-radius: var(--r-card);
-    background: var(--well);
-    box-shadow: inset 0 0 0 1px var(--line);
-    overflow: hidden;
-    min-width: 0;
-}
-
-/* Its language, and Copy at the far end, on a strip over the code. */
-.code-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    height: calc(32 * var(--sp));
-    padding: 0 calc(6 * var(--sp)) 0 calc(13 * var(--sp));
-    border-bottom: 1px solid var(--line);
-    background: var(--well-head);
-    font-size: 0.821rem;
-    color: var(--fg-3);
-    font-weight: 500;
-}
-
-.code-body {
-    margin: 0;
-    padding: calc(12 * var(--sp)) calc(14 * var(--sp));
-    overflow: auto;
-    font: var(--code-size)/1.6 var(--font-mono);
-    tab-size: 2;
+/* The design's .codeblock (remix-conversation.css), in Cavvy's code font and colours; flat in a tool's section. */
+.codeblock-body {
+    font-family: var(--font-mono);
     color: var(--shiki-foreground);
 }
 
@@ -2739,4 +2713,9 @@
 .youran.found .youran-cmd {
     white-space: normal;
     overflow-wrap: anywhere;
+}
+
+/* A plan's glimpse: a heading 12px under what's above it, as the design has it (the column's gap and 1px). */
+.plan-preview .md > .md-block:not(:first-child):has(> h2) {
+    margin-top: calc(1 * var(--sp));
 }

@@ -3,9 +3,8 @@
    - Steps (StepsTray.tsx): the agent's to-do list, as a glass strip on top of
      the composer, above the Up next tray. One line while it works: the
      progress and the step under way. It opens upward into the whole list.
-   - The proposed plan (Activity.tsx PlanCard): a card in the turn that
-     presented it, with Read the plan, its actions (worktree, save, copy), and
-     where it went. */
+   - The proposed plan (blocks/PlanCard.tsx): a card in the turn that
+     presented it, in the design's rules (remix-conversation.css .plan). */
 
 /* ---- Steps -------------------------------------------------------------- */
 
@@ -213,104 +212,4 @@
     .st-chev {
         transition: none;
     }
-}
-
-/* ---- The proposed plan, as a card in its turn (the remix's .plan) ---------- */
-
-.plan {
-    display: flex;
-    flex-direction: column;
-    margin: calc(2 * var(--sp)) 0;
-    border-radius: calc(10 * var(--sp));
-    background: var(--card);
-    box-shadow: inset 0 0 0 1px var(--line);
-}
-
-[data-theme="dark"] .plan {
-    background: var(--hover);
-}
-
-.plan[data-state="wait"] {
-    box-shadow: inset 0 0 0 1px var(--warn-line);
-}
-
-.plan-top {
-    display: flex;
-    align-items: center;
-    gap: calc(8 * var(--sp));
-    min-width: 0;
-    height: calc(34 * var(--sp));
-    padding: 0 calc(6 * var(--sp)) 0 calc(14 * var(--sp));
-    border-bottom: 1px solid var(--line);
-    font-size: 0.857rem;
-}
-
-.plan-kicker {
-    font-weight: 600;
-}
-
-.plan-state {
-    min-width: 0;
-    color: var(--fg-3);
-}
-
-.plan[data-state="wait"] .plan-state {
-    color: var(--warn);
-}
-
-.plan-title {
-    padding: calc(12 * var(--sp)) calc(14 * var(--sp)) 0;
-    font-size: 1.071rem;
-    font-weight: 600;
-    letter-spacing: -0.01em;
-    overflow-wrap: anywhere;
-}
-
-/* The start of it, fading out: Read the plan has all of it. */
-.plan-preview {
-    max-height: calc(104 * var(--sp));
-    padding: calc(6 * var(--sp)) calc(14 * var(--sp)) 0;
-    overflow: hidden;
-    mask-image: linear-gradient(to bottom, #000 40%, transparent);
-}
-
-.plan-preview .md {
-    color: var(--fg-2);
-    font-size: 0.964rem;
-    line-height: 1.55;
-}
-
-.plan-preview .md h2 {
-    font-size: 0.964rem;
-}
-
-.plan-preview .md > h2:not(:first-child) {
-    margin-top: calc(12 * var(--sp));
-}
-
-.plan-foot {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: calc(12 * var(--sp));
-    padding: calc(8 * var(--sp)) calc(14 * var(--sp)) calc(12 * var(--sp));
-}
-
-/* Where the plan went: a new worktree's session ("Implementing on <branch> · Open session"). */
-.plan-impl {
-    display: inline-flex;
-    align-items: center;
-    gap: calc(5 * var(--sp));
-    min-width: 0;
-    color: var(--fg-3);
-    font-size: 0.857rem;
-}
-
-.plan-impl .mono {
-    color: var(--fg-2);
-    font-size: 0.821rem;
-}
-
-.plan-impl .link-btn {
-    font-size: inherit;
 }

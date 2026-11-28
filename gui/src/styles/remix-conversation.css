@@ -5,7 +5,7 @@
 
 /* ---- kit pieces the conversation uses (the mock's base.css, kit.css) ---- */
 
-:where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .kbd {
+.kbd {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -22,12 +22,12 @@
     line-height: 1;
 }
 
-:where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .icon-btn-sm {
+.icon-btn-sm {
     width: calc(24 * var(--sp));
     height: calc(24 * var(--sp));
 }
 
-:where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .btn-sm {
+.btn-sm {
     height: calc(26 * var(--sp));
     padding: 0 calc(8 * var(--sp));
     border-radius: var(--radius-s);
@@ -35,33 +35,33 @@
     gap: calc(5 * var(--sp));
 }
 
-:where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .btn-primary {
+.btn-primary {
     background: var(--ink);
     color: var(--on-ink);
     box-shadow: none;
 }
 
-:where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .btn-primary:hover,
-:where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .btn-primary:active {
+.btn-primary:hover,
+.btn-primary:active {
     background: var(--ink-hover);
 }
 
-:where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .btn-ghost {
+.btn-ghost {
     background: transparent;
     box-shadow: none;
     color: var(--text-2);
 }
 
-:where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .btn-ghost:hover {
+.btn-ghost:hover {
     background: var(--fill-2);
     color: var(--text);
 }
 
-:where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .btn-danger {
+.btn-danger {
     color: var(--red);
 }
 
-:where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .btn-danger:hover {
+.btn-danger:hover {
     background: var(--red-soft);
     box-shadow: inset 0 0 0 1px var(--red-line);
 }
@@ -110,11 +110,11 @@
     font-variant-numeric: tabular-nums;
 }
 
-:where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .stat-add {
+.stat-add {
     color: var(--diff-add-text);
 }
 
-:where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .stat-del {
+.stat-del {
     color: var(--diff-del-text);
 }
 
@@ -125,7 +125,7 @@
     font-size: calc(12 * var(--sp));
 }
 
-:where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .path-dir {
+.path-dir {
     color: var(--text-3);
     overflow: hidden;
     text-overflow: ellipsis;
@@ -134,7 +134,7 @@
     min-width: 0;
 }
 
-:where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .path-base {
+.path-base {
     color: var(--text);
     white-space: nowrap;
     flex: none;
@@ -237,7 +237,7 @@
 
 /* ---------- code ---------- */
 
-:where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .codeblock {
+.codeblock {
     border-radius: calc(10 * var(--sp));
     background: var(--code-bg);
     box-shadow: inset 0 0 0 1px var(--line);

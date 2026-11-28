@@ -15,6 +15,9 @@ import { Markdown } from "./Markdown";
  * a ⋯ menu with what else can be done with it: take it to a new worktree, save it, copy it. A plan taken to a
  * worktree says where, at its foot, and opens that session.
  */
+/** Cavvy's plan states, as the design names them (its rules key on waiting). */
+const PLAN_STATE: Record<string, string> = { wait: "waiting", ok: "approved", quiet: "earlier" };
+
 export function PlanCard(p: { tool: ToolBlock; sessionId?: string }) {
     let more: HTMLButtonElement | undefined;
     const [menu, setMenu] = createSignal(false);
@@ -49,16 +52,16 @@ export function PlanCard(p: { tool: ToolBlock; sessionId?: string }) {
         return to.filter((l) => linkOwner(plans, l) === p.tool.id);
     });
     return (
-        <div class="plan" data-state={state()?.tone} data-find={p.tool.id}>
-            <div class="plan-top" data-find-skip>
+        <div class="plan" data-state={PLAN_STATE[state()?.tone ?? ""]} data-find={p.tool.id}>
+            <header class="plan-top" data-find-skip>
                 <span class="plan-kicker">Plan</span>
                 <Show when={state()}>{(s) => <span class="plan-state truncate">{s().label}</span>}</Show>
                 <span class="grow" />
-                <button ref={more} class="hb sm" aria-label="Plan actions" aria-haspopup="menu" aria-expanded={menu()} onClick={() => setMenu(!menu())}>
+                <button ref={more} class="icon-btn icon-btn-sm" aria-label="Plan actions" aria-haspopup="menu" aria-expanded={menu()} data-state={menu() ? "open" : "closed"} onClick={() => setMenu(!menu())}>
                     <Ellipsis size={14} />
                 </button>
-            </div>
-            <Menu label="Plan actions" open={menu()} anchor={() => more} onClose={() => setMenu(false)} width={260}>
+            </header>
+            <Menu label="Plan actions" open={menu()} anchor={() => more} onClose={() => setMenu(false)} width={260} align="end">
                 <button
                     role="menuitem"
                     class="menu-item compact"
@@ -75,15 +78,15 @@ export function PlanCard(p: { tool: ToolBlock; sessionId?: string }) {
                     <Copy size={14} /> Copy plan
                 </button>
             </Menu>
-            <div class="plan-title selectable">{title()}</div>
+            <h3 class="plan-title selectable">{title()}</h3>
             <Show when={body()}>
                 {/* A glimpse: the links and buttons in it aren't reachable until it's read in full. */}
                 <div class="plan-preview" data-find-skip inert>
-                    <Markdown text={body()} class="small" />
+                    <Markdown text={body()} />
                 </div>
             </Show>
-            <div class="plan-foot" data-find-skip>
-                <button class="btn sm" onClick={() => open("view")}>
+            <footer class="plan-foot" data-find-skip>
+                <button class="btn btn-sm" onClick={() => open("view")}>
                     Read the plan
                 </button>
                 <For each={links()}>
@@ -99,7 +102,7 @@ export function PlanCard(p: { tool: ToolBlock; sessionId?: string }) {
                         </span>
                     )}
                 </For>
-            </div>
+            </footer>
         </div>
     );
 }
