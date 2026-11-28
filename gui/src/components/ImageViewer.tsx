@@ -1,5 +1,5 @@
 import { createSignal, createUniqueId, onCleanup, onMount, Show } from "solid-js";
-import { ChevronLeft, ChevronRight } from "lucide-solid";
+import { ChevronLeft, ChevronRight, X } from "lucide-solid";
 import { fromBase64 } from "../lib/attachments";
 import { canZoom, fitSize, flipFrom, imageSize, stepKey, viewBox, zoomScroll, type Size } from "../lib/image-view";
 import { replyUrls } from "../state/images";
@@ -161,21 +161,22 @@ function Viewer(p: { captionId: string }) {
     };
     return (
         <div
-            class={`iv ${zoomed() ? "zoomed" : ""} ${grabbing() ? "grabbing" : ""}`}
+            class={`viewer iv ${zoomed() ? "zoomed" : ""} ${grabbing() ? "grabbing" : ""}`}
             // Focused when it opens, so no ring shows round the image until Tab gets there.
             tabIndex={-1}
             autofocus
             onClick={(e) => {
                 if (dragged) return void (dragged = false);
                 const t = e.target as HTMLElement;
-                if (!t.closest(".iv-img, .iv-caption, .iv-step")) close();
+                if (!t.closest(".viewer-img, .viewer-caption, .viewer-nav")) close();
             }}
         >
             <div class="iv-stage" ref={stage}>
                 <div class="iv-frame">
                     <div
                         ref={pic}
-                        class={`iv-img ${zoomable() ? "can-zoom" : ""}`}
+                        class={`viewer-img iv-img ${zoomable() ? "can-zoom" : ""}`}
+                        data-actual={zoomed() ? "" : undefined}
                         tabIndex={0}
                         role={zoomable() ? "button" : "img"}
                         aria-label={zoomable() ? `${item().name}: ${zoomed() ? "fit to the window" : "view at actual size"}` : item().name}
@@ -198,24 +199,28 @@ function Viewer(p: { captionId: string }) {
                             {(i) => <Picture url={show(i).url} preview={i.preview} onSize={(n) => setDecoded((m) => new Map(m).set(i, n))} />}
                         </Show>
                     </div>
-                    <div class="iv-caption" id={p.captionId}>
-                        <span class="iv-name truncate">{caption()}</span>
-                        <Show when={images.length > 1}>
-                            <span class="iv-count">
-                                {index() + 1} of {images.length}
-                            </span>
-                        </Show>
-                    </div>
                 </div>
             </div>
             <Show when={images.length > 1}>
-                <button class="iv-step prev" aria-label="Previous image" title="Previous (←)" disabled={index() === 0} onClick={() => step(-1)}>
-                    <ChevronLeft size={18} />
+                <button class="viewer-nav viewer-prev" aria-label="Previous image" title="Previous (←)" disabled={index() === 0} onClick={() => step(-1)}>
+                    <ChevronLeft size={20} />
                 </button>
-                <button class="iv-step next" aria-label="Next image" title="Next (→)" disabled={index() === images.length - 1} onClick={() => step(1)}>
-                    <ChevronRight size={18} />
+                <button class="viewer-nav viewer-next" aria-label="Next image" title="Next (→)" disabled={index() === images.length - 1} onClick={() => step(1)}>
+                    <ChevronRight size={20} />
                 </button>
             </Show>
+            <button class="viewer-close" aria-label="Close" title="Close (Esc)" onClick={close}>
+                <X size={16} />
+            </button>
+            <div class="viewer-caption" id={p.captionId}>
+                {caption()}
+                <Show when={images.length > 1}>
+                    <span class="num">
+                        {" "}
+                        · {index() + 1} of {images.length}
+                    </span>
+                </Show>
+            </div>
         </div>
     );
 }

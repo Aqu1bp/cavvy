@@ -91,8 +91,8 @@ const FRAME: [file: string, selector: string, property: string, value: string][]
     ["sidebar.css", ".side-top .hb", "width", "28px"],
     ["sidebar.css", ".side-top .hb", "height", "28px"],
     ["sidebar.css", ".resize-handle", "width", "6px"],
-    ["overlays.css", ".find-bar.glass", "top", "58px"],
-    ["overlays.css", ".find-bar.glass", "height", "36px"],
+    ["remix-conversation.css", ".findbar", "top", "calc(var(--header-h) + 10px)"],
+    ["remix-conversation.css", ".findbar", "height", "36px"],
     // The scrollbar's width is a token: the title bar stops short of it (shell.css), and the fade leaves it out (stage.css).
     ["tokens.css", ":root", "--scrollbar-w", "10px"],
     ["base.css", "::-webkit-scrollbar", "width", "var(--scrollbar-w)"],
@@ -116,7 +116,7 @@ const FRAME_RULES: Record<string, RegExp> = {
     "shell.css": /^(\[data-inspmode="(float|fill)"\] \.insp|(\.app\.electron )?\.insp-resizer|\[data-lead\] \.(insp-lead|insp-t|rv-h|br-bar|sim-bar)|\.stage-pane > \.header)$/,
     "sidebar.css": /^(\.side-top( \.hb)?|\.resize-handle(\.left)?)$/,
     "terminal.css": /^(\.terminal-resize|\.app\.tauri\.os-macos(\.rail-off|\[data-rail="overlay"\]) \.terminal-panel\.max \.terminal-toolbar)$/,
-    "overlays.css": /^\.find-bar\.glass$/,
+    "remix-conversation.css": /^\.findbar$/,
     // A theme's stage: 1600 × 1000 units, the coordinates its layers are placed in, scaled whole to cover the window
     // or a tile (--tb-scale, the tile's own scale). No text sits on it.
     "theme-backdrop.css": /^\.tb-stage$/,

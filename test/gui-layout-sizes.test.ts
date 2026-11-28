@@ -147,6 +147,6 @@ test("the transcript, its end and the Latest pill have the composer dock's heigh
     expect(transcript).not.toContain("jump-shelf");
     const agents = read("components/Agents.tsx");
     expect(agents).toMatch(/<div class="transcript-end" style=\{\{ "--dock-h": `\$\{dockH\(\)\}px` \}\} \/>/);
-    expect(agents).toMatch(/<section class="transcript" aria-label="Sub-agent transcript" style=\{\{ "--dock-h": `\$\{dockH\(\)\}px` \}\}>/);
+    expect(agents).toMatch(/<section class="transcript convo" aria-label="Sub-agent transcript" style=\{\{ "--dock-h": `\$\{dockH\(\)\}px` \}\}>/);
     expect(read("styles/stage.css")).toMatch(/\.stage \.transcript \{[^}]*mask-image: linear-gradient\([^;]*var\(--dock-h\)/);
 });

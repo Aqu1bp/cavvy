@@ -446,11 +446,8 @@ body.resizing .br-host-tab {
     --br-float-inset: calc(5 * var(--sp));
 }
 
+/* The card and its head are the design's (remix-conversation.css): as wide as it's been made, within its room. */
 .br-float {
-    position: absolute;
-    top: calc(var(--header-h) + 12 * var(--sp));
-    right: calc(22 * var(--sp));
-    z-index: 20;
     width: min(calc(400 * var(--sp)), calc(100% - 32 * var(--sp)));
     transform-origin: top right;
     animation: br-float-in calc(var(--dur-panel) * 1.25) var(--ease-out);
@@ -485,27 +482,7 @@ body.resizing .br-host-tab {
 }
 
 .br-float-card {
-    display: flex;
-    flex-direction: column;
     padding: 0 var(--br-float-inset) var(--br-float-inset);
-    border-radius: var(--radius-md);
-}
-
-/* The remix's .br-float-head: the page's title, then its host in a quieter tone. */
-.br-float-bar {
-    display: flex;
-    align-items: center;
-    gap: calc(2 * var(--sp));
-    height: calc(34 * var(--sp));
-    padding: 0 0 0 calc(6 * var(--sp));
-}
-
-.br-float-title {
-    flex: 0 1 auto;
-    min-width: 0;
-    margin: 0 calc(4 * var(--sp)) 0 calc(8 * var(--sp));
-    font-size: 0.893rem;
-    font-weight: 500;
 }
 
 /* Gives way first when the bar is short. */
@@ -514,14 +491,6 @@ body.resizing .br-host-tab {
     min-width: 0;
     color: var(--fg-3);
     font-size: 0.857rem;
-}
-
-.br-float-bar .hb {
-    color: var(--fg-3);
-}
-
-.br-float-bar .hb:hover {
-    color: var(--fg);
 }
 
 /* Live while the agent's turn runs: the dot breathes; afterwards (the view lingers a moment) it's still and grey. */
@@ -545,8 +514,6 @@ body.resizing .br-host-tab {
 .br-float-page {
     aspect-ratio: 1280 / 800;
     border-radius: calc(var(--radius-md) - var(--br-float-inset));
-    background: var(--sheet-2);
-    cursor: pointer;
 }
 
 /* Its free edges, astride the card's edge: dragged, they resize it (the page's shape kept). */
