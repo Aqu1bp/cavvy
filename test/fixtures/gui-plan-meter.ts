@@ -122,15 +122,14 @@ test("the words are the context; their tone follows the context alone", () => {
     } finally { m.dispose(); }
 });
 
-for (const reached of [false, true]) test(`unknown size stays empty${reached ? ", red once a limit is reached" : " and neutral"}; shared /context signal opens the same card`, () => {
+for (const reached of [false, true]) test(`unknown size stays empty and neutral${reached ? ", a reached limit too" : ""}; shared /context signal opens the same card`, () => {
     const m = mount({ unknown: true, reached, plan: reached ? 100 : undefined });
     try {
-        expect(m.tone()).toBe(reached ? "danger" : "normal");
+        // The words are the context's alone: a reached limit is the conversation's card, the rail's foot and Usage's.
+        expect(m.tone()).toBe("normal");
         // No share to say yet: the word alone.
         expect(text(m.trigger())).toBe("Context");
-        expect(m.trigger().props["aria-label"]).toContain("size unknown");
-        // The limit that stops it, named, with when it resets.
-        if (reached) expect(m.trigger().props["aria-label"]).toContain("CLI · Default: ");
+        expect(m.trigger().props["aria-label"]).toBe("Context: size unknown");
         m.show();
         expect(text(m.root)).toContain("After the first reply");
         expect(all(m.root).filter(n => n.props.role === "dialog")).toHaveLength(1);
@@ -138,84 +137,28 @@ for (const reached of [false, true]) test(`unknown size stays empty${reached ? "
     } finally { m.dispose(); }
 });
 
-for (const current of ["default", "work"]) test(`${current}: refresh only alternatives, and switch from inside the card`, async () => {
-    const m = mount({ current, reached: true, singleAccount: true });
+for (const away of [undefined, "box"]) test(`a reached limit isn't the card's${away ? " (another machine's session)" : ""}: no limit, plan, resets or accounts in it`, async () => {
+    const m = mount({ reached: true, credits: false, plan: 100, away, machineLimits: { [planLimitKey("cli", "default")]: { at: timestamp, reached: true, windows: [{ label: "5-hour", usedPercent: 100 }] } } });
     try {
-        expect(m.calls).toEqual([]);
-        expect(all(m.root).filter(n => n.tag === "button")).toHaveLength(1);
         m.show();
-        expect(text(m.root)).toContain("Limit reached");
         m.setCatalog(accounts);
-        expect(m.calls).toEqual([["accounts.list", { provider: "cli", refresh: true }]]);
-        expect(text(m.root)).toContain("Checking accounts…");
         m.pending.resolve(accounts);
         await Bun.sleep(0);
-        const alternative = current === "default" ? "Work" : "Default";
-        m.setState({ ...m.state(), busy: true });
-        expect(m.button(`Use ${alternative} account`).props.disabled).toBe(true);
-        m.setState({ ...m.state(), busy: false });
-        m.button(`Use ${alternative} account`).props.onClick();
-        await Bun.sleep(0);
-        expect(m.calls.at(-1)).toEqual(["session.setAccount", { id: "session", provider: "cli", accountId: alternative.toLowerCase() }]);
-        expect(m.open()).toBe(false);
-        expect(m.notices).toHaveLength(1);
-        m.show(); m.setCatalog(accounts.filter(a => a.id === current));
-        expect(text(m.root)).not.toContain("Switch to");
+        expect(all(m.root).find(n => n.props.role === "dialog")!.props["aria-label"]).toBe("Context");
+        expect(text(m.root)).toContain("Context");
+        for (const gone of ["Limit reached", "limit reached", "Resets", "CLI · ", "Checking accounts", "Use "]) expect(text(m.root)).not.toContain(gone);
+        // Nothing asked of the accounts: switching is the limit card's and the model picker's.
+        expect(m.calls).toEqual([]);
+        expect(all(m.root).filter(n => n.tag === "button").map(text)).toEqual([text(m.trigger()), "Compact now"]);
     } finally { m.dispose(); }
 });
 
-test("reached on credits (#434): says so, and switching away doesn't claim the turn stopped", async () => {
-    const m = mount({ reached: true, credits: true });
-    try {
-        expect(m.trigger().props["aria-label"]).toContain("CLI · Default: Limit reached, using credits");
-        m.show();
-        expect(text(m.root)).toContain("Limit reached, using credits");
-        m.pending.resolve(accounts);
-        await Bun.sleep(0);
-        // Another account is still offered: it stops the spending.
-        m.button("Use Work account").props.onClick();
-        await Bun.sleep(0);
-        expect(m.notices).toEqual(["Account switched"]);
-    } finally { m.dispose(); }
-    const hard = mount({ reached: true, credits: false });
-    try {
-        hard.show();
-        expect(text(hard.root)).toContain("Limit reached");
-        expect(text(hard.root)).not.toContain("using credits");
-    } finally { hard.dispose(); }
-});
-
-test("another machine's session opened here: its plan limits and accounts are that machine's, not this computer's", () => {
-    // This computer's account is at its limit; box's isn't known to be.
-    const none = mount({ reached: true, away: "box" });
-    try {
-        none.show();
-        expect(text(none.root)).not.toContain("Limit reached");
-        expect(none.calls).toEqual([]);
-    } finally { none.dispose(); }
-    // Box's own account at its limit: said, and its other accounts are asked of box.
-    const boxes = [{ id: "cli", name: "CLI", agentCli: { plan: "Pro", defaultAccount: "default", accounts: [{ id: "default", name: "Default" }, { id: "second", name: "Second" }] } }];
-    const m = mount({ away: "box", machineProviders: boxes, machineLimits: { [planLimitKey("cli", "default")]: { at: timestamp, reached: true, windows: [{ label: "5-hour", usedPercent: 100 }] } } });
+test("with no session yet, Compact now waits for one", () => {
+    const m = mount({ home: true, plan: 50, current: "work" });
     try {
         m.show();
-        expect(text(m.root)).toContain("5-hour limit");
-        expect(m.calls.map((c: any[]) => c.slice(0, 2))).toEqual([["there", "accounts.list"]]);
+        expect(m.button("Compact now").props["aria-disabled"]).toBe(true);
     } finally { m.dispose(); }
-});
-
-test("Home uses default account; session uses its own account", () => {
-    for (const home of [true, false]) {
-        const m = mount({ home });
-        try {
-            m.setLimits(Object.fromEntries([ ["default", 100], ["work", 100] ].map(([id, pct]) => [planLimitKey("cli", id as string), { at: timestamp, reached: true, windows: [{ label: id === "work" ? "Weekly" : "5-hour", usedPercent: pct }] }])));
-            m.wire();
-            expect(m.trigger().props["aria-label"]).toContain(home ? "CLI · Work: Weekly limit reached" : "CLI · Default: 5-hour limit reached");
-            m.show();
-            // Named by the limit that stops it, then whose plan it is.
-            expect(text(m.root)).toContain(home ? "Weekly limit reachedCLI · Work" : "5-hour limit reachedCLI · Default");
-            expect(m.button("Compact now").props["aria-disabled"]).toBe(home ? true : undefined);
-        } finally { m.dispose(); }
-    }
 });
 
 test("a click or ArrowDown opens it, not hover or focus; another click, Escape or focus elsewhere closes it", () => {
@@ -255,19 +198,6 @@ test("another session picked (by a key, which clicks nothing outside it) closes 
         expect(m.open()).toBe(false);
     } finally { m.dispose(); }
 });
-
-test("aggregate limit resets survive windows without resets, without duplicating window resets", () => {
-    const m = mount();
-    try {
-        const report = { at: timestamp, reached: true, resetsAt: timestamp + 3600000, windows: [{ label: "5-hour", usedPercent: 70 }] };
-        m.setLimits({ [planLimitKey("cli", "default")]: report });
-        m.show();
-        expect(text(m.root)).toContain(`Resets ${meterOf(report, timestamp)!.resets}`);
-        m.setLimits({ [planLimitKey("cli", "default")]: { ...report, windows: [{ ...report.windows[0], usedPercent: 100, resetsAt: report.resetsAt }] } });
-        expect(text(m.root).match(/Resets /g)).toHaveLength(1);
-    } finally { m.dispose(); }
-});
-
 
 test("context is measured to where it compacts, and the numbers say where that comes from", () => {
     const m = mount({ autoCompact: true });

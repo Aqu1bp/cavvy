@@ -965,7 +965,7 @@ button.meter[aria-expanded="true"] {
     font-size: calc(11.5 * var(--sp));
 }
 
-/* ---- Context and session: what the context holds and what to do about it ---- */
+/* ---- Context: what the context holds and what to do about it ---- */
 
 .menu.ctx-card {
     width: calc(280 * var(--sp));
@@ -984,12 +984,6 @@ button.meter[aria-expanded="true"] {
     gap: calc(8 * var(--sp));
 }
 
-.ctx-block + .ctx-block {
-    margin-top: calc(12 * var(--sp));
-    padding-top: calc(12 * var(--sp));
-    border-top: 1px solid var(--line);
-}
-
 .ctx-line {
     display: flex;
     align-items: baseline;
@@ -1006,18 +1000,6 @@ button.meter[aria-expanded="true"] {
     font-size: calc(12 * var(--sp));
 }
 
-.ctx-limit {
-    color: var(--amber);
-    font-size: calc(12.5 * var(--sp));
-    font-weight: 500;
-}
-
-/* Reached and blocking, with no credits to carry the turns past it (#426). */
-.ctx-limit.stop {
-    color: var(--red);
-}
-
-.ctx-account,
 .ctx-compact {
     align-self: flex-start;
 }
