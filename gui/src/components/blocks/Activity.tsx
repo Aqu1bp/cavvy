@@ -32,7 +32,7 @@ import {
     Smartphone,
     SquareTerminal,
     Wrench,
-    X, GitCommitHorizontal, ArrowUpFromLine, GitPullRequestArrow } from "lucide-solid";
+    X, Ban, GitCommitHorizontal, ArrowUpFromLine, GitPullRequestArrow } from "lucide-solid";
 import type { AgentRun, Block, ThinkingBlock, TodoEntry, ToolBlock } from "@shared/protocol";
 import { duration, firstChangedLine, plural, sleepSeconds, stripAnsi } from "../../lib/format";
 import { commandDescription, isLive, resultEchoes, runningVerb, sameInARow, shortModelRef, toolKind, toolLabel } from "../../lib/tool-words";
@@ -48,7 +48,7 @@ import { openAgents, openInEditor, openReview, stopBackground } from "../../stat
 import { findReveal, setViewedImage } from "../../state/ui";
 import { imagesReady, toolImage, toolThumb } from "../../state/images";
 import { CopyButton, Shine, Spinner } from "../ui/bits";
-import { AgentMark, ProviderStack } from "../ui/AgentMark";
+import { AgentMark } from "../ui/AgentMark";
 import { CodeBlock } from "./CodeBlock";
 import { Counts, DiffView } from "./DiffView";
 import { Markdown } from "./Markdown";
@@ -186,7 +186,9 @@ export function WorkRun(p: { items: Item[]; /** The turn's live line says what's
     // The line, once a step is done. The rows, while it's open; and before any step is done, whatever there is to
     // show (a thought, a call with no live line), with no card around it. One place for the rows either way, so a
     // row drawn before its run had a line is the same row after.
-    const lined = createMemo(() => done().length > 0);
+    // Sub-agents alone have their own line ("2 sub-agents · 1 working · 1 done"): no second one over it.
+    const onlyAgents = createMemo(() => tools().length > 0 && tools().every((t) => t.agent) && p.items.every((it) => it.kind === "activity"));
+    const lined = createMemo(() => done().length > 0 && !onlyAgents());
     // What its calls looked at (an image read, a screenshot): at the line's far right, the viewer a click away.
     const looked = createMemo(() => done().flatMap((t) => (t.imageKeys ?? []).map((_, index) => ({ tool: t, index }))).slice(0, 3));
     /** Its one step is an image read, and the image is all there is to see: the line opens the viewer, not a card. */
@@ -200,66 +202,78 @@ export function WorkRun(p: { items: Item[]; /** The turn's live line says what's
         return only && answered(only) ? only.summary : undefined;
     });
     return (
-        <div class={`run ${lined() && open() && !pictured() ? "open" : ""} ${looked().length ? "looked" : ""}`}>
-            <Show when={lined() && looked().length}>
-                <span class="run-thumbs">
-                    <For each={looked()}>{(l) => <ToolImage tool={l.tool} index={l.index} />}</For>
-                </span>
-            </Show>
+        <div class="tools run" data-open={(lined() && open() && !pictured()) || undefined}>
             <Show when={lined()}>
-                <button class={`run-h ${pictured() ? "pictured" : ""}`} data-find-skip aria-expanded={pictured() ? undefined : open()} onClick={(e) => (pictured() ? viewToolImages(folds.sessionId, pictured()!, 0, e.currentTarget) : folds.set(key(), !open()))}>
-                    <Show
-                        when={answer()}
-                        fallback={
-                            <span class="run-t truncate">
-                                <Inline text={title()} />
-                            </span>
-                        }
-                    >
-                        {(a) => (
-                            // The answer whole, the question giving way to it; short of room for a few of its words, the
-                            // question steps aside (onto a line out of sight) and only the answer is cut: one "…" at most.
-                            <span class="run-qa">
-                                <span class="run-q">
-                                    <span class="run-t truncate">
-                                        <Inline text={title()} />
-                                    </span>
+                <div class="tools-line">
+                    <button class={`tools-head run-h ${pictured() ? "pictured" : ""}`} data-find-skip aria-expanded={pictured() ? undefined : open()} onClick={(e) => (pictured() ? viewToolImages(folds.sessionId, pictured()!, 0, e.currentTarget) : folds.set(key(), !open()))}>
+                        <Show
+                            when={answer()}
+                            fallback={
+                                <span class="tools-summary truncate">
+                                    <Inline text={title()} />
                                 </span>
-                                <span class="run-a truncate">{a()}</span>
+                            }
+                        >
+                            {(a) => (
+                                // The answer whole, the question giving way to it; short of room for a few of its words, the
+                                // question steps aside (onto a line out of sight) and only the answer is cut: one "…" at most.
+                                <span class="run-qa">
+                                    <span class="run-q">
+                                        <span class="tools-summary truncate">
+                                            <Inline text={title()} />
+                                        </span>
+                                    </span>
+                                    <span class="run-a truncate">{a()}</span>
+                                </span>
+                            )}
+                        </Show>
+                        <Stat added={stats().added} removed={stats().removed} />
+                        <Show when={groupDiagnostics(done())}>{(r) => <DiagnosticsChip report={r()} />}</Show>
+                        <Show when={failed()}>
+                            <span class="tools-flag" data-tone="amber" title={`${plural(failed(), "call")} failed`}>
+                                <AlertTriangle size={12} />
+                                {failed()}
                             </span>
-                        )}
-                    </Show>
-                    <Show when={stats().added || stats().removed}>
-                        <span class="stat">
-                            <Counts added={stats().added} removed={stats().removed} />
-                        </span>
-                    </Show>
-                    <Show when={groupDiagnostics(done())}>{(r) => <DiagnosticsChip report={r()} />}</Show>
-                    <Show when={failed()}>
-                        <span class="wflag err" title={`${plural(failed(), "call")} failed`}>
-                            <AlertTriangle size={12} /> {failed()}
-                        </span>
-                    </Show>
-                    <Show when={denied()}>
-                        <span class="wflag warn" title={`${plural(denied(), "call")} declined`}>
-                            <X size={12} /> {denied()}
-                        </span>
-                    </Show>
-                    <Show when={unshown() && !open()}>
-                        <span class="wflag run-live" title={`${plural(unshown(), "call")} running`}>
-                            <Spinner size={12} class="tone-accent" />
-                            <span class="sr-only">{`${plural(unshown(), "call")} running`}</span>
-                        </span>
-                    </Show>
-                    <Show when={!pictured()}>
-                        <ChevronRight size={13} class="chev" />
-                    </Show>
-                </button>
+                        </Show>
+                        <Show when={denied()}>
+                            <span class="tools-flag" title={`${plural(denied(), "call")} declined`}>
+                                <Ban size={12} />
+                                {denied()}
+                            </span>
+                        </Show>
+                        <Show when={unshown() && !open()}>
+                            <span class="tools-flag run-live" title={`${plural(unshown(), "call")} running`}>
+                                <Spinner size={12} class="tone-accent" />
+                                <span class="sr-only">{`${plural(unshown(), "call")} running`}</span>
+                            </span>
+                        </Show>
+                        <Show when={!pictured()}>
+                            <ChevronRight size={13} class="chev" data-open={open() || undefined} />
+                        </Show>
+                    </button>
+                    <For each={looked()}>{(l) => <ToolImage tool={l.tool} index={l.index} />}</For>
+                </div>
             </Show>
             <Show when={!lined() || (open() && !pictured())}>
-                <div class={lined() ? "run-rows" : "run-bare"}>{p.children}</div>
+                <div class={lined() ? "tools-list run-rows" : "run-bare"}>{p.children}</div>
             </Show>
         </div>
+    );
+}
+
+/** What a step or a run added and removed (the design's .stat): nothing when it's neither. */
+export function Stat(p: { added?: number; removed?: number }) {
+    return (
+        <Show when={p.added || p.removed}>
+            <span class="stat">
+                <Show when={p.added}>
+                    <span class="stat-add">+{p.added!.toLocaleString()}</span>
+                </Show>
+                <Show when={p.removed}>
+                    <span class="stat-del">−{p.removed!.toLocaleString()}</span>
+                </Show>
+            </span>
+        </Show>
     );
 }
 
@@ -327,13 +341,13 @@ export function Thinking(p: { block: ThinkingBlock; live: boolean }) {
     const preview = () => p.block.text.trim().split("\n").filter(Boolean).slice(-2).join(" ");
     return (
         <Show when={prefs.showThinking || p.live}>
-            <div ref={(el) => enterRow(el, motionMs(STAGGER_MS))} class={`wgroup thinking ${open() ? "open" : ""} ${p.live ? "live" : ""}`}>
-                <button class="acts-h wrow" onPointerEnter={fetch} onFocus={fetch} onClick={() => (fetch(), setOpen(!open()))} aria-expanded={open()}>
-                    <ChevronRight size={13} class="chev" />
-                    <span class={`wtext ${p.live ? "shimmer" : ""}`}>{label()}<Show when={p.live}><Shine text={label()} /></Show></span>
+            <div ref={(el) => enterRow(el, motionMs(STAGGER_MS))} class={`think thinking ${p.live ? "live" : ""}`} data-open={open() || undefined}>
+                <button class="tools-head" onPointerEnter={fetch} onFocus={fetch} onClick={() => (fetch(), setOpen(!open()))} aria-expanded={open()}>
+                    <span class={p.live ? "shimmer" : undefined}>{label()}<Show when={p.live}><Shine text={label()} /></Show></span>
+                    <ChevronRight size={13} class="chev" data-open={open() || undefined} />
                 </button>
-                <Show when={open()} fallback={<Show when={p.live && preview()}><div class="thinking-peek">{preview()}</div></Show>}>
-                    <div class="thinking-text">{p.block.text.trim()}</div>
+                <Show when={open()} fallback={<Show when={p.live && preview()}><p class="think-text thinking-peek">{preview()}</p></Show>}>
+                    <p class="think-text">{p.block.text.trim()}</p>
                 </Show>
             </div>
         </Show>
@@ -507,16 +521,15 @@ export function SubAgentsRow(p: { runs: AgentRun[] }) {
     };
     return (
         // One agent: its row alone, which opens it. Several: how many and how they're doing, opening into a row each.
-        <Show when={p.runs.length > 1} fallback={<div class="subagents single"><div class="agl"><Show when={p.runs[0]} keyed>{(a) => <AgentRow a={a} providerOf={providerOf} />}</Show></div></div>}>
-            <div class="subagents">
-                <button class="ag-head" aria-expanded={open()} onClick={() => setOpen(!open())}>
-                    <ProviderStack providers={p.runs.map(providerOf)} />
-                    <span class="ag-sum">{[plural(p.runs.length, "sub-agent"), ...counts()].join(" · ")}</span>
-                    <span class="ag-time num">{span()}</span>
-                    <ChevronRight size={13} class="chev" />
+        <Show when={p.runs.length > 1} fallback={<div class="agents subagents single"><div class="agents-list"><Show when={p.runs[0]} keyed>{(a) => <AgentRow a={a} providerOf={providerOf} />}</Show></div></div>}>
+            <div class="agents subagents" data-open={open() || undefined}>
+                <button class="tools-head ag-head" aria-expanded={open()} onClick={() => setOpen(!open())}>
+                    <span class="tools-summary">{[plural(p.runs.length, "sub-agent"), ...counts()].join(" · ")}</span>
+                    <span class="tools-count num">{span()}</span>
+                    <ChevronRight size={13} class="chev" data-open={open() || undefined} />
                 </button>
                 <Show when={open()}>
-                    <div class="agl">
+                    <div class="agents-list">
                         <For each={p.runs}>{(a) => <AgentRow a={a} providerOf={providerOf} />}</For>
                     </div>
                 </Show>
@@ -533,20 +546,20 @@ function AgentRow(p: { a: AgentRun; providerOf: (a: AgentRun) => string | undefi
     // The whole call it's making, for the tooltip and a screen reader: the line says it in a few words.
     const full = () => (a.status === "running" ? agentStep(a)?.full : undefined);
     return (
-        <button class={`agr ${findReveal()?.part === a.id ? "found" : ""}`} data-find={a.id} onClick={() => openAgents(a.id)} title={a.model ? `${a.description ?? ""}\n${shortModelRef(a.model)}` : a.description}>
-            <span class="av">
+        <button class={`agent-row agr ${findReveal()?.part === a.id ? "found" : ""}`} data-find={a.id} onClick={() => openAgents(a.id)} title={a.model ? `${a.description ?? ""}\n${shortModelRef(a.model)}` : a.description}>
+            {/* Its maker's mark (the design's is a robot for every agent), and a dot for how it's doing. */}
+            <span class="agent-mark" data-state={a.status === "running" ? "working" : a.status}>
                 <AgentMark provider={providerOf(a)} />
-                <span class={`nd st-${a.status}`} />
+                <span class="agent-dot" />
             </span>
-            <span class="agr-text">
-                <span class="agr-name truncate">{a.description?.trim() || "Sub-agent"}</span>{" "}
-                <span class={`agr-sub truncate ${a.status === "failed" ? "tone-err" : ""}`} title={full()} aria-label={full() && `${meta()}${full()}`}>
+            <span class="agent-text">
+                <span class="agent-name">{a.description?.trim() || "Sub-agent"}</span>{" "}
+                <span class={`agent-sub ${a.status === "failed" ? "tone-err" : ""}`} title={full()} aria-label={full() && `${meta()}${full()}`}>
                     {meta()}
                     {agentLine(a)}
                 </span>
             </span>
-            <span class="ag-time num">{agentElapsed(a)}</span>
-            <ChevronRight size={13} class="chev" />
+            <span class="agent-when num">{agentElapsed(a)}</span>
         </button>
     );
 }
@@ -612,6 +625,30 @@ export function ToolRow(p: ToolRowProps) {
     return <RenderBoundary raw={() => p.tool}><ToolRowContent {...p} /></RenderBoundary>;
 }
 
+/** A call's state as the design's rows name it (data-state). */
+const STATE_OF: Partial<Record<ToolBlock["status"], string>> = { ok: "done", error: "failed", denied: "declined" };
+
+const CODE_TOOLS = new Set(["Bash", "Grep", "Glob", "Skill", "ToolSearch"]);
+/** What follows a row's verb: a file's path (its folder quiet, its name plain), code (a command, a pattern), or words. */
+function targetKind(t: ToolBlock): "path" | "code" | "plain" {
+    const k = toolKind(t.name);
+    if (FILE_TOOLS.has(k)) return "path";
+    return CODE_TOOLS.has(k) || /^mcp__(?!cavvy__)/.test(t.name) ? "code" : "plain";
+}
+
+/** A file's path as the design writes it: the folder quiet, the name plain. */
+export function Path(p: { path: string }) {
+    const cut = () => p.path.lastIndexOf("/");
+    return (
+        <span class="path" title={p.path}>
+            <Show when={cut() >= 0}>
+                <span class="path-dir">{p.path.slice(0, cut() + 1)}</span>
+            </Show>
+            <span class="path-base">{p.path.slice(cut() + 1)}</span>
+        </span>
+    );
+}
+
 function ToolRowContent(p: ToolRowProps) {
     const [open, setOpen] = createSignal(false);
     const folds = useContext(CardFoldsContext);
@@ -633,6 +670,8 @@ function ToolRowContent(p: ToolRowProps) {
         });
     });
     const ms = () => (p.also?.length ? all().reduce((n, t) => n + (t.durationMs ?? 0), 0) : p.tool.durationMs);
+    const target = () => `tool-target tool-arg ${p.activity ? "warg" : ""}`;
+    const skip = () => p.tool.status === "streaming" || undefined;
     const meta = () => {
         const t = p.tool;
         // Counted calls each have their own result: they're in its details.
@@ -646,9 +685,9 @@ function ToolRowContent(p: ToolRowProps) {
         return resultOf(t.summary);
     };
     return (
-        <div ref={(el) => enterRow(el, motionMs(STAGGER_MS))} class={`tool ${open() ? "open" : ""} st-${p.tool.status} ${found() ? "found" : ""}`} data-find={p.tool.id}>
+        <div ref={(el) => enterRow(el, motionMs(STAGGER_MS))} class={`tool st-${p.tool.status} ${found() ? "found" : ""}`} data-open={open() || undefined} data-state={STATE_OF[p.tool.status] ?? "running"} data-find={p.tool.id}>
             <div class="tool-head" style={p.detailsOnly ? { display: "none" } : undefined}>
-                <button class={p.activity ? `tool-line wrow ${isLive(p.tool) ? "live" : ""} ${p.tool.status === "awaiting" || p.tool.status === "queued" ? p.tool.status : ""}` : "tool-line"} onClick={(e) => (pictured() ? viewToolImages(folds.sessionId, p.tool, 0, e.currentTarget) : setOpen(!open()))} aria-expanded={pictured() ? undefined : open()}>
+                <button class={p.activity ? `tool-row tool-line wrow ${isLive(p.tool) ? "live" : ""} ${p.tool.status === "awaiting" || p.tool.status === "queued" ? p.tool.status : ""}` : "tool-row tool-line"} onClick={(e) => (pictured() ? viewToolImages(folds.sessionId, p.tool, 0, e.currentTarget) : setOpen(!open()))} aria-expanded={pictured() ? undefined : open()}>
                     <span class="tool-icon" title={p.tool.sandboxed ? "Ran in the sandbox" : undefined}>
                         <Switch fallback={<ToolIcon name={p.tool.name} agent={p.tool.agent} size={14} />}>
                             <Match when={p.activity && p.tool.status === "awaiting"}><Hand size={14} /></Match>
@@ -658,8 +697,18 @@ function ToolRowContent(p: ToolRowProps) {
                     {/* Spaces between the parts, as find counts them ("Read src/a.ts"); a flex row doesn't draw them. */}
                     <span class={shines() ? "tool-verb wverb shimmer" : p.activity && isLive(p.tool) ? "tool-verb wverb" : "tool-verb"} data-find-skip={isLive(p.tool) || undefined}>{p.activity && isLive(p.tool) ? runningVerb(p.tool) : label().verb}<Show when={shines()}><Shine text={runningVerb(p.tool)} /></Show></span>{!isLive(p.tool) && " "}
                     <Show when={label().arg}>
-                        <span class={p.activity ? "tool-arg warg mono truncate" : "tool-arg truncate"} data-find-skip={p.tool.status === "streaming" || undefined}>{label().arg}</span>{!isLive(p.tool) && " "}
+                        {(arg) => (
+                            <Switch fallback={<span class={`${target()} tool-target-plain`} data-find-skip={skip()}>{arg()}</span>}>
+                                <Match when={targetKind(p.tool) === "path"}>
+                                    <span class={target()} data-find-skip={skip()}><Path path={arg()} /></span>
+                                </Match>
+                                <Match when={targetKind(p.tool) === "code"}>
+                                    <code class={target()} data-find-skip={skip()}>{arg()}</code>
+                                </Match>
+                            </Switch>
+                        )}
                     </Show>
+                    {!isLive(p.tool) && label().arg && " "}
                     <Show when={p.also?.length}>
                         <span class="tool-times num" title={`${all().length} times in a row`} data-find-skip>×{all().length}</span>
                     </Show>
@@ -670,13 +719,14 @@ function ToolRowContent(p: ToolRowProps) {
                         <Show when={p.activity && isLive(p.tool) && liveTime(p.tool)}>
                             {(time) => <span class="wtime num" data-find-skip>{time()}</span>}
                         </Show>
-                        <Show when={meta() && !pictured()}>
-                            <span class={`truncate ${p.tool.status === "error" ? "tone-err" : p.tool.status === "denied" ? "tone-warn" : ""}`}>{meta()}</span>
+                        <Show when={p.tool.status === "denied" && !p.also?.length}>
+                            <span class="tool-flag" data-tone="red">Declined</span>
+                        </Show>
+                        <Show when={meta() && meta() !== "Declined" && !pictured()}>
+                            <span class={`truncate ${p.tool.status === "error" ? "tone-err" : ""}`}>{meta()}</span>
                         </Show>
                         <Show when={p.tool.diff && p.tool.status === "ok"}>
-                            <span class="stat" data-find-skip>
-                                <Counts added={p.tool.diff!.added} removed={p.tool.diff!.removed} />
-                            </span>
+                            <Stat added={p.tool.diff!.added} removed={p.tool.diff!.removed} />
                         </Show>
                         <Show when={p.tool.diagnostics}>{(r) => <DiagnosticsChip report={r()} />}</Show>
                         <Show when={ms() !== undefined && ms()! >= 1000}>
@@ -686,6 +736,9 @@ function ToolRowContent(p: ToolRowProps) {
                         </Show>
                         <Show when={!p.activity || !isLive(p.tool)}><StatusIcon tool={p.tool} /></Show>
                     </span>
+                    <Show when={!pictured()}>
+                        <ChevronRight size={13} class="chev" data-open={open() || undefined} />
+                    </Show>
                 </button>
                 {/* What it brought, in place of its result's words (the file itself may be one the session can't open). */}
                 {/* An answer's images are what was attached to it: there too. */}
@@ -1238,13 +1291,13 @@ function CommandBody(p: { tool: ToolBlock; live: boolean; running: boolean; code
 
 function Section(p: { label: string; children: JSX.Element; aside?: JSX.Element }) {
     return (
-        <div class="tsec">
-            <div class="tsec-head">
+        <section class="tsec">
+            <header class="tsec-head">
                 <span>{p.label}</span>
                 {p.aside}
-            </div>
+            </header>
             {p.children}
-        </div>
+        </section>
     );
 }
 
@@ -1276,7 +1329,7 @@ function Output(p: { tool: ToolBlock; bare?: boolean }) {
                 when={p.bare}
                 fallback={
                     <Section label={p.tool.status === "error" ? "Error" : "Output"} aside={more()}>
-                        <pre class={`term ${p.tool.status === "error" ? "err" : ""}`}>{text()}</pre>
+                        <pre class={`term-out cmd-out ${p.tool.status === "error" ? "err" : ""}`}>{text()}</pre>
                     </Section>
                 }
             >
@@ -1428,7 +1481,7 @@ function ToolDetailsContent(p: { tool: ToolBlock; openLink?: boolean }) {
                     </Section>
                     <Show when={t().status === "running" && t().progress} fallback={<Output tool={t()} />}>
                         <Section label="Output">
-                            <pre class="term">{stripAnsi(t().progress ?? "")}</pre>
+                            <pre class="term-out cmd-out">{stripAnsi(t().progress ?? "")}</pre>
                         </Section>
                     </Show>
                 </Match>

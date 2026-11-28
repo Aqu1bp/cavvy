@@ -290,16 +290,16 @@ export function FindBar(p: {
     };
 
     return (
-        <div class="find-bar glass" role="search" aria-label="Conversation" on:keydown={onBarKey}>
+        <div class="findbar find-bar" role="search" aria-label="Conversation" on:keydown={onBarKey}>
             <input ref={input} value={text()} onInput={(e) => onInput(e.currentTarget.value)} on:keydown={onKey} placeholder="Find in conversation" spellcheck={false} aria-label="Find in conversation" />
-            <span class="find-count num" role="status" aria-live="polite" aria-atomic="true">{count()}</span>
-            <button class="find-btn" title="Previous (Shift+Enter)" aria-label="Previous match" disabled={matches().length < 2} onClick={() => go(cur() - 1)}>
+            <span class="findbar-count num" role="status" aria-live="polite" aria-atomic="true">{count()}</span>
+            <button class="icon-btn icon-btn-sm" title="Previous (Shift+Enter)" aria-label="Previous match" disabled={matches().length < 2} onClick={() => go(cur() - 1)}>
                 <ChevronUp size={14} />
             </button>
-            <button class="find-btn" title="Next (Enter)" aria-label="Next match" disabled={matches().length < 2} onClick={() => go(cur() + 1)}>
+            <button class="icon-btn icon-btn-sm" title="Next (Enter)" aria-label="Next match" disabled={matches().length < 2} onClick={() => go(cur() + 1)}>
                 <ChevronDown size={14} />
             </button>
-            <button class="find-btn" title="Close (Esc)" aria-label="Close find" onClick={close}>
+            <button class="icon-btn icon-btn-sm" title="Close (Esc)" aria-label="Close find" onClick={close}>
                 <X size={14} />
             </button>
         </div>

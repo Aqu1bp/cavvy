@@ -126,7 +126,7 @@ try {
     setLast(false);
     assert.equal(lines().length, 0);
     setLast(true);
-    const logs = () => all(root).filter((n) => hasClass(n, "worklog"));
+    const logs = () => all(root).filter((n) => hasClass(n, "wseg"));
     const folds = () => all(root).filter((n) => hasClass(n, "worked"));
     const feet = () => all(root).filter((n) => hasClass(n, "turn-foot"));
     // Ended by a steer whose turn still runs: its work stays open, with no footer, until the chain ends.
@@ -164,7 +164,7 @@ try {
     prefs.expandActivity = true;
     const again = node("root");
     const disposeAgain = renderer.render(() => TurnView({ turn: { ...turn(), status: "done", endedAt: 1341 }, state: state(), last: true }), again);
-    assert.equal(all(again).filter((n) => hasClass(n, "worklog")).length, 1, "expanded activity starts unfolded");
+    assert.equal(all(again).filter((n) => hasClass(n, "wseg")).length, 1, "expanded activity starts unfolded");
     disposeAgain();
     prefs.expandActivity = false;
     assert.equal(motionMs(260), 0, "no motion without a browser's reduced-motion query");

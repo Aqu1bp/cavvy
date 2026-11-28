@@ -618,7 +618,7 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; aside?: boole
         const turn = els[firstBelow(els.length, (i) => els[i]!.getBoundingClientRect().bottom - shiftOf(els[i]!), top)];
         if (!turn) return;
         // A block anchor also survives replacing the live head with a work-log toggle.
-        let part = [...turn.querySelectorAll<HTMLElement>("[data-find], .worklog")].find((el) => el.getBoundingClientRect().bottom - shiftOf(el) > top);
+        let part = [...turn.querySelectorAll<HTMLElement>("[data-find], .wseg")].find((el) => el.getBoundingClientRect().bottom - shiftOf(el) > top);
         // Within one large work log or reply, anchor the measured row in view. A container's
         // top alone cannot preserve the paragraph/tool being read when rows above reflow.
         const rows = part ? [...part.querySelectorAll<HTMLElement>('[data-work-row="sized"]')] : [];
@@ -627,7 +627,7 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; aside?: boole
         if (row?.dataset.find) part = row;
         return {
             turnId: turn.dataset.turn!, offset: turn.getBoundingClientRect().top - shiftOf(turn) - top,
-            part: part?.dataset.find ?? (part ? `worklog:${[...turn.querySelectorAll(".worklog")].indexOf(part)}` : undefined),
+            part: part?.dataset.find ?? (part ? `worklog:${[...turn.querySelectorAll(".wseg")].indexOf(part)}` : undefined),
             partOffset: part ? part.getBoundingClientRect().top - shiftOf(part) - top : undefined,
             ...(row && row !== part ? { row: [...part!.querySelectorAll<HTMLElement>("[data-work-row]")].indexOf(row), rowOffset: row.getBoundingClientRect().top - shiftOf(row) - top } : {}),
         };
@@ -688,7 +688,7 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; aside?: boole
         const turn = turnEls.get(reading.turnId);
         if (!turn) return;
         const part = reading.part?.startsWith("worklog:")
-            ? turn.querySelectorAll<HTMLElement>(".worklog")[Number(reading.part.slice(8))]
+            ? turn.querySelectorAll<HTMLElement>(".wseg")[Number(reading.part.slice(8))]
             : reading.part ? turn.querySelector<HTMLElement>(`[data-find="${CSS.escape(reading.part)}"]`) : undefined;
         const row = part && reading.row !== undefined ? part.querySelectorAll<HTMLElement>("[data-work-row]")[reading.row] : undefined;
         const el = row ?? part ?? turn;
@@ -1559,30 +1559,35 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; aside?: boole
     };
 
     return (
-        <div class="transcript-wrap">
+        <div class="transcript-wrap convo-wrap">
             {/* Keeps one size while the panels slide (lib/layout.ts heldSizes): the conversation is laid out once, not every frame. */}
             <div class="transcript-hold" ref={box} classList={{ held: !!hold() }} style={hold()}>
-            <div class="transcript" ref={scroller} style={{ "--dock-h": dock() }} classList={{ "jump-shown": !stick() && !scrolledDown() }} onScroll={onScroll} onWheel={onWheel} onTouchStart={press} onPointerDown={press} onKeyDown={onKey} onClick={toggledRow} aria-label="Conversation">
+            <div class="transcript convo" ref={scroller} style={{ "--dock-h": dock() }} classList={{ "jump-shown": !stick() && !scrolledDown() }} onScroll={onScroll} onWheel={onWheel} onTouchStart={press} onPointerDown={press} onKeyDown={onKey} onClick={toggledRow} aria-label="Conversation">
                 {/* Clips the column's glide, so a translate never adds to what the conversation scrolls through. */}
                 <div class="transcript-glide">
-                <div class="transcript-col" ref={content}>
-                    <Show when={p.handle.view.state.forkOf}>
-                        {(f) => (
-                            <button class="forked-from" title="Open the original session" onClick={() => void activate(f().id)}>
-                                <GitFork size={13} /> Forked from <span class="truncate">{f().title}</span>
-                            </button>
-                        )}
+                <div class="transcript-col convo-col" ref={content}>
+                    {/* Where it came from: the session it was forked from, the one whose plan it carries out. */}
+                    <Show when={p.handle.view.state.forkOf || (p.handle.view.state.planLinks ?? []).some((l) => l.role === "from")}>
+                        <div class="convo-origin">
+                        <Show when={p.handle.view.state.forkOf}>
+                            {(f) => (
+                                <button class="origin-link" title="Open the original session" onClick={() => void activate(f().id)}>
+                                    <GitFork size={13} /> Forked from <span class="truncate">{f().title}</span>
+                                </button>
+                            )}
+                        </Show>
+                        {/* Started from another session's plan (in a new worktree): that session, a click away. */}
+                        <For each={(p.handle.view.state.planLinks ?? []).filter((l) => l.role === "from")}>
+                            {(l) => (
+                                <button class="origin-link" title="Open the planning session" onClick={() => void activate(l.session)}>
+                                    <ArrowUpLeft size={13} /> Plan from <span class="truncate">“{app.sessions.find((s) => s.id === l.session)?.title ?? app.archived.find((s) => s.id === l.session)?.title ?? l.title ?? "another session"}”</span>
+                                </button>
+                            )}
+                        </For>
+                        </div>
                     </Show>
-                    {/* Started from another session's plan (in a new worktree): that session, a click away. */}
-                    <For each={(p.handle.view.state.planLinks ?? []).filter((l) => l.role === "from")}>
-                        {(l) => (
-                            <button class="forked-from" title="Open the planning session" onClick={() => void activate(l.session)}>
-                                <ArrowUpLeft size={13} /> Plan from <span class="truncate">“{app.sessions.find((s) => s.id === l.session)?.title ?? app.archived.find((s) => s.id === l.session)?.title ?? l.title ?? "another session"}”</span>
-                            </button>
-                        )}
-                    </For>
                     <Show when={hidden()}>
-                        <button class="earlier" onClick={() => void earlier()} disabled={loadingEarlier()} aria-disabled={buttonHeld() !== undefined || undefined}>
+                        <button class="turns-more earlier" onClick={() => void earlier()} disabled={loadingEarlier()} aria-disabled={buttonHeld() !== undefined || undefined}>
                             Show {Math.min(PAGE, hidden())} earlier {hidden() === 1 ? "turn" : "turns"}
                         </button>
                     </Show>
@@ -1693,7 +1698,7 @@ function LaterTurns(p: { count: number; fill: () => Promise<boolean | "moved">; 
         });
     });
     return (
-        <button ref={el} class="earlier later" onClick={() => go(true)} disabled={busy()}>
+        <button ref={el} class="turns-more earlier later" onClick={() => go(true)} disabled={busy()}>
             Show {Math.min(40, p.count)} later {p.count === 1 ? "turn" : "turns"}
         </button>
     );
