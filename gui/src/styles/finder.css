@@ -63,3 +63,8 @@
     align-items: center;
     gap: calc(5 * var(--sp));
 }
+
+/* Nothing listed (a failed search): no empty band over the foot. */
+.finder .pal-list:empty {
+    display: none;
+}
