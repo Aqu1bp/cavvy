@@ -68,7 +68,7 @@
     --gutter: 8px;
     --sidebar-w: 280px;
     --panel-w: 280px;
-    --review-w: 720px;
+    --review-w: 704px;
     --column-w: calc(736 * var(--sp));
     /* The scrollbars' width (base.css). */
     --scrollbar-w: 10px;

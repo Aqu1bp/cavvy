@@ -23,8 +23,8 @@ export const nameOf = (path: string) => path.split("/").pop() ?? path;
 /** The diff reader's own width (its left edge's handle), within these. */
 export const REVIEW_MIN = 420;
 export const REVIEW_MAX = 1200;
-/** What a double-click on the handle goes back to. */
-export const REVIEW_DEFAULT = 720;
+/** What a double-click on the handle goes back to: the design's reader (660) and the rail beside it (44). */
+export const REVIEW_DEFAULT = 704;
 /** One arrow-key press on the handle. */
 export const REVIEW_STEP = 24;
 

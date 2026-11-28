@@ -89,7 +89,7 @@ export const PREF_DEFAULTS: Prefs = {
     showThinking: true,
     sidebarWidth: 280,
     terminalHeight: 260,
-    reviewWidth: 720,
+    reviewWidth: 704,
     reviewIgnoreWhitespace: true,
     favoriteModels: [],
     chatWidth: "default",
