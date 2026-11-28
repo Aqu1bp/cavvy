@@ -1,4 +1,5 @@
 import { createEffect, createSignal, For, on, Show } from "solid-js";
+import { Check as CheckIcon, Sparkles, TriangleAlert } from "lucide-solid";
 import type { GitChangesInfo, GitFileDiff } from "@shared/protocol";
 import { app, handleFor, rpc } from "../state/app";
 import { gitCommit, gitCommitMessage } from "../state/actions";
@@ -8,7 +9,10 @@ import { mod, os } from "../lib/platform";
 import { plural } from "../lib/format";
 import { draftedBy } from "../lib/model-name";
 import { Dialog } from "./ui/Dialog";
-import { Spinner } from "./ui/bits";
+import { Kbd, Spinner } from "./ui/bits";
+import { Counts } from "./blocks/DiffView";
+import { dirOf, nameOf } from "../lib/inspector";
+import "../styles/review.css";
 import { takeFocus } from "../lib/focus-trap";
 
 /** A file as the Review pane names it in a commit request: its handle when its name was shown redacted, else its name. */
@@ -102,6 +106,7 @@ export function CommitDialog() {
               ? "This is the default branch."
               : undefined;
 
+    const subject = () => message().split("\n")[0]!.trim();
     let messageEl: HTMLTextAreaElement | undefined;
     const generate = async () => {
         const request = commitRequest();
@@ -188,50 +193,72 @@ export function CommitDialog() {
         void commit();
     };
 
+    const footer = (
+        <>
+            <button class="btn" disabled={committing()} onClick={close}>
+                Cancel
+            </button>
+            <span title={blocked()}>
+                <button class="btn btn-primary" disabled={!ready() || !message().trim() || committing() || generating() || naming() || (branching() && !newName().trim())} onClick={() => void commit()}>
+                    {committing() ? "Committing…" : branching() ? "Commit to new branch" : "Commit"}
+                    <Kbd keys={os === "macos" ? "⌘+↵" : `${mod}+↵`} />
+                </button>
+            </span>
+        </>
+    );
+
     return (
         <Dialog
             open={Boolean(commitRequest())}
             onClose={close}
             title={paths().length ? `Commit ${plural(paths().length, "file")}` : "Commit changes"}
-            subtitle={view()?.repo ? <>On <span class="mono">{view()?.head?.branch ?? `detached HEAD ${view()?.head?.sha?.slice(0, 7) ?? ""}`}</span></> : undefined}
-            width={560}
+            subtitle={view()?.repo ? <>On <code>{view()?.head?.branch ?? `detached HEAD ${view()?.head?.sha?.slice(0, 7) ?? ""}`}</code></> : undefined}
+            width={520}
+            footer={footer}
         >
-            <div class="commit-dialog">
-                <Show when={!loading()} fallback={<Spinner />}>
-                    <Show when={view()?.repo}>
-                        <Show when={warning()}>
-                            {/* Ticked, the box below says where the commit goes. */}
-                            <Show when={!toNew()}>
-                                <p class="commit-warning" role="status">{warning()}</p>
-                            </Show>
-                            <div class="commit-branch">
-                                <label class="check-row">
-                                    <input
-                                        type="checkbox"
-                                        checked={toNew()}
-                                        disabled={committing()}
-                                        onChange={(e) => {
-                                            setToNew(e.currentTarget.checked);
-                                            if (e.currentTarget.checked && !newName()) void suggestName();
-                                        }}
-                                    />
-                                    <span>Commit to a new branch</span>
-                                </label>
-                                <Show when={toNew()}>
-                                    <div class="commit-generate">
-                                        <input class="input mono grow" aria-label="New branch name" placeholder={naming() ? "Suggesting…" : "feature/my-change"} spellcheck={false} autocomplete="off" maxLength={200} value={newName()} disabled={committing() || naming()} onInput={(e) => setNewName(e.currentTarget.value)} />
-                                        <button class="btn btn-ghost btn-sm" disabled={committing() || naming()} title={nameNote()?.model ? `Suggested by ${draftedBy(nameNote()!.model!, commitRequest()?.id)}` : undefined} onClick={() => void suggestName()}>
-                                            {naming() ? "Suggesting…" : "Suggest"}
-                                        </button>
-                                    </div>
-                                    <Show when={nameNote()?.error}>{(m) => <span class="wt-error" role="status">{m()}</span>}</Show>
-                                </Show>
+            <Show when={!loading()} fallback={<Spinner class="blank-spinner" />}>
+                <Show when={view()?.repo}>
+                    <Show when={warning()}>
+                        {/* Ticked, the field below says where the commit goes. */}
+                        <Show when={!toNew()}>
+                            <div class="note git-note" data-tone="amber" role="status">
+                                <TriangleAlert size={13} />
+                                <span class="note-body">{warning()}</span>
                             </div>
                         </Show>
-                        <div class="commit-files" role="group" aria-label="Files to commit">
-                            <For each={files()}>
-                                {(f) => (
-                                    <label class="commit-file">
+                        <div class="commit-branch">
+                            <label class="check" data-disabled={committing() || undefined}>
+                                <input
+                                    type="checkbox"
+                                    checked={toNew()}
+                                    disabled={committing()}
+                                    onChange={(e) => {
+                                        setToNew(e.currentTarget.checked);
+                                        if (e.currentTarget.checked && !newName()) void suggestName();
+                                    }}
+                                />
+                                <span class="check-box" aria-hidden="true">
+                                    <CheckIcon size={11} stroke-width={3} />
+                                </span>
+                                <span class="check-label">Commit to a new branch</span>
+                            </label>
+                            <Show when={toNew()}>
+                                <div class="commit-branch-row">
+                                    <input class="input mono" aria-label="New branch name" placeholder={naming() ? "Suggesting…" : "feature/my-change"} spellcheck={false} autocomplete="off" maxLength={200} value={newName()} disabled={committing() || naming()} onInput={(e) => setNewName(e.currentTarget.value)} />
+                                    <button class="btn btn-sm" disabled={committing() || naming()} title={nameNote()?.model ? `Suggested by ${draftedBy(nameNote()!.model!, commitRequest()?.id)}` : undefined} onClick={() => void suggestName()}>
+                                        <Sparkles size={13} />
+                                        {naming() ? "Suggesting…" : "Suggest"}
+                                    </button>
+                                </div>
+                                <Show when={nameNote()?.error}>{(m) => <span class="field-hint field-error" role="status">{m()}</span>}</Show>
+                            </Show>
+                        </div>
+                    </Show>
+                    <div class="commit-files" role="group" aria-label="Files to commit">
+                        <For each={files()}>
+                            {(f) => (
+                                <div class="commit-file">
+                                    <label class="check" data-disabled={committing() || undefined}>
                                         <input
                                             type="checkbox"
                                             checked={paths().includes(key(f))}
@@ -242,26 +269,38 @@ export function CommitDialog() {
                                                 setPaths((old) => (e.currentTarget.checked ? [...old, key(f)] : old.filter((p) => p !== key(f))));
                                             }}
                                         />
-                                        <span class="mono">{f.from ? `${f.from} → ${f.path}` : f.path}</span>
+                                        <span class="check-box" aria-hidden="true">
+                                            <CheckIcon size={11} stroke-width={3} />
+                                        </span>
+                                        <span class="check-label">
+                                            <span class="path" title={f.from ? `${f.from} → ${f.path}` : f.path}>
+                                                <Show when={dirOf(f.path)}>
+                                                    <span class="path-dir">{dirOf(f.path)}</span>
+                                                </Show>
+                                                <span class="path-base">{nameOf(f.path)}</span>
+                                            </span>
+                                        </span>
                                     </label>
-                                )}
-                            </For>
-                            <Show when={!files().length}>
-                                <p class="muted">No changes left in these files.</p>
-                            </Show>
-                        </div>
-                    </Show>
+                                    <span class="stat">
+                                        <Counts added={f.added} removed={f.removed} />
+                                    </span>
+                                </div>
+                            )}
+                        </For>
+                        <Show when={!files().length}>
+                            <p class="commit-none">No changes left in these files.</p>
+                        </Show>
+                    </div>
                 </Show>
-                {/* There at once, while the changes load: what's typed straight away lands in it. */}
-                <Show when={loading() || view()?.repo}>
-                    <label class="sr-only" for="commit-message">
-                        Commit message
-                    </label>
+            </Show>
+            {/* There at once, while the changes load: what's typed straight away lands in it. */}
+            <Show when={loading() || view()?.repo}>
+                <div class="commit-message">
                     <textarea
-                        id="commit-message"
-                        class="input mono"
-                        rows={7}
+                        class="textarea"
+                        rows={5}
                         autofocus
+                        aria-label="Commit message"
                         // The message takes the keyboard, unless it has been moved on purpose since the dialog opened.
                         ref={(el) => {
                             messageEl = el;
@@ -278,35 +317,32 @@ export function CommitDialog() {
                             setMessage(e.currentTarget.value);
                         }}
                     />
-                    <div class="commit-generate">
-                        <button class="btn btn-ghost" disabled={!ready() || generating() || committing()} title={model() ? `Drafted by ${draftedBy(model()!, commitRequest()?.id)}` : undefined} onClick={() => void generate()}>
-                            {generating() ? "Generating…" : "Generate message"}
+                    <div class="commit-draft">
+                        <button class="btn btn-sm" disabled={!ready() || generating() || committing()} title={model() ? `Drafted by ${draftedBy(model()!, commitRequest()?.id)}` : undefined} onClick={() => void generate()}>
+                            <Show when={generating()} fallback={<Sparkles size={13} />}>
+                                <Spinner size={12} />
+                            </Show>
+                            Generate message
                         </button>
                         <Show when={before() !== undefined && !generating()}>
-                            <button class="link-btn small" disabled={committing()} onClick={() => { revision++; setMessage(before()!); setBefore(undefined); messageEl?.focus(); }}>Undo</button>
+                            <button class="link-btn" disabled={committing()} onClick={() => { revision++; setMessage(before()!); setBefore(undefined); messageEl?.focus(); }}>Undo</button>
                         </Show>
-                        <Show when={genError()}>{(m) => <span class="wt-error" role="status">{m()}</span>}</Show>
+                        <Show when={genError()}>{(m) => <span class="field-hint field-error" role="status">{m()}</span>}</Show>
+                        <Show when={subject().length > 72}>
+                            <span class="commit-drafted commit-long">{subject().length} characters</span>
+                        </Show>
                     </div>
-                </Show>
-                <Show when={blocked()}>
-                    <p class="commit-warning">{blocked()}</p>
-                </Show>
-                <Show when={error()}>
-                    <pre class="commit-error" role="alert">{error()}</pre>
-                </Show>
-                <div class="dialog-actions">
-                    <span class="grow" />
-                    <button class="btn btn-ghost" disabled={committing()} onClick={close}>
-                        Cancel
-                    </button>
-                    <span title={blocked()}>
-                        <button class="btn btn-primary" disabled={!ready() || !message().trim() || committing() || generating() || naming() || (branching() && !newName().trim())} onClick={() => void commit()}>
-                            {committing() ? "Committing…" : branching() ? "Commit to new branch" : "Commit"}
-                            <kbd aria-hidden="true">{os === "macos" ? "⌘↵" : `${mod}+↵`}</kbd>
-                        </button>
-                    </span>
                 </div>
-            </div>
+            </Show>
+            <Show when={blocked()}>
+                <div class="note git-note" data-tone="amber">
+                    <TriangleAlert size={13} />
+                    <span class="note-body">{blocked()}</span>
+                </div>
+            </Show>
+            <Show when={error()}>
+                <pre class="commit-error" role="alert">{error()}</pre>
+            </Show>
         </Dialog>
     );
 }

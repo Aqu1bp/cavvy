@@ -463,7 +463,7 @@ function DiffViewContent(p: DiffProps) {
     const hasSlot = (idx: number) => anchoredAt(idx) || draftAt(idx);
     /** What goes under a row: the comments that end on it, and the one being written. */
     const Slot = (s: { idx: number }) => (
-        <div class="dc-slot" data-slot>
+        <div class="rv-after" data-slot>
             <For each={placed().at.get(s.idx) ?? []}>
                 {(x) => <CommentCard id={x.c.id} edits={edits} label={rangeLabel(x.lo, s.idx)} text={x.c.text} onEdit={(t) => p.comments!.edit(x.c.id, t)} onRemove={() => {
                     setHovered(undefined);
@@ -908,8 +908,8 @@ function DiffViewContent(p: DiffProps) {
                 <div class="diff-note">{p.diff.note}</div>
             </Show>
             <Show when={p.comments && placed().outdated.length}>
-                <div class="dc-outdated" data-find-skip>
-                    <div class="dc-outdated-head">{plural(placed().outdated.length, "comment")} on lines that have changed since</div>
+                <div class="rv-orphans" data-find-skip>
+                    <div class="rv-orphans-head">{plural(placed().outdated.length, "comment")} on lines that have changed since</div>
                     <For each={placed().outdated}>
                         {(c) => <CommentCard id={c.id} edits={edits} label={linesPhrase(c)} text={c.text} outdated snippet={c.snippet} onEdit={(t) => p.comments!.edit(c.id, t)} onRemove={() => p.comments!.remove(c.id)} />}
                     </For>

@@ -1,5 +1,5 @@
 import { createSignal, onMount, Show } from "solid-js";
-import { MessageSquare, Pencil, Trash2 } from "lucide-solid";
+import { Pencil, Trash2 } from "lucide-solid";
 import { isMod, mod } from "../../lib/platform";
 import { composingKey } from "../../lib/composer-menu";
 
@@ -10,7 +10,7 @@ export function CommentBox(p: { label: string; initial?: string; submitLabel?: s
     const fit = () => {
         if (!ta) return;
         ta.style.height = "auto";
-        ta.style.height = `${Math.min(ta.scrollHeight, 240)}px`;
+        ta.style.height = `${Math.min(ta.scrollHeight, 160)}px`;
     };
     onMount(() => {
         if (p.autofocus === false) return void requestAnimationFrame(fit);
@@ -25,10 +25,15 @@ export function CommentBox(p: { label: string; initial?: string; submitLabel?: s
     const submit = () => {
         if (text().trim()) p.onSubmit(text().trim());
     };
+    const label = () => p.label[0]!.toUpperCase() + p.label.slice(1);
     return (
-        <div
-            class="dc-box"
+        <form
+            class="rv-comment rv-comment-box dc-box"
             data-edit={p.editing}
+            onSubmit={(e) => {
+                e.preventDefault();
+                submit();
+            }}
             onPointerDown={(e) => e.stopPropagation()}
             onKeyDown={(e) => {
                 // From the text or either button: the box closes, the review pane stays.
@@ -39,8 +44,7 @@ export function CommentBox(p: { label: string; initial?: string; submitLabel?: s
         >
             <textarea
                 ref={ta}
-                class="dc-input"
-                rows={2}
+                rows={1}
                 value={text()}
                 placeholder="Leave a comment for the agent…"
                 aria-label={`Comment on ${p.label}`}
@@ -57,16 +61,17 @@ export function CommentBox(p: { label: string; initial?: string; submitLabel?: s
                     }
                 }}
             />
-            <div class="dc-actions">
-                <span class="dc-hint">{mod}+Enter to {p.submitLabel ? p.submitLabel.toLowerCase() : "add"} · Esc to cancel</span>
-                <button class="btn btn-sm btn-ghost" onClick={() => p.onCancel()}>
+            <div class="rv-comment-foot">
+                <span class="rv-comment-lines">{label()}</span>
+                <span class="grow" />
+                <button type="button" class="btn btn-sm btn-ghost" title="Esc" onClick={() => p.onCancel()}>
                     Cancel
                 </button>
-                <button class="btn btn-sm btn-primary" disabled={!text().trim()} onClick={submit}>
+                <button type="submit" class="btn btn-sm btn-primary" title={`${mod}+Enter`} disabled={!text().trim()}>
                     {p.submitLabel ?? "Comment"}
                 </button>
             </div>
-        </div>
+        </form>
     );
 }
 
@@ -100,28 +105,27 @@ export function CommentCard(p: { id: string; label: string; text: string; edits:
                 />
             }
         >
-            <div class={`dc-card ${p.outdated ? "outdated" : ""}`} role="note" aria-label={`Your comment on ${p.label}`} onPointerDown={(e) => e.stopPropagation()} onMouseEnter={() => p.onHover?.(true)} onMouseLeave={() => p.onHover?.(false)}>
-                <span class="dc-icon" title="Goes with your next message"><MessageSquare size={14} aria-hidden="true" /></span>
-                <div class="dc-body">
-                    <div class="dc-meta">
-                        <span class="dc-label">{p.label[0]!.toUpperCase() + p.label.slice(1)}</span>
-                        <Show when={p.outdated}>
-                            <span class="dc-tag" title="Changed since you commented. The agent gets the lines you saw.">Outdated</span>
-                        </Show>
-                    </div>
-                    <p class="dc-text">{p.text}</p>
+            <div class="rv-comment" data-outdated={p.outdated || undefined} role="note" aria-label={`Your comment on ${p.label}`} onPointerDown={(e) => e.stopPropagation()} onMouseEnter={() => p.onHover?.(true)} onMouseLeave={() => p.onHover?.(false)}>
+                <div class="rv-comment-main">
+                    <p class="rv-comment-text">{p.text}</p>
                     <Show when={p.outdated && p.snippet}>
-                        <pre class="dc-snippet mono">{p.snippet!.split("\n").slice(1).join("\n")}</pre>
+                        <pre class="rv-comment-snippet mono">{p.snippet!.split("\n").slice(1).join("\n")}</pre>
                     </Show>
+                    <p class="rv-comment-meta">
+                        <span class="rv-comment-lines">{p.label[0]!.toUpperCase() + p.label.slice(1)}</span>
+                        <Show when={p.outdated}>
+                            <span class="tag" data-tone="amber" title="Changed since you commented. The agent gets the lines you saw.">Outdated</span>
+                        </Show>
+                    </p>
                 </div>
-                <span class="dc-tools">
-                    <button class="hb sm" title="Edit comment" aria-label={`Edit comment on ${p.label}`} onClick={() => p.edits.set(p.id, p.text)}>
+                <div class="rv-comment-actions">
+                    <button class="icon-btn icon-btn-sm" title="Edit comment" aria-label={`Edit comment on ${p.label}`} onClick={() => p.edits.set(p.id, p.text)}>
                         <Pencil size={13} />
                     </button>
-                    <button class="hb sm" title="Delete comment" aria-label={`Delete comment on ${p.label}`} onClick={() => p.onRemove()}>
+                    <button class="icon-btn icon-btn-sm" title="Delete comment" aria-label={`Delete comment on ${p.label}`} onClick={() => p.onRemove()}>
                         <Trash2 size={13} />
                     </button>
-                </span>
+                </div>
             </div>
         </Show>
     );

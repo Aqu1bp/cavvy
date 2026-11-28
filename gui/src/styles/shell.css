@@ -440,7 +440,7 @@
 }
 
 [data-lead] .inspector-head,
-[data-lead] .rv-h {
+[data-lead] .rv-bar {
     padding-left: calc(92px - var(--win-pad, 8px) + 76px);
 }
 

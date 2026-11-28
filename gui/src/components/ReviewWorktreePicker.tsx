@@ -6,12 +6,12 @@
 // opened from the menu's "Every worktree…".
 
 import { createEffect, createMemo, createSignal, For, on, Show } from "solid-js";
-import { Bot, Check, FolderGit2, MessageSquare, Search } from "lucide-solid";
+import { Bot, Check, MessageSquare, Search } from "lucide-solid";
 import type { SessionWorktreeInfo } from "@shared/protocol";
 import { app } from "../state/app";
 import { plural, since, tildify } from "../lib/format";
 import type { WorktreeWork } from "../lib/worktree-work";
-import { Popover } from "./ui/Popover";
+import { Dialog } from "./ui/Dialog";
 
 /** Work named per row; the rest are counted. */
 const NAMED = 3;
@@ -91,7 +91,7 @@ export function ReviewWorktreePicker(p: {
             setSel(Math.max(0, rows().findIndex(isOn)));
             requestAnimationFrame(() => {
                 input?.focus();
-                list?.querySelector(".menu-item.sel")?.scrollIntoView({ block: "nearest" });
+                list?.querySelector(".row.sel")?.scrollIntoView({ block: "nearest" });
             });
         }),
     );
@@ -107,7 +107,7 @@ export function ReviewWorktreePicker(p: {
             e.preventDefault();
             if (!n) return;
             setSel((s) => (s + (e.key === "ArrowDown" ? 1 : -1) + n) % n);
-            requestAnimationFrame(() => list?.querySelector(".menu-item.sel")?.scrollIntoView({ block: "nearest" }));
+            requestAnimationFrame(() => list?.querySelector(".row.sel")?.scrollIntoView({ block: "nearest" }));
         } else if (e.key === "Enter") {
             e.preventDefault();
             const w = rows()[sel()];
@@ -115,78 +115,63 @@ export function ReviewWorktreePicker(p: {
         }
     };
     return (
-        <>
-            <Popover open={open()} anchor={p.anchor} onClose={p.onClose} placement="bottom" align="start" width={400} maxHeight={680}>
-                <div role="dialog" aria-label="Choose a worktree" onKeyDown={onKey}>
-                    <div class="mp-search">
-                        <Search size={14} />
-                        <input ref={input} value={q()} onInput={(e) => setQ(e.currentTarget.value)} placeholder="Search worktrees, agents, sessions…" aria-label="Search worktrees" spellcheck={false} />
-                    </div>
-                    <div class="base-list rv-wt-list" ref={list} role="listbox" aria-label="Worktrees">
-                        <Show when={!p.error} fallback={<div class="menu-note">{p.error}</div>}>
-                            <Show when={p.worktrees || !p.loading} fallback={<div class="menu-note">Loading worktrees…</div>}>
-                                <For each={rows()} fallback={<div class="menu-note">{p.worktrees?.length ? "No worktrees match." : "This folder isn't in a Git repository."}</div>}>
-                                    {(w, i) => {
-                                        const there = () => work().get(w.path);
-                                        const named = () => workNamed(there());
-                                        return (
-                                            <button
-                                                class={`menu-item rv-wt-item ${i() === sel() ? "sel" : ""} ${isOn(w) ? "current" : ""}`}
-                                                role="option"
-                                                aria-selected={isOn(w)}
-                                                aria-disabled={!usable(w)}
-                                                title={w.path}
-                                                onMouseMove={() => setSel(i())}
-                                                onClick={() => choose(w)}
-                                            >
-                                                <FolderGit2 size={15} />
-                                                <span class="menu-item-text">
-                                                    <span class="rv-wt-name">
-                                                        <span class="menu-item-name mono truncate">{worktreeLabel(w)}</span>
-                                                        <Show when={w.current}>
-                                                            <span class="rv-wt-self">This session</span>
+        <Dialog open={open()} onClose={p.onClose} title="Every worktree" width={540} edge>
+            <div role="presentation" onKeyDown={onKey}>
+                <label class="rv-search rv-search-lg">
+                    <Search size={14} />
+                    <input ref={input} value={q()} onInput={(e) => setQ(e.currentTarget.value)} placeholder="Search worktrees, agents, sessions…" aria-label="Search worktrees, agents, sessions" spellcheck={false} />
+                </label>
+                <div class="rv-wt-list" ref={list} role="listbox" aria-label="Worktrees">
+                    <Show when={!p.error} fallback={<div class="blank"><p class="blank-title">{p.error}</p></div>}>
+                        <Show when={p.worktrees || !p.loading} fallback={<div class="blank"><p class="blank-title">Loading worktrees…</p></div>}>
+                            <For each={rows()} fallback={<div class="blank"><p class="blank-title">{p.worktrees?.length ? "No worktrees match." : "This folder isn't in a Git repository."}</p></div>}>
+                                {(w, i) => {
+                                    const named = () => workNamed(work().get(w.path));
+                                    return (
+                                        <button class={`row ${i() === sel() ? "sel" : ""}`} role="option" aria-selected={isOn(w)} aria-current={isOn(w) || undefined} aria-disabled={!usable(w)} title={w.path} onMouseMove={() => setSel(i())} onClick={() => choose(w)}>
+                                            <span class="menu-check">
+                                                <Show when={isOn(w)}>
+                                                    <Check size={14} />
+                                                </Show>
+                                            </span>
+                                            <span class="row-text">
+                                                <span class="row-title mono rv-wt-branch">{worktreeLabel(w)}</span>
+                                                <span class="row-sub">{[facts(w), where(w, p.worktrees?.find((x) => x.main))].filter(Boolean).join(" · ")}</span>
+                                                <Show when={named().length}>
+                                                    <span class="rv-wt-work">
+                                                        <For each={named().slice(0, NAMED)}>
+                                                            {(n) => (
+                                                                <span class="rv-wt-who" title={n.agent ? `Sub-agent: ${n.text}` : `Session: ${n.text}`}>
+                                                                    <span class="rv-wt-ico">
+                                                                        <Show when={n.agent} fallback={<MessageSquare size={12} />}>
+                                                                            <Bot size={12} />
+                                                                        </Show>
+                                                                        <Show when={n.dot}>
+                                                                            <span class={`rv-wt-dot ${n.dot}`} aria-label={n.dot === "st-waiting" ? "Waiting for you" : "Running"} />
+                                                                        </Show>
+                                                                    </span>
+                                                                    <span class="truncate">{n.text}</span>
+                                                                </span>
+                                                            )}
+                                                        </For>
+                                                        <Show when={named().length > NAMED}>
+                                                            <span class="rv-wt-who">+{named().length - NAMED} more</span>
                                                         </Show>
                                                     </span>
-                                                    <span class="menu-item-sub mono truncate">{where(w, p.worktrees?.find((x) => x.main))}</span>
-                                                    <Show when={facts(w)}>
-                                                        <span class="menu-item-sub">{facts(w)}</span>
-                                                    </Show>
-                                                    <Show when={named().length}>
-                                                        <span class="rv-wt-work">
-                                                            <For each={named().slice(0, NAMED)}>
-                                                                {(n) => (
-                                                                    <span class="rv-wt-who" title={n.agent ? `Sub-agent: ${n.text}` : `Session: ${n.text}`}>
-                                                                        <span class="rv-wt-ico">
-                                                                            <Show when={n.agent} fallback={<MessageSquare size={12} />}>
-                                                                                <Bot size={12} />
-                                                                            </Show>
-                                                                            <Show when={n.dot}>
-                                                                                <span class={`rv-wt-dot ${n.dot}`} aria-label={n.dot === "st-waiting" ? "Waiting for you" : "Running"} />
-                                                                            </Show>
-                                                                        </span>
-                                                                        <span class="truncate">{n.text}</span>
-                                                                    </span>
-                                                                )}
-                                                            </For>
-                                                            <Show when={named().length > NAMED}>
-                                                                <span class="rv-wt-more">+{named().length - NAMED} more</span>
-                                                            </Show>
-                                                        </span>
-                                                    </Show>
-                                                </span>
-                                                <Show when={isOn(w)}>
-                                                    <Check size={14} class="menu-check" />
                                                 </Show>
-                                            </button>
-                                        );
-                                    }}
-                                </For>
-                            </Show>
+                                            </span>
+                                            <Show when={w.current}>
+                                                <span class="tag">This session</span>
+                                            </Show>
+                                        </button>
+                                    );
+                                }}
+                            </For>
                         </Show>
-                    </div>
-                    <div class="menu-note">Other worktrees show their branch and uncommitted changes; turns and Cavvy edits are this session's.</div>
+                    </Show>
                 </div>
-            </Popover>
-        </>
+                <p class="rv-wt-foot">Other worktrees show their branch and uncommitted changes; turns and Cavvy edits are this session's.</p>
+            </div>
+        </Dialog>
     );
 }

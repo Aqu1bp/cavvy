@@ -114,7 +114,7 @@ const FRAME_RULES: Record<string, RegExp> = {
     // A floating or filling inspector is placed by lib/layout.ts's px (FLOAT_TOP, its gap, floatBottom).
     // Full screen with the sidebar hidden: the title bar's buttons and the rows after them clear the traffic lights.
     // The title bar over a session stops short of its scrollbar (its padding is the bar's, less the scrollbar's width).
-    "shell.css": /^(\[data-inspmode="(float|fill)"\] \.insp|(\.app\.electron )?\.insp-resizer|\[data-lead\] \.(insp-lead|inspector-head|rv-h)|\.stage-pane > \.header)$/,
+    "shell.css": /^(\[data-inspmode="(float|fill)"\] \.insp|(\.app\.electron )?\.insp-resizer|\[data-lead\] \.(insp-lead|inspector-head|rv-bar)|\.stage-pane > \.header)$/,
     "sidebar.css": /^(\.side-top( \.hb)?|\.resize-handle(\.left)?)$/,
     "terminal.css": /^(\.terminal-resizer(::after)?|\.app\.tauri\.os-macos(\.rail-off|\[data-rail="overlay"\]) \.terminal-panel\.max \.terminal-bar)$/,
     "overlays.css": /^\.find-bar\.glass$/,
