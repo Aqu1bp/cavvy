@@ -3,6 +3,7 @@
 
 import { stoppedText, switchWord, type Block, type NoticeBlock, type NoticeLimit, type ScheduleInfo } from "@shared/protocol";
 import { resetLabel } from "./limits";
+import { staysInTurn } from "./cards";
 
 /**
  * How a notice is drawn: a switch's line between turns, what a switch stopped on a line of its own (said after a
@@ -155,7 +156,7 @@ export function quietBlocks(blocks: Block[], quiet: boolean, last: boolean | und
 
 /** A turn's row that is work (lib/live-line.ts workSegments): a run of steps, a thought. */
 export function isWorkRow(it: { kind: string; card?: string; block?: { t: string } }): boolean {
-    return it.kind === "activity" ? it.card !== "plan" : it.block?.t === "thinking";
+    return it.kind === "activity" ? !staysInTurn(it.card) : it.block?.t === "thinking";
 }
 
 /** The turn has an error card: it says how the turn ended, so no "Stopped with an error" line under it. */

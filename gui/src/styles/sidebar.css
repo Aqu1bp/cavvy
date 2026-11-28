@@ -593,6 +593,20 @@
     color: var(--warn);
 }
 
+/* Tasks its agent suggested, waiting for you: "1 suggested", before the row's time. */
+.sidebar .row-sg {
+    flex: none;
+    margin-right: calc(6 * var(--sp));
+    padding: 0 calc(6 * var(--sp));
+    border-radius: var(--pill);
+    font-size: 0.786rem;
+    font-weight: 500;
+    line-height: 1.5;
+    color: var(--accent-text);
+    background: var(--accent-softer);
+    white-space: nowrap;
+}
+
 .sidebar .lead-pin {
     color: var(--fg-3);
 }

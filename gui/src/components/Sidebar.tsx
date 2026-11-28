@@ -199,7 +199,22 @@ function useRowMenu(more: () => HTMLElement | undefined) {
 /** What a screen reader hears for a row: its title, then how it's doing, and whether it's selected. */
 function rowLabel(s: SessionSummary, unread: boolean, picked = false): string {
     const word = s.making ? "forking" : sessionStatus(s, now())?.text;
-    return [s.run ? `${s.run.modelName} · ${s.title}` : s.title, s.machine && `on ${s.machine}`, s.status === "idle" && !s.making ? (unread ? "unread" : undefined) : word, s.pinned ? "pinned" : undefined, picked ? "selected" : undefined].filter(Boolean).join(", ");
+    return [s.run ? `${s.run.modelName} · ${s.title}` : s.title, s.machine && `on ${s.machine}`, s.status === "idle" && !s.making ? (unread ? "unread" : undefined) : word, suggestedLabel(s), s.pinned ? "pinned" : undefined, picked ? "selected" : undefined].filter(Boolean).join(", ");
+}
+
+/** Tasks its agent suggested that wait for the user (loaded sessions only): "1 suggested". */
+const suggestedLabel = (s: SessionSummary) => (s.suggested ? `${s.suggested} suggested` : undefined);
+/** That, as a chip on the row. */
+function SuggestedChip(p: { s: SessionSummary }) {
+    return (
+        <Show when={suggestedLabel(p.s)}>
+            {(label) => (
+                <span class="row-sg" aria-hidden="true">
+                    {label()}
+                </span>
+            )}
+        </Show>
+    );
 }
 
 /** Just before a row's title: a check while it's picked, a pin when pinned. How it's doing is at its end (RowEnd). */
@@ -331,6 +346,7 @@ function SessionCard(p: { s: SessionSummary; hold: (id: string, held: boolean) =
                     <Show when={!r.editing()}>{p.s.run ? p.s.run.modelName : p.s.title}</Show>
                 </span>
                 <span class="end">
+                    <SuggestedChip s={p.s} />
                     <RowEnd s={p.s} unread={unread()} />
                 </span>
                 {/* Its project, under the title, and what it runs on. Listed by date only: by project, the heading says it. */}
@@ -384,6 +400,7 @@ function SessionRow(p: { s: SessionSummary; hold: (id: string, held: boolean) =>
                 >
                     <RowLead s={p.s} picked={picked()} />
                     <span class="truncate">{p.s.run ? `${p.s.run.modelName} · ${p.s.title}` : p.s.title}</span>
+                    <SuggestedChip s={p.s} />
                     <Show when={p.s.machine}>
                         <span class="slim-at">{p.s.machine}</span>
                     </Show>

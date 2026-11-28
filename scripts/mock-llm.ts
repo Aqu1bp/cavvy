@@ -7,6 +7,7 @@
 //   "question"       asks a multiple-choice question
 //   "mcpform" / "mcpsample" / "mcpresources"   an MCP server named "docs" asks for a form, for sampling; its resources
 //   "plan"           presents a plan for approval
+//   "suggestdemo"    suggests an unrelated task to the user (SuggestTask), then carries on; "suggestdemo twice", two of them
 //   "todo"           keeps a todo list while working
 //   "slow"           streams a long answer slowly
 //   "streamdemo"     a long markdown reply (headings, lists, code, a table) at a model's pace: uneven chunks, uneven gaps
@@ -376,6 +377,13 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
     if (addServer) return toolRounds === 0 ? { text: "Adding it.", calls: [{ name: "ServerAdd", args: { name: addServer[1]!.toLowerCase(), address: addServer[2], ...(addServer[3] ? { identity_file: addServer[3] } : {}) } }] } : { text: lastResult };
     const deleteServer = /\bdeleteserver ([\w-]+)/.exec(p);
     if (deleteServer) return toolRounds === 0 ? { text: "Deleting it.", calls: [{ name: "ServerRemove", args: { name: deleteServer[1] } }] } : { text: lastResult };
+    // Comes across something unrelated and suggests it as a task of its own, then carries on with its own.
+    if (/\bsuggestdemo\b/.test(p)) {
+        const flaky = { title: "Fix the flaky login test", why: "test/login.test.ts failed once and passed on the rerun, with no change between.", prompt: "test/login.test.ts is flaky: it failed once and passed on the rerun with nothing changed.\n\nSteps:\n1. Run `bun test ./test/login.test.ts` ten times in a row.\n2. Find the wait that races (it looks like the session cookie is read before it's set).\n\nDone when it passes 50 runs in a row under load." };
+        const typo = { title: "Fix the settings page typo", why: "The Settings page says “Recieve” in the notifications section.", prompt: "src/settings.ts spells “Receive” as “Recieve” in the notifications section. Fix it and check the other strings there." };
+        if (toolRounds === 0) return { text: "That test failure isn't part of this; I'll suggest it as its own task.", calls: [{ name: "SuggestTask", args: flaky }, ...(/\btwice\b/.test(p) ? [{ name: "SuggestTask", args: typo }] : [])] };
+        return { text: "Carrying on with what you asked." };
+    }
     // Asks the user to sign in to something ("signin gh", "signin fly on box"; "signin fly: fly auth login" offers a command Cavvy doesn't know), then carries on.
     const signIn = /\bsignin ([\w.-]+)(?: on ([\w.-]+))?(?:: ([\w .-]+))?/.exec(p);
     if (signIn) {

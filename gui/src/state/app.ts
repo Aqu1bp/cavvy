@@ -359,6 +359,8 @@ async function linkMade(name: string | undefined): Promise<Rpc> {
         if (typeof sessionId === "string" && away.get(sessionId) === from && forUs(e)) rpc.hear(e);
         // Its models changed (a key added there): asked for again, if they were asked for.
         else if (e.type === "models.changed" && on in machineModels) machineModelsAgain(on, from);
+        // A draft for a session it's making for this window, said before it's linked here (madeOn takes it then).
+        else if (e.type === "draft" && typeof sessionId === "string" && !away.has(sessionId)) earlyDraft(sessionId, from, { text: e.text, images: e.images, files: e.files, after: e.after });
         // Its accounts' limits, as they move: for the meter of its sessions here.
         else if (e.type === "limits" && on in machineLimits) setMachineLimits(on, planLimitKey(e.limits.provider, e.limits.accountId), reconcile(fromWireLimits(e.limits)));
     };
@@ -789,9 +791,30 @@ function adopt(snap: SessionSnapshot): SessionHandle {
         return { id, ready, setReady, view, set, seq: snap.seq, epoch: snap.epoch, queue: [] as SessionOp[], scheduled: false, draft, setDraft, addDraft, lastUsed: Date.now() };
     });
     handles.set(id, h);
+    for (const d of draftsFor.get(id) ?? []) h.addDraft(d);
+    draftsFor.delete(id);
     trim(id);
     setHandleVersion((v) => v + 1);
     return h;
+}
+
+/**
+ * What came back to the input box of a session this window hasn't opened (a suggested task started from here whose
+ * first message a hook stopped): it's there when the session is opened. The latest few sessions'.
+ */
+const draftsFor = new Map<string, Draft[]>();
+function keepDraft(id: string, d: Draft) {
+    draftsFor.set(id, [...(draftsFor.get(id) ?? []), d]);
+    if (draftsFor.size > 20) draftsFor.delete(draftsFor.keys().next().value!);
+}
+
+/** Drafts each other machine said for a session before it was linked here: taken only once madeOn links it over that connection. */
+const earlyDrafts = new WeakMap<Rpc, Map<string, Draft[]>>();
+function earlyDraft(id: string, link: Rpc, d: Draft) {
+    const of = earlyDrafts.get(link) ?? new Map<string, Draft[]>();
+    earlyDrafts.set(link, of);
+    of.set(id, [...(of.get(id) ?? []), d]);
+    if (of.size > 20) of.delete(of.keys().next().value!);
 }
 
 /** A session this window had open, asked for again after its connection was back: what it missed, or a snapshot. */
@@ -1852,9 +1875,13 @@ function onEvent(ev: ServerEvent) {
             // A delete that failed closed it: a fresh snapshot into the same handle, so the view and draft stay.
             if (handles.has(ev.sessionId)) void openFresh(ev.sessionId).then(adopt, (e) => reopenFailed(ev.sessionId, e));
             return;
-        case "draft":
-            handles.get(ev.sessionId)?.addDraft({ text: ev.text, images: ev.images, files: ev.files, after: ev.after });
+        case "draft": {
+            const d = { text: ev.text, images: ev.images, files: ev.files, after: ev.after };
+            const h = handles.get(ev.sessionId);
+            if (h) h.addDraft(d);
+            else keepDraft(ev.sessionId, d);
             return;
+        }
         case "toast":
             toast(ev.message, ev.level);
             return;
@@ -2023,3 +2050,6 @@ export function start() {
 export function attentionCount(): number {
     return app.sessions.filter((s) => s.status === "waiting").length;
 }
+
+/** What a suggested task's card reads and does of the window's machines and sessions (state/suggestions.ts, loaded with it). */
+export const machinesInside = { away, awayOn, restoredOn, handles, machineModels, machineSettings, machineProviders, machineLimits, earlyDrafts, linked, keepDraft, machineReady, machineModelsAgain };
