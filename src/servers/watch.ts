@@ -319,7 +319,7 @@ export class MachineWatch {
     private reshow(id: string) {
         const s = this.sessions.get(id);
         if (!s) return;
-        this.say(this.deleting(id) ? { hidden: id } : { session: this.shown(s) });
+        this.say(this.deleting(id) ? { hidden: id } : { session: this.shown(s) }, true);
     }
 
     /** Done here at once, and sent to the server once it's back (or now, after those before it), in the order they were made. */
@@ -365,16 +365,16 @@ export class MachineWatch {
             if (took) {
                 // What it is there now, without waiting to hear it: the row doesn't go back and forth. Written down
                 // before the change is let go, so a restart in between can't bring back what was.
-                // Deleted there now: gone (unless the server said so first).
-                if (s && c.method === "session.delete") {
-                    this.sessions.delete(id);
-                    this.say({ remove: id });
-                } else if (s) this.sessions.set(id, changed(s, c));
+                if (s && c.method === "session.delete") this.sessions.delete(id);
+                else if (s) this.sessions.set(id, changed(s, c));
                 if (!this.forgotten) this.o.kept?.write([...this.sessions.values()].map((x) => this.resting(x)));
             }
             this.pending = this.pending.filter((x) => x !== c);
             this.savePending();
-            if (!took || c.method !== "session.delete") this.reshow(id);
+            // A delete done there, or refused for a session it no longer has: gone for good (said again if the server
+            // said so first, or of one not listed here), so a window forgets what it kept of it. Else the row as it is.
+            if (c.method === "session.delete" && !this.sessions.has(id)) this.say({ remove: id }, true);
+            else this.reshow(id);
         }
     }
 
@@ -404,10 +404,15 @@ export class MachineWatch {
     /** Session changes told in this second (CHANGES_PER_SECOND). */
     private burst = { from: 0, told: 0 };
 
-    /** Tells one change, unless there are more in a second than a server's sessions ever change: then the list is told anew, which is only so often (manager.ts). */
-    private say(change: SessionChange) {
+    /**
+     * Tells one change, unless there are more in a second than a server's sessions ever change: then the list is told
+     * anew, which is only so often (manager.ts). `own`: one of this machine's own changes (made here while the server
+     * was away, or its outcome), always told by itself: the list alone wouldn't say a row was hidden or is gone for good.
+     */
+    private say(change: SessionChange, own = false) {
         // Removed from this Cavvy (and only kept open a moment to sign out there): its sessions aren't listed any more.
         if (this.forgotten) return;
+        if (own) return this.o.session?.(change);
         const now = Date.now();
         if (now - this.burst.from >= 1000) this.burst = { from: now, told: 0 };
         if (++this.burst.told > CHANGES_PER_SECOND) return this.o.changed();

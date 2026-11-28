@@ -457,7 +457,8 @@ test("what a row offers is done here while the server can't be reached, kept thr
 
     // One the server refuses (gone there, say): the row shows what the server has.
     back.stop();
-    pending = [{ method: "session.delete", params: { id: "s3" } }];
+    // And one for a session not listed here (a restart since, a long list), that the server no longer has.
+    pending = [{ method: "session.delete", params: { id: "s3" } }, { method: "session.delete", params: { id: "gone" } }];
     refuse = true;
     const shownAgain: SessionChange[] = [];
     const refused = new MachineWatch("box", { reach: async () => ({ status: "connected", url: `ws://127.0.0.1:${srv.port}/ws`, token: "t" }), changed: () => {}, session: (c) => shownAgain.push(c), notice: () => {}, kept, pending: store });
@@ -465,9 +466,9 @@ test("what a row offers is done here while the server can't be reached, kept thr
     refused.start();
     await until("the refusal", () => (pending as unknown[]).length === 0);
     expect(refused.overview().sessions.map((s) => s.id)).toContain("s3");
-    // Its row comes back, and nothing said it was gone.
+    // Its row comes back, and nothing said it was gone; the one the server doesn't have is gone for good.
     expect(shownAgain).toContainEqual({ session: expect.objectContaining({ id: "s3" }) });
-    expect(shownAgain.some((c) => "remove" in c)).toBe(false);
+    expect(shownAgain.filter((c) => "remove" in c)).toEqual([{ remove: "gone" }]);
 });
 
 test("a delete sent without an answer, then undone, is brought back there too: the server may have done it", async () => {

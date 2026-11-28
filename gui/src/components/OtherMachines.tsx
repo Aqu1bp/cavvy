@@ -118,6 +118,8 @@ function unlist(id: string, at: string | undefined) {
 const hidden = new Map<string, string | undefined>();
 function hide(id: string, at: string | undefined) {
     if (!far.has(id) || far.get(id) !== at) return;
+    // One of the window's own machine's has that id now: it's not that one that's meant.
+    if (listed(id)?.machine === machine) return;
     far.delete(id);
     left(id, at);
     hidden.set(id, at);
@@ -129,13 +131,14 @@ function hide(id: string, at: string | undefined) {
 
 /** One session of another machine is gone from it. */
 function drop(id: string, at: string | undefined) {
-    // Hidden before: gone for good now.
-    if (hidden.has(id) && hidden.get(id) === at && !far.has(id)) {
-        hidden.delete(id);
-        if (listed(id)?.machine === machine) return;
-        return forgetSession(id);
+    if (hidden.get(id) === at) hidden.delete(id);
+    // Not in the list (hidden here as it was deleted while its machine was away, or since then the window was
+    // reloaded): gone for good now, so what's kept of it, a draft, goes too. Not one of the window's own machine's.
+    if (!far.has(id)) {
+        if (!listed(id)) forgetSession(id);
+        return;
     }
-    if (!far.has(id) || far.get(id) !== at) return;
+    if (far.get(id) !== at) return;
     far.delete(id);
     left(id, at);
     const now = listed(id);
