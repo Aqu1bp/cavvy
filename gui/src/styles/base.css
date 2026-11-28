@@ -426,6 +426,7 @@ h3 {
     border-radius: var(--radius-s);
     color: var(--text-2);
     flex: none;
+    transition: background 0.12s, color 0.12s;
 }
 
 .hb:hover:not(:disabled),
