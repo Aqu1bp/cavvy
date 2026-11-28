@@ -388,20 +388,20 @@
 .stopslider {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: calc(12 * var(--sp));
 }
 
 .stopslider-label {
     color: var(--text-2);
-    font-size: 12.5px;
+    font-size: calc(12.5 * var(--sp));
     white-space: nowrap;
 }
 
 .stopslider-track {
     position: relative;
-    width: 132px;
-    height: 20px;
-    border-radius: 10px;
+    width: calc(132 * var(--sp));
+    height: calc(20 * var(--sp));
+    border-radius: calc(10 * var(--sp));
     cursor: pointer;
     touch-action: none;
 }
@@ -409,30 +409,30 @@
 .stopslider-track::before {
     content: "";
     position: absolute;
-    left: 7px;
-    right: 7px;
-    top: 8px;
-    height: 4px;
-    border-radius: 2px;
+    left: calc(7 * var(--sp));
+    right: calc(7 * var(--sp));
+    top: calc(8 * var(--sp));
+    height: calc(4 * var(--sp));
+    border-radius: calc(2 * var(--sp));
     background: var(--fill-3);
 }
 
 .stopslider-fill {
     position: absolute;
     left: 0;
-    top: 8px;
-    height: 4px;
-    border-radius: 2px;
+    top: calc(8 * var(--sp));
+    height: calc(4 * var(--sp));
+    border-radius: calc(2 * var(--sp));
     background: var(--accent);
     transition: width 0.14s var(--ease);
 }
 
 .stopslider-stop {
     position: absolute;
-    top: 8.5px;
-    width: 3px;
-    height: 3px;
-    margin-left: -1.5px;
+    top: calc(8.5 * var(--sp));
+    width: calc(3 * var(--sp));
+    height: calc(3 * var(--sp));
+    margin-left: calc(-1.5 * var(--sp));
     border-radius: 50%;
     background: var(--text-4);
 }
@@ -443,10 +443,10 @@
 
 .stopslider-thumb {
     position: absolute;
-    top: 3px;
-    width: 14px;
-    height: 14px;
-    margin-left: -7px;
+    top: calc(3 * var(--sp));
+    width: calc(14 * var(--sp));
+    height: calc(14 * var(--sp));
+    margin-left: calc(-7 * var(--sp));
     border-radius: 50%;
     background: #fff;
     box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.14), 0 1px 3px rgba(0, 0, 0, 0.22);
@@ -491,7 +491,7 @@
     gap: calc(4 * var(--sp));
     align-items: center;
     padding: calc(4 * var(--sp)) calc(4 * var(--sp)) calc(3 * var(--sp));
-    border-radius: 7px;
+    border-radius: calc(7 * var(--sp));
     color: var(--text-2);
     font-size: calc(11.5 * var(--sp));
     font-weight: 500;
@@ -511,7 +511,7 @@
 .tint-art {
     width: calc(58 * var(--sp));
     height: calc(30 * var(--sp));
-    border-radius: 4px;
+    border-radius: calc(4 * var(--sp));
     box-shadow: inset 0 0 0 1px rgba(128, 128, 128, 0.26);
 }
 
@@ -556,7 +556,7 @@
 }
 
 .text-sample code {
-    padding: 1.5px calc(5 * var(--sp));
+    padding: calc(1.5 * var(--sp)) calc(5 * var(--sp));
     border-radius: calc(5 * var(--sp));
     background: color-mix(in srgb, var(--text) 8%, transparent);
     font-size: 0.875em;
@@ -706,7 +706,7 @@ a.btn {
     display: inline-flex;
     flex: none;
     padding: calc(2 * var(--sp));
-    border-radius: 4px;
+    border-radius: calc(4 * var(--sp));
     color: var(--text-3);
     cursor: default;
 }

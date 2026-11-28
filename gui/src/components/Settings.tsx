@@ -10,7 +10,7 @@ import { createStore, reconcile } from "solid-js/store";
 import { now } from "../lib/clock";
 import { updateView } from "../lib/app-update";
 import { connectCli, editors, refreshEditors } from "../state/actions";
-import { ACCENTS, CHAT_WIDTHS, forcedScheme, prefs, PREF_DEFAULTS, setPrefs, type AccentId } from "../state/prefs";
+import { ACCENTS, CHAT_WIDTHS, forcedScheme, prefs, PREF_DEFAULTS, setPrefs, sp, type AccentId } from "../state/prefs";
 import { themeTraits } from "../state/theme-traits";
 
 /** Settings → Appearance → Theme: loaded when Appearance first opens. */
@@ -169,7 +169,7 @@ function StopSlider(p: { value: string; stops: { id: string; name: string }[]; o
         const s = p.stops[Math.min(last(), Math.max(0, i))]!;
         if (s.id !== p.value) p.onChange(s.id);
     };
-    const pos = (i: number) => `calc(7px + (100% - 14px) * ${last() ? i / last() : 0})`;
+    const pos = (i: number) => `calc(7 * var(--sp) + (100% - 14 * var(--sp)) * ${last() ? i / last() : 0})`;
     return (
         <div class="stopslider">
             <span class="stopslider-label">{p.stops[at()]?.name}</span>
@@ -195,7 +195,7 @@ function StopSlider(p: { value: string; stops: { id: string; name: string }[]; o
                     const el = e.currentTarget;
                     const move = (x: number) => {
                         const box = el.getBoundingClientRect();
-                        pick(Math.round(((x - box.left - 7) / (box.width - 14)) * last()));
+                        pick(Math.round(((x - box.left - sp(7)) / (box.width - sp(14))) * last()));
                     };
                     move(e.clientX);
                     el.setPointerCapture(e.pointerId);

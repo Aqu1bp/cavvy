@@ -116,6 +116,8 @@ const FRAME_RULES: Record<string, RegExp> = {
     // The title bar over a session stops short of its scrollbar (its padding is the bar's, less the scrollbar's width).
     "shell.css": /^(\[data-inspmode="(float|fill)"\] \.insp|(\.app\.electron )?\.insp-resizer|\[data-lead\] \.(insp-lead|insp-t|rv-h|br-bar|sim-bar)|\.stage-pane > \.header)$/,
     "sidebar.css": /^(\.side-top( \.hb)?|\.resize-handle(\.left)?)$/,
+    // Settings' bar with the sidebar hidden: its start clears the traffic lights, as the title bar's does.
+    "settings.css": /^\.settings-sheet\.traffic(\.rail-off)? \.settings-top$/,
     "terminal.css": /^(\.terminal-resize|\.app\.tauri\.os-macos(\.rail-off|\[data-rail="overlay"\]) \.terminal-panel\.max \.terminal-toolbar)$/,
     "overlays.css": /^\.find-bar\.glass$/,
     // A theme's stage: 1600 × 1000 units, the coordinates its layers are placed in, scaled whole to cover the window
