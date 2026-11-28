@@ -1,0 +1,224 @@
+/* The design's rewind dialog (its dialogs.css), copied as remix-conversation.css copies the rest of the conversation. Loaded
+   with the dialog, which is loaded when it's first opened. */
+
+/* ---------- rewind ---------- */
+
+/* It grows as rows open, so it hangs from the top instead of re-centring. Cavvy's dialog sits in a backdrop that
+   centres it (ui/Dialog): the backdrop hangs it instead, and its entrance has no -50% to keep. The body runs edge to
+   edge (the design's .dlg-body-bare). */
+.dialog-backdrop:has(> .dialog.rw) {
+    align-items: flex-start;
+    padding-top: 13vh;
+}
+
+.dialog.rw {
+    max-height: calc(87vh - calc(40 * var(--sp)));
+    transform-origin: top center;
+    animation-name: dlg-top-in;
+}
+
+@keyframes dlg-top-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
+  }
+}
+
+.dialog.rw .dialog-body {
+    padding: 0;
+    gap: 0;
+    border-top: 1px solid var(--line);
+}
+
+:where(.rw) .rw-list {
+    display: flex;
+    flex-direction: column;
+    flex: none;
+    max-height: calc(168 * var(--sp));
+    overflow-y: auto;
+    border-bottom: 1px solid var(--line);
+}
+
+:where(.rw) .rw-item {
+    display: flex;
+    align-items: center;
+    gap: calc(11 * var(--sp));
+    flex: none;
+    min-height: calc(36 * var(--sp));
+    padding: 0 calc(20 * var(--sp));
+    transition: background 0.1s;
+}
+
+:where(.rw) .rw-item + .rw-item {
+    border-top: 1px solid var(--line);
+}
+
+:where(.rw) .rw-item:hover {
+    background: var(--fill-1);
+}
+
+:where(.rw) .rw-item[aria-checked="true"] {
+    background: color-mix(in srgb, var(--accent-soft) 55%, transparent);
+}
+
+:where(.rw) .rw-item:focus-visible {
+    outline-offset: -2px;
+}
+
+.rw-text {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.rw-changed {
+    flex: none;
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
+    font-variant-numeric: tabular-nums;
+}
+
+:where(.rw) .rw-plan {
+    display: flex;
+    flex-direction: column;
+    gap: calc(8 * var(--sp));
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: calc(12 * var(--sp)) calc(20 * var(--sp)) calc(14 * var(--sp));
+}
+
+:where(.rw) .rw-plan > * {
+    flex: none;
+}
+
+.rw-head {
+    font-weight: 600;
+}
+
+.rw-files {
+    border-radius: var(--radius-m);
+    box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.rw-file {
+    display: flex;
+    align-items: center;
+    gap: calc(10 * var(--sp));
+    height: calc(30 * var(--sp));
+    padding: 0 calc(10 * var(--sp)) 0 calc(12 * var(--sp));
+}
+
+.rw-file + .rw-file {
+    border-top: 1px solid var(--line);
+}
+
+.rw-file .path {
+    flex: 1;
+}
+
+.rw-action {
+    flex: none;
+    width: calc(50 * var(--sp));
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
+}
+
+.rw-action-del {
+    color: var(--red);
+}
+
+.rw-none,
+.rw-foot {
+    color: var(--text-3);
+    font-size: calc(12.5 * var(--sp));
+}
+
+/* The design's notes (its kit.css), which the dialog's warnings are. */
+:where(.rw) .note {
+    display: flex;
+    align-items: flex-start;
+    gap: calc(8 * var(--sp));
+    padding: calc(8 * var(--sp)) calc(10 * var(--sp));
+    border-radius: var(--radius-m);
+    background: var(--fill-1);
+    color: var(--text-2);
+    font-size: calc(12.5 * var(--sp));
+    line-height: 1.45;
+}
+
+:where(.rw) .note > svg {
+    flex: none;
+    margin-top: calc(2 * var(--sp));
+    color: var(--text-3);
+}
+
+:where(.rw) .note[data-tone="amber"] {
+    background: var(--amber-soft);
+    color: var(--amber);
+}
+
+:where(.rw) .note[data-tone="amber"] > svg {
+    color: var(--amber);
+}
+
+:where(.rw) .note[data-tone="red"] {
+    background: var(--red-soft);
+    color: var(--red);
+}
+
+:where(.rw) .note[data-tone="red"] > svg {
+    color: var(--red);
+}
+
+:where(.rw) .note-body {
+    flex: 1;
+    min-width: 0;
+}
+
+:where(.rw) .note .link-btn,
+:where(.rw) .note .btn {
+    flex: none;
+    margin-left: auto;
+}
+
+/* The design's radio dot (its panels.css). */
+.radio-dot {
+    position: relative;
+    flex: none;
+    width: calc(16 * var(--sp));
+    height: calc(16 * var(--sp));
+    border-radius: 50%;
+    box-shadow: inset 0 0 0 1.5px var(--line-strong);
+    transition: box-shadow 0.12s, background 0.12s;
+}
+
+[aria-checked="true"] > .radio-dot {
+    background: var(--accent);
+    box-shadow: none;
+}
+
+[aria-checked="true"] > .radio-dot::after {
+    content: "";
+    position: absolute;
+    inset: calc(5 * var(--sp));
+    border-radius: 50%;
+    background: var(--on-accent);
+}
+
+/* Cavvy's own: undo the last restore, and the lines said instead of the list. */
+.rw-undo {
+    padding: calc(10 * var(--sp)) calc(20 * var(--sp)) 0;
+    font-size: calc(12.5 * var(--sp));
+}
+
+.dialog.rw .panel-empty {
+    padding: calc(14 * var(--sp)) calc(20 * var(--sp));
+}
+
+/* The design's dialogs.css: what goes first in the foot, at its left. */
+.dlg-foot-left {
+    margin-right: auto;
+}

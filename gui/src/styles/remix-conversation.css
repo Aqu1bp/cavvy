@@ -1,0 +1,2130 @@
+/* The conversation, as the remix draws it: the mock's rules (conversation.css, blocks.css, dock.css, and the
+   rewind, sub-agent view and floating browser parts of dialogs.css, misc.css, browser.css), copied as they are.
+   Edits are mechanical only: px that sit with text are calc(N * var(--sp)); see the notes where perf-rules or
+   Cavvy's markup needed more. Tokens: tokens.css, "the remix's token names". */
+
+/* ---- the conversation's own pieces of the mock's base.css (its kit is kit.css) ---- */
+
+:where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .copy-btn {
+    flex: none;
+    height: calc(22 * var(--sp));
+    padding: 0 calc(7 * var(--sp));
+    border-radius: calc(5 * var(--sp));
+    color: var(--text-3);
+    font-family: var(--font-ui);
+    font-size: calc(11.5 * var(--sp));
+    font-weight: 500;
+    transition: background 0.12s, color 0.12s;
+}
+
+:where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .copy-btn:hover {
+    background: var(--fill-2);
+    color: var(--text);
+}
+
+:where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .copy-btn.btn {
+    height: calc(32 * var(--sp));
+    padding: 0 calc(12 * var(--sp));
+    font-size: calc(13 * var(--sp));
+    border-radius: var(--radius-m);
+}
+
+:where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .chev {
+    flex: none;
+    color: var(--text-3);
+    transition: transform 0.14s var(--ease);
+}
+
+:where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .chev[data-open] {
+    transform: rotate(90deg);
+}
+
+:where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .stat {
+    display: inline-flex;
+    gap: calc(6 * var(--sp));
+    flex: none;
+    font-family: var(--font-mono);
+    font-size: calc(11.5 * var(--sp));
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+    /* Cavvy's base.css .stat sets line-height 1 and nowrap (its font shorthand), which the design's .stat leaves alone. */
+    line-height: inherit;
+    white-space: inherit;
+}
+
+.stat-add {
+    color: var(--diff-add-text);
+}
+
+.stat-del {
+    color: var(--diff-del-text);
+}
+
+:where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .path {
+    display: inline-flex;
+    min-width: 0;
+    font-family: var(--font-mono);
+    font-size: calc(12 * var(--sp));
+}
+
+.path-dir {
+    color: var(--text-3);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 0 1 auto;
+    min-width: 0;
+}
+
+.path-base {
+    color: var(--text);
+    white-space: nowrap;
+    flex: none;
+}
+
+:where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .badge {
+    display: inline-flex;
+    align-items: center;
+    height: calc(18 * var(--sp));
+    padding: 0 calc(6 * var(--sp));
+    border-radius: calc(4 * var(--sp));
+    font-size: calc(11 * var(--sp));
+    font-weight: 500;
+    font-family: var(--font-mono);
+}
+
+/* ---------- tags ---------- */
+
+:where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .tag {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(4 * var(--sp));
+    flex: none;
+    height: calc(18 * var(--sp));
+    padding: 0 calc(6 * var(--sp));
+    border-radius: calc(4 * var(--sp));
+    background: var(--fill-2);
+    color: var(--text-2);
+    font-size: calc(11 * var(--sp));
+    font-weight: 500;
+    line-height: 1;
+    white-space: nowrap;
+}
+
+:where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .tag[data-tone="accent"] {
+    background: var(--accent-soft);
+    color: var(--accent-text);
+}
+
+:where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .tag[data-tone="green"] {
+    background: var(--green-soft);
+    color: var(--green);
+}
+
+:where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .tag[data-tone="amber"] {
+    background: var(--amber-soft);
+    color: var(--amber);
+}
+
+:where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .tag[data-tone="red"] {
+    background: var(--red-soft);
+    color: var(--red);
+}
+
+/* ---------- small helpers ---------- */
+
+:where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .dim {
+    color: var(--text-3);
+}
+
+/* ---------- messages ---------- */
+
+.msg-user {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: calc(14 * var(--sp));
+}
+
+.msg-user:first-child {
+    margin-top: 0;
+}
+
+.bubble {
+    max-width: 82%;
+    padding: calc(10 * var(--sp)) calc(15 * var(--sp));
+    border-radius: calc(18 * var(--sp)) calc(18 * var(--sp)) calc(5 * var(--sp)) calc(18 * var(--sp));
+    background: var(--bubble);
+    font-size: var(--chat-size);
+    line-height: 1.55;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.bubble code,
+.md :not(pre) > code,
+.errcard-detail code {
+    padding: calc(1.5 * var(--sp)) calc(5 * var(--sp));
+    border-radius: calc(5 * var(--sp));
+    background: color-mix(in srgb, var(--text) 8%, transparent);
+    font-size: 0.875em;
+}
+
+.msg-agent {
+    min-width: 0;
+}
+
+/* The reply's prose: markdown.css, where the design's .md rules sit on Cavvy's blocks (each a .md-block, filled in
+   place as it streams, lib/stream-dom.ts), spaced by the column's gap rather than by margins. The design's dot at the
+   end of a streaming reply is left out: an animation running for as long as every reply streams. */
+
+/* ---------- code ---------- */
+
+.codeblock {
+    border-radius: calc(10 * var(--sp));
+    background: var(--code-bg);
+    box-shadow: inset 0 0 0 1px var(--line);
+    overflow: hidden;
+}
+
+.codeblock-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: calc(32 * var(--sp));
+    padding: 0 calc(6 * var(--sp)) 0 calc(13 * var(--sp));
+    border-bottom: 1px solid var(--line);
+    background: var(--code-head);
+}
+
+.codeblock-lang {
+    color: var(--text-3);
+    font-size: calc(11.5 * var(--sp));
+    font-weight: 500;
+}
+
+.codeblock-body {
+    margin: 0;
+    padding: calc(12 * var(--sp)) calc(14 * var(--sp));
+    overflow-x: auto;
+    font-size: var(--code-size);
+    line-height: 1.6;
+    tab-size: 2;
+    outline-offset: -2px;
+}
+
+.codeblock-body code {
+    font-size: inherit;
+}
+
+/* ---------- tool runs ---------- */
+
+.tools {
+    margin: calc(-3 * var(--sp)) 0;
+}
+
+.tools-head {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(7 * var(--sp));
+    max-width: 100%;
+    margin-left: calc(-7 * var(--sp));
+    padding: calc(4 * var(--sp)) calc(7 * var(--sp));
+    border-radius: var(--radius-s);
+    color: var(--text-2);
+    font-size: calc(13 * var(--sp));
+    transition: background 0.12s, color 0.12s;
+}
+
+.tools-head:hover {
+    background: var(--fill-1);
+    color: var(--text);
+}
+
+.tools-summary {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.tools-count {
+    flex: none;
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
+}
+
+/* No fade: the rows are on screen already when the run gets its line (#126). */
+.tools-list {
+    display: flex;
+    flex-direction: column;
+    margin: calc(4 * var(--sp)) 0 calc(4 * var(--sp)) 1px;
+    padding-left: calc(10 * var(--sp));
+    border-left: 1.5px solid var(--line);
+}
+
+.tool-row {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    width: 100%;
+    height: calc(30 * var(--sp));
+    padding: 0 calc(8 * var(--sp));
+    border-radius: var(--radius-s);
+    color: var(--text-2);
+    transition: background 0.1s;
+}
+
+.tool-row:hover,
+.tool[data-open] > .tool-row {
+    background: var(--fill-1);
+}
+
+.tool-icon {
+    display: inline-flex;
+    flex: none;
+    color: var(--text-3);
+}
+
+.tool[data-state="running"] .tool-icon {
+    color: var(--accent);
+}
+
+.tool-verb {
+    flex: none;
+    color: var(--text-2);
+}
+
+.tool-target {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text);
+    font-size: calc(12 * var(--sp));
+}
+
+span.tool-target {
+    display: inline-flex;
+}
+
+.tool[data-state="stopped"] .tool-target,
+.tool[data-state="stopped"] .tool-target .path-base {
+    color: var(--text-3);
+    text-decoration: line-through;
+}
+
+.tool-meta {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    flex: none;
+    margin-left: auto;
+    padding-left: calc(8 * var(--sp));
+    color: var(--text-3);
+    font-size: calc(11.5 * var(--sp));
+    font-variant-numeric: tabular-nums;
+}
+
+.tool-detail {
+    padding: calc(6 * var(--sp)) 0 calc(10 * var(--sp)) calc(8 * var(--sp));
+    animation: fade-in 0.15s;
+}
+
+.tool-card {
+    border-radius: calc(9 * var(--sp));
+    background: var(--code-bg);
+    box-shadow: inset 0 0 0 1px var(--line);
+    overflow: hidden;
+}
+
+.matches {
+    display: flex;
+    flex-direction: column;
+    padding: calc(6 * var(--sp)) 0;
+    overflow-x: auto;
+}
+
+.matches li {
+    display: flex;
+    gap: calc(14 * var(--sp));
+    padding: calc(3 * var(--sp)) calc(12 * var(--sp));
+    font-family: var(--font-mono);
+    font-size: calc(12 * var(--sp));
+    line-height: 1.5;
+    white-space: nowrap;
+}
+
+/* ---------- terminal ---------- */
+
+:where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .term {
+    border-radius: calc(9 * var(--sp));
+    background: var(--code-bg);
+    box-shadow: inset 0 0 0 1px var(--line);
+    overflow: hidden;
+    font-family: var(--font-mono);
+    font-size: calc(12.5 * var(--sp));
+}
+
+.term-out {
+    margin: 0;
+    padding: calc(10 * var(--sp)) calc(12 * var(--sp));
+    max-height: calc(340 * var(--sp));
+    overflow: auto;
+    border-top: 1px solid var(--line);
+    color: var(--text-2);
+    font-size: calc(12 * var(--sp));
+    line-height: 1.55;
+    white-space: pre;
+    outline-offset: -2px;
+}
+
+/* ---------- error, stopped, working ---------- */
+
+.errcard {
+    display: flex;
+    flex-direction: column;
+    gap: calc(6 * var(--sp));
+    margin: calc(6 * var(--sp)) 0;
+    padding: calc(16 * var(--sp));
+    border-radius: calc(14 * var(--sp));
+    background: var(--red-soft);
+    box-shadow: inset 0 0 0 1px var(--red-line);
+}
+
+.errcard-head {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    color: var(--red);
+    font-size: calc(12.5 * var(--sp));
+    font-weight: 600;
+}
+
+.errcard-what {
+    font-size: calc(15 * var(--sp));
+    font-weight: 600;
+    letter-spacing: -0.01em;
+}
+
+.errcard-detail {
+    color: var(--text-2);
+    font-size: calc(13.5 * var(--sp));
+    line-height: 1.55;
+}
+
+.errcard-actions {
+    display: flex;
+    gap: calc(6 * var(--sp));
+    margin-top: calc(8 * var(--sp));
+}
+
+.errcard[data-retried] {
+    background: transparent;
+    box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.errcard[data-retried] .errcard-head {
+    color: var(--text-3);
+}
+
+.errcard[data-retried] .errcard-what {
+    color: var(--text-2);
+}
+
+:where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .stopped {
+    display: flex;
+    align-items: center;
+    gap: calc(12 * var(--sp));
+    margin: calc(4 * var(--sp)) 0;
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
+    font-weight: 500;
+}
+
+.stopped-line {
+    flex: 1;
+    height: 1px;
+    background: var(--line);
+}
+
+.stopped-label {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(7 * var(--sp));
+}
+
+:where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .working {
+    display: flex;
+    align-items: center;
+    gap: calc(9 * var(--sp));
+    height: calc(26 * var(--sp));
+    color: var(--text-3);
+    font-size: calc(13 * var(--sp));
+}
+
+.working-dots {
+    display: inline-flex;
+    gap: calc(3 * var(--sp));
+}
+
+.working-dots i {
+    width: calc(5 * var(--sp));
+    height: calc(5 * var(--sp));
+    border-radius: 50%;
+    background: var(--accent);
+    /* Stepped on the stream clock's grid (the design's ease-in-out, 1.2s, with its rise at 30%), and paused with
+       the window's other decoration (perf-rules). */
+    animation: bounce 1.2s steps(6) infinite;
+    animation-play-state: var(--decor);
+}
+
+.working-dots i:nth-child(2) {
+    animation-delay: 0.15s;
+}
+
+.working-dots i:nth-child(3) {
+    animation-delay: 0.3s;
+}
+
+@keyframes bounce {
+  0%,
+  50%,
+  100% {
+    opacity: 0.3;
+    transform: translateY(0);
+  }
+  25% {
+    opacity: 1;
+    transform: translateY(-3px);
+  }
+}
+
+.working-time {
+    font-variant-numeric: tabular-nums;
+    font-size: calc(12 * var(--sp));
+}
+
+.working-hint {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(5 * var(--sp));
+    margin-left: calc(4 * var(--sp));
+    font-size: calc(12 * var(--sp));
+}
+
+/* ---------- jump to latest ----------
+   Cavvy's pill (transcript.css .jump): over the composer, which lies over the conversation, and clear of a floating
+   panel; it comes in as it's put in the page. Its look is the design's (below). */
+
+/* Conversation blocks added on top of the base's (.bubble, .md, .tools, .tool-row, .term, .diff, .errcard). */
+
+/* The room at the end is .transcript-end's, under the composer that lies over the conversation. */
+.convo-col {
+    gap: 0;
+}
+
+.turn {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: calc(12 * var(--sp));
+    min-width: 0;
+}
+
+/* Between turns: .turn's own padding-bottom (transcript.css), so a turn skipped while far off keeps its gap in its box. */
+
+.msg-user {
+    position: relative;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: calc(6 * var(--sp));
+    margin-top: 0;
+}
+
+.bubble {
+    border-radius: calc(14 * var(--sp)) calc(14 * var(--sp)) calc(4 * var(--sp)) calc(14 * var(--sp));
+}
+
+.bubble-command {
+    font-family: var(--font-mono);
+    font-size: calc(var(--chat-size) - 1.5 * var(--sp));
+}
+
+.bubble-more {
+    display: block;
+    margin-top: calc(4 * var(--sp));
+}
+
+.msg-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(5 * var(--sp));
+    color: var(--text-3);
+    font-size: calc(11.5 * var(--sp));
+    font-weight: 500;
+}
+
+.msg-images {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: calc(6 * var(--sp));
+    max-width: 82%;
+}
+
+.msg-files {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: calc(6 * var(--sp));
+    max-width: 82%;
+}
+
+.msg-file {
+    display: inline-flex;
+    align-items: baseline;
+    gap: calc(8 * var(--sp));
+    height: calc(26 * var(--sp));
+    padding: 0 calc(9 * var(--sp));
+    border-radius: var(--radius-s);
+    background: var(--fill-1);
+    box-shadow: inset 0 0 0 1px var(--line);
+    font-size: calc(12 * var(--sp));
+    line-height: calc(26 * var(--sp));
+}
+
+.msg-comments {
+    display: flex;
+    flex-direction: column;
+    gap: calc(4 * var(--sp));
+    width: min(82%, calc(520 * var(--sp)));
+}
+
+.msg-comment {
+    display: flex;
+    align-items: baseline;
+    gap: calc(10 * var(--sp));
+    padding: calc(6 * var(--sp)) calc(10 * var(--sp));
+    border-radius: var(--radius-m);
+    background: var(--surface);
+    box-shadow: inset 0 0 0 1px var(--line);
+    text-align: left;
+    transition: background 0.1s;
+}
+
+.msg-comment:hover {
+    background: var(--fill-1);
+}
+
+.msg-comment-loc {
+    flex: none;
+    color: var(--accent-text);
+    font-size: calc(11.5 * var(--sp));
+}
+
+.msg-comment-text {
+    min-width: 0;
+    font-size: calc(13 * var(--sp));
+}
+
+/* Time, copy and rewind appear with the pointer, in the gap under the bubble. */
+.msg-actions {
+    position: absolute;
+    top: 100%;
+    right: 0;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    gap: calc(2 * var(--sp));
+    height: calc(24 * var(--sp));
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.12s;
+}
+
+.msg-user:hover .msg-actions,
+.msg-user:focus-within .msg-actions {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.msg-time {
+    margin-right: calc(6 * var(--sp));
+    color: var(--text-3);
+    font-size: calc(11.5 * var(--sp));
+    font-variant-numeric: tabular-nums;
+}
+
+:where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .copy-btn:disabled {
+    opacity: 0.45;
+    pointer-events: none;
+}
+
+.turn-foot {
+    position: absolute;
+    top: 100%;
+    left: calc(-7 * var(--sp));
+    z-index: 2;
+    display: flex;
+    gap: calc(2 * var(--sp));
+    height: calc(22 * var(--sp));
+    margin-top: calc(2 * var(--sp));
+    opacity: 0;
+    transition: opacity 0.12s;
+}
+
+.turn-foot-last {
+    position: static;
+    margin: calc(-6 * var(--sp)) 0 calc(-6 * var(--sp)) calc(-7 * var(--sp));
+}
+
+.turn:hover .turn-foot,
+.turn-foot:focus-within,
+.turn-foot-last {
+    opacity: 1;
+}
+
+.peer {
+    align-self: flex-start;
+    max-width: 82%;
+    padding: calc(8 * var(--sp)) calc(12 * var(--sp));
+    border-left: 2px solid var(--line-strong);
+}
+
+.peer-head {
+    margin-bottom: calc(2 * var(--sp));
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
+    font-weight: 500;
+}
+
+.wake {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    color: var(--text-2);
+    font-size: calc(13 * var(--sp));
+}
+
+.wake svg {
+    flex: none;
+    color: var(--amber-strong);
+}
+
+/* ---------- work log ---------- */
+
+.worklog,
+.think,
+.agents,
+.say {
+    margin: calc(-3 * var(--sp)) 0;
+}
+
+.worklog-body {
+    display: flex;
+    flex-direction: column;
+    gap: calc(9 * var(--sp));
+    margin: calc(6 * var(--sp)) 0 calc(4 * var(--sp)) 1px;
+    padding-left: calc(12 * var(--sp));
+    border-left: 1.5px solid var(--line);
+    animation: fade-in 0.15s;
+}
+
+.tools-line {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    min-width: 0;
+}
+
+.tools-head .stat {
+    margin-left: calc(2 * var(--sp));
+}
+
+.tools-flag {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(3 * var(--sp));
+    flex: none;
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
+    font-variant-numeric: tabular-nums;
+}
+
+.tools-flag[data-tone="amber"] {
+    color: var(--amber);
+}
+
+.tool-target-plain {
+    color: var(--text-2);
+    font-size: calc(13 * var(--sp));
+}
+
+.tool-times {
+    flex: none;
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
+}
+
+.tool-flag {
+    color: var(--text-3);
+}
+
+.tool-flag[data-tone="red"] {
+    color: var(--red);
+    font-weight: 500;
+}
+
+.tool[data-state="declined"] .tool-target,
+.tool[data-state="declined"] .tool-target .path-base {
+    color: var(--text-3);
+}
+
+.open-editor {
+    color: var(--text-3);
+}
+
+.tsec + .tsec,
+:where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .diff + .tsec {
+    border-top: 1px solid var(--line);
+}
+
+.tsec-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: calc(28 * var(--sp));
+    padding: 0 calc(6 * var(--sp)) 0 calc(12 * var(--sp));
+    color: var(--text-3);
+    font-size: calc(11.5 * var(--sp));
+    font-weight: 500;
+}
+
+.cmd-text {
+    margin: 0;
+    padding: 0 calc(12 * var(--sp)) calc(9 * var(--sp));
+    font-size: calc(12.5 * var(--sp));
+    font-weight: 500;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.cmd-out {
+    border-top: 0;
+    padding-top: 0;
+    max-height: calc(300 * var(--sp));
+}
+
+.cmd-foot {
+    display: flex;
+    align-items: center;
+    gap: calc(12 * var(--sp));
+    min-height: calc(30 * var(--sp));
+    padding: 0 calc(6 * var(--sp)) 0 calc(12 * var(--sp));
+    border-top: 1px solid var(--line);
+    background: var(--code-head);
+    color: var(--text-3);
+    font-family: var(--font-ui);
+    font-size: calc(11.5 * var(--sp));
+}
+
+:where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(5 * var(--sp));
+    flex: none;
+    height: calc(18 * var(--sp));
+    padding: 0 calc(6 * var(--sp));
+    border-radius: calc(4 * var(--sp));
+    background: var(--fill-2);
+    color: var(--text-2);
+    font-family: var(--font-ui);
+    font-size: calc(11 * var(--sp));
+    font-weight: 500;
+}
+
+:where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .pill[data-tone="red"] {
+    background: var(--red-soft);
+    color: var(--red);
+}
+
+.todos {
+    display: flex;
+    flex-direction: column;
+    padding: calc(6 * var(--sp)) calc(4 * var(--sp));
+}
+
+.shot {
+    display: block;
+    width: min(100%, calc(420 * var(--sp)));
+    border-radius: calc(9 * var(--sp));
+    overflow: hidden;
+    box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.shot img {
+    display: block;
+    width: 100%;
+    border-radius: calc(9 * var(--sp));
+    box-shadow: 0 0 0 1px var(--line);
+}
+
+.say-line {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(6 * var(--sp));
+    max-width: 100%;
+    margin-left: calc(-7 * var(--sp));
+    padding: calc(4 * var(--sp)) calc(7 * var(--sp));
+    border-radius: var(--radius-s);
+    color: var(--text-2);
+    font-size: calc(13 * var(--sp));
+    text-align: left;
+}
+
+.say-line:not(:disabled):hover {
+    background: var(--fill-1);
+    color: var(--text);
+}
+
+.say-line:disabled {
+    cursor: default;
+}
+
+.say-text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.say-full {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: calc(4 * var(--sp));
+    padding: calc(4 * var(--sp)) 0;
+    color: var(--text-2);
+}
+
+.say-full .md {
+    font-size: calc(13.5 * var(--sp));
+    line-height: 1.6;
+}
+
+.think-text {
+    margin: calc(4 * var(--sp)) 0 calc(4 * var(--sp)) 1px;
+    padding-left: calc(12 * var(--sp));
+    border-left: 1.5px solid var(--line);
+    color: var(--text-2);
+    font-size: calc(13 * var(--sp));
+    line-height: 1.6;
+    white-space: pre-wrap;
+}
+
+/* ---------- sub-agents ---------- */
+
+.agents-list {
+    display: flex;
+    flex-direction: column;
+    margin-top: calc(6 * var(--sp));
+    border-radius: calc(9 * var(--sp));
+    background: var(--surface);
+    box-shadow: inset 0 0 0 1px var(--line);
+    overflow: hidden;
+}
+
+[data-theme="dark"] .agents-list {
+    background: var(--fill-1);
+}
+
+.agent-row {
+    display: flex;
+    align-items: center;
+    gap: calc(10 * var(--sp));
+    min-height: calc(46 * var(--sp));
+    padding: calc(6 * var(--sp)) calc(12 * var(--sp));
+    text-align: left;
+    transition: background 0.1s;
+}
+
+.agent-row + .agent-row {
+    border-top: 1px solid var(--line);
+}
+
+.agent-row:hover {
+    background: var(--fill-1);
+}
+
+.agent-mark {
+    position: relative;
+    display: inline-flex;
+    flex: none;
+    color: var(--text-2);
+}
+
+.agent-dot {
+    position: absolute;
+    right: calc(-3 * var(--sp));
+    bottom: calc(-2 * var(--sp));
+    width: calc(7 * var(--sp));
+    height: calc(7 * var(--sp));
+    border-radius: 50%;
+    background: var(--text-4);
+    box-shadow: 0 0 0 1.5px var(--surface);
+}
+
+.agent-mark[data-state="working"] .agent-dot {
+    background: var(--accent);
+}
+
+.agent-mark[data-state="waiting"] .agent-dot {
+    background: var(--amber-strong);
+}
+
+.agent-mark[data-state="done"] .agent-dot {
+    background: var(--green);
+}
+
+.agent-mark[data-state="failed"] .agent-dot {
+    background: var(--red);
+}
+
+.agent-text {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-width: 0;
+}
+
+.agent-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 500;
+}
+
+.agent-sub {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
+}
+
+.agent-when {
+    flex: none;
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
+}
+
+/* ---------- plan card ---------- */
+
+:where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .plan {
+    display: flex;
+    flex-direction: column;
+    border-radius: calc(10 * var(--sp));
+    background: var(--surface);
+    box-shadow: inset 0 0 0 1px var(--line);
+}
+
+[data-theme="dark"] :where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .plan {
+    background: var(--fill-1);
+}
+
+:where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .plan[data-state="waiting"] {
+    box-shadow: inset 0 0 0 1px var(--amber-line);
+}
+
+.plan-top {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    height: calc(34 * var(--sp));
+    padding: 0 calc(6 * var(--sp)) 0 calc(14 * var(--sp));
+    border-bottom: 1px solid var(--line);
+    font-size: calc(12 * var(--sp));
+}
+
+.plan-kicker {
+    font-weight: 600;
+}
+
+.plan-state {
+    color: var(--text-3);
+}
+
+:where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .plan[data-state="waiting"] .plan-state {
+    color: var(--amber);
+}
+
+.plan-title {
+    padding: calc(12 * var(--sp)) calc(14 * var(--sp)) 0;
+    font-size: calc(15 * var(--sp));
+    font-weight: 600;
+    letter-spacing: -0.01em;
+}
+
+.plan-preview {
+    max-height: calc(104 * var(--sp));
+    padding: calc(6 * var(--sp)) calc(14 * var(--sp)) 0;
+    overflow: hidden;
+    -webkit-mask-image: linear-gradient(to bottom, #000 40%, transparent);
+    mask-image: linear-gradient(to bottom, #000 40%, transparent);
+}
+
+.plan-preview .md {
+    color: var(--text-2);
+    font-size: calc(13.5 * var(--sp));
+    line-height: 1.55;
+}
+
+.plan-preview .md h2 {
+    font-size: calc(13.5 * var(--sp));
+}
+
+.plan-preview .md > h2:not(:first-child) {
+    margin-top: calc(12 * var(--sp));
+}
+
+.plan-foot {
+    display: flex;
+    align-items: center;
+    gap: calc(12 * var(--sp));
+    padding: calc(8 * var(--sp)) calc(14 * var(--sp)) calc(12 * var(--sp));
+}
+
+.plan-impl {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(5 * var(--sp));
+    min-width: 0;
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
+}
+
+.plan-impl .mono {
+    color: var(--text-2);
+    font-size: calc(11.5 * var(--sp));
+}
+
+/* ---------- notices ---------- */
+
+.notice {
+    margin: calc(-3 * var(--sp)) 0;
+}
+
+.notice-line,
+.notice-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(7 * var(--sp));
+    max-width: 100%;
+    margin-left: calc(-7 * var(--sp));
+    padding: calc(4 * var(--sp)) calc(7 * var(--sp));
+    border-radius: var(--radius-s);
+    color: var(--text-2);
+    font-size: calc(13 * var(--sp));
+    text-align: left;
+}
+
+.notice-line:not(:disabled):hover {
+    background: var(--fill-1);
+}
+
+.notice-line:disabled,
+.notice-pill:disabled,
+.notice-static {
+    cursor: default;
+}
+
+.notice-pill {
+    margin-left: 0;
+    height: calc(24 * var(--sp));
+    padding: 0 calc(9 * var(--sp)) 0 calc(8 * var(--sp));
+    background: var(--amber-soft);
+    color: var(--amber);
+    font-size: calc(12.5 * var(--sp));
+    font-weight: 500;
+}
+
+.notice-pill .chev {
+    color: var(--amber);
+}
+
+.notice-verdict {
+    width: calc(14 * var(--sp));
+    text-align: center;
+    color: var(--text-3);
+}
+
+.notice-verdict[data-verdict="met"] {
+    color: var(--green);
+}
+
+.notice-verdict[data-verdict="unmet"] {
+    color: var(--red);
+}
+
+.notice-detail {
+    margin: calc(4 * var(--sp)) 0 calc(4 * var(--sp)) 1px;
+    padding-left: calc(12 * var(--sp));
+    border-left: 1.5px solid var(--line);
+    color: var(--text-2);
+    font-size: calc(13 * var(--sp));
+    line-height: 1.55;
+}
+
+/* The base's error card, a size tighter. */
+.errcard {
+    gap: calc(4 * var(--sp));
+    margin: calc(2 * var(--sp)) 0;
+    padding: calc(12 * var(--sp)) calc(14 * var(--sp));
+    border-radius: calc(10 * var(--sp));
+}
+
+.errcard-head {
+    font-size: calc(13 * var(--sp));
+}
+
+.errcard-what {
+    color: var(--text);
+    font-size: calc(14 * var(--sp));
+}
+
+.errcard-detail {
+    font-size: calc(13 * var(--sp));
+}
+
+.errcard-actions {
+    margin-top: calc(6 * var(--sp));
+}
+
+.errcard-actions .copy-btn.btn {
+    height: calc(26 * var(--sp));
+    padding: 0 calc(8 * var(--sp));
+    font-size: calc(12 * var(--sp));
+    border-radius: var(--radius-s);
+}
+
+.errcard-limit {
+    background: var(--amber-soft);
+    box-shadow: inset 0 0 0 1px var(--amber-line);
+}
+
+.errcard-limit .errcard-head {
+    color: var(--amber);
+}
+
+/* ---------- rules ---------- */
+
+.rule {
+    margin: calc(2 * var(--sp)) 0;
+}
+
+.rule-line {
+    display: flex;
+    align-items: center;
+    gap: calc(12 * var(--sp));
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
+}
+
+.rule-label {
+    flex: none;
+}
+
+.rule-detail {
+    margin-top: calc(8 * var(--sp));
+    padding: calc(10 * var(--sp)) calc(12 * var(--sp));
+    border-radius: var(--radius-m);
+    background: var(--fill-1);
+    color: var(--text-2);
+    font-size: calc(13 * var(--sp));
+    line-height: 1.55;
+}
+
+:where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .stopped {
+    margin: calc(2 * var(--sp)) 0;
+}
+
+/* ---------- "You ran" ---------- */
+
+.youran {
+    border-radius: calc(9 * var(--sp));
+    background: var(--code-bg);
+    box-shadow: inset 0 0 0 1px var(--line);
+    overflow: hidden;
+}
+
+.youran-head {
+    display: flex;
+    align-items: center;
+    gap: calc(10 * var(--sp));
+    min-height: calc(34 * var(--sp));
+    padding: 0 calc(10 * var(--sp)) 0 calc(12 * var(--sp));
+}
+
+.youran-label {
+    flex: none;
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
+    font-weight: 500;
+}
+
+.youran-cmd {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: calc(12.5 * var(--sp));
+    font-weight: 500;
+}
+
+.youran-out {
+    max-height: calc(220 * var(--sp));
+}
+
+/* ---------- changes card ---------- */
+
+.chg {
+    border-radius: calc(10 * var(--sp));
+    background: var(--surface);
+    box-shadow: inset 0 0 0 1px var(--line);
+    overflow: hidden;
+}
+
+[data-theme="dark"] .chg {
+    background: var(--fill-1);
+}
+
+:where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .chg-head {
+    display: flex;
+    align-items: center;
+    gap: calc(10 * var(--sp));
+    min-height: calc(40 * var(--sp));
+    padding: 0 calc(7 * var(--sp)) 0 calc(14 * var(--sp));
+}
+
+.chg-title {
+    font-weight: 600;
+}
+
+.chg-branch {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(5 * var(--sp));
+    min-width: 0;
+    color: var(--text-3);
+    font-size: calc(11.5 * var(--sp));
+}
+
+.chg-files {
+    /* The design's reset of every list (its base.css). */
+    margin: 0;
+    border-top: 1px solid var(--line);
+    padding: calc(3 * var(--sp)) 0;
+}
+
+.chg-file {
+    display: flex;
+    align-items: center;
+    gap: calc(10 * var(--sp));
+    height: calc(28 * var(--sp));
+    padding: 0 calc(7 * var(--sp)) 0 calc(14 * var(--sp));
+}
+
+.chg-file:hover {
+    background: var(--fill-1);
+}
+
+.chg-file-main {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    flex: 1;
+    min-width: 0;
+    height: calc(28 * var(--sp));
+    text-align: left;
+}
+
+.chg-file-main:hover .path-base {
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+
+.chg-more {
+    display: block;
+    padding: calc(2 * var(--sp)) calc(14 * var(--sp)) calc(8 * var(--sp));
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
+}
+
+.chg-more:hover {
+    color: var(--text);
+}
+
+.chg-note {
+    display: flex;
+    align-items: center;
+    gap: calc(6 * var(--sp));
+    padding: calc(7 * var(--sp)) calc(14 * var(--sp));
+    border-top: 1px solid var(--line);
+    color: var(--amber);
+    font-size: calc(12 * var(--sp));
+}
+
+/* ---------- live line ---------- */
+
+:where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .live {
+    margin-top: calc(2 * var(--sp));
+}
+
+.working-hint {
+    margin-left: auto;
+}
+
+.live-target {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-3);
+    font-size: calc(12.5 * var(--sp));
+}
+
+.live-label {
+    color: var(--amber);
+}
+
+.live-wait {
+    width: calc(7 * var(--sp));
+    height: calc(7 * var(--sp));
+    margin: 0 calc(5 * var(--sp)) 0 calc(4 * var(--sp));
+    border-radius: 50%;
+    background: var(--amber-strong);
+}
+
+/* ---------- top of the column ---------- */
+
+.convo-origin {
+    display: flex;
+    flex-wrap: wrap;
+    gap: calc(4 * var(--sp)) calc(14 * var(--sp));
+    margin: calc(-8 * var(--sp)) 0 calc(18 * var(--sp)) calc(-7 * var(--sp));
+}
+
+.origin-link {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(6 * var(--sp));
+    padding: calc(3 * var(--sp)) calc(7 * var(--sp));
+    border-radius: var(--radius-s);
+    color: var(--text-3);
+    font-size: calc(12.5 * var(--sp));
+}
+
+.origin-link:hover {
+    background: var(--fill-1);
+    color: var(--text);
+}
+
+.turns-more {
+    align-self: center;
+    height: calc(26 * var(--sp));
+    margin: 0 0 calc(22 * var(--sp));
+    padding: 0 calc(10 * var(--sp));
+    border-radius: var(--radius-s);
+    box-shadow: inset 0 0 0 1px var(--line-strong);
+    color: var(--text-2);
+    font-size: calc(12 * var(--sp));
+    font-weight: 500;
+}
+
+.turn + .turns-more {
+    margin: calc(22 * var(--sp)) 0 0;
+}
+
+.turns-more:hover {
+    background: var(--fill-1);
+    color: var(--text);
+}
+
+:where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .jump {
+    height: calc(28 * var(--sp));
+    border-radius: var(--radius-m);
+    gap: calc(7 * var(--sp));
+}
+
+/* ---------- find ---------- */
+
+/* Cavvy's title bar lies over the conversation: the bar keeps the design's 10px under it. Its place and height
+   are the window's frame, in px (test/gui-text-size.test.ts). Over the agent's floating browser, which shares
+   the corner. Narrower in a narrow pane, its field giving way. */
+.findbar {
+    position: absolute;
+    top: calc(var(--header-h) + 10px);
+    right: calc(24 * var(--sp));
+    z-index: 26;
+    display: flex;
+    align-items: center;
+    gap: calc(2 * var(--sp));
+    height: 36px;
+    max-width: calc(100% - 48 * var(--sp));
+    padding: 0 calc(5 * var(--sp)) 0 calc(12 * var(--sp));
+    border-radius: var(--radius-m);
+    background: var(--surface);
+    box-shadow: var(--shadow-pop);
+    animation: drop-in 0.16s var(--ease);
+}
+
+.findbar input {
+    flex: 0 1 auto;
+    min-width: 0;
+    width: calc(200 * var(--sp));
+    border: 0;
+    background: none;
+    outline: none;
+    padding: 0;
+}
+
+.findbar input::placeholder {
+    color: var(--text-3);
+}
+
+.findbar-count {
+    min-width: calc(64 * var(--sp));
+    margin-right: calc(4 * var(--sp));
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
+    text-align: right;
+}
+
+.findbar .icon-btn:disabled {
+    opacity: 0.4;
+}
+
+::highlight(find-match) {
+    background-color: color-mix(in srgb, var(--amber-strong) 30%, transparent);
+}
+
+::highlight(find-current) {
+    background-color: var(--amber-strong);
+    color: #1d1c1a;
+}
+
+/* ---------- markdown extras ---------- */
+
+.md li.task-list-item {
+    list-style: none;
+    margin-left: calc(-20 * var(--sp));
+}
+
+.md li.task-list-item input {
+    margin: 0 calc(8 * var(--sp)) 0 0;
+    vertical-align: -1px;
+    accent-color: var(--accent);
+}
+
+.md-file {
+    color: var(--accent-text);
+    font-family: var(--font-mono);
+    font-size: 0.875em;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+
+.md-image {
+    display: block;
+    width: min(100%, calc(440 * var(--sp)));
+    border-radius: calc(9 * var(--sp));
+    overflow: hidden;
+    box-shadow: 0 0 0 1px var(--line);
+}
+
+.md-image img {
+    display: block;
+    width: 100%;
+}
+
+/* Request cards above the message box. One look for all six kinds; amber edge, red for danger. */
+
+.dock {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: calc(8 * var(--sp));
+    padding: calc(12 * var(--sp)) calc(14 * var(--sp));
+    border-radius: calc(10 * var(--sp));
+    background: var(--surface);
+    box-shadow: inset 0 0 0 1px var(--amber-line), inset 3px 0 0 var(--amber-strong), var(--shadow-composer);
+    outline: none;
+    animation: rise-in 0.2s var(--ease);
+}
+
+.dock[data-danger] {
+    box-shadow: inset 0 0 0 1px var(--red-line), inset 3px 0 0 var(--red), var(--shadow-composer);
+}
+
+.dock-head {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    min-width: 0;
+    padding-right: calc(4 * var(--sp));
+}
+
+.dock:has(.dock-pager) .dock-head {
+    padding-right: calc(150 * var(--sp));
+}
+
+.dock-title {
+    min-width: 0;
+    font-size: calc(14 * var(--sp));
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    line-height: calc(20 * var(--sp));
+    overflow-wrap: anywhere;
+}
+
+.dock code {
+    padding: 1px calc(5 * var(--sp));
+    border-radius: calc(4 * var(--sp));
+    background: color-mix(in srgb, var(--text) 8%, transparent);
+    font-size: 0.88em;
+    font-weight: 500;
+}
+
+.dock-stat {
+    margin-left: calc(8 * var(--sp));
+    font-weight: 500;
+}
+
+.dock-sub {
+    margin-top: calc(-6 * var(--sp));
+    color: var(--text-3);
+    font-size: calc(12.5 * var(--sp));
+}
+
+.dock-line {
+    color: var(--text-2);
+    font-size: calc(13 * var(--sp));
+    line-height: 1.5;
+}
+
+.dock-line-label {
+    color: var(--text-3);
+}
+
+.dock-warn {
+    display: flex;
+    align-items: center;
+    gap: calc(6 * var(--sp));
+    color: var(--red);
+    font-size: calc(13 * var(--sp));
+    font-weight: 500;
+}
+
+.dock-code {
+    margin: 0;
+    padding: calc(8 * var(--sp)) calc(10 * var(--sp));
+    border-radius: var(--radius-m);
+    background: var(--code-bg);
+    box-shadow: inset 0 0 0 1px var(--line);
+    font-size: calc(12 * var(--sp));
+    line-height: 1.5;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    max-height: calc(120 * var(--sp));
+    overflow-y: auto;
+}
+
+.dock-diff {
+    max-height: calc(200 * var(--sp));
+    overflow: auto;
+}
+
+.dock-input {
+    width: 100%;
+}
+
+.dock-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: calc(6 * var(--sp));
+    margin-top: calc(2 * var(--sp));
+}
+
+.dock-actions .btn {
+    height: calc(28 * var(--sp));
+    padding: 0 calc(9 * var(--sp));
+    border-radius: var(--radius-s);
+    max-width: 100%;
+}
+
+.dock-btn-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.dock-actions .btn code {
+    background: color-mix(in srgb, currentColor 10%, transparent);
+}
+
+.dock-hint {
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
+}
+
+.dock-pager {
+    position: absolute;
+    top: calc(8 * var(--sp));
+    right: calc(8 * var(--sp));
+    display: flex;
+    align-items: center;
+    gap: calc(2 * var(--sp));
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
+}
+
+.dock-pager .icon-btn:disabled {
+    opacity: 0.35;
+}
+
+/* question */
+
+.dock-options {
+    display: flex;
+    flex-direction: column;
+    border-radius: var(--radius-m);
+    box-shadow: inset 0 0 0 1px var(--line);
+    overflow: hidden;
+}
+
+.dock-option {
+    display: flex;
+    align-items: flex-start;
+    gap: calc(10 * var(--sp));
+    padding: calc(7 * var(--sp)) calc(10 * var(--sp));
+    transition: background 0.1s;
+}
+
+.dock-option + .dock-option {
+    border-top: 1px solid var(--line);
+}
+
+.dock-option:hover {
+    background: var(--fill-1);
+}
+
+.dock-option[aria-checked="true"] {
+    background: var(--accent-soft);
+}
+
+.dock-option .kbd-group {
+    margin-top: 1px;
+}
+
+.dock-option-text {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-width: 0;
+}
+
+.dock-option-label {
+    font-weight: 500;
+}
+
+.dock-option-desc {
+    color: var(--text-3);
+    font-size: calc(12.5 * var(--sp));
+}
+
+.dock-option-check {
+    flex: none;
+    margin-top: calc(3 * var(--sp));
+    color: var(--accent);
+}
+
+/* plan */
+
+.dock-plan {
+    max-height: min(34vh, calc(300 * var(--sp)));
+    padding: calc(12 * var(--sp)) calc(14 * var(--sp));
+    border-radius: var(--radius-m);
+    background: var(--code-bg);
+    box-shadow: inset 0 0 0 1px var(--line);
+    overflow-y: auto;
+    outline-offset: -2px;
+}
+
+.dock-plan-title {
+    margin-bottom: calc(8 * var(--sp));
+    font-size: calc(15 * var(--sp));
+    font-weight: 600;
+}
+
+.dock-plan .md {
+    font-size: calc(13.5 * var(--sp));
+    line-height: 1.55;
+}
+
+.dock-plan .md h2 {
+    font-size: calc(13.5 * var(--sp));
+}
+
+.dock-plan .md > h2:not(:first-child) {
+    margin-top: calc(14 * var(--sp));
+}
+
+.dock-plan .md code {
+    padding: 1px calc(4 * var(--sp));
+}
+
+/* secret */
+
+/* .dock-field: a question's answer and its attach button, laid out as the secret's field and its eye. */
+.dock-secret,
+.dock-field {
+    display: flex;
+    align-items: center;
+    gap: calc(4 * var(--sp));
+}
+
+.dock-secret .input,
+.dock-field .input {
+    flex: 1;
+}
+
+/* sign-in */
+
+.si-wait {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+}
+
+.si-services {
+    display: flex;
+    flex-direction: column;
+    border-radius: var(--radius-m);
+    box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.si-service {
+    display: flex;
+    align-items: center;
+    gap: calc(9 * var(--sp));
+    min-height: calc(38 * var(--sp));
+    padding: 0 calc(8 * var(--sp)) 0 calc(12 * var(--sp));
+}
+
+.si-service + .si-service {
+    border-top: 1px solid var(--line);
+}
+
+.si-service-name {
+    flex: 1;
+    font-weight: 500;
+}
+
+.si-who {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(5 * var(--sp));
+    padding-right: calc(4 * var(--sp));
+    color: var(--green);
+    font-size: calc(12.5 * var(--sp));
+}
+
+.si-code {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    align-self: flex-start;
+    height: calc(36 * var(--sp));
+    padding: 0 calc(6 * var(--sp)) 0 calc(12 * var(--sp));
+    border-radius: var(--radius-m);
+    background: var(--code-bg);
+    box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.si-code-value {
+    font-size: calc(16 * var(--sp));
+    font-weight: 600;
+    letter-spacing: 0.08em;
+}
+
+.si-term {
+    padding: calc(8 * var(--sp)) calc(10 * var(--sp));
+    border-radius: var(--radius-m);
+    background: var(--code-bg);
+    box-shadow: inset 0 0 0 1px var(--line);
+    font-family: var(--font-mono);
+    font-size: calc(12 * var(--sp));
+    line-height: 1.6;
+}
+
+/* confirm */
+
+.dock-facts {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    column-gap: calc(16 * var(--sp));
+    row-gap: calc(3 * var(--sp));
+    font-size: calc(13 * var(--sp));
+}
+
+.dock-facts > div {
+    display: contents;
+}
+
+.dock-facts dt {
+    color: var(--text-3);
+}
+
+/* ---- the cards' pieces from the design's base.css and kit.css ---- */
+
+/* The design's reset, for what the cards are built of (Cavvy's base.css keeps these elements' margins). */
+:where(.dock-sub, .dock-line, .dock-warn, .dock-plan-title, .si-services, .dock-facts, .dock-facts dd) {
+    margin: 0;
+    padding: 0;
+}
+
+:where(.si-services) {
+    list-style: none;
+}
+
+/* The key again, at a weight over composer.css's `.ask kbd`: the card keeps .ask (perf-rules reads it). */
+:where(.dock) kbd.kbd {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: calc(18 * var(--sp));
+    height: calc(18 * var(--sp));
+    padding: 0 calc(4 * var(--sp));
+    border-radius: calc(4 * var(--sp));
+    background: var(--fill-1);
+    box-shadow: inset 0 0 0 1px var(--line);
+    color: var(--text-3);
+    font-family: var(--font-ui);
+    font-size: calc(11 * var(--sp));
+    font-weight: 500;
+    line-height: 1;
+}
+
+:where(.dock) .input.mono {
+    font-size: calc(12 * var(--sp));
+}
+
+:where(.dock) .btn .kbd {
+    margin-left: calc(2 * var(--sp));
+    background: color-mix(in srgb, currentColor 14%, transparent);
+    box-shadow: none;
+    color: inherit;
+    opacity: 0.8;
+}
+
+/* ---- Cavvy's own, in the cards' patterns ---- */
+
+/* A secret or token: masked without being a password field, which browsers offer to save. */
+:where(.dock) .masked {
+    -webkit-text-security: disc;
+}
+
+/* Feedback: a textarea (Shift+Enter is a new line), one line high like the design's field until it's longer. */
+textarea.dock-input {
+    height: auto;
+    min-height: 0;
+    max-height: calc(120 * var(--sp));
+    padding: calc(7 * var(--sp)) calc(10 * var(--sp));
+    line-height: calc(18 * var(--sp));
+    resize: none;
+    field-sizing: content;
+}
+
+/* A question's options scroll in a short window (the card is capped: composer.css .ask), the rest stays in sight. */
+.dock > .dock-options {
+    flex: 0 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+}
+
+/* Files dropped on a question go with its answer: the card is the drop target. */
+.dock-q {
+    display: contents;
+}
+
+.dock:has(.dock-q.dragging) {
+    box-shadow: inset 0 0 0 1.5px var(--accent), var(--shadow-composer);
+}
+
+.dock-attached {
+    flex: none;
+}
+
+/* A CLI's prompt, typed into: its own text, the caret after it. */
+pre.si-term {
+    margin: 0;
+    max-height: calc(160 * var(--sp));
+    overflow: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    outline: none;
+    cursor: text;
+}
+
+pre.si-term:focus-visible {
+    box-shadow: inset 0 0 0 1px var(--focus);
+}
+
+.si-caret {
+    display: inline-block;
+    width: 0.6em;
+    height: 1.1em;
+    vertical-align: text-bottom;
+    background: currentColor;
+    opacity: 0.35;
+}
+
+.si-term:focus .si-caret {
+    opacity: 1;
+}
+
+.si-link {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(4 * var(--sp));
+    align-self: flex-start;
+}
+
+/* ---------- sub-agent view ---------- */
+
+.agentview {
+    gap: calc(16 * var(--sp));
+}
+
+:where(.agentview) .crumbs {
+    display: flex;
+    align-items: center;
+    gap: calc(6 * var(--sp));
+    min-width: 0;
+    margin-bottom: calc(4 * var(--sp));
+    color: var(--text-3);
+    font-size: calc(12.5 * var(--sp));
+    white-space: nowrap;
+}
+
+.agentview-note {
+    margin-top: calc(6 * var(--sp));
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
+}
+
+.agentbar {
+    display: flex;
+    align-items: center;
+    gap: calc(10 * var(--sp));
+    height: calc(46 * var(--sp));
+    padding: 0 calc(9 * var(--sp)) 0 calc(14 * var(--sp));
+    border-radius: calc(10 * var(--sp));
+    background: var(--surface);
+    box-shadow: inset 0 0 0 1px var(--line-strong), var(--shadow-composer);
+}
+
+.agentbar-status {
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+}
+
+.agentbar-model {
+    color: var(--text-3);
+    font-size: calc(12.5 * var(--sp));
+}
+
+/* Over the tab of what it's asking, as the composer is. A narrow pane leaves the model out. */
+.agentbar {
+    position: relative;
+    z-index: 2;
+    min-width: 0;
+}
+
+:where(.main[data-narrow~="640"], .stage-pane[data-narrow~="640"]) .agentbar-model {
+    display: none;
+}
+
+.agentbar .btn .kbd {
+    background: var(--fill-2);
+}
+
+/* ---------- floating browser ---------- */
+
+/* Cavvy's view holds the card and, astride its edges, the grips that resize it (browser.css): the design's card is
+   .br-float-card. The title bar lies over the conversation: it sits that much lower. Its entrance is Cavvy's
+   (browser.css br-float-in): the page, drawn over it apart, fades in step with it. */
+.br-float {
+    position: absolute;
+    top: calc(var(--header-h) + 12 * var(--sp));
+    right: calc(22 * var(--sp));
+    z-index: 12;
+}
+
+/* Rounded at --radius-md, its page inside its frame rounded concentrically (browser.css): the page is drawn over by
+   the real one, which can only be rounded alike at all four corners, so it can't run to the card's edge. */
+.br-float-card {
+    display: flex;
+    flex-direction: column;
+    border-radius: var(--radius-md);
+    background: var(--surface);
+    box-shadow: var(--shadow-pop);
+    overflow: hidden;
+}
+
+/* The card's frame is the head's sides: 5px of it, and 6 more on the left, are the design's 0 5px 0 11px. */
+.br-float-head {
+    display: flex;
+    align-items: center;
+    gap: calc(2 * var(--sp));
+    flex: none;
+    height: calc(34 * var(--sp));
+    padding: 0 0 0 calc(6 * var(--sp));
+}
+
+/* The page's host follows it, quieter (browser.css). */
+.br-float-title {
+    flex: 0 1 auto;
+    min-width: 0;
+    margin: 0 calc(4 * var(--sp)) 0 calc(8 * var(--sp));
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: calc(12.5 * var(--sp));
+    font-weight: 500;
+}
+
+.br-float-page {
+    position: relative;
+    display: block;
+    overflow: hidden;
+    background: #fff;
+    color: #171717;
+    color-scheme: light;
+    cursor: pointer;
+}
+
+.br-float-page:focus-visible {
+    outline-offset: -2px;
+}
+
+/* ---- the design's one-shot entrances (its base.css) ---- */
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}

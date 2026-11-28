@@ -61,7 +61,7 @@ export async function checkEditorFind(root: HTMLElement) {
         </div>
     </>, root);
     const scope = (id: string) => col.querySelector<HTMLElement>(`[data-find="${id}"]`)!;
-    const count = () => root.querySelector(".find-count")?.textContent;
+    const count = () => root.querySelector(".findbar-count")?.textContent;
     const current = () => [...CSS.highlights.get("find-current")!][0] as Range;
     const key = (target: HTMLElement, key: string, shiftKey = false) => {
         const event = new KeyboardEvent("keydown", { key, shiftKey, bubbles: true, cancelable: true });
@@ -74,7 +74,7 @@ export async function checkEditorFind(root: HTMLElement) {
         // before that timer runs (especially on a fast display or a busy suite).
         for (let i = 0; i < 100 && !finishLookup; i++) await new Promise((r) => setTimeout(r, 20));
         // Above the bubble, in its row (the bubble is what find searches; the chips are skipped).
-        check(scope("prompt").closest(".user-row")!.querySelectorAll(".prompt-attachments .chip").length === 3, "prompt displays image, text and PDF attachment chips");
+        check(scope("prompt").closest(".msg-user")!.querySelectorAll(".msg-images > *, .msg-files > *").length === 3, "prompt displays image, text and PDF attachment chips");
         check(findMatches([turn], "files").length === 1 && textRanges(scope("prompt"), "files").length === 1, "attachment names do not duplicate a prompt match");
         for (const label of ["files.pdf", "1 KB", "1 image"]) {
             check(findMatches([turn], label).length === 0 && textRanges(col, label).length === 0, "attachment-only labels have no counted or painted matches");
@@ -121,7 +121,7 @@ export async function checkEditorFind(root: HTMLElement) {
         setFindQuery("edited.ts");
         await settle();
         check(count() === "1 of 1" && textRanges(col, "edited.ts").length === 1, "changed-files card doesn't add another match");
-        const changedAction = col.querySelector<HTMLButtonElement>(".chg .row-open")!;
+        const changedAction = col.querySelector<HTMLButtonElement>(".chg .open-editor")!;
         check(changedAction.closest("[data-find-skip]"), "changed-files editor action is excluded from find");
         changedAction.click();
         check(opened.at(-1)?.path === "src/edited.ts" && opened.at(-1)?.line === 9 && opened.at(-1)?.sessionId === sessionId, "changed-files action keeps its session, path and line");
@@ -136,7 +136,7 @@ export async function checkEditorFind(root: HTMLElement) {
         key(input, "Enter");
         await settle();
         check(count() === "1 of 1" && current().startContainer.parentElement?.closest(".compacted-summary"), "stepping wraps to the body, never the header");
-        compact.querySelector<HTMLButtonElement>(".compacted-rule button")!.click();
+        compact.querySelector<HTMLButtonElement>(".rule-line button")!.click();
         check(!compact.querySelector(".compacted-summary"), "summary can be folded again");
         setFindQuery("Important summary");
         await settle(350);

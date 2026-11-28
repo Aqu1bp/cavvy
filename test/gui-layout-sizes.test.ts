@@ -128,10 +128,10 @@ test("the transcript, its end and the Latest pill have the composer dock's heigh
     // The pill, for itself; it also has the width a floating panel covers.
     expect(transcript).toMatch(/<button class="jump glass" style=\{\{ "--dock-h": dock\(\), "--over": floatOver\(\) \}\}/);
     // The scroller, which fades the conversation out where the dock starts (stage.css): there is no fade laid over it.
-    expect(transcript).toMatch(/<div class="transcript" ref=\{scroller\} style=\{\{ "--dock-h": dock\(\) \}\}/);
+    expect(transcript).toMatch(/<div class="transcript convo" ref=\{scroller\} style=\{\{ "--dock-h": dock\(\) \}\}/);
     expect(transcript).not.toContain("jump-shelf");
     const agents = read("components/Agents.tsx");
     expect(agents).toMatch(/<div class="transcript-end" style=\{\{ "--dock-h": `\$\{dockH\(\)\}px` \}\} \/>/);
-    expect(agents).toMatch(/<section class="transcript" aria-label="Sub-agent transcript" style=\{\{ "--dock-h": `\$\{dockH\(\)\}px` \}\}>/);
+    expect(agents).toMatch(/<section class="transcript convo" aria-label="Sub-agent transcript" style=\{\{ "--dock-h": `\$\{dockH\(\)\}px` \}\}>/);
     expect(read("styles/stage.css")).toMatch(/\.stage \.transcript \{[^}]*mask-image: linear-gradient\([^;]*var\(--dock-h\)/);
 });

@@ -29,6 +29,9 @@ const ChangesCard = component(source, "ChangesCard", {
     ...turnPlaces, agentProvider, app: { hello: { homeDir: "/home/u" } },
     // The card's "+a −d" (blocks/DiffView.tsx Counts): only the sides that changed.
     Counts: (p: { added?: number; removed?: number }) => { const n = node("counts"); n.text = [p.added ? `+${p.added}` : "", p.removed ? `−${p.removed}` : ""].filter(Boolean).join(" "); return n; },
+    // The design's "+a −d" (blocks/Activity.tsx Stat), as Counts above.
+    Stat: (p: { added?: number; removed?: number }) => { const n = node("stat"); n.text = [p.added ? `+${p.added}` : "", p.removed ? `−${p.removed}` : ""].filter(Boolean).join(" "); return n; },
+    ExternalLink: stub,
     FileDiff: stub, SquareArrowOutUpRight: stub, Folder: stub, FolderGit2: stub, Info: stub, AlertTriangle: stub, ProviderIcon: stub, SplitPath: (p: { path: string }) => { const n = node("path"); n.text = p.path; return n; },
 });
 const settle = async () => { for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r)); };

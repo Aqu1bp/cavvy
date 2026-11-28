@@ -1,0 +1,77 @@
+/* The design's image viewer (its dialogs.css), copied as remix-conversation.css copies the rest of the conversation. Loaded
+   with the viewer, which is loaded when it's first opened. */
+
+/* ---------- image viewer ---------- */
+
+.viewer {
+    position: fixed;
+    inset: 0;
+    z-index: 85;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(12, 11, 10, 0.86);
+    overflow: hidden;
+    animation: fade-in 0.14s;
+}
+
+.viewer-img {
+    max-width: calc(100vw - calc(144 * var(--sp)));
+    max-height: calc(100vh - calc(112 * var(--sp)));
+    border-radius: calc(6 * var(--sp));
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+    cursor: zoom-in;
+    background: #fff;
+}
+
+.viewer-img[data-actual] {
+    max-width: none;
+    max-height: none;
+    cursor: grab;
+}
+
+.viewer-nav,
+.viewer-close {
+    position: absolute;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: calc(36 * var(--sp));
+    height: calc(36 * var(--sp));
+    border-radius: var(--radius-m);
+    background: rgba(255, 255, 255, 0.1);
+    color: #fff;
+}
+
+.viewer-nav:hover,
+.viewer-close:hover {
+    background: rgba(255, 255, 255, 0.2);
+}
+
+.viewer-prev {
+    left: calc(20 * var(--sp));
+}
+
+.viewer-next {
+    right: calc(20 * var(--sp));
+}
+
+.viewer-close {
+    top: calc(16 * var(--sp));
+    right: calc(20 * var(--sp));
+    width: calc(32 * var(--sp));
+    height: calc(32 * var(--sp));
+}
+
+.viewer-caption {
+    position: absolute;
+    bottom: calc(18 * var(--sp));
+    left: 50%;
+    transform: translateX(-50%);
+    padding: calc(5 * var(--sp)) calc(10 * var(--sp));
+    border-radius: var(--radius-s);
+    background: rgba(0, 0, 0, 0.5);
+    color: rgba(255, 255, 255, 0.86);
+    font-size: calc(12.5 * var(--sp));
+    white-space: nowrap;
+}
