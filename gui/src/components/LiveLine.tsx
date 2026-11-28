@@ -160,7 +160,7 @@ export function LiveLine(p: { state: LiveLineState | undefined; hint?: string; s
                         on the light's (remix-conversation.css .working-dots), so the two moving together draw no more windows than
                         the light alone. */}
                     <span class="lic" aria-hidden="true">
-                        <Show when={showing()?.kind === "wait"} fallback={<Show when={current()} keyed>{(_layer: Layer) => <span class="working-dots"><i /><i /><i /></span>}</Show>}>
+                        <Show when={showing()?.kind === "wait"} fallback={<span class="working-dots"><i /><i /><i /></span>}>
                             <span class="live-wait" />
                         </Show>
                     </span>
