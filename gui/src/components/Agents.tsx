@@ -5,7 +5,7 @@
 // delegated.
 
 import { createEffect, createMemo, createSignal, Index, Match, onCleanup, onMount, Show, Switch } from "solid-js";
-import { ArrowLeft, Bot, ChevronRight, CornerDownLeft, CornerLeftDown } from "lucide-solid";
+import { ArrowLeft, Bot, ChevronRight, CornerDownLeft, Square } from "lucide-solid";
 import { LiveLine } from "./LiveLine";
 import { liveLine, workSegments } from "../lib/live-line";
 import { prefs } from "../state/prefs";
@@ -186,27 +186,27 @@ export function AgentView(p: { handle: SessionHandle; agent: AgentRun }) {
                 </span>
             </TitleBar>
             <div class="stage">
-                <div class="transcript-wrap">
-                    <section class="transcript" aria-label="Sub-agent transcript" style={{ "--dock-h": `${dockH()}px` }}>
-                        <div class="transcript-col agent-col">
+                <div class="transcript-wrap convo-wrap">
+                    <section class="transcript convo" aria-label="Sub-agent transcript" style={{ "--dock-h": `${dockH()}px` }}>
+                        <div class="transcript-col convo-col agentview agent-col">
                             {/* What the parent asked: on the right, as a prompt, under where it came from. */}
-                            <div class="user-row agent-task">
-                                <span class="agent-from" data-find-skip>
-                                    <CornerLeftDown size={12} aria-hidden="true" /> {parent() ? `From ${parentName()}` : "From the session"}
+                            <div class="msg-user user-row agent-task">
+                                <span class="msg-tag agent-from" data-find-skip>
+                                    {parent() ? `From ${parentName()}` : "From the session"}
                                 </span>
-                                <div class={`user-bubble ${longTask() && !fullTask() ? "clamped" : ""}`}>
+                                <div class={`bubble user-bubble ${longTask() && !fullTask() ? "clamped" : ""}`}>
                                     <span class="user-text">{a().prompt || a().description || "No instructions were recorded."}</span>
                                     <Show when={longTask()}>
-                                        <button class="link-btn more" aria-expanded={fullTask()} onClick={() => setFullTask(!fullTask())}>
+                                        <button class="link-btn bubble-more" aria-expanded={fullTask()} onClick={() => setFullTask(!fullTask())}>
                                             {fullTask() ? "Show less" : "Show more"}
                                         </button>
                                     </Show>
                                 </div>
-                                <div class="user-actions" data-find-skip>
-                                    <time class="user-when" dateTime={new Date(a().startedAt).toISOString()}>{clock(a().startedAt)}</time>
+                                <div class="msg-actions user-actions" data-find-skip>
+                                    <time class="msg-time user-when" dateTime={new Date(a().startedAt).toISOString()}>{clock(a().startedAt)}</time>
                                 </div>
                             </div>
-                            <div class="reply agent-reply">
+                            <div class="turn agent-reply">
                                 <Show when={!live(a()) && items().length}>
                                     <button class="fold acts-h worked" aria-expanded={unfolded()} onClick={() => setUnfolded(!unfolded())}>
                                         <ChevronRight size={14} class="chev" />
@@ -225,7 +225,7 @@ export function AgentView(p: { handle: SessionHandle; agent: AgentRun }) {
                                     <LiveLine state={line()} />
                                 </Show>
                                 <Show when={a().replayed && !a().blocks.length && !a().partial}>
-                                    <div class="agent-dropped">Its steps aren't kept once the session is reopened.</div>
+                                    <div class="agentview-note">Its steps aren't kept once the session is reopened.</div>
                                 </Show>
                                 <Show when={result()}>
                                     <Markdown text={result()!} sessionId={p.handle.id} />
@@ -244,24 +244,25 @@ export function AgentView(p: { handle: SessionHandle; agent: AgentRun }) {
                         <Show when={asks().length}>
                             <InteractionTab sessionId={p.handle.id} items={asks()} />
                         </Show>
-                        <div class="agent-bar" role="status">
-                            <span class="av">
+                        <div class="agentbar" role="status">
+                            <span class="agent-mark" data-state={a().status === "running" ? "working" : a().status}>
                                 <AgentMark provider={provider()} />
-                                <span class={`nd st-${a().status}`} />
+                                <span class="agent-dot" />
                             </span>
-                            <span class={`agent-bar-state num st-${a().status}`}>{statusLine(a())}</span>
-                            <span class="agent-bar-model truncate" title={modelTitle()}>
+                            <span class="agentbar-status">{statusLine(a())}</span>
+                            <span class="agentbar-model truncate" title={modelTitle()}>
                                 {model()}<Show when={a().effort}>{(effort) => ` · ${effort()}`}</Show>
                             </span>
                             <span class="grow" />
-                            <button class="btn sm" onClick={back} title={parent() ? `Back to ${parentName()}` : "Back to session"}>
-                                <ArrowLeft size={13} /> Back <kbd>Esc</kbd>
+                            <button class="btn btn-sm" onClick={back} title={parent() ? `Back to ${parentName()}` : "Back to session"}>
+                                <ArrowLeft size={13} /> Back{" "}
+                                <span class="kbd-group" aria-hidden="true">
+                                    <kbd class="kbd">Esc</kbd>
+                                </span>
                             </button>
                             <Show when={live(a()) && a().taskId}>
-                                <button class="btn sm deny" onClick={() => void stopAgent(p.handle.id, a().id)}>
-                                    <svg width="9" height="9" viewBox="0 0 10 10" aria-hidden="true">
-                                        <rect width="10" height="10" rx="2" fill="currentColor" />
-                                    </svg>
+                                <button class="btn btn-sm btn-danger" onClick={() => void stopAgent(p.handle.id, a().id)}>
+                                    <Square size={9} fill="currentColor" stroke-width={0} />
                                     Stop this agent
                                 </button>
                             </Show>

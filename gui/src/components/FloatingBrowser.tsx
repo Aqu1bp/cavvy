@@ -9,7 +9,7 @@
 // in the side panel. It fades in, and fades out shrinking toward its corner, the page with it.
 
 import { batch, createEffect, createSignal, on, onCleanup, onMount, Show } from "solid-js";
-import { Maximize2, X } from "lucide-solid";
+import { PanelRight, X } from "lucide-solid";
 import type { SessionHandle } from "../state/app";
 import { browserActivityAt, browserPaneShown, browserState, showBrowser } from "../state/browser";
 import { setShownBrowser, unshowBrowser } from "../state/browser-host";
@@ -244,17 +244,17 @@ function Floating(p: { title: string; host?: string; live: boolean; targetId: st
             onPointerLeave={() => p.onHover(false)}
             onAnimationEnd={(e) => e.target === float && p.leaving && p.onLeft()}
         >
-            <div class="br-float-card glass" role="region" aria-label="The agent's browser">
-                <div class="br-float-bar">
+            <div class="br-float-card" role="region" aria-label="The agent's browser">
+                <div class="br-float-head">
                     <span class={`br-live ${p.live ? "on" : ""}`} title={p.live ? "The agent is using this page" : undefined} />
                     <span class="br-float-title truncate" title={p.title}>{p.title}</span>
                     <Show when={p.host}>{(host) => <span class="br-float-host truncate">{host()}</span>}</Show>
                     <span class="grow" />
-                    <button class="hb sm" aria-label="Open in the side panel" title="Open in the side panel" onClick={showBrowser}>
-                        <Maximize2 size={13} />
+                    <button class="icon-btn icon-btn-sm" aria-label="Open in the side panel" title="Open in the side panel" onClick={showBrowser}>
+                        <PanelRight size={14} />
                     </button>
-                    <button class="hb sm" aria-label="Close" title="Close until the agent's next turn" onClick={p.onHide}>
-                        <X size={13} />
+                    <button class="icon-btn icon-btn-sm" aria-label="Close" title="Close until the agent's next turn" onClick={p.onHide}>
+                        <X size={14} />
                     </button>
                 </div>
                 <div ref={page} class="br-float-page" title="Open in the side panel" onClick={showBrowser} />

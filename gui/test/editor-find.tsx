@@ -61,7 +61,7 @@ export async function checkEditorFind(root: HTMLElement) {
         </div>
     </>, root);
     const scope = (id: string) => col.querySelector<HTMLElement>(`[data-find="${id}"]`)!;
-    const count = () => root.querySelector(".find-count")?.textContent;
+    const count = () => root.querySelector(".findbar-count")?.textContent;
     const current = () => [...CSS.highlights.get("find-current")!][0] as Range;
     const key = (target: HTMLElement, key: string, shiftKey = false) => {
         const event = new KeyboardEvent("keydown", { key, shiftKey, bubbles: true, cancelable: true });
