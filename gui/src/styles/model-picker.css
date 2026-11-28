@@ -312,6 +312,9 @@
     display: flex;
     align-items: center;
     border-radius: calc(6 * var(--sp));
+    /* Cavvy: OpenRouter lists hundreds; rows out of view skip layout and paint. */
+    content-visibility: auto;
+    contain-intrinsic-size: auto calc(30 * var(--sp));
 }
 
 .mp-item:is(:hover, .sel) {
