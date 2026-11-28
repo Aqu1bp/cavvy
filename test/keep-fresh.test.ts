@@ -71,10 +71,15 @@ test("lists are asked for again when the oldest is due, and not while they're fr
     try {
         await engine.refreshListings();
         expect(calls).toBe(1);
-        // Still old (it couldn't be listed again): tried again after the short wait, and again.
+        // Still old (it couldn't be listed again): tried again after the short wait, then after twice that.
         const until = Date.now() + 2000;
-        while (calls < 3 && Date.now() < until) await Bun.sleep(10);
+        const at = [Date.now()];
+        while (calls < 3 && Date.now() < until) {
+            await Bun.sleep(5);
+            if (calls > at.length) at.push(Date.now());
+        }
         expect(calls).toBeGreaterThanOrEqual(3);
+        expect(at[2]! - at[1]!).toBeGreaterThanOrEqual(55);
         // Listed now: nothing more until it's due, half a day on.
         fetchedAt = Date.now();
         await engine.refreshListings(true);

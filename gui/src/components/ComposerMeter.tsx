@@ -41,7 +41,7 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
         if (document.visibilityState !== "visible" || app.conn !== "open" || !cli || !onScreen) return;
         const plan = { provider: provider()!, accountId: accountId() };
         // The window's own machine (undefined) isn't this computer seen from a server's window (""): kept apart.
-        const key = `${String(awayMachine(p.sessionId))}\0${planLimitKey(plan.provider, plan.accountId)}`;
+        const key = JSON.stringify([awayMachine(p.sessionId) ?? null, planLimitKey(plan.provider, plan.accountId)]);
         if (!planCheckDue(limits(), Date.now(), planAsked.get(key))) return;
         planAsked.set(key, Date.now());
         void checkLimits(p.sessionId, [plan]);

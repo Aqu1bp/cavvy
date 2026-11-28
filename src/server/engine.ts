@@ -1083,6 +1083,8 @@ export class Engine {
     }
 
     private relistTimer?: ReturnType<typeof setTimeout>;
+    /** Passes in a row that left a list unlisted. */
+    private relistFails = 0;
     /** Each CLI's program as its models were last listed (cliProgram). */
     private cliPrograms = new Map<string, string | undefined>();
 
@@ -1095,11 +1097,14 @@ export class Engine {
         for (const x of l) if (x.provider.auth === "cli") this.cliPrograms.set(x.provider.id, cliProgram(x.provider.id));
         if (this.stopping) return;
         const now = Date.now();
-        // When each list is due: its half day on, or the short wait for one that's past it or has nothing (it couldn't be listed).
-        const due = l.filter((x) => !x.provider.local && !x.provider.instanceOf && (x.fetchedAt !== undefined || x.status === "error")).map((x) => {
-            const left = x.fetchedAt === undefined ? 0 : x.fetchedAt + MODEL_LIST_TTL_MS - now;
-            return left > 0 ? left : relistTiming.retryMs;
-        });
+        const timed = l.filter((x) => !x.provider.local && !x.provider.instanceOf && (x.fetchedAt !== undefined || x.status === "error"));
+        // One that couldn't be listed (it says why, or is still past due) is tried again after the short wait, doubled
+        // each time in a row it fails: a provider that never answers isn't asked every half hour for good.
+        const failed = (x: ProviderListing) => Boolean(x.error) || x.status === "error" || x.fetchedAt! + MODEL_LIST_TTL_MS <= now;
+        this.relistFails = timed.some(failed) ? this.relistFails + 1 : 0;
+        const retry = relistTiming.retryMs * 2 ** Math.min(this.relistFails - 1, 10);
+        // When each list is due: its half day on, or that wait.
+        const due = timed.map((x) => (failed(x) ? retry : x.fetchedAt! + MODEL_LIST_TTL_MS - now));
         if (!due.length) return;
         this.relistTimer = setTimeout(() => void this.refreshListings(), Math.min(MODEL_LIST_TTL_MS, ...due));
         this.relistTimer.unref?.();
