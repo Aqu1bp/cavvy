@@ -732,8 +732,6 @@ select:focus-visible {
         outline: 2px solid Highlight;
     }
 
-    .card.cur,
-    .slim.cur,
     .navi.on:not(:focus-visible),
     .segmented button.on:not(:focus-visible),
     .menu-item.sel:not(:focus-visible),
