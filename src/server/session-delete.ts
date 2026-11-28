@@ -119,6 +119,17 @@ function removeTree(p: string, depth = 0) {
 }
 
 /**
+ * What a session that never had a transcript left beside it (its ui log, file history and the like), removed: for one
+ * a suggested task's start made and then discarded (engine.ts). A session with a transcript is left alone.
+ */
+export function removeUnsavedSession(dir: string, id: string) {
+    const [transcript, ...rest] = pieces(dir, id);
+    if (present(transcript!.live)) return;
+    for (const p of rest) if (present(p.live)) removeTree(p.live);
+    forgetFileHistory(join(dir, "file-history", id));
+}
+
+/**
  * A session's files and its trash entry, checked to be inside the Cavvy
  * home. Called before its runtime is closed too, so a setup it would refuse
  * doesn't close anything.

@@ -3,8 +3,8 @@
 // same session (after a restart too), worktrees, and that no server can ask for it.
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
-import { join } from "path";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { dirname, join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 import type { SessionSnapshot, StartTaskResult, SuggestionState } from "../src/server/protocol";
 
@@ -15,6 +15,7 @@ const { answerPeers } = await import("../src/server/far-peers");
 const { startMockLlm } = await import("../scripts/mock-llm");
 const { createDemoProject } = await import("../scripts/demo-project");
 const { gitArgv, gitEnv } = await import("../src/util/git");
+const { peerWake } = await import("../src/agent/peers");
 
 const dirs: string[] = [];
 const mock = startMockLlm({ delayMs: 0 });
@@ -231,13 +232,17 @@ describe("tasks.start", () => {
             const starting = engine.handle(watcher, "tasks.start", start);
             // While the hook decides, the session isn't listed.
             await until(() => [...engine.runtimes.values()].some((x) => x.session.meta.suggestedBy?.key === "s0#hook" && x.busy));
-            const made = [...engine.runtimes.values()].find((x) => x.session.meta.suggestedBy?.key === "s0#hook")!.id;
-            expect(((await engine.handle(watcher, "sessions.list", {})) as { id: string }[]).some((x) => x.id === made)).toBe(false);
+            const made = [...engine.runtimes.values()].find((x) => x.session.meta.suggestedBy?.key === "s0#hook")!;
+            const madeDir = dirname(made.session.path);
+            const madeId = made.id;
+            expect(((await engine.handle(watcher, "sessions.list", {})) as { id: string }[]).some((x) => x.id === madeId)).toBe(false);
             await expect(starting).rejects.toMatchObject({ code: "blocked", message: "Prompt blocked by hook: not today" });
+            // Nothing of it is left on disk either.
+            for (const f of [`${madeId}.jsonl`, join("ui", `${madeId}.jsonl`), join("file-history", madeId), join("state", `${madeId}.json`)]) expect(existsSync(join(madeDir, f))).toBe(false);
             // No session left behind: not loaded, not listed, nothing in its composer; no window was told of it, its
             // turn's end not notified (notifyAfterSeconds is 0 here).
             expect([...engine.runtimes.keys()].filter((id) => !before.has(id))).toEqual([]);
-            expect(heard.filter((m) => m.sessionId === made || m.session?.id === made || m.id === made)).toEqual([]);
+            expect(heard.filter((m) => m.sessionId === madeId || m.session?.id === madeId || m.id === madeId)).toEqual([]);
             const listed = (await engine.handle(watcher, "sessions.list", {})) as { cwd: string }[];
             expect(listed.some((x) => x.cwd === folder)).toBe(false);
             expect(drafts).toEqual([]);
@@ -265,16 +270,15 @@ describe("tasks.start", () => {
             const drafts: any[] = [];
             const watcher = { subs: new Set<string>(), send: (m: any) => m.type === "draft" && drafts.push(m) } as never;
             engine.clients.add(watcher);
-            const at = Date.now();
             const starting = engine.handle(watcher, "tasks.start", { cwd: folder, title: "Fix it", prompt: "Fix the other thing.", model: "mock:mock-opus", origin: { key: "s0#hook-sent", session: "s0", title: "x" } }) as Promise<StartTaskResult>;
             await until(() => [...engine.runtimes.values()].some((x) => x.session.meta.suggestedBy?.key === "s0#hook-sent" && x.busy));
             const n = [...engine.runtimes.values()].find((x) => x.session.meta.suggestedBy?.key === "s0#hook-sent")!;
             await Bun.sleep(200);
-            // As another session's SendToSession would: queued behind the first prompt.
+            // The user's message, sent while it works: queued behind the first prompt.
             await n.send("FOLLOWUP: and more.");
             const r = await starting;
-            // Answered as the refused run ended, not after the message behind it (2 s of hook, then its turn).
-            expect(Date.now() - at).toBeLessThan(3000);
+            // Answered as the refused run ended, before the message behind it was taken (its hook takes 2 s).
+            expect(n.session.messageCount).toBe(0);
             expect(r).toMatchObject({ sessionId: n.id });
             expect(r.failed).toBeUndefined();
             expect(drafts).toEqual([expect.objectContaining({ sessionId: n.id, text: "Fix the other thing." })]);
@@ -287,24 +291,74 @@ describe("tasks.start", () => {
         }
     });
 
-    test("a hook slow to answer: started once its timeout and a margin are past", async () => {
+    test("another session's message during the wait: refused, it stays, and the message is delivered", async () => {
+        const folder = realpathSync(tempDir("tasks-hook-wake-"));
+        dirs.push(folder);
+        const settings = join(iso.home, "settings.json");
+        const was = readFileSync(settings, "utf-8");
+        writeFileSync(settings, JSON.stringify({ ...JSON.parse(was), hooks: { UserPromptSubmit: [{ command: "sleep 1; echo 'not today' >&2; exit 2" }] } }));
+        try {
+            const drafts: any[] = [];
+            const watcher = { subs: new Set<string>(), send: (m: any) => m.type === "draft" && drafts.push(m) } as never;
+            engine.clients.add(watcher);
+            const starting = engine.handle(watcher, "tasks.start", { cwd: folder, title: "Fix it", prompt: "Fix it.", model: "mock:mock-opus", origin: { key: "s0#hook-wake", session: "s0", title: "x" } }) as Promise<StartTaskResult>;
+            await until(() => [...engine.runtimes.values()].some((x) => x.session.meta.suggestedBy?.key === "s0#hook-wake" && x.busy));
+            const n = [...engine.runtimes.values()].find((x) => x.session.meta.suggestedBy?.key === "s0#hook-wake")!;
+            // As SendToSession delivers it (session-peers.ts deliverTo): a wake, not a queued message.
+            n.toolState.wakes!.push(peerWake({ id: "s9", title: "Other" }, "What did you find?"));
+            const r = await starting;
+            expect(r).toMatchObject({ sessionId: n.id });
+            expect(drafts).toEqual([expect.objectContaining({ sessionId: n.id, text: "Fix it." })]);
+            await until(() => n.idle && n.session.messageCount > 0);
+            expect(JSON.stringify(n.session.messages)).toContain("What did you find?");
+            engine.clients.delete(watcher);
+        } finally {
+            writeFileSync(settings, was);
+        }
+    });
+
+    test("a hook slower than the bound: started, and a refusal after it puts the prompt back in the session, still listed", async () => {
         const folder = realpathSync(tempDir("tasks-hook-slow-"));
         dirs.push(folder);
         const settings = join(iso.home, "settings.json");
         const was = readFileSync(settings, "utf-8");
-        // Its timeout is 0.2 s, but the sleep it leaves behind holds its output for 6 s.
-        writeFileSync(settings, JSON.stringify({ ...JSON.parse(was), hooks: { UserPromptSubmit: [{ command: "sleep 6; exit 2", timeout: 0.2 }] } }));
+        // It refuses no sooner than 3 s in, within its own timeout; the bound is cut to 0.5 s here.
+        writeFileSync(settings, JSON.stringify({ ...JSON.parse(was), hooks: { UserPromptSubmit: [{ command: "sleep 3; echo 'not today' >&2; exit 2", timeout: 20 }] } }));
+        const o = (engine as any).o;
+        o.taskVerdictMaxMs = 500;
         try {
-            const at = Date.now();
-            const r = await call<StartTaskResult>("tasks.start", { cwd: folder, title: "Fix it", prompt: "Fix it.", model: "mock:mock-opus", origin: { key: "s0#hook-slow", session: "s0", title: "x" } });
-            const took = Date.now() - at;
-            expect(r.sessionId).toBeDefined();
+            const drafts: any[] = [];
+            const watcher = { subs: new Set<string>(), send: (m: any) => m.type === "draft" && drafts.push(m) } as never;
+            engine.clients.add(watcher);
+            const r = (await engine.handle(watcher, "tasks.start", { cwd: folder, title: "Fix it", prompt: "Fix it.", model: "mock:mock-opus", origin: { key: "s0#hook-slow", session: "s0", title: "x" } })) as StartTaskResult;
+            const n = engine.runtimes.get(r.sessionId!)!;
+            // Answered before the hook did.
             expect(r.failed).toBeUndefined();
-            expect(took).toBeGreaterThanOrEqual(3000);
-            expect(took).toBeLessThan(5000);
+            expect(drafts).toEqual([]);
+            expect(n.busy).toBe(true);
+            await until(() => drafts.length > 0 && n.idle);
+            expect(drafts).toEqual([expect.objectContaining({ sessionId: n.id, text: "Fix it." })]);
+            // Empty, but still there for the card to open: loaded and listed.
+            expect(n.session.messageCount).toBe(0);
+            expect(engine.runtimes.get(n.id)).toBe(n);
+            expect(((await engine.handle(watcher, "sessions.list", {})) as { id: string }[]).some((x) => x.id === n.id)).toBe(true);
+            engine.clients.delete(watcher);
         } finally {
+            delete o.taskVerdictMaxMs;
             writeFileSync(settings, was);
         }
+    });
+
+    test("a session emptied by a rewind: its row hears the suggestion went", async () => {
+        const rt = await suggestingSession();
+        expect(rt.snapshot().state.suggestions).toHaveLength(1);
+        const rows = () => sent.filter((m) => m.type === "sessions.upsert" && m.session.id === rt.id).map((m) => m.session);
+        await until(() => rows().at(-1)?.suggested === 1);
+        const targets = (await call<{ index: number }[]>("session.rewindTargets", { id: rt.id }));
+        const plan = await call<{ planId: string }>("session.rewindPlan", { id: rt.id, index: targets[0]!.index });
+        await call("session.rewind", { id: rt.id, index: targets[0]!.index, planId: plan.planId, code: false, conversation: true });
+        expect(rt.session.messageCount).toBe(0);
+        await until(() => rows().at(-1)?.suggested === undefined);
     });
 
     test("a model the session can't take once it's made: model_unavailable, and the session goes", async () => {
@@ -339,7 +393,8 @@ describe("tasks.start", () => {
             expect(r.sessionId).toBeUndefined();
             expect(r.failed).toMatchObject({ code: "blocked", message: "Prompt blocked by hook: not today" });
             expect(r.worktree?.branch).toBe("fix/the-header");
-            const again = await call<StartTaskResult>("tasks.start", { ...start, prompt: "Fix it.", resume: r.worktree!.path });
+            // The window lost the path (reloaded while it ran): the start remembers it.
+            const again = await call<StartTaskResult>("tasks.start", { ...start, prompt: "Fix it." });
             expect(again.failed).toBeUndefined();
             expect(again.worktree).toEqual(r.worktree);
             expect(engine.runtimes.get(again.sessionId!)!.ws.cwd).toBe(r.worktree!.path);
@@ -432,7 +487,7 @@ describe("tasks.start", () => {
         // Its agent is told the paths the prompt names in the main checkout are this worktree's.
         await until(() => na.session.messageCount > 0);
         const note = JSON.stringify(na.session.messages.find((m) => m.role === "user")!.content);
-        expect(note).toContain(`You're working in a new worktree of ${repo}, at ${a.worktree!.path}: paths under ${repo} mean the same files in this worktree.`);
+        expect(note).toContain(`You're working in a new worktree of ${repo}, at ${a.worktree!.path}: paths in ${repo} outside this worktree mean the same files here.`);
         const b = await call<StartTaskResult>("tasks.start", o("s0#b"));
         expect(b.worktree?.branch).toBe("fix/login-button-misaligned-2");
         // One that's only on a remote is taken too.

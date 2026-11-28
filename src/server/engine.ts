@@ -79,7 +79,7 @@ import { forkUiLogSoon, readSegments, readUiLogSoon, type UiLog } from "./histor
 import { CLI_SOURCES, findCliSession, listCliSessions, readCliTranscript, validCliId, type CliSource } from "./cli-sessions";
 import { cavvyLinks, importModel, linkKey, writeImportedSession, type CavvyLinks } from "./cli-import";
 import { CODEX_CLIENT_NAME } from "../backends/codex";
-import { checkId, claimForDelete, listTrash, locateSession, purgeTrash, restoreSession, trashSession, type SessionFlags } from "./session-delete";
+import { checkId, claimForDelete, listTrash, locateSession, purgeTrash, removeUnsavedSession, restoreSession, trashSession, type SessionFlags } from "./session-delete";
 import { searchSessions, warmSearch } from "./search";
 import { usageDays, usageSummary } from "./usage";
 import { askMachines, USAGE_GRACE_MS, withMachines, type Asked } from "./usage-machines";
@@ -158,6 +158,8 @@ export interface EngineOptions {
     listModels?: typeof listAllModels;
     /** How long a session no window shows waits to be closed once it has nothing to do (tests shorten it). */
     unloadAfterMs?: number;
+    /** For tests: TASK_VERDICT_MAX_MS. */
+    taskVerdictMaxMs?: number;
     /** For tests: GUEST_IDLE_MS. */
     guestIdleMs?: number;
     /** How long a window that went away has to come back to its terminals before they're stopped (tests shorten it). */
@@ -788,7 +790,8 @@ export class Engine {
         // One that lends to a session on a server is never listed: what it asks shows in that session (lentChanged).
         if (rt.guest) return this.lentChanged(rt);
         // An empty new session isn't listed. A turn can end with nothing in the history (a !command, a prompt a hook blocked): its row has to hear that it ended.
-        if (!rt.session.messageCount && !rt.busy && rt.firstPrompt() === undefined) return;
+        // So does one emptied by a rewind (its suggested count goes), and a suggested task's, whose card opens it.
+        if (!rt.session.messageCount && !rt.busy && rt.firstPrompt() === undefined && !this.summarySent.has(rt.id) && !rt.session.meta.suggestedBy) return;
         const member = readStore().runs?.flatMap((r) => r.sessions).find((s) => s.id === rt.id);
         const outcome = runOutcome(rt);
         if (member && member.outcome !== outcome) updateStore((s) => {
@@ -1127,7 +1130,8 @@ export class Engine {
             out.set(s.id, { id: s.id, cwd: s.cwd, projectName: basename(s.cwd) || s.cwd, title: s.title, createdAt: s.createdAt, updatedAt: s.updatedAt, messages: s.messages, status: "idle", pinned: pinned.has(s.id), archived: arch.has(s.id), settled: settled.has(s.id), model: s.model, live: false, run: runs.get(s.id) });
         }
         for (const rt of this.runtimes.values()) {
-            if (rt.guest || this.decidingTasks.has(rt.id) || (!rt.session.messageCount && !rt.busy) || arch.has(rt.id) !== archived) continue;
+            // A suggested task's session is listed while it's loaded, empty too (a refused prompt back in its composer): its card opens it.
+            if (rt.guest || this.decidingTasks.has(rt.id) || (!rt.session.messageCount && !rt.busy && !rt.session.meta.suggestedBy) || arch.has(rt.id) !== archived) continue;
             // By when it last worked, which its file can't say yet while it works (Session.worked writes a line a minute).
             out.set(rt.id, this.summaryOf(rt, lists));
         }
@@ -1899,6 +1903,8 @@ export class Engine {
     private refusedTasks = new Set<string>();
     /** Sessions a suggested task's start hasn't decided on yet (startTaskOnce): not listed, shown or notified of. */
     private decidingTasks = new Set<string>();
+    /** Worktrees a suggested task's start made and then failed, by origin key: the next start of it goes on in one still there. */
+    private taskWorktrees = new Map<string, { path: string; branch: string }>();
 
     /** The session a suggested task was started as here (loaded, or saved), by its origin key. */
     taskStartedFor(key: string): { sessionId: string; title: string; cwd: string } | undefined {
@@ -1978,17 +1984,20 @@ export class Engine {
         }
         await this.checkTaskModel(ref, effort);
         const suggester = origin.machine ? undefined : this.runtimes.get(origin.session);
-        const resume = optText(p.resume, "resume", 4096);
+        const asked = optText(p.resume, "resume", 4096);
+        // The window may have lost the worktree an earlier failed start made (a reload while it ran): this one remembers.
+        const remembered = !asked && p.worktree === true ? this.taskWorktrees.get(origin.key) : undefined;
+        const resume = asked ?? remembered?.path;
         let made: { path: string; branch: string } | undefined;
         if (p.worktree === true || resume) {
             const top = gitRoot(cwd);
             if (!top) throw new RpcError("This folder isn't in a Git repository, so it can't have a worktree.", "not_git");
             try {
-                if (resume) {
-                    const w = listWorktrees(cwd).find((x) => x.managed && x.exists && x.branch && (resolve(x.path) === resolve(resume) || realPath(x.path) === realPath(resume)));
-                    if (!w) throw new RpcError(`${resume} isn't a worktree Cavvy made in this repository.`, "worktree_failed");
-                    made = { path: w.path, branch: w.branch! };
-                } else {
+                const w = resume ? listWorktrees(cwd).find((x) => x.managed && x.exists && x.branch && (resolve(x.path) === resolve(resume) || realPath(x.path) === realPath(resume))) : undefined;
+                if (w) made = { path: w.path, branch: w.branch! };
+                else if (asked) throw new RpcError(`${asked} isn't a worktree Cavvy made in this repository.`, "worktree_failed");
+                else {
+                    // None asked for, or the one remembered is gone: a new one.
                     const r = await createWorktreeWithHooks({ path: cwd, branch: taskBranch(cwd, taskSlug(title)) }, this.o.log);
                     made = { path: r.path, branch: r.branch };
                 }
@@ -2006,6 +2015,8 @@ export class Engine {
             there = candidate && isDir(candidate) && isInside(realPath(candidate), realPath(made.path)) ? candidate : made.path;
         }
         const worktree = made ? { path: made.path, branch: made.branch } : undefined;
+        // Kept until a start of it succeeds.
+        if (worktree) this.taskWorktrees.set(origin.key, worktree);
         const failed = (e: unknown, sessionId?: string, code?: string): StartTaskResult => {
             const c = code ?? (e instanceof RpcError ? e.code : undefined);
             return { sessionId, title, cwd: there, ...(worktree ? { worktree } : {}), failed: { message: redact((e as Error).message), ...(c ? { code: c } : {}), ...(c === "needs_trust" ? { folder: (e as RpcError).folder ?? there } : {}) } };
@@ -2025,6 +2036,12 @@ export class Engine {
         // Failed once it's made: it goes (nothing is in it), so Start again makes it afresh; a worktree stays, to resume.
         const abandon = async (e: unknown, code: string): Promise<StartTaskResult> => {
             this.runtimes.get(next.id) === next && (await this.unload(next).catch(() => undefined));
+            // What it left beside it (its ui log, file history) goes too: it never was a session of the user's.
+            try {
+                removeUnsavedSession(dirname(next.session.path), next.id);
+            } catch (err) {
+                this.o.log?.(`suggested task ${next.id}: ${redact((err as Error).message)}`);
+            }
             this.refusedTasks.delete(next.id);
             this.decidingTasks.delete(next.id);
             const r = failed(e, undefined, code);
@@ -2052,7 +2069,7 @@ export class Engine {
             const note = [`This task was suggested by the agent in session ${from} (“${origin.title}”) while it worked on something else; the user started it. To ask that agent what it saw, you can send a message to session ${from} (SendToSession, or send_to_session among Cavvy's tools); it may be refused.`];
             // The suggester's prompt names the checkout it worked in.
             const top = made && gitRoot(cwd);
-            if (made && top) note.push(`You're working in a new worktree of ${top}, at ${made.path}: paths under ${top} mean the same files in this worktree.`);
+            if (made && top) note.push(`You're working in a new worktree of ${top}, at ${made.path}: paths in ${top} outside this worktree mean the same files here.`);
             next.agent?.addReminder(note.join("\n\n"));
             // A UserPromptSubmit hook may refuse it before it's kept. With such hooks this start waits for them (up to
             // a bound), and a refusal is its failure: the session goes, and the card says why. Refused after that (a
@@ -2069,7 +2086,8 @@ export class Engine {
                 updateStore((s) => {
                     s.suggestedTasks = (s.suggestedTasks ?? []).filter((t) => t.session !== next.id);
                 });
-                if (waiting) runEnded(next.session.messageCount === 0 && !next.queuedCount);
+                // Nothing kept, queued (the user's) or to be delivered (another session's message, a watch's event).
+                if (waiting) runEnded(next.session.messageCount === 0 && !next.queuedCount && !next.toolState.wakes?.size);
                 else this.draft(next, prompt);
             };
             let decided!: () => void;
@@ -2086,13 +2104,15 @@ export class Engine {
                 // window's call has no timeout of its own and the card shows Starting… until it's answered.
                 const longest = Math.max(...hooks.map((h) => (h.timeout === undefined ? Infinity : h.timeout * 1000)));
                 let timer: ReturnType<typeof setTimeout> | undefined;
-                const late = await Promise.race([decision.then(() => false), turn.then(() => false, () => false), new Promise<boolean>((r) => (timer = setTimeout(() => r(true), Math.min(TASK_VERDICT_MAX_MS, longest + TASK_VERDICT_MARGIN_MS))))]);
+                const bound = Math.min(this.o.taskVerdictMaxMs ?? TASK_VERDICT_MAX_MS, longest + TASK_VERDICT_MARGIN_MS);
+                const late = await Promise.race([decision.then(() => false), turn.then(() => false, () => false), new Promise<boolean>((r) => (timer = setTimeout(() => r(true), bound)))]);
                 clearTimeout(timer);
                 if (late) waiting = false;
             }
             void turn.catch((e) => this.o.log?.(`suggested task ${next.id}: ${redact((e as Error).message)}`));
             // That run's end, not what was queued behind it.
-            if (blocked !== undefined) discard = await ended;
+            // Ended without ran saying so (the run threw after the refusal): kept, as one used meanwhile is.
+            if (blocked !== undefined) discard = await Promise.race([ended, turn.then(() => false, () => false)]);
         } catch (e) {
             return await abandon(e, "send_failed");
         }
@@ -2106,6 +2126,8 @@ export class Engine {
                 s.suggestedTasks = [{ key: origin.key, session: next.id, at: Date.now() }, ...(s.suggestedTasks ?? []).filter((t) => t.key !== origin.key)].slice(0, MAX_SUGGESTED_TASKS);
             });
         }
+        // A session is in it now: the next start of it is that session's to answer, or makes its own.
+        this.taskWorktrees.delete(origin.key);
         return { sessionId: next.id, title, cwd: there, ...(worktree ? { worktree } : {}) };
     }
 
