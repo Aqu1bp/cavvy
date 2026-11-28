@@ -247,10 +247,10 @@ export function Narration(p: { block: TextBlock }) {
     return (
         <div class={`wgroup ${open() ? "open" : ""}`} data-find={p.block.id}>
             <button class="acts-h wrow" onClick={() => setOpen(!open())} aria-expanded={open()}>
-                <ChevronRight size={14} class="chev" />
                 <span class="wtext truncate" data-find-skip>
                     “{line()}”
                 </span>
+                <ChevronRight size={13} class="chev" />
             </button>
             <Show when={open()}>
                 <div class="wkids narration">

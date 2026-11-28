@@ -1,15 +1,13 @@
-/* Model replies, in the mockup's prose rules (chat.css, "The reply"): the
-   reading size (14.5px at the default text size), full-strength text, airy
-   lines, 12px between blocks. Each block is its own .md-block (lib/markdown.ts). */
+/* Model replies, in the remix's prose rules (its conversation.css .md): the reading size (14.5px at the default text
+   size), airy lines, 11px between blocks. Each block is its own .md-block (lib/markdown.ts). */
 
 .md {
-    font-size: 1.036rem;
-    line-height: 1.62;
-    color: var(--fg);
+    font-size: var(--chat-size);
+    line-height: 1.65;
     overflow-wrap: anywhere;
     display: flex;
     flex-direction: column;
-    gap: calc(12 * var(--sp));
+    gap: calc(11 * var(--sp));
     min-width: 0;
 }
 
@@ -42,74 +40,57 @@
 .md h3,
 .md h4 {
     margin: 0;
-    line-height: 1.3;
     font-weight: 600;
-    letter-spacing: -0.005em;
-    color: var(--fg);
-}
-
-/* A heading's block: more room above it than between paragraphs, less under
-   it, so it reads with what follows. (The block, not the heading: a block's
-   first and last child have no margins of their own.) */
-.md > .md-block:has(> :is(h1, h2, h3, h4)) {
-    margin-bottom: calc(-4 * var(--sp));
-}
-
-.md > .md-block:not(:first-child):has(> :is(h1, h2, h3, h4)) {
-    margin-top: calc(10 * var(--sp));
+    letter-spacing: -0.012em;
+    line-height: 1.3;
 }
 
 .md h1 {
-    font-size: 1.2em;
-    letter-spacing: -0.01em;
+    font-size: 1.429rem;
 }
 
 .md h2 {
-    font-size: 1.1em;
-    letter-spacing: -0.01em;
+    font-size: 1.214rem;
 }
 
 .md h3 {
-    font-size: 1.035em;
+    font-size: 1.071rem;
 }
 
 .md h4 {
-    font-size: 0.93em;
-    color: var(--fg-2);
+    font-size: 1.036rem;
+}
+
+/* A heading's block: more room above it than between paragraphs (24px, 18px for the smaller two). */
+.md > .md-block:not(:first-child):has(> :is(h1, h2)) {
+    margin-top: calc(13 * var(--sp));
+}
+
+.md > .md-block:not(:first-child):has(> :is(h3, h4)) {
+    margin-top: calc(7 * var(--sp));
 }
 
 .md ul,
 .md ol {
     margin: 0;
-    padding-left: 1.25em;
-    display: flex;
-    flex-direction: column;
-    gap: calc(6 * var(--sp));
+    padding-left: calc(22 * var(--sp));
 }
 
-.md li {
-    padding-left: 0.2em;
+.md li + li {
+    margin-top: calc(5 * var(--sp));
 }
 
-/* Bullets are quiet; numbers are read, so they keep a text colour. */
+.md li > :is(ul, ol) {
+    margin-top: calc(6 * var(--sp));
+}
+
 .md li::marker {
     color: var(--fg-3);
 }
 
-.md ul > li::marker {
-    color: var(--fg-4);
-}
-
-/* A nested list is the detail: closer, a step quieter, with dashes. */
-.md li > :is(ul, ol) {
-    margin-top: calc(6 * var(--sp));
-    gap: calc(4 * var(--sp));
-    color: var(--fg-2);
-}
-
-/* As list-style-type, not ::marker's content: WebKit (the app's WKWebView) ignores content there. */
-.md li > ul {
-    list-style-type: "–  ";
+.md ol > li::marker {
+    font-variant-numeric: tabular-nums;
+    font-size: 0.93em;
 }
 
 .md li > p {
@@ -118,31 +99,28 @@
 
 .md strong {
     font-weight: 600;
-    color: var(--fg);
 }
 
 .md :not(pre) > code {
     font-family: var(--font-mono);
-    font-size: 0.85em;
+    font-size: 0.875em;
     padding: calc(1.5 * var(--sp)) calc(5 * var(--sp));
     border-radius: calc(5 * var(--sp));
-    color: var(--fg);
     background: color-mix(in srgb, var(--fg) 8%, transparent);
     overflow-wrap: anywhere;
 }
 
 .md blockquote {
     margin: 0;
-    padding: 0.1em 0 0.1em 1em;
-    border-left: 2px solid var(--line);
+    padding-left: calc(14 * var(--sp));
+    border-left: 2px solid var(--line-strong);
     color: var(--fg-2);
 }
 
 .md hr {
     border: 0;
-    height: 1px;
-    background: var(--line);
-    margin: 0.6em 0;
+    border-top: 1px solid var(--line);
+    margin: calc(7 * var(--sp)) 0;
 }
 
 .md a {
@@ -151,25 +129,25 @@
     text-underline-offset: 2px;
 }
 
-/* A file the session has: opens in the editor. */
+/* A file the session has: opens in the editor. Named in code, the link's words are mono, without the code's fill. */
 .md a.md-file {
     cursor: pointer;
 }
 
-/* A file named in code: the link's words, in mono. */
 .md a.md-file > code {
     padding: 0;
     background: none;
     color: inherit;
 }
 
+/* An image a reply links to: not loaded by itself, a pill that opens it. */
 .md .md-image {
     display: inline-flex;
     align-items: center;
     gap: calc(4 * var(--sp));
     padding: 1px calc(8 * var(--sp));
-    border-radius: var(--pill);
-    background: var(--sheet-2);
+    border-radius: var(--radius-sm);
+    background: var(--hover);
     color: var(--fg-2);
     font-size: 0.86em;
     text-decoration: none;
@@ -183,18 +161,17 @@
 /* A local image file a reply links to, filled in once the server has read it. */
 .md img.md-img {
     display: block;
-    max-width: 100%;
+    max-width: min(100%, 440 * var(--sp));
     max-height: calc(480 * var(--sp));
-    margin: calc(4 * var(--sp)) 0;
-    border-radius: var(--r-card);
-    box-shadow: 0 0 0 0.5px var(--line);
+    border-radius: calc(9 * var(--sp));
+    box-shadow: 0 0 0 1px var(--line);
     cursor: zoom-in;
 }
 
 .md img.md-img:not([src]) {
     width: calc(240 * var(--sp));
     height: calc(135 * var(--sp));
-    background: var(--sheet-2);
+    background: var(--hover);
 }
 
 .md img.md-img:focus-visible {
@@ -202,8 +179,7 @@
     outline-offset: 2px;
 }
 
-/* Tables: a card on the sheet with a hairline edge (a border, which the
-   header row's fill can't cover), a quiet header row, hairlines between rows. */
+/* Tables: a hairline frame (a border, which the header row's fill can't cover), a quiet header row. */
 .md-table {
     overflow-x: auto;
     border: 1px solid var(--line);
@@ -211,9 +187,9 @@
 }
 
 .md table {
-    border-collapse: collapse;
     width: 100%;
-    font-size: 0.93em;
+    border-collapse: collapse;
+    font-size: 0.964rem;
     line-height: 1.45;
 }
 
@@ -221,8 +197,8 @@
 .md td {
     padding: calc(7 * var(--sp)) calc(12 * var(--sp));
     text-align: left;
-    border-bottom: 1px solid var(--line);
     vertical-align: top;
+    border-bottom: 1px solid var(--line);
     overflow-wrap: break-word;
 }
 
@@ -235,9 +211,9 @@
 
 .md th {
     background: var(--well-head);
+    color: var(--fg-2);
     font-size: 0.857rem;
     font-weight: 500;
-    color: var(--fg-2);
 }
 
 .md tr:last-child td {
@@ -259,42 +235,37 @@
     font-variant-numeric: tabular-nums;
 }
 
-/* Code blocks: a tinted card with a hairline edge. */
-.md .md-pre {
-    box-shadow: inset 0 0 0 1px var(--line);
-}
-
-.md .md-pre,
-.md .code:not(.bare) .code-body {
-    padding: calc(12 * var(--sp)) calc(14 * var(--sp));
-    font: 0.893rem/1.65 var(--font-mono);
-}
-
+/* Code in a list or a table (lib/markdown.ts), not a code block: a well with the code block's body. */
 .md .md-pre {
     margin: 0;
-    background: var(--sheet-2);
+    padding: calc(12 * var(--sp)) calc(14 * var(--sp));
     border-radius: var(--r-card);
+    background: var(--well);
+    box-shadow: inset 0 0 0 1px var(--line);
+    font: var(--code-size)/1.6 var(--font-mono);
     overflow-x: auto;
 }
 
+/* A task: a box, ticked when done. */
 .md-check {
     display: inline-block;
     width: calc(13 * var(--sp));
     height: calc(13 * var(--sp));
-    border-radius: calc(4 * var(--sp));
-    border: 1.5px solid var(--fg-4);
+    margin-right: calc(8 * var(--sp));
+    border-radius: calc(3 * var(--sp));
+    box-shadow: inset 0 0 0 1px var(--line-strong);
+    background: var(--raised);
     vertical-align: -1px;
-    margin-right: calc(6 * var(--sp));
 }
 
 .md-check.on {
-    background: var(--ok);
-    border-color: var(--ok);
+    background: var(--accent) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 6.2l2.4 2.3 4.6-5' fill='none' stroke='white' stroke-width='1.8'/%3E%3C/svg%3E") center / 80% no-repeat;
+    box-shadow: none;
 }
 
 .md li:has(> .md-check) {
     list-style: none;
-    margin-left: -1.25em;
+    margin-left: calc(-20 * var(--sp));
 }
 
 /* While the reply streams, what has just come out is drawn faint and inks in over about 350ms: an ink trail.

@@ -286,25 +286,24 @@
 .user-row {
     position: relative;
     align-self: flex-end;
-    max-width: min(82%, 600 * var(--sp));
+    max-width: 82%;
     min-width: 0;
     display: flex;
     flex-direction: column;
     align-items: flex-end;
-    margin-bottom: calc(16 * var(--sp));
+    gap: calc(6 * var(--sp));
+    margin-bottom: calc(12 * var(--sp));
 }
 
-/* "Steered in": sent while it worked, it joined the work at its next step. */
-.steered-tag {
-    align-self: flex-end;
+/* "Steered in" (sent while it worked, it joined the work at its next step), "Scheduled": a small word over it. */
+.steered-tag,
+.prompt-scheduled {
     display: inline-flex;
     align-items: center;
     gap: calc(5 * var(--sp));
-    margin: 0 calc(4 * var(--sp)) calc(5 * var(--sp)) 0;
+    color: var(--fg-3);
     font-size: 0.821rem;
-    font-weight: 600;
-    color: var(--steer);
-    animation: fade 300ms var(--ease) 260ms both;
+    font-weight: 500;
 }
 
 /* Started by an event the agent asked to be woken for. */
@@ -377,18 +376,13 @@
 .user-bubble {
     min-width: 0;
     max-width: 100%;
-    background: var(--bubble);
+    padding: calc(10 * var(--sp)) calc(15 * var(--sp));
     border-radius: calc(14 * var(--sp)) calc(14 * var(--sp)) calc(4 * var(--sp)) calc(14 * var(--sp));
-    padding: calc(12 * var(--sp)) calc(16 * var(--sp));
-    font-size: 1.036rem;
+    background: var(--bubble);
+    font-size: var(--chat-size);
     line-height: 1.55;
-    color: var(--fg);
     white-space: pre-wrap;
     overflow-wrap: anywhere;
-}
-
-.user-row > .user-bubble {
-    padding: calc(10 * var(--sp)) calc(15 * var(--sp));
 }
 
 /* Time, Copy and Rewind, with the pointer, in the gap under the bubble. */
@@ -405,7 +399,7 @@
     color: var(--fg-3);
     font-size: 0.821rem;
     opacity: 0;
-    transition: opacity 120ms;
+    transition: opacity 0.12s;
 }
 
 .user-row:hover .user-actions,
@@ -435,15 +429,6 @@
     color: var(--fg);
 }
 
-.prompt-scheduled {
-    display: flex;
-    align-items: center;
-    gap: calc(5 * var(--sp));
-    margin: 0 calc(4 * var(--sp)) calc(5 * var(--sp)) 0;
-    font-size: 0.857rem;
-    color: var(--fg-3);
-}
-
 .user-bubble.clamped .user-text {
     display: -webkit-box;
     -webkit-line-clamp: 14;
@@ -452,22 +437,18 @@
 }
 
 .user-bubble .more {
-    display: flex;
-    margin-top: calc(6 * var(--sp));
-    color: var(--fg-2);
+    display: block;
+    margin-top: calc(4 * var(--sp));
 }
 
-.user-bubble.command .user-text {
+.user-bubble.command .user-text,
+.user-bubble .user-text.mono {
     font-family: var(--font-mono);
-    font-size: 0.929rem;
+    font-size: calc(var(--chat-size) - 1.5 * var(--sp));
 }
 
 .user-bubble.shell {
     background: color-mix(in srgb, var(--ok) 7%, var(--bubble));
-}
-
-.user-bubble .user-text.mono {
-    font-size: 0.929rem;
 }
 
 .user-bubble .user-text.mono svg {
@@ -476,14 +457,13 @@
     margin-right: calc(2 * var(--sp));
 }
 
-/* Attachments: above the bubble, at the right. Small pills, and thumbnails for images. */
+/* Attachments: above the bubble, at the right. A file is a small tile, an image a thumbnail. */
 .prompt-attachments {
     display: flex;
     flex-wrap: wrap;
     justify-content: flex-end;
     align-items: center;
     gap: calc(6 * var(--sp));
-    margin-bottom: calc(6 * var(--sp));
     white-space: normal;
 }
 
@@ -491,18 +471,18 @@
     height: calc(26 * var(--sp));
     max-width: calc(280 * var(--sp));
     gap: calc(6 * var(--sp));
-    padding: 0 calc(10 * var(--sp)) 0 calc(8 * var(--sp));
-    border-radius: var(--pill);
-    background: var(--bubble);
-    box-shadow: none;
+    padding: 0 calc(9 * var(--sp));
+    border-radius: var(--radius-sm);
+    background: var(--hover);
+    box-shadow: inset 0 0 0 1px var(--line);
     font-size: 0.857rem;
     font-weight: 400;
-    color: var(--fg-2);
+    color: var(--fg);
 }
 
 .prompt-attachments .chip svg {
-    color: var(--fg-3);
     flex: none;
+    color: var(--fg-3);
 }
 
 .prompt-attachments .chip .truncate {
@@ -510,41 +490,34 @@
     max-width: calc(180 * var(--sp));
 }
 
-/* As tall as the row, as wide as the image's shape (within limits): a strip or a tall page is letterboxed whole,
-   never cropped to its middle, which can be all background. */
+/* As tall as the remix's thumbnail, as wide as the image's shape (within limits): a strip or a tall page is shown
+   whole, never cropped to its middle, which can be all background. */
 .prompt-image {
     display: inline-grid;
     place-items: center;
     min-width: calc(56 * var(--sp));
-    height: calc(76 * var(--sp));
+    height: calc(96 * var(--sp));
     padding: 0;
-    border: 0;
-    border-radius: calc(12 * var(--sp));
+    border-radius: var(--r-well);
     overflow: hidden;
-    background: var(--bubble);
-    box-shadow: inset 0 0 0 0.5px var(--line);
+    background: var(--hover);
+    box-shadow: inset 0 0 0 1px var(--line);
     cursor: zoom-in;
 }
 
 .prompt-image img {
     display: block;
-    width: auto;
     max-width: calc(220 * var(--sp));
-    height: calc(76 * var(--sp));
+    height: calc(96 * var(--sp));
     object-fit: contain;
 }
 
-/* Its place while it comes, at its shape. */
 .prompt-image.wait {
     cursor: default;
 }
 
 .prompt-image.sized img {
     width: 100%;
-}
-
-.prompt-image:hover img {
-    opacity: 0.88;
 }
 
 .prompt-image:focus-visible {
@@ -557,49 +530,45 @@
     position: relative;
     display: flex;
     flex-direction: column;
-    gap: calc(8 * var(--sp));
+    gap: calc(12 * var(--sp));
     min-width: 0;
 }
 
-.reply > .md {
-    margin: calc(4 * var(--sp)) 0;
-}
-
-.reply > .md + .md {
-    margin-top: calc(2 * var(--sp));
-}
-
-/* A disclosure line: "Read 3 files and searched once", "Worked for 1m 12s", "Thought for 41s". */
-.acts-h {
+/* A disclosure line: "Read 3 files and searched once", "Worked for 1m 12s", "Thought for 41s" (the remix's .tools-head). */
+.acts-h,
+.run-h {
     align-self: flex-start;
     display: inline-flex;
     align-items: center;
-    gap: calc(6 * var(--sp));
-    max-width: calc(100% + 4 * var(--sp));
-    min-height: calc(26 * var(--sp));
+    gap: calc(7 * var(--sp));
+    max-width: calc(100% + 7 * var(--sp));
     margin-left: calc(-7 * var(--sp));
-    padding: 0 calc(7 * var(--sp));
+    padding: calc(4 * var(--sp)) calc(7 * var(--sp));
     border-radius: var(--radius-sm);
     font-size: 0.929rem;
     color: var(--fg-2);
     text-align: left;
     white-space: nowrap;
     overflow: hidden;
-    transition: background 140ms, color 140ms;
+    transition: background 0.12s, color 0.12s;
 }
 
-.acts-h:hover {
+.acts-h:hover,
+.run-h:hover {
     background: var(--hover);
     color: var(--fg);
 }
 
-.acts-h .chev {
+.acts-h .chev,
+.run-h .chev {
     flex: none;
-    transition: transform 220ms var(--ease);
+    color: var(--fg-3);
+    transition: transform 0.14s var(--ease);
 }
 
 .acts.open > .acts-h .chev,
 .wgroup.open > .acts-h .chev,
+.run.open > .run-h .chev,
 .fold[aria-expanded="true"] .chev {
     transform: rotate(90deg);
 }
@@ -624,11 +593,6 @@
 
 .acts-h .stat {
     font-size: 0.857rem;
-}
-
-/* "Worked for 2m 5s": a finished turn's work, folded. */
-.acts-h.worked {
-    margin-bottom: calc(4 * var(--sp));
 }
 
 /* Come in as the turn it ends finishes, not each time a finished one is built. */
@@ -904,7 +868,7 @@
 
 .turn-foot .copy-btn {
     opacity: 0;
-    transition: opacity 120ms;
+    transition: opacity 0.12s;
 }
 
 .turn:hover .turn-foot .copy-btn,
@@ -1417,27 +1381,6 @@
     min-width: 0;
 }
 
-.run-h {
-    align-self: flex-start;
-    display: inline-flex;
-    align-items: center;
-    gap: calc(7 * var(--sp));
-    max-width: calc(100% + 7 * var(--sp));
-    min-height: calc(26 * var(--sp));
-    margin-left: calc(-7 * var(--sp));
-    padding: 0 calc(7 * var(--sp));
-    border-radius: var(--radius-sm);
-    font-size: 0.929rem;
-    color: var(--fg-2);
-    text-align: left;
-    white-space: nowrap;
-}
-
-.run-h:hover {
-    background: var(--hover);
-    color: var(--fg);
-}
-
 .run-h:focus-visible {
     outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
     outline-offset: 2px;
@@ -1485,25 +1428,7 @@
 }
 
 .run-h .stat {
-    display: inline-flex;
-    gap: calc(5 * var(--sp));
-    flex: none;
-    font-size: 0.857rem;
-    font-variant-numeric: tabular-nums;
-}
-
-.run-h .chev {
-    flex: none;
-    color: var(--fg-4);
-    transition: transform 220ms var(--ease), color 140ms;
-}
-
-.run-h:hover .chev {
-    color: var(--fg-3);
-}
-
-.run.open > .run-h .chev {
-    transform: rotate(90deg);
+    margin-left: 2px;
 }
 
 /* Opened: the run's steps, a row each, on a hairline down their left. */
@@ -1533,21 +1458,21 @@
     display: none;
 }
 
+/* In a list, a row is the remix's .tool-row: the list's width, 30px, the open one filled. */
 .steps .tool-line {
-    gap: var(--row-gap);
-    min-height: var(--row-h);
     width: 100%;
+    min-height: var(--row-h);
     margin-left: 0;
-    border-radius: 0;
-    /* Its result ends where a command's does (.cmd-h: its chevron column), with the Open button's room after it. */
     padding: 0 calc(3 * var(--sp)) 0 var(--row-x);
-    color: var(--fg-2);
+    border-radius: 0;
+    background: none;
 }
 
 /* The row is the whole width of the list: its Open button sits in it, not after it. */
 .steps .tool-head {
     position: relative;
     border-radius: var(--radius-sm);
+    transition: background 0.1s;
 }
 
 .steps .tool-head:hover,
@@ -1555,39 +1480,12 @@
     background: var(--hover);
 }
 
-.steps .tool-line:hover,
-.steps .tool.open > .tool-head > .tool-line {
-    color: var(--fg-2);
-    background: none;
-}
-
 .steps .tool-icon {
     width: var(--row-ic);
-    height: var(--row-ic);
-}
-
-.steps .tool-arg {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    font-size: 0.857rem;
-    color: var(--fg);
-}
-
-.steps .tool-meta {
-    flex: none;
-    margin-left: auto;
-    padding-left: calc(8 * var(--sp));
-    font-variant-numeric: tabular-nums;
 }
 
 .steps .tool-head > .row-open {
     margin: 0 calc(8 * var(--sp)) 0 0;
-}
-
-/* What a call returned, opened: wells under its row, inset like the row. */
-.steps .tool-detail {
-    padding: calc(6 * var(--sp)) 0 calc(10 * var(--sp)) calc(8 * var(--sp));
 }
 
 /* A finished thought, among the steps: "Thought for 4s", a row like the others, its chevron where their icons are. */
@@ -1707,8 +1605,17 @@
     border-left: 1px solid var(--line);
 }
 
+/* What was said on the way, opened: in full, a step quieter. */
 .wkids.narration {
-    padding: calc(4 * var(--sp)) 0 calc(4 * var(--sp)) calc(18 * var(--sp));
+    margin: 0;
+    padding: calc(4 * var(--sp)) 0;
+    border: 0;
+    color: var(--fg-2);
+}
+
+.wkids.narration .md {
+    font-size: 0.964rem;
+    line-height: 1.6;
 }
 
 .wkids .tool-detail {
@@ -1759,63 +1666,65 @@
     min-width: 0;
 }
 
-/* One call: its icon, what it did, where, and a word on how it went. */
+/* One call (the remix's .tool-row): its icon, what it did, where, and at the end a word on how it went. */
 .tool-line {
     display: flex;
     align-items: center;
     gap: calc(8 * var(--sp));
-    width: calc(100% + 6 * var(--sp));
-    min-height: calc(26 * var(--sp));
-    margin-left: calc(-6 * var(--sp));
-    padding: 0 calc(6 * var(--sp));
-    border-radius: calc(8 * var(--sp));
+    width: calc(100% + 8 * var(--sp));
+    min-width: 0;
+    height: calc(30 * var(--sp));
+    margin-left: calc(-8 * var(--sp));
+    padding: 0 calc(8 * var(--sp));
+    border-radius: var(--radius-sm);
     font-size: 0.929rem;
     color: var(--fg-2);
-    min-width: 0;
     text-align: left;
     white-space: nowrap;
-    transition: background 140ms, color 140ms;
+    transition: background 0.1s;
 }
 
 .tool-line:hover,
 .tool.open > .tool-head > .tool-line {
-    color: var(--fg);
     background: var(--hover);
 }
 
 .tool-icon {
-    display: grid;
-    place-items: center;
+    display: inline-flex;
     flex: none;
     color: var(--fg-3);
 }
 
+.wrow.live .tool-icon {
+    color: var(--accent);
+}
+
 .tool-verb {
     flex: none;
-    color: inherit;
+    color: var(--fg-2);
 }
 
 .tool-arg {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
     font-family: var(--font-mono);
     font-size: 0.857rem;
     color: var(--fg);
 }
 
-.activity-step.live .tool-arg {
-    color: var(--fg);
-}
-
 .tool-meta {
-    display: flex;
+    display: inline-flex;
     align-items: center;
     gap: calc(8 * var(--sp));
-    color: var(--fg-3);
-    font-size: 0.857rem;
+    flex: none;
     min-width: 0;
-}
-
-.tool-meta .stat {
-    font-size: 0.857rem;
+    margin-left: auto;
+    padding-left: calc(8 * var(--sp));
+    color: var(--fg-3);
+    font-size: 0.821rem;
+    font-variant-numeric: tabular-nums;
 }
 
 .wrow.live .wverb {
@@ -1968,28 +1877,34 @@
     outline-offset: 2px;
 }
 
-/* Opened: the call's details, under its row. */
+/* Opened: the call's details, under its row, in the remix's tool card: a section each ("Input", "Output"). */
 .tool-detail {
-    padding: calc(4 * var(--sp)) 0 calc(10 * var(--sp)) calc(22 * var(--sp));
     display: flex;
     flex-direction: column;
-    gap: calc(10 * var(--sp));
+    gap: calc(8 * var(--sp));
+    padding: calc(6 * var(--sp)) 0 calc(10 * var(--sp)) calc(8 * var(--sp));
 }
 
-.detail-section {
-    display: flex;
-    flex-direction: column;
-    gap: calc(5 * var(--sp));
+.tool-card {
+    border-radius: calc(9 * var(--sp));
+    background: var(--well);
+    box-shadow: inset 0 0 0 1px var(--line);
+    overflow: hidden;
 }
 
-.detail-label {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    font-size: 0.786rem;
-    font-weight: 600;
-    color: var(--fg-3);
-    letter-spacing: 0.01em;
+.tool-card > :not(.tsec, .diff) {
+    margin: calc(8 * var(--sp)) calc(12 * var(--sp));
+}
+
+.tool-card :is(.term, .code.bare) {
+    border-radius: 0;
+    background: none;
+    box-shadow: none;
+}
+
+.tool-card .tsec > :is(.term, .detail-q, .md),
+.tool-card .tsec .code-body {
+    padding: 0 calc(12 * var(--sp)) calc(10 * var(--sp));
 }
 
 .detail-q {
@@ -2142,12 +2057,15 @@
     min-height: var(--row-h);
     padding: 0 calc(12 * var(--sp)) 0 var(--row-x);
     border-radius: var(--radius-sm);
+    font-size: 0.929rem;
     color: var(--fg-2);
     cursor: default;
     outline: none;
+    transition: background 0.1s;
 }
 
 .edit-card > .tcard-h[role="button"]:hover,
+.edit-card.open > .tcard-h,
 .edit-card > .tcard-h:focus-visible {
     background: var(--hover);
 }
@@ -2196,7 +2114,7 @@
     min-width: 0;
     margin-left: auto;
     padding-left: calc(8 * var(--sp));
-    font-size: 0.857rem;
+    font-size: 0.821rem;
     font-variant-numeric: tabular-nums;
     color: var(--fg-3);
 }
@@ -2343,6 +2261,7 @@
     white-space: nowrap;
     cursor: default;
     outline: none;
+    transition: background 0.1s;
 }
 
 .run-rows > .cmd-row {
@@ -2367,6 +2286,7 @@
 }
 
 .cmd-row > .cmd-h:hover,
+.cmd-row.open > .cmd-h,
 .cmd-row > .cmd-h:focus-visible {
     background: var(--hover);
 }
@@ -2410,7 +2330,7 @@
     display: flex;
     align-items: center;
     gap: calc(8 * var(--sp));
-    font-size: 0.857rem;
+    font-size: 0.821rem;
     font-variant-numeric: tabular-nums;
     color: var(--fg-3);
 }
@@ -2556,13 +2476,14 @@
     font-family: inherit;
 }
 
+/* Opened: the remix's tool card. "Command" over the command after "$", "Output" over what it printed, then how it
+   ended, on the card's foot. */
 .cmd-body {
     margin: calc(6 * var(--sp)) 0 calc(10 * var(--sp)) calc(8 * var(--sp));
-    border-radius: var(--r-well);
+    border-radius: calc(9 * var(--sp));
     background: var(--well);
     box-shadow: inset 0 0 0 1px var(--line);
     overflow: hidden;
-    font: 0.857rem/1.65 var(--font-mono);
     animation: cmd-open var(--dur-panel) var(--ease);
 }
 
@@ -2573,33 +2494,41 @@
     }
 }
 
-.cmd-in,
-.cmd-out {
-    position: relative;
+.tsec + .tsec {
+    border-top: 1px solid var(--line);
+}
+
+.tsec-head {
     display: flex;
-    gap: calc(8 * var(--sp));
-    padding: calc(10 * var(--sp)) calc(40 * var(--sp)) calc(10 * var(--sp)) calc(14 * var(--sp));
-}
-
-.cmd-in {
-    border-bottom: 0.5px solid var(--line);
-}
-
-.cmd-in .ps {
-    color: var(--fg-4);
-    user-select: none;
-    -webkit-user-select: none;
+    align-items: center;
+    justify-content: space-between;
+    height: calc(28 * var(--sp));
+    padding: 0 calc(6 * var(--sp)) 0 calc(12 * var(--sp));
+    color: var(--fg-3);
+    font-size: 0.821rem;
+    font-weight: 500;
 }
 
 .cmd-body pre {
     margin: 0;
-    min-width: 0;
-    flex: 1;
-    font: inherit;
+    font-family: var(--font-mono);
+    tab-size: 4;
+}
+
+.cmd-text {
+    padding: 0 calc(12 * var(--sp)) calc(9 * var(--sp));
+    font-size: 0.893rem;
+    font-weight: 500;
+    line-height: 1.5;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
-    tab-size: 4;
-    color: var(--fg);
+}
+
+.cmd-in .ps {
+    color: var(--ok);
+    font-weight: 600;
+    user-select: none;
+    -webkit-user-select: none;
 }
 
 .cmd-in .f { color: var(--syn-function); }
@@ -2610,9 +2539,13 @@
 .cmd-in .hd { color: var(--fg-2); }
 
 .cmd-out pre {
-    max-height: calc(240 * var(--sp));
+    max-height: calc(300 * var(--sp));
+    padding: 0 calc(12 * var(--sp)) calc(10 * var(--sp));
     overflow: auto;
     color: var(--fg-2);
+    font-size: 0.857rem;
+    line-height: 1.55;
+    white-space: pre;
 }
 
 .cmd-out .er {
@@ -2624,36 +2557,32 @@
 }
 
 .cmd-out .none {
+    margin: 0;
+    padding: 0 calc(12 * var(--sp)) calc(10 * var(--sp));
     color: var(--fg-3);
-    font-family: var(--font-ui);
-}
-
-/* An opened command's one Copy, for the command, in its top-right corner. */
-.cmd-in .cp {
-    position: absolute;
-    top: calc(6 * var(--sp));
-    right: calc(6 * var(--sp));
+    font-size: 0.893rem;
 }
 
 .cmd-foot {
     display: flex;
     align-items: center;
-    gap: calc(6 * var(--sp));
+    gap: calc(12 * var(--sp));
     min-height: calc(30 * var(--sp));
-    padding: calc(2 * var(--sp)) calc(8 * var(--sp)) calc(2 * var(--sp)) calc(14 * var(--sp));
-    border-top: 0.5px solid var(--line);
-    font: 0.821rem var(--font-ui);
+    padding: 0 calc(6 * var(--sp)) 0 calc(12 * var(--sp));
+    border-top: 1px solid var(--line);
+    background: var(--well-head);
     color: var(--fg-3);
-    font-variant-numeric: tabular-nums;
+    font-size: 0.821rem;
 }
 
-.cmd-foot .grow {
-    flex: 1;
+.cmd-foot .link-btn {
+    margin-left: auto;
 }
 
-.cmd-foot .exit {
+/* "Exit 1": the kit's .pill, red. */
+.pill.red {
+    background: var(--danger-soft);
     color: var(--danger);
-    font-weight: 600;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -3049,10 +2978,10 @@
 
 .code-body {
     margin: 0;
-    padding: calc(10 * var(--sp)) calc(14 * var(--sp));
+    padding: calc(12 * var(--sp)) calc(14 * var(--sp));
     overflow: auto;
-    font: 0.857rem/1.7 var(--font-mono);
-    tab-size: 4;
+    font: var(--code-size)/1.6 var(--font-mono);
+    tab-size: 2;
     color: var(--shiki-foreground);
 }
 
@@ -4022,45 +3951,42 @@
     color: var(--fg-2);
 }
 
-/* Sent with a prompt: under its text, in the bubble. */
+/* Review comments sent with a prompt: under its text, in the bubble, a small card each. */
 .prompt-comments {
     display: flex;
     flex-direction: column;
-    gap: calc(6 * var(--sp));
+    gap: calc(4 * var(--sp));
     margin-top: calc(8 * var(--sp));
 }
 
 .prompt-comment {
     display: flex;
-    flex-direction: column;
-    gap: calc(2 * var(--sp));
+    align-items: baseline;
+    gap: calc(10 * var(--sp));
     padding: calc(6 * var(--sp)) calc(10 * var(--sp));
-    border-radius: calc(10 * var(--sp));
-    background: color-mix(in srgb, var(--sheet) 60%, transparent);
-    box-shadow: inset 2px 0 0 var(--accent);
-    font-size: 0.9rem;
+    border-radius: var(--r-well);
+    background: var(--card);
+    box-shadow: inset 0 0 0 1px var(--line);
+    font-size: 0.929rem;
+    white-space: normal;
 }
 
 .prompt-comment-where {
     display: inline-flex;
     align-items: center;
     gap: calc(5 * var(--sp));
-    align-self: flex-start;
-    max-width: 100%;
-    padding: 0;
-    border: 0;
-    background: none;
-    color: var(--fg-2);
-    font-size: 0.78rem;
-    cursor: pointer;
+    flex: none;
+    max-width: 45%;
+    color: var(--accent-text);
+    font-size: 0.821rem;
 }
 
 .prompt-comment-where:hover {
-    color: var(--accent-text);
     text-decoration: underline;
 }
 
 .prompt-comment-text {
+    min-width: 0;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
 }
