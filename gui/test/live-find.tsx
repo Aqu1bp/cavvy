@@ -179,19 +179,19 @@ async function checkCards() {
 async function checkCommandFollow() {
     const box = root.appendChild(document.createElement("div"));
     const lines = (from: number, n: number) => Array.from({ length: n }, (_, i) => `line ${from + i}\n`).join("");
-    const [cmd, setCmd] = createStore<ToolBlock>({ t: "tool", id: "follow", name: "Bash", title: "make", input: { command: "make" }, status: "running", progress: lines(0, 15), startedAt: Date.now() });
+    const [cmd, setCmd] = createStore<ToolBlock>({ t: "tool", id: "follow", name: "Bash", title: "make", input: { command: "make" }, status: "running", progress: lines(0, 30), startedAt: Date.now() });
     const dispose = render(() => <ActivityGroup tools={[cmd]} steps={[cmd]} card="command" turnRunning />, box);
     try {
         await paint();
         // Folded until it's opened: its last line under the row, the output only once opened.
-        check(!box.querySelector(".cmd-body") && box.querySelector(".cmd-tail")?.textContent === "line 14", "follow: a running command starts folded on its last line");
+        check(!box.querySelector(".cmd-body") && box.querySelector(".cmd-tail")?.textContent === "line 29", "follow: a running command starts folded on its last line");
         box.querySelector<HTMLElement>("[role=button].cmd-h")!.click();
         await paint();
         const out = box.querySelector<HTMLElement>(".cmd-out pre")!;
         const gap = () => out.scrollHeight - out.scrollTop - out.clientHeight;
         check(out.scrollHeight > out.clientHeight, "follow fixture: output must start scrolling");
         check(gap() < 2, `follow: starts at the end (${gap()}px from it)`);
-        for (let n = 15; n < 36; n += 4) {
+        for (let n = 30; n < 51; n += 4) {
             setCmd("progress", (p) => p + lines(n, 4));
             await paint();
             check(gap() < 2, `follow: four more lines keep it at the end (${gap()}px from it, scrollHeight ${out.scrollHeight})`);
@@ -199,13 +199,13 @@ async function checkCommandFollow() {
         out.scrollTop = 0;
         out.dispatchEvent(new Event("scroll"));
         await paint();
-        setCmd("progress", (p) => p + lines(40, 4));
+        setCmd("progress", (p) => p + lines(55, 4));
         await paint();
         check(out.scrollTop === 0, `follow: a reader who scrolled up stays there (scrollTop ${out.scrollTop})`);
         out.scrollTop = out.scrollHeight;
         out.dispatchEvent(new Event("scroll"));
         await paint();
-        setCmd("progress", (p) => p + lines(44, 4));
+        setCmd("progress", (p) => p + lines(59, 4));
         await paint();
         check(gap() < 2, `follow: back at the end, it follows again (${gap()}px from it)`);
     } finally {

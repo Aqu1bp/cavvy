@@ -216,7 +216,7 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
                         <>
                             <AgentMark provider={askerProvider()} size={12} /> Requested by sub-agent ·{" "}
                             <Show when={p.it.agentId} fallback={asker()}>
-                                <button class="link-btn" tabIndex={-1} title="See what it has done so far" onClick={() => openAgents(p.it.agentId)}>
+                                <button class="link-btn" tabIndex={-1} title="See its work so far" onClick={() => openAgents(p.it.agentId)}>
                                     {asker()}
                                 </button>
                             </Show>
@@ -468,7 +468,7 @@ function PlanCard(p: { sessionId: string; it: PlanInteraction }) {
                 >
                     New worktree… <kbd>5</kbd>
                 </button>
-                <button class="btn" title="Save the plan as a Markdown file" onClick={save}>
+                <button class="btn" title="Save as Markdown" onClick={save}>
                     Save… <kbd>6</kbd>
                 </button>
             </div>

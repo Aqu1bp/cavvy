@@ -154,7 +154,7 @@ export function UserPrompt(p: { turn: Turn; sessionId?: string; onRewind?: (inde
     // Started by an event the agent asked to be woken for (a watched pull request), not by the user.
     if (p.turn.prompt?.wake) {
         return (
-            <div class="wake-row" data-find="prompt" title="The agent asked to be woken for this event">
+            <div class="wake-row" data-find="prompt" title="Woken by this event">
                 <BellRing size={13} aria-hidden="true" />
                 <span class="wake-text">{text()}</span>
             </div>
@@ -166,7 +166,7 @@ export function UserPrompt(p: { turn: Turn; sessionId?: string; onRewind?: (inde
         <div class={`user-row ${p.turn.prompt?.steered ? "steered" : ""}`}>
             {/* Sent while the turn before ran, and joined it at its next step (that turn ended for it). */}
             <Show when={p.turn.prompt?.steered}>
-                <span class="steered-tag" data-find-skip title="Sent while it worked: joined the work at its next step">
+                <span class="steered-tag" data-find-skip title="Joined at the next step">
                     <CornerDownRight size={12} aria-hidden="true" />
                     Steered in
                 </span>

@@ -1341,7 +1341,7 @@ function Diagnostics(p: { report: DiagnosticReport }) {
     };
     return (
         <Section label="Diagnostics" aside={<span class="diag-aside">{aside()}</span>}>
-            <Show when={items().length} fallback={<div class="detail-note">The problems reported before are gone.</div>}>
+            <Show when={items().length} fallback={<div class="detail-note">Earlier problems are fixed.</div>}>
                 <ul class="diag-list">
                     <For each={items()}>
                         {(i) => (

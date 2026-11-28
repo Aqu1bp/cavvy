@@ -279,7 +279,7 @@ export default function SignInCard(p: { sessionId: string; it: SignInInteraction
                                 Done <kbd>1</kbd>
                             </button>
                             <Show when={it().canSave}>
-                                <button class="btn" disabled={sending()} title="Cavvy runs it for you next time" onClick={() => void send({ action: "done", save: true })}>
+                                <button class="btn" disabled={sending()} title="Runs automatically next time" onClick={() => void send({ action: "done", save: true })}>
                                     Done, and remember <kbd>2</kbd>
                                 </button>
                             </Show>

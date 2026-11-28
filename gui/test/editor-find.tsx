@@ -121,7 +121,7 @@ export async function checkEditorFind(root: HTMLElement) {
         setFindQuery("edited.ts");
         await settle();
         check(count() === "1 of 1" && textRanges(col, "edited.ts").length === 1, "changed-files card doesn't add another match");
-        const changedAction = col.querySelector<HTMLButtonElement>(".files-card .row-open")!;
+        const changedAction = col.querySelector<HTMLButtonElement>(".chg .row-open")!;
         check(changedAction.closest("[data-find-skip]"), "changed-files editor action is excluded from find");
         changedAction.click();
         check(opened.at(-1)?.path === "src/edited.ts" && opened.at(-1)?.line === 9 && opened.at(-1)?.sessionId === sessionId, "changed-files action keeps its session, path and line");
@@ -145,7 +145,7 @@ export async function checkEditorFind(root: HTMLElement) {
         check(textRanges(col, "hide summary").length === 0 && textRanges(col, "Conversation compacted").length === 0, "compaction controls never enter highlight ranges");
 
         const shell = scope("shell");
-        const command = shell.querySelector<HTMLElement>(".shell-head code")!;
+        const command = shell.querySelector<HTMLElement>(".youran-head code")!;
         check(command.scrollWidth > command.clientWidth, "long shell command begins clipped");
         const hidden = textRanges(command, "needle")[0]!.getBoundingClientRect();
         check(hidden.left > command.getBoundingClientRect().right, "shell fixture match starts beyond the visible header");
@@ -167,7 +167,7 @@ export async function checkEditorFind(root: HTMLElement) {
 
         setFindQuery("exit");
         await settle(350);
-        const output = scope("shell-exit").querySelector(".tcard-out")!;
+        const output = scope("shell-exit").querySelector(".youran-out")!;
         check(findMatches([turn], "exit").length === 1 && textRanges(col, "exit").length === 1, "shell status badges do not add output matches");
         check(count() === "1 of 1" && current().toString() === "exit" && current().startContainer.parentElement === output, "find selects shell output instead of its exit-status badge");
         key(input, "Enter");
@@ -176,7 +176,7 @@ export async function checkEditorFind(root: HTMLElement) {
 
         setFindQuery("foobar");
         await settle(350);
-        const ansiOutput = scope("shell-ansi").querySelector(".tcard-out")!;
+        const ansiOutput = scope("shell-ansi").querySelector(".youran-out")!;
         const ansiMatches = findMatches([turn], "foobar");
         const ansiRanges = textRanges(scope("shell-ansi"), "foobar");
         check(ansiMatches.length === 2 && ansiMatches.every((m, i) => m.part === "shell-ansi" && m.n === i), "ANSI escapes do not split displayed matches");
