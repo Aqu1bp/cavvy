@@ -2014,12 +2014,21 @@ export class Engine {
         // Failed once it's made: it goes (nothing is in it), so Start again makes it afresh; a worktree stays, to resume.
         const abandon = async (e: unknown, code: string): Promise<StartTaskResult> => {
             this.runtimes.get(next.id) === next && (await this.unload(next).catch(() => undefined));
+            this.refusedTasks.delete(next.id);
             const r = failed(e, undefined, code);
             if (!made) throw new RpcError(r.failed!.message, code);
             return r;
         };
+        let modelSet: boolean;
         try {
-            if (!(await next.setModel(ref, { quiet: true }))) return await abandon(new Error("That model isn't available here. Pick another."), "model_unavailable");
+            modelSet = await next.setModel(ref, { quiet: true });
+        } catch (e) {
+            return await abandon(e, "send_failed");
+        }
+        if (!modelSet) return await abandon(new Error("That model isn't available here. Pick another."), "model_unavailable");
+        /** The reason a UserPromptSubmit hook refused the prompt while this start waited for them. */
+        let blocked: string | undefined;
+        try {
             if (effort) next.setEffort(effort as EffortLevel);
             next.rename(title);
             this.watch(client, next.id);
@@ -2027,25 +2036,38 @@ export class Engine {
             // reminder: nothing in it is read as the user's, its @mentions included).
             // As this machine names that session: on another one, by that machine's name.
             const from = origin.machine && !origin.session.includes("/") ? `${origin.machine}/${origin.session}` : origin.session;
-            next.agent?.addReminder(`This task was suggested by the agent in session ${from} (“${origin.title}”) while it worked on something else; the user started it. To ask that agent what it saw, send a message to session ${from} (SendToSession, or send_to_session among Cavvy's tools).`);
-            // A UserPromptSubmit hook that refuses it, before it's kept: the prompt goes back to its composer, and the
-            // start isn't one (Start again makes another). Esc keeps it its own way; a stop later in the turn leaves it
-            // where it was sent. Said as its own run ends, before anything queued after it runs.
+            const note = [`This task was suggested by the agent in session ${from} (“${origin.title}”) while it worked on something else; the user started it. To ask that agent what it saw, you can send a message to session ${from} (SendToSession, or send_to_session among Cavvy's tools); it may be refused.`];
+            // The suggester's prompt names the checkout it worked in.
+            const top = made && gitRoot(cwd);
+            if (made && top) note.push(`You're working in a new worktree of ${top}, at ${made.path}: paths under ${top} mean the same files in this worktree.`);
+            next.agent?.addReminder(note.join("\n\n"));
+            // A UserPromptSubmit hook may refuse it before it's kept. With such hooks this start waits for them, and a
+            // refusal is its failure: the session goes, and the card says why. When the prompt waits instead (for the
+            // account the session needs) and is refused later, it goes back to the session's composer, and the start
+            // doesn't count (Start again makes another). Said as its own run ends, before anything queued after it runs.
+            let waiting = false;
             const ran = (reason: TurnEndReason, kept: boolean) => {
                 if (reason !== "blocked" || kept) return;
                 this.refusedTasks.add(next.id);
                 updateStore((s) => {
                     s.suggestedTasks = (s.suggestedTasks ?? []).filter((t) => t.session !== next.id);
                 });
-                this.draft(next, prompt);
+                if (!waiting) this.draft(next, prompt);
             };
-            const turn = next.startTurn(prompt, { ran });
+            let decided!: () => void;
+            const decision = new Promise<void>((r) => (decided = r));
+            const hooked = Boolean(next.settings().hooks?.UserPromptSubmit?.length);
+            const turn = next.startTurn(prompt, { ran, ...(hooked ? { admission: (why?: string) => ((blocked = why), decided()) } : {}) });
+            waiting = hooked && next.busy;
             // Not begun (a prompt held for the account the session needs is, its own way): what stopped it is the start's.
             if (!next.busy) await turn;
+            else if (waiting) await Promise.race([decision, turn.catch(() => undefined)]);
             void turn.catch((e) => this.o.log?.(`suggested task ${next.id}: ${redact((e as Error).message)}`));
+            if (blocked !== undefined) await turn.catch(() => undefined);
         } catch (e) {
             return await abandon(e, "send_failed");
         }
+        if (blocked !== undefined) return await abandon(new Error(`Prompt blocked by hook: ${blocked.trim().slice(0, 500)}`), "blocked");
         if (!this.refusedTasks.has(next.id)) {
             updateStore((s) => {
                 s.suggestedTasks = [{ key: origin.key, session: next.id, at: Date.now() }, ...(s.suggestedTasks ?? []).filter((t) => t.key !== origin.key)].slice(0, MAX_SUGGESTED_TASKS);

@@ -73,6 +73,10 @@ test("a session a server describes is taken apart and put together again: its ow
     const odd = heardSession({ id: "s1", title: "x".repeat(5000), cwd: 7, status: "made-up", updatedAt: "now" })!;
     expect([odd.title.length, odd.cwd, odd.status, odd.updatedAt]).toEqual([200, "", "idle", 0]);
     for (const not of [null, "s1", {}, { id: 5 }, { id: "../x" }, { id: "a b" }, { id: "x".repeat(121) }]) expect(heardSession(not)).toBeUndefined();
+    // Suggested tasks waiting (the sidebar's count): a whole number, no more than a session may hold.
+    expect(heardSession({ id: "s1", suggested: 2 })!.suggested).toBe(2);
+    expect(heardSession({ id: "s1", suggested: 1e9 })!.suggested).toBe(20);
+    for (const odd of [0, -1, 1.5, "3", NaN, Infinity, null]) expect(heardSession({ id: "s1", suggested: odd })!).not.toHaveProperty("suggested");
 });
 
 test("however many sessions a server lists or sends later, and however long their words, only so much is kept and shown", async () => {

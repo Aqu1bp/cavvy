@@ -253,6 +253,8 @@ export interface RunOptions {
     admitted?: { context?: string };
     /** A wake that is another session's message: who sent it (kept with the prompt, so the transcript shows it). */
     from?: { id: string; title: string };
+    /** Once its UserPromptSubmit hooks have decided, before the turn goes on: the reason one blocked it, or none. */
+    admission?: (blocked?: string) => void;
 }
 
 /** What a queued message's hooks, and whether it can still go, decided (AgentHost.drainWaiting). */
@@ -802,11 +804,13 @@ export class Agent {
         } else if (opts.kind !== "wake") {
             const h = await this.promptHooks(promptText, signal);
             if (h.blocked) {
+                opts.admission?.(h.blocked);
                 this.emit({ type: "turn_end", reason: "blocked" });
                 return "blocked";
             }
             if (h.context) this.addReminder(h.context);
         }
+        opts.admission?.();
         // A turn its CLI started by itself (adopt) is sent nothing: Cavvy's notes, results and context all wait
         // for the next prompt that is sent, as they do for a /goal.
         const adopting = Boolean(opts.adopt);
@@ -1138,14 +1142,15 @@ export class Agent {
      * The UserPromptSubmit hooks, for a prompt the user sent: whether one blocked it (the user is told), or
      * the context they add, as a note for the model.
      */
-    private async promptHooks(promptText: string, signal: AbortSignal): Promise<{ blocked?: boolean; context?: string }> {
+    /** `blocked`: the hook's reason. */
+    private async promptHooks(promptText: string, signal: AbortSignal): Promise<{ blocked?: string; context?: string }> {
         if (this.o.isSubagent || !this.hookSettings().hooks?.UserPromptSubmit?.length) return {};
         const h = await this.hooks("UserPromptSubmit", { prompt: promptText }, signal);
         const blocked = h?.blocked ?? h?.stop;
         if (blocked) {
             this.hookStop = undefined;
             this.emit({ type: "notice", level: "warn", message: `Prompt blocked by hook: ${blocked}` });
-            return { blocked: true };
+            return { blocked };
         }
         return h?.additionalContext ? { context: `Context from a UserPromptSubmit hook:\n${h.additionalContext}` } : {};
     }

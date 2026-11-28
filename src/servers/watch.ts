@@ -7,6 +7,7 @@
 // is and said to be so.
 
 import type { ConnectResult, MachineOverview, RELAYED_ARCHIVE_OFFER, RELAYED_SESSION_METHODS, ServerEvent, SessionSummary } from "../server/protocol";
+import { SUGGEST_LIMITS } from "../agent/suggestions";
 import { openBoundedSocket, type BoundedSocket } from "./bounded-socket";
 
 /** A call of a tool this machine lends, as the server sent it. */
@@ -99,6 +100,8 @@ export function heardSession(v: unknown): SessionSummary | undefined {
         ...(typeof s.model === "string" && s.model ? { model: cut(s.model, 100) } : {}),
         ...(status === "waiting" && (s.waitingKind === "permission" || s.waitingKind === "question" || s.waitingKind === "plan" || s.waitingKind === "secret" || s.waitingKind === "signin" || s.waitingKind === "confirm") ? { waitingKind: s.waitingKind } : {}),
         ...(typeof s.turnStartedAt === "number" && Number.isFinite(s.turnStartedAt) ? { turnStartedAt: s.turnStartedAt } : {}),
+        // Suggested tasks waiting: no more than a session may hold.
+        ...(Number.isInteger(s.suggested) && (s.suggested as number) > 0 ? { suggested: Math.min(s.suggested as number, SUGGEST_LIMITS.pending) } : {}),
     };
 }
 

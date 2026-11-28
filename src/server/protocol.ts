@@ -808,10 +808,12 @@ export interface StartTaskParams {
 
 /**
  * Checks fail before anything is made, as an RpcError with one of these codes (needs_trust carries the folder):
- * no_folder, needs_trust, model_unavailable, effort_unavailable, not_git, worktree_failed.
- * `failed` is only for failures after something was made: the worktree (resume it), or the session too (open it).
+ * no_folder, needs_trust, model_unavailable, effort_unavailable, not_git, worktree_failed. Once the session is made:
+ * model_unavailable, send_failed, or blocked (a UserPromptSubmit hook refused the prompt; its reason is the message),
+ * and the session goes. `failed` is only for failures after something was kept: the worktree (resume it), or the
+ * session too (open it).
  */
-export type StartTaskCode = "no_folder" | "needs_trust" | "model_unavailable" | "effort_unavailable" | "not_git" | "worktree_failed" | "send_failed";
+export type StartTaskCode = "no_folder" | "needs_trust" | "model_unavailable" | "effort_unavailable" | "not_git" | "worktree_failed" | "send_failed" | "blocked";
 
 export interface StartTaskResult {
     sessionId?: string;
