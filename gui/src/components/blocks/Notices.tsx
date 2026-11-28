@@ -59,34 +59,35 @@ function InfoLine(p: { block: NoticeBlock; leaving?: boolean; row?: boolean }) {
     onFound(() => p.block.id, () => setOpen(true));
     const toggle = () => long() && setOpen(!open());
     return (
-        <div
-            class={`nt ${long() ? "long" : ""} ${open() ? "open" : ""} ${mark() === "✓" ? "goal-met" : ""} ${p.block.wake ? "wake" : ""} ${p.row && p.block.wake ? "row" : ""} ${p.leaving ? "leaving" : ""}`}
-            data-find={p.block.id}
-            role={long() ? "button" : "note"}
-            tabIndex={long() ? 0 : undefined}
-            aria-expanded={long() ? open() : undefined}
-            onClick={toggle}
-            onKeyDown={(e) => {
-                if (e.key !== "Enter" && e.key !== " ") return;
-                e.preventDefault();
-                toggle();
-            }}
-        >
-            <span class={`ic ${p.block.source ? "logo" : ""}`} title={p.block.source ? cliName(p.block.source) : undefined}>
-                <Show when={p.block.source} fallback={p.block.wake ? <BellRing size={13} aria-hidden="true" /> : <GoalOrInfo mark={mark()} />}>
-                    {(s) => <ProviderIcon id={s()} size={14} />}
-                </Show>
-            </span>
-            <span class="tx" ref={tx}>
-                <Runs text={text()} />
-                <Show when={open() && p.block.details?.length}>
-                    <For each={p.block.details}>{(d) => <span class="nt-detail"><span class="sr-only">{"\n"}</span>{d}</span>}</For>
-                </Show>
-            </span>
-            <Show when={long()}>
-                <span class="more" aria-hidden="true">
-                    <ChevronRight size={12} />
+        <div class={`notice nt ${long() ? "long" : ""} ${open() ? "open" : ""} ${mark() === "✓" ? "goal-met" : ""} ${p.block.wake ? "wake" : ""} ${p.row && p.block.wake ? "row" : ""} ${p.leaving ? "leaving" : ""}`} data-open={open() || undefined} data-find={p.block.id}>
+            <div
+                class={`notice-line ${long() ? "" : "notice-static"}`}
+                role={long() ? "button" : "note"}
+                tabIndex={long() ? 0 : undefined}
+                aria-expanded={long() ? open() : undefined}
+                onClick={toggle}
+                onKeyDown={(e) => {
+                    if (e.key !== "Enter" && e.key !== " ") return;
+                    e.preventDefault();
+                    toggle();
+                }}
+            >
+                <span class={`ic ${p.block.source ? "logo" : ""}`} title={p.block.source ? cliName(p.block.source) : undefined}>
+                    <Show when={p.block.source} fallback={p.block.wake ? <BellRing size={13} aria-hidden="true" /> : <GoalOrInfo mark={mark()} />}>
+                        {(s) => <ProviderIcon id={s()} size={13} />}
+                    </Show>
                 </span>
+                <span class="tx" ref={tx}>
+                    <Runs text={text()} />
+                </span>
+                <Show when={long()}>
+                    <ChevronRight size={12} class="chev" data-open={open() || undefined} aria-hidden="true" />
+                </Show>
+            </div>
+            <Show when={open() && p.block.details?.length}>
+                <p class="notice-detail">
+                    <For each={p.block.details}>{(d) => <span class="nt-detail"><span class="sr-only">{"\n"}</span>{d}</span>}</For>
+                </p>
             </Show>
         </div>
     );
@@ -120,7 +121,7 @@ function WarnPill(p: { block: NoticeBlock }) {
     // One element whether it folds or not (it starts to once its title is found cut short): what measures it stays.
     const head = (): JSX.Element => (
         <div
-            class="nw-h"
+            class="notice-pill nw-h"
             role={folds() ? "button" : undefined}
             tabIndex={folds() ? 0 : undefined}
             aria-expanded={folds() ? open() : undefined}
@@ -131,9 +132,7 @@ function WarnPill(p: { block: NoticeBlock }) {
                 toggle();
             }}
         >
-            <span class="ic">
-                <AlertTriangle size={14} />
-            </span>
+            <AlertTriangle size={12} />
             <span class="nw-title" ref={title}>
                 <Runs text={parts().title} />
             </span>
@@ -146,16 +145,16 @@ function WarnPill(p: { block: NoticeBlock }) {
                 )}
             </Show>
             <Show when={folds()}>
-                <ChevronRight size={12} class="chev" />
+                <ChevronRight size={12} class="chev" data-open={open() || undefined} />
             </Show>
         </div>
     );
     return (
-        <div class={`nw ${open() ? "open" : ""}`} data-find={p.block.id}>
+        <div class={`notice notice-warn nw ${open() ? "open" : ""}`} data-open={open() || undefined} data-find={p.block.id}>
             {head()}
             {/* Drawn once it's open: folded, only the title reads (find opens it to a match in what's under it). */}
             <Show when={hasBody() && open()}>
-                <div class="nw-body">
+                <div class="notice-detail nw-body">
                     <Show when={parts().body}>
                         {(b) => (
                             <p>
@@ -204,52 +203,49 @@ function ErrorCard(p: { block: NoticeBlock; state?: SessionState }) {
     const parts = createMemo(() => errorParts(p.block, now(), Boolean(resume())));
     const [copied, setCopied] = createSignal(false);
     return (
-        <div class="ne" data-find={p.block.id}>
-            <span class="ic">
-                <Show when={limit()} fallback={<AlertCircle size={14} />}>
-                    <Hourglass size={14} />
+        <div class={`errcard ${limit() ? "errcard-limit" : ""}`} data-retried={(limit() && !latest()) || undefined} data-find={p.block.id}>
+            <div class="errcard-head">
+                <Show when={limit()} fallback={<AlertCircle size={15} />}>
+                    <Hourglass size={15} />
                 </Show>
-            </span>
-            <div class="ne-title">
-                <Runs text={parts().title} />
+                <span class="errcard-what">
+                    <Runs text={parts().title} />
+                </span>
             </div>
             <Show when={resume()}>
                 {(r) => (
-                    <div class="ne-resume" data-find-skip>
+                    <p class="errcard-detail" data-find-skip>
                         Continues at {untilLabel(r().nextAt, now())}
                         <Show when={r().nextAt - now() >= 60_000}> · in {until(r().nextAt, now())}</Show>
-                    </div>
+                    </p>
                 )}
             </Show>
             <Show when={parts().body}>
                 {(b) => (
-                    <div class="ne-body">
+                    <p class="errcard-detail">
                         <span class="sr-only">{"\n"}</span>
                         <span class={p.block.title ? undefined : "mono"}>
                             <Runs text={b()} />
                         </span>
-                    </div>
+                    </p>
                 )}
             </Show>
             <Show
                 when={limit()}
                 fallback={
-                    <button
-                        class="hb sm ne-copy"
-                        data-find-skip
-                        title={copied() ? "Copied" : "Copy the error"}
-                        aria-label={copied() ? "Copied" : "Copy the error"}
-                        onClick={async () => {
-                            if (await copyText(p.block.text)) {
-                                setCopied(true);
-                                setTimeout(() => setCopied(false), 1400);
-                            }
-                        }}
-                    >
-                        <Show when={copied()} fallback={<Copy size={13} />}>
-                            <Check size={13} />
-                        </Show>
-                    </button>
+                    <div class="errcard-actions" data-find-skip>
+                        <button
+                            class="copy-btn btn btn-sm btn-ghost"
+                            onClick={async () => {
+                                if (await copyText(p.block.text)) {
+                                    setCopied(true);
+                                    setTimeout(() => setCopied(false), 1400);
+                                }
+                            }}
+                        >
+                            {copied() ? "Copied" : "Copy the error"}
+                        </button>
+                    </div>
                 }
             >
                 {(l) => <LimitActions provider={l().provider} accountId={l().accountId} resetsAt={l().resetsAt} state={p.state} latest={latest()} resume={resume()?.id} />}
@@ -312,16 +308,16 @@ function LimitActions(p: { provider: string; accountId: string; resetsAt?: numbe
     }
     return (
         <Show when={others().length || p.resume || canResume()}>
-            <div class="ne-foot" data-find-skip>
+            <div class="errcard-actions" data-find-skip>
                 <For each={others()}>
                     {(a) => (
-                        <button class="cbtn" disabled={(p.state?.busy && !p.state.activity?.idle) || switching()} title="Starts a new CLI thread with this conversation; send your message again" onClick={() => void switchTo(a.id)}>
+                        <button class="btn btn-sm btn-primary" disabled={(p.state?.busy && !p.state.activity?.idle) || switching()} title="Starts a new CLI thread with this conversation; send your message again" onClick={() => void switchTo(a.id)}>
                             Use {a.name} account
                         </button>
                     )}
                 </For>
                 <Show when={p.resume || canResume()}>
-                    <button class="cbtn" disabled={toggling()} title={p.resume ? "Wait for your next message instead" : "Pick up where it left off once the limit resets"} onClick={() => void toggleResume()}>
+                    <button class="btn btn-sm" disabled={toggling()} title={p.resume ? "Wait for your next message instead" : "Pick up where it left off once the limit resets"} onClick={() => void toggleResume()}>
                         {p.resume ? "Don't continue" : "Continue after the limit resets"}
                     </button>
                 </Show>
@@ -392,11 +388,11 @@ function StoppedLine(p: { provider: string; tasks: StoppedTask[]; under?: boolea
 /** A CLI compacted its context: a rule across the column with its label, as Cavvy's own compaction (no summary to show). */
 function CompactedLine(p: { block: NoticeBlock; leaving?: boolean }) {
     return (
-        <div class={`compacted ${p.leaving ? "leaving" : ""}`} data-find={p.block.id}>
-            <div class="compacted-rule" title={p.block.text}>
-                <span />
-                <span class="imported-label">{COMPACTED_LABEL}</span>
-                <span />
+        <div class={`rule compacted ${p.leaving ? "leaving" : ""}`} data-find={p.block.id}>
+            <div class="rule-line" title={p.block.text}>
+                <span class="stopped-line" />
+                <span class="rule-label">{COMPACTED_LABEL}</span>
+                <span class="stopped-line" />
             </div>
         </div>
     );

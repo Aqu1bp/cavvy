@@ -136,7 +136,7 @@ export async function checkEditorFind(root: HTMLElement) {
         key(input, "Enter");
         await settle();
         check(count() === "1 of 1" && current().startContainer.parentElement?.closest(".compacted-summary"), "stepping wraps to the body, never the header");
-        compact.querySelector<HTMLButtonElement>(".compacted-rule button")!.click();
+        compact.querySelector<HTMLButtonElement>(".rule-line button")!.click();
         check(!compact.querySelector(".compacted-summary"), "summary can be folded again");
         setFindQuery("Important summary");
         await settle(350);

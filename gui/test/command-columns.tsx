@@ -29,7 +29,7 @@ const rows: ToolBlock[] = [
 /** At each text size and width: each column's edge is the same on every row that has that part. */
 export async function checkCommandColumns(target: HTMLElement) {
     const box = target.appendChild(document.createElement("div"));
-    box.className = "worklog";
+    box.className = "wseg";
     // The rows of an opened run, in its card (Activity.tsx WorkRun): the columns are the card's.
     const card = box.appendChild(document.createElement("div"));
     card.className = "run-rows";

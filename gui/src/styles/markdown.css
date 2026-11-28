@@ -46,19 +46,19 @@
 }
 
 .md h1 {
-    font-size: 1.429rem;
+    font-size: calc(20 * var(--sp));
 }
 
 .md h2 {
-    font-size: 1.214rem;
+    font-size: calc(17 * var(--sp));
 }
 
 .md h3 {
-    font-size: 1.071rem;
+    font-size: calc(15 * var(--sp));
 }
 
 .md h4 {
-    font-size: 1.036rem;
+    font-size: calc(14.5 * var(--sp));
 }
 
 /* A heading's block: more room above it than between paragraphs (24px, 18px for the smaller two). */
@@ -76,11 +76,19 @@
     padding-left: calc(22 * var(--sp));
 }
 
+.md ul {
+    list-style: disc;
+}
+
+.md ol {
+    list-style: decimal;
+}
+
 .md li + li {
     margin-top: calc(5 * var(--sp));
 }
 
-.md li > :is(ul, ol) {
+.md li > :is(ul, ol, .codeblock) {
     margin-top: calc(6 * var(--sp));
 }
 
@@ -179,17 +187,18 @@
     outline-offset: 2px;
 }
 
-/* Tables: a hairline frame (a border, which the header row's fill can't cover), a quiet header row. */
+/* Tables: a hairline frame, a quiet header row. The design's frame is an inset shadow, which the header row's fill
+   covers: a border here, so the frame goes all the way round. */
 .md-table {
     overflow-x: auto;
     border: 1px solid var(--line);
-    border-radius: var(--r-well);
+    border-radius: var(--radius-m);
 }
 
 .md table {
     width: 100%;
     border-collapse: collapse;
-    font-size: 0.964rem;
+    font-size: calc(13.5 * var(--sp));
     line-height: 1.45;
 }
 
@@ -210,9 +219,9 @@
 }
 
 .md th {
-    background: var(--well-head);
+    background: var(--code-head);
     color: var(--fg-2);
-    font-size: 0.857rem;
+    font-size: calc(12 * var(--sp));
     font-weight: 500;
 }
 

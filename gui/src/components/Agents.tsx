@@ -83,7 +83,7 @@ function Log(p: { agent: AgentRun; agents: AgentRun[]; items: Item[]; lastText?:
         <Index each={segs()}>
             {(seg) => (
                 <Show when={seg().kind === "work"} fallback={renderItem(() => (seg() as { item: Item }).item)}>
-                    <div class="worklog">
+                    <div class="wseg">
                         <WorkRun items={(seg() as { items: Item[] }).items ?? []} hideLive={running()}>
                             <Index each={(seg() as { items: Item[] }).items ?? []}>{(it) => renderItem(it)}</Index>
                         </WorkRun>

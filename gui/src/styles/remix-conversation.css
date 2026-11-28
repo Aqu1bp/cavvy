@@ -227,7 +227,7 @@
 .md :not(pre) > code,
 .approval-reason code,
 .errcard-detail code {
-    padding: 1.5px calc(5 * var(--sp));
+    padding: calc(1.5 * var(--sp)) calc(5 * var(--sp));
     border-radius: calc(5 * var(--sp));
     background: color-mix(in srgb, var(--text) 8%, transparent);
     font-size: 0.875em;
@@ -237,162 +237,9 @@
     min-width: 0;
 }
 
-.md {
-    font-size: var(--chat-size);
-    line-height: 1.65;
-    overflow-wrap: anywhere;
-}
-
-.md > * + * {
-    margin-top: calc(11 * var(--sp));
-}
-
-.md h1,
-.md h2,
-.md h3,
-.md h4 {
-    font-weight: 600;
-    letter-spacing: -0.012em;
-    line-height: 1.3;
-}
-
-.md h1 {
-    font-size: calc(20 * var(--sp));
-}
-
-.md h2 {
-    font-size: calc(17 * var(--sp));
-}
-
-.md h3 {
-    font-size: calc(15 * var(--sp));
-}
-
-.md h4 {
-    font-size: calc(14.5 * var(--sp));
-}
-
-.md > h1:not(:first-child),
-.md > h2:not(:first-child) {
-    margin-top: calc(24 * var(--sp));
-}
-
-.md > h3:not(:first-child),
-.md > h4:not(:first-child) {
-    margin-top: calc(18 * var(--sp));
-}
-
-.md ul,
-.md ol {
-    padding-left: calc(22 * var(--sp));
-}
-
-.md ul {
-    list-style: disc;
-}
-
-.md ol {
-    list-style: decimal;
-}
-
-.md li + li {
-    margin-top: calc(5 * var(--sp));
-}
-
-.md li > ul,
-.md li > ol,
-.md li > .codeblock {
-    margin-top: calc(6 * var(--sp));
-}
-
-.md li::marker {
-    color: var(--text-3);
-}
-
-.md ol > li::marker {
-    font-variant-numeric: tabular-nums;
-    font-size: 0.93em;
-}
-
-.md strong {
-    font-weight: 600;
-}
-
-.md a {
-    color: var(--accent-text);
-    text-decoration: underline;
-    text-underline-offset: 2px;
-}
-
-.md blockquote {
-    margin: 0;
-    padding-left: calc(14 * var(--sp));
-    border-left: 2px solid var(--line-strong);
-    color: var(--text-2);
-}
-
-.md hr {
-    border: 0;
-    border-top: 1px solid var(--line);
-    margin: calc(18 * var(--sp)) 0;
-}
-
-.md-table {
-    overflow-x: auto;
-    border-radius: var(--radius-m);
-    box-shadow: inset 0 0 0 1px var(--line);
-}
-
-.md table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: calc(13.5 * var(--sp));
-    line-height: 1.45;
-}
-
-.md th,
-.md td {
-    padding: calc(7 * var(--sp)) calc(12 * var(--sp));
-    text-align: left;
-    vertical-align: top;
-    border-bottom: 1px solid var(--line);
-}
-
-.md th {
-    background: var(--code-head);
-    color: var(--text-2);
-    font-size: calc(12 * var(--sp));
-    font-weight: 500;
-}
-
-.md tr:last-child td {
-    border-bottom: 0;
-}
-
-.md-streaming > p:last-child::after,
-.md-streaming > h1:last-child::after,
-.md-streaming > h2:last-child::after,
-.md-streaming > h3:last-child::after,
-.md-streaming > ul:last-child > li:last-child::after,
-.md-streaming > ol:last-child > li:last-child::after {
-    content: "";
-    display: inline-block;
-    width: calc(7 * var(--sp));
-    height: calc(7 * var(--sp));
-    margin-left: calc(5 * var(--sp));
-    border-radius: 50%;
-    background: var(--accent);
-    vertical-align: 1px;
-    animation: caret 1s steps(10) infinite;
-    animation-play-state: var(--loops);
-}
-
-@keyframes caret {
-  50% {
-    opacity: 0.25;
-    transform: scale(0.8);
-  }
-}
+/* The reply's prose: markdown.css, where the design's .md rules sit on Cavvy's blocks (each a .md-block, filled in
+   place as it streams, lib/stream-dom.ts), spaced by the column's gap rather than by margins. The design's dot at the
+   end of a streaming reply is left out: an animation running for as long as every reply streams. */
 
 /* ---------- code ---------- */
 
@@ -486,13 +333,13 @@
     font-size: calc(12 * var(--sp));
 }
 
+/* No fade: the rows are on screen already when the run gets its line (#126). */
 .tools-list {
     display: flex;
     flex-direction: column;
     margin: calc(4 * var(--sp)) 0 calc(4 * var(--sp)) 1px;
     padding-left: calc(10 * var(--sp));
     border-left: 1.5px solid var(--line);
-    animation: fade-in 0.15s;
 }
 
 .tool-row {
@@ -809,8 +656,10 @@ span.tool-target {
     height: calc(5 * var(--sp));
     border-radius: 50%;
     background: var(--accent);
+    /* Stepped on the stream clock's grid (the design's ease-in-out, 1.2s, with its rise at 30%), and paused with
+       the window's other decoration (perf-rules). */
     animation: bounce 1.2s steps(6) infinite;
-    animation-play-state: var(--loops);
+    animation-play-state: var(--decor);
 }
 
 .working-dots i:nth-child(2) {
@@ -884,9 +733,9 @@ span.tool-target {
 
 /* Conversation blocks added on top of the base's (.bubble, .md, .tools, .tool-row, .term, .diff, .errcard). */
 
+/* The room at the end is .transcript-end's, under the composer that lies over the conversation. */
 .convo-col {
     gap: 0;
-    padding-bottom: calc(28 * var(--sp));
 }
 
 .turn {
@@ -897,9 +746,7 @@ span.tool-target {
     min-width: 0;
 }
 
-.turn + .turn {
-    margin-top: calc(26 * var(--sp));
-}
+/* Between turns: .turn's own padding-bottom (transcript.css), so a turn skipped while far off keeps its gap in its box. */
 
 .msg-user {
     position: relative;
@@ -915,7 +762,7 @@ span.tool-target {
 
 .bubble-command {
     font-family: var(--font-mono);
-    font-size: calc(var(--chat-size) - 1.5px);
+    font-size: calc(var(--chat-size) - 1.5 * var(--sp));
 }
 
 .bubble-more {

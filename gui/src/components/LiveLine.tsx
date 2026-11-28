@@ -139,9 +139,9 @@ export function LiveLine(p: { state: LiveLineState | undefined; hint?: string; s
     };
     return (
         <Show when={layers().length}>
-            <div class="live-line" data-find-skip>
+            <div class="live live-line" data-find-skip>
                 <div
-                    class="live-stack"
+                    class="working live-stack"
                     role={command() ? "button" : undefined}
                     tabindex={command() ? 0 : undefined}
                     aria-expanded={command() ? Boolean(opened()) : undefined}
@@ -157,14 +157,14 @@ export function LiveLine(p: { state: LiveLineState | undefined; hint?: string; s
                     <span class="sr-only">{command() ? [showing()?.label, showing()?.detail].filter(Boolean).join(": ") : (stepOf(showing()?.steps) ?? showing()?.label)}</span>
                     {/* Three dots while it works, the light sweeping the label too; an amber dot when it waits on the user. */}
                     <span class="lic" aria-hidden="true">
-                        <Show when={showing()?.kind === "wait"} fallback={<span class="dots"><i /><i /><i /></span>}>
-                            <span class="ldot" />
+                        <Show when={showing()?.kind === "wait"} fallback={<span class="working-dots"><i /><i /><i /></span>}>
+                            <span class="live-wait" />
                         </Show>
                     </span>
                     <For each={layers()}>{(l) => <LayerRow layer={l} hint={p.hint} isOpen={isOpen} onGone={() => drop(l.id)} />}</For>
                     <Show when={p.stop && showing()?.kind !== "wait"}>
-                        <span class="lstop" aria-hidden="true">
-                            <kbd>Esc</kbd> Stop
+                        <span class="working-hint lstop" aria-hidden="true">
+                            <kbd class="kbd">Esc</kbd> Stop
                         </span>
                     </Show>
                 </div>
@@ -226,7 +226,7 @@ function LayerRow(p: { layer: Layer; hint?: string; isOpen: (id: string) => bool
         <div ref={el} class={`layer k-${s().kind} ${p.layer.leaving() ? "leaving" : ""}`} title={s().title} aria-hidden="true">
             {/* A soft light crosses the label and rests, the words holding still: a bright copy of the label for each place
                 the light stops at, each shown for its step (transcript.css). */}
-            <Show when={s().kind !== "wait"} fallback={<span class="lbl">{s().label}</span>}>
+            <Show when={s().kind !== "wait"} fallback={<span class="lbl live-label">{s().label}</span>}>
                 <span class="lbl shim">
                     {label()}
                     <span class="lights" data-find-skip>
@@ -238,7 +238,7 @@ function LayerRow(p: { layer: Layer; hint?: string; isOpen: (id: string) => bool
             </Show>
             <Show when={!at() && s().detail}>
                 {/* Find counts a running call's argument (find.ts): it's here while the call runs. */}
-                <span class={`det ${s().mono ? "mono" : ""}`} data-find={!p.layer.leaving() && s().toolId ? s().toolId : undefined}>
+                <span class={`live-target det ${s().mono ? "mono" : ""}`} data-find={!p.layer.leaving() && s().toolId ? s().toolId : undefined}>
                     {s().detail}
                 </span>
             </Show>
@@ -248,7 +248,7 @@ function LayerRow(p: { layer: Layer; hint?: string; isOpen: (id: string) => bool
                 <Show when={p.hint}>{(h) => <span class="hint">{h()}</span>}</Show>
                 <Show when={time()}>
                     {(t) => (
-                        <span class="tm num">
+                        <span class="working-time tm num">
                             {t()}
                             <Show when={s().meta}>{(m) => ` ${m()}`}</Show>
                         </span>

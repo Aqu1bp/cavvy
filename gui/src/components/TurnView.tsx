@@ -1,6 +1,6 @@
 import { RenderBoundary } from "./ui/ErrorBoundary";
 import { createComputed, createEffect, createMemo, createResource, createSignal, For, Index, Match, on, onCleanup, Show, Switch, untrack } from "solid-js";
-import { AlertCircle, AlertTriangle, ArrowUpRight, BellRing, ChevronRight, Clock, CornerDownRight, FileText, Folder, FolderGit2, MessageSquareText, Square, SquareArrowOutUpRight, SquareTerminal } from "lucide-solid";
+import { AlertCircle, AlertTriangle, ArrowUpRight, BellRing, ChevronRight, Clock, CornerDownRight, Folder, FolderGit2, MessageSquareText, Square, ExternalLink, SquareArrowOutUpRight, SquareTerminal } from "lucide-solid";
 import type { AgentRun, Block, CompactBlock, FileDiff as Diff, ImportedBlock, NoticeBlock, PeerBlock, SessionState, ShellBlock, TextBlock, ThinkingBlock, Turn, TurnPlace } from "@shared/protocol";
 import { basename, firstChangedLine, plural, promptTime, shortPrompt, stripAnsi, tildify } from "../lib/format";
 import { cardShape, incompleteLine, PLACES_SHOWN, placeRows, placesTotal, WHO_NAMED, workers, type OwnPlace } from "../lib/turn-places";
@@ -13,8 +13,7 @@ import { fetchGitChanges, type GitView } from "../state/changes";
 import { openInEditor, openReview, openWorktreeReview } from "../state/actions";
 import { findReveal, setViewedImage } from "../state/ui";
 import { imagesReady, promptImages, wholePromptImages, type PromptImage } from "../state/images";
-import { ActivityGroup, groupBlocks, Thinking, WorkRun, type Item } from "./blocks/Activity";
-import { Counts } from "./blocks/DiffView";
+import { ActivityGroup, groupBlocks, Stat, Thinking, WorkRun, type Item } from "./blocks/Activity";
 import { Markdown } from "./blocks/Markdown";
 import { CopyButton, Spinner } from "./ui/bits";
 import { ProviderIcon } from "./ui/ProviderIcon";
@@ -66,7 +65,7 @@ function PromptImages(p: { sessionId?: string; turn: Turn; count: number }) {
         return `calc(${w && h ? Math.min(220, Math.max(56, (76 * w) / h)) : 101} * var(--sp))`;
     };
     const chip = () => (
-        <Show when={sizes() && !failed()} fallback={<span class="chip tiny">{label()}</span>}>
+        <Show when={sizes() && !failed()} fallback={<span class="msg-file">{label()}</span>}>
             <For each={sizes()}>{(_, i) => <span class="prompt-image wait" style={{ width: width(i()) }} role="img" aria-label={`Image ${i() + 1} of ${p.count}`} />}</For>
         </Show>
     );
@@ -143,7 +142,7 @@ export function UserPrompt(p: { turn: Turn; sessionId?: string; onRewind?: (inde
     const clamped = () => (long() && !expanded() ? "clamped" : "");
     const more = () => (
         <Show when={long()}>
-            <button class="link-btn more" aria-expanded={expanded()} onClick={() => setExpanded(!expanded())}>
+            <button class="link-btn bubble-more" aria-expanded={expanded()} onClick={() => setExpanded(!expanded())}>
                 {expanded() ? "Show less" : "Show more"}
             </button>
         </Show>
@@ -163,65 +162,67 @@ export function UserPrompt(p: { turn: Turn; sessionId?: string; onRewind?: (inde
     // At the right, as wide as its text: attachments above it, and under it (over the gap, on hover
     // or focus) when it was sent, Copy and Rewind.
     return (
-        <div class={`user-row ${p.turn.prompt?.steered ? "steered" : ""}`}>
+        <div class={`msg-user ${p.turn.prompt?.steered ? "steered" : ""}`}>
             {/* Sent while the turn before ran, and joined it at its next step (that turn ended for it). */}
             <Show when={p.turn.prompt?.steered}>
-                <span class="steered-tag" data-find-skip title="Joined at the next step">
+                <span class="msg-tag" data-find-skip title="Joined at the next step">
                     <CornerDownRight size={12} aria-hidden="true" />
                     Steered in
                 </span>
             </Show>
             <Show when={p.turn.prompt?.scheduled}>
                 {(label) => (
-                    <span class="prompt-scheduled" data-find-skip>
+                    <span class="msg-tag" data-find-skip>
                         <Clock size={12} /> {label()}
                     </span>
                 )}
             </Show>
-            <Show when={p.turn.prompt?.images || p.turn.prompt?.files?.length}>
-                <span class="prompt-attachments" data-find-skip>
-                    <Show when={p.turn.prompt?.images}>
-                        {(n) => <PromptImages sessionId={p.sessionId} turn={p.turn} count={n()} />}
-                    </Show>
+            <Show when={p.turn.prompt?.images}>
+                {(n) => (
+                    <div class="msg-images" data-find-skip>
+                        <PromptImages sessionId={p.sessionId} turn={p.turn} count={n()} />
+                    </div>
+                )}
+            </Show>
+            <Show when={p.turn.prompt?.files?.length}>
+                <div class="msg-files" data-find-skip>
                     <For each={p.turn.prompt?.files ?? []}>
                         {(f) => (
-                            <span class="chip tiny" title={`${f.name} · ${formatSize(f.size)}${f.lines !== undefined ? ` · ${plural(f.lines, "line")}` : ""}`}>
-                                {f.from === "side-chat" ? <MessageSquareText size={11} /> : <FileText size={11} />} <span class="truncate">{f.name}</span> · {f.from === "side-chat" && f.lines !== undefined ? plural(f.lines, "line") : formatSize(f.size)}
+                            <span class="msg-file" title={`${f.name} · ${formatSize(f.size)}${f.lines !== undefined ? ` · ${plural(f.lines, "line")}` : ""}`}>
+                                <span class="mono truncate">{f.name}</span>
+                                <span class="dim">{f.from === "side-chat" && f.lines !== undefined ? plural(f.lines, "line") : formatSize(f.size)}</span>
                             </span>
                         )}
                     </For>
-                </span>
+                </div>
             </Show>
             {/* Not for a message that's only attachments (a side chat's answer brought back, say). */}
-            <Show when={text().trim() || parts().comments.length}>
-                <div class={`user-bubble ${p.turn.prompt?.command ? "command" : ""} ${shell() ? "shell" : ""} ${clamped()} ${shortPrompt(text()) && !parts().comments.length ? "short" : ""}`} data-find="prompt">
+            <Show when={text().trim()}>
+                <div class={`bubble ${p.turn.prompt?.command ? "bubble-command" : ""} ${shell() ? "shell" : ""} ${clamped()} ${shortPrompt(text()) && !parts().comments.length ? "short" : ""}`} data-find="prompt">
                     <Show when={shell()} fallback={<span class="user-text">{text()}</span>}>
                         <span class="user-text mono">
                             <SquareTerminal size={13} /> {text().slice(1)}
                         </span>
                     </Show>
-                    <Show when={parts().comments.length}>
-                        <div class="prompt-comments">
-                            <For each={parts().comments}>
-                                {(c) => (
-                                    <div class="prompt-comment">
-                                        <button class="prompt-comment-where mono" data-find-skip title={`Show ${c.path} in the review`} aria-label={`Comment on ${c.path}, ${linesPhrase(c)}. Show the file in the review`} onClick={() => openReview(c.path)}>
-                                            <MessageSquareText size={12} aria-hidden="true" />
-                                            <span class="truncate">{c.path}:{linesLabel(c)}</span>
-                                        </button>
-                                        <span class="prompt-comment-text">{c.text}</span>
-                                    </div>
-                                )}
-                            </For>
-                        </div>
-                    </Show>
                     {more()}
                 </div>
             </Show>
-            <div class="user-actions" data-find-skip>
+            <Show when={parts().comments.length}>
+                <div class="msg-comments" data-find="prompt">
+                    <For each={parts().comments}>
+                        {(c) => (
+                            <button class="msg-comment" title={`Show ${c.path} in the review`} aria-label={`Comment on ${c.path}, ${linesPhrase(c)}: ${c.text}. Show the file in the review`} onClick={() => openReview(c.path)}>
+                                <span class="mono msg-comment-loc" data-find-skip>{c.path.split("/").pop()}:{linesLabel(c)}</span>
+                                <span class="msg-comment-text">{c.text}</span>
+                            </button>
+                        )}
+                    </For>
+                </div>
+            </Show>
+            <div class="msg-actions" data-find-skip>
                 <Show when={p.turn.startedAt}>
                     {(at) => (
-                        <time class="user-when" dateTime={new Date(at()).toISOString()} title={new Date(at()).toLocaleString()}>
+                        <time class="msg-time" dateTime={new Date(at()).toISOString()} title={new Date(at()).toLocaleString()}>
                             {promptTime(at())}
                         </time>
                     )}
@@ -245,16 +246,23 @@ export function Narration(p: { block: TextBlock }) {
     const line = () => p.block.text.replace(/```[\s\S]*?```/g, " ").replace(/[*_`>#]/g, "").replace(/\s+/g, " ").trim();
     createEffect(on(findReveal, (r) => r?.part === p.block.id && setOpen(true)));
     return (
-        <div class={`wgroup ${open() ? "open" : ""}`} data-find={p.block.id}>
-            <button class="acts-h wrow" onClick={() => setOpen(!open())} aria-expanded={open()}>
-                <span class="wtext truncate" data-find-skip>
-                    “{line()}”
-                </span>
-                <ChevronRight size={13} class="chev" />
-            </button>
-            <Show when={open()}>
-                <div class="wkids narration">
+        <div class="say" data-open={open() || undefined} data-find={p.block.id}>
+            <Show
+                when={open()}
+                fallback={
+                    <button class="say-line" onClick={() => setOpen(true)} aria-expanded={false}>
+                        <span class="say-text" data-find-skip>
+                            “{line()}”
+                        </span>
+                        <ChevronRight size={13} class="chev" />
+                    </button>
+                }
+            >
+                <div class="say-full narration">
                     <Markdown text={p.block.text} />
+                    <button class="link-btn" onClick={() => setOpen(false)} aria-expanded={true}>
+                        Show less
+                    </button>
                 </div>
             </Show>
         </div>
@@ -266,15 +274,15 @@ export function Narration(p: { block: TextBlock }) {
 function Imported(p: { block: ImportedBlock }) {
     const date = () => (p.block.startedAt ? new Date(p.block.startedAt).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }) : undefined);
     return (
-        <div class="compacted imported">
-            <div class="compacted-rule">
-                <span />
-                <span class="imported-label">
+        <div class="rule compacted imported">
+            <div class="rule-line">
+                <span class="stopped-line" />
+                <span class="rule-label">
                     Imported from {p.block.source}
                     <Show when={date()}> · {date()}</Show>
                     <Show when={p.block.omitted}> · {plural(p.block.omitted, "earlier message")} not imported</Show>
                 </span>
-                <span />
+                <span class="stopped-line" />
             </div>
         </div>
     );
@@ -284,20 +292,19 @@ function Compacted(p: { block: CompactBlock; leaving?: boolean }) {
     const [open, setOpen] = createSignal(false);
     createEffect(on(findReveal, (r) => r?.part === p.block.id && setOpen(true)));
     return (
-        <div class={`compacted ${p.leaving ? "leaving" : ""}`} data-find={p.block.id}>
-            <div class="compacted-rule" data-find-skip>
-                <span />
-                <button
-                    class="link-btn"
-                    aria-expanded={open()}
-                    onClick={() => setOpen(!open())}
-                >
-                    {p.block.idle ? "Compacted while idle" : "Conversation compacted"} · {open() ? "hide summary" : "view summary"}
-                </button>
-                <span />
+        <div class={`rule compacted ${p.leaving ? "leaving" : ""}`} data-open={open() || undefined} data-find={p.block.id}>
+            <div class="rule-line" data-find-skip>
+                <span class="stopped-line" />
+                <span class="rule-label">
+                    {p.block.idle ? "Compacted while idle" : "Conversation compacted"} ·{" "}
+                    <button class="link-btn" aria-expanded={open()} onClick={() => setOpen(!open())}>
+                        {open() ? "hide summary" : "view summary"}
+                    </button>
+                </span>
+                <span class="stopped-line" />
             </div>
             <Show when={open()}>
-                <div class="compacted-summary">
+                <div class="rule-detail compacted-summary">
                     <Markdown text={p.block.summary} class="small" />
                 </div>
             </Show>
@@ -315,7 +322,7 @@ function Shell(p: { block: ShellBlock }) {
                 <Show
                     when={p.block.running}
                     fallback={
-                        <span class={`pill ${p.block.exitCode ? "red" : ""}`} data-find-skip>
+                        <span class="pill" data-tone={p.block.exitCode ? "red" : undefined} data-find-skip>
                             Exit {p.block.exitCode ?? "?"}
                         </span>
                     }
@@ -326,7 +333,7 @@ function Shell(p: { block: ShellBlock }) {
                 </Show>
             </div>
             <Show when={p.block.output}>
-                <pre class="youran-out" tabIndex={0}>{stripAnsi(p.block.output)}</pre>
+                <pre class="term-out youran-out" tabIndex={0}>{stripAnsi(p.block.output)}</pre>
             </Show>
         </div>
     );
@@ -353,9 +360,11 @@ export function SplitPath(p: { path: string; cwd?: string }) {
     const rel = () => (p.cwd && p.path.startsWith(p.cwd + "/") ? p.path.slice(p.cwd.length + 1) : p.path);
     const cut = () => rel().lastIndexOf("/");
     return (
-        <span class="truncate split-path" title={p.path}>
-            <span class="dir">{cut() >= 0 ? rel().slice(0, cut() + 1) : ""}</span>
-            <span class="name">{cut() >= 0 ? rel().slice(cut() + 1) : rel()}</span>
+        <span class="path" title={p.path}>
+            <Show when={cut() >= 0}>
+                <span class="path-dir">{rel().slice(0, cut() + 1)}</span>
+            </Show>
+            <span class="path-base">{cut() >= 0 ? rel().slice(cut() + 1) : rel()}</span>
         </span>
     );
 }
@@ -423,57 +432,55 @@ function ChangesCard(p: { turn: Turn; cwd: string; sessionId: string; busy: bool
     const incomplete = () => (captured() && recorded()?.incomplete ? incompleteLine(recorded()?.notes) : undefined);
     const one = () => places()[0]!;
     const commits = (n?: number) => (n ? ` · ${plural(n, "commit")}` : "");
-    const Stat = (s: { added?: number; removed?: number }) => (
-        <span class="stat">
-            <Counts added={s.added} removed={s.removed} />
-        </span>
-    );
     return (
         <Show when={files().length || places().length || incomplete()}>
             <div class="chg" data-find-skip>
                 <Switch>
                     {/* Its own folder: the files, as before. */}
                     <Match when={shape() === "files"}>
-                        <div class="chg-head">
+                        <header class="chg-head">
                             <span class="chg-title">{!snapshotDiff() && !files().length ? "Turn snapshot incomplete" : plural(own()?.files ?? 0, "changed file")}</span>
                             <Show when={files().length}>
                                 <Stat {...total()} />
                             </Show>
                             <span class="grow" />
                             {/* Keep recorded changes tied to this turn, even after later edits. */}
-                            <button class="btn sm" onClick={reviewTurn}>
+                            <button class="btn btn-sm" onClick={reviewTurn}>
                                 Review changes
                             </button>
-                        </div>
-                        <div class="chg-files">
+                        </header>
+                        <ul class="chg-files">
                             <For each={all() ? files() : files().slice(0, FILES_SHOWN)}>
                                 {(f) => (
-                                    <div class="chg-file">
+                                    <li class="chg-file">
                                         <button class="chg-file-main" onClick={() => reviewChanges(f.path, f.pathToken)}>
                                             <SplitPath path={f.path} cwd={p.cwd} />
                                             <Show when={f.status === "added"}>
-                                                <span class="frow-tag">new</span>
+                                                <span class="tag">new</span>
+                                            </Show>
+                                            <Show when={f.status === "deleted"}>
+                                                <span class="tag">deleted</span>
                                             </Show>
                                         </button>
                                         <Stat {...f} />
                                         <Show when={f.status !== "deleted"}>
-                                            <button class="icon-btn row-open" title="Open in editor" aria-label={`Open ${f.path} in editor`} onClick={() => void openInEditor(f.path, f.line, { sessionId: p.sessionId, gitToken: f.pathToken })}>
-                                                <SquareArrowOutUpRight size={13} />
+                                            <button class="icon-btn icon-btn-sm open-editor row-open" title="Open in editor" aria-label={`Open ${f.path} in editor`} onClick={() => void openInEditor(f.path, f.line, { sessionId: p.sessionId, gitToken: f.pathToken })}>
+                                                <ExternalLink size={13} />
                                             </button>
                                         </Show>
-                                    </div>
+                                    </li>
                                 )}
                             </For>
-                            <Show when={files().length > FILES_SHOWN && !all()}>
-                                <button class="chg-more" onClick={() => setAll(true)}>
-                                    {plural(files().length - FILES_SHOWN, "more file")}
-                                </button>
-                            </Show>
-                        </div>
+                        </ul>
+                        <Show when={files().length > FILES_SHOWN && !all()}>
+                            <button class="chg-more" onClick={() => setAll(true)}>
+                                {plural(files().length - FILES_SHOWN, "more file")}
+                            </button>
+                        </Show>
                     </Match>
                     {/* One other worktree: its files, with its branch beside Review. */}
                     <Match when={shape() === "worktree"}>
-                        <div class="chg-head">
+                        <header class="chg-head">
                             <span class="chg-title">{one().files !== undefined ? plural(one().files!, "changed file") : `Changes in ${basename(one().path)}`}</span>
                             <Show when={one().files !== undefined}>
                                 <Stat {...one()} />
@@ -486,41 +493,41 @@ function ChangesCard(p: { turn: Turn; cwd: string; sessionId: string; busy: bool
                                 <FolderGit2 size={12} />
                                 <span class="truncate mono">{one().branch ?? basename(one().path)}</span>
                             </span>
-                            <button class="btn sm" onClick={() => openWorktreeReview(one().path)}>
+                            <button class="btn btn-sm" onClick={() => openWorktreeReview(one().path)}>
                                 Review changes
                             </button>
-                        </div>
+                        </header>
                         <Show when={one().top?.length}>
-                            <div class="chg-files">
+                            <ul class="chg-files">
                                 <For each={one().top}>
                                     {(f) => (
-                                        <div class="chg-file">
+                                        <li class="chg-file">
                                             <button class="chg-file-main" onClick={() => openWorktreeReview(one().path, f.path, f.pathToken)}>
                                                 <SplitPath path={f.path} />
                                                 <Show when={f.change === "added"}>
-                                                    <span class="frow-tag">new</span>
+                                                    <span class="tag">new</span>
                                                 </Show>
                                             </button>
                                             <Stat {...f} />
-                                        </div>
+                                        </li>
                                     )}
                                 </For>
-                                <Show when={(one().files ?? 0) > (one().top?.length ?? 0)}>
-                                    <button class="chg-more" onClick={() => openWorktreeReview(one().path)}>
-                                        {plural((one().files ?? 0) - (one().top?.length ?? 0), "more file")}
-                                    </button>
-                                </Show>
-                            </div>
+                            </ul>
+                            <Show when={(one().files ?? 0) > (one().top?.length ?? 0)}>
+                                <button class="chg-more" onClick={() => openWorktreeReview(one().path)}>
+                                    {plural((one().files ?? 0) - (one().top?.length ?? 0), "more file")}
+                                </button>
+                            </Show>
                         </Show>
                     </Match>
                     {/* Several places: a row each, its own folder first, then the busiest, with who worked there. */}
                     <Match when={shape() === "places"}>
-                        <div class="chg-head">
+                        <header class="chg-head">
                             <span class="chg-title">Changes in {rows().length} places</span>
                             <span class="chg-sub">{plural(placesTotal(rows()).files, "file")}</span>
                             <Stat {...placesTotal(rows())} />
                             <span class="grow" />
-                        </div>
+                        </header>
                         <div class="chg-files">
                             <For each={allPlaces() ? rows() : rows().slice(0, PLACES_SHOWN)}>
                                 {(r) => {
@@ -558,7 +565,7 @@ function ChangesCard(p: { turn: Turn; cwd: string; sessionId: string; busy: bool
                                             <Show when={r.place.files !== undefined} fallback={<span class="stat" />}>
                                                 <Stat {...r.place} />
                                             </Show>
-                                            <button class="btn sm" onClick={() => (r.own ? reviewTurn() : openWorktreeReview((r.place as TurnPlace).path))}>
+                                            <button class="btn btn-sm" onClick={() => (r.own ? reviewTurn() : openWorktreeReview((r.place as TurnPlace).path))}>
                                                 Review
                                             </button>
                                         </div>
@@ -576,10 +583,10 @@ function ChangesCard(p: { turn: Turn; cwd: string; sessionId: string; busy: bool
                 {/* What the snapshot left out, in a line; why, in its tooltip. */}
                 <Show when={incomplete()}>
                     {(line) => (
-                        <div class="chg-note" title={line().detail}>
+                        <p class="chg-note" title={line().detail}>
                             <AlertTriangle size={12} />
                             {line().text}
-                        </div>
+                        </p>
                     )}
                 </Show>
             </div>
@@ -753,7 +760,7 @@ function TurnViewContent(p: TurnViewProps) {
                 {(b) => (
                     <Switch>
                         <Match when={b().t === "text" && (b() as TextBlock)}>
-                            {(t) => <Markdown text={t().text} streaming={writing() && t().id === lastText()} sessionId={p.state.id} find={t().id} class={leaving?.() ? "leaving" : undefined} />}
+                            {(t) => <Markdown text={t().text} streaming={writing() && t().id === lastText()} sessionId={p.state.id} find={t().id} class={leaving?.() ? "msg-agent leaving" : "msg-agent"} />}
                         </Match>
                         <Match when={b().t === "thinking" && (b() as ThinkingBlock)}>{(t) => <Show when={!liveThought(t())}><Thinking block={t()} live={false} /></Show>}</Match>
                         <Match when={b().t === "notice" && (b() as NoticeBlock)}>{(n) => <Notice block={n()} state={p.state} leaving={leaving?.()} row={folds?.()} />}</Match>
@@ -777,7 +784,7 @@ function TurnViewContent(p: TurnViewProps) {
             }
         >
             <Show when={showWork() && drawn(i)}>
-                <div class={`worklog ${folding() ? "leaving" : ""}`}>
+                <div class={`wseg ${folding() ? "leaving" : ""}`}>
                     {/* One quiet line for the run, opening into its steps' rows. */}
                     <WorkRun items={(seg() as { items: Item[] }).items ?? []} hideLive={live()}>
                         <Index each={(seg() as { items: Item[] }).items ?? []}>{(it) => renderItem(it)}</Index>
@@ -786,11 +793,44 @@ function TurnViewContent(p: TurnViewProps) {
             </Show>
         </Show>
     );
+    // "Worked for": the work log's line.
+    const foldButton = () => (
+        <button class="tools-head worklog-head fold worked" classList={{ arrived: arrived() }} aria-expanded={unfolded()} onPointerEnter={wholeTurn} onFocus={wholeTurn} onClick={(event) => {
+            const toggle = () => (unfolded() ? unfold(false) : openByClick());
+            if (p.onToggleWork) p.onToggleWork(event.currentTarget, toggle);
+            else toggle();
+        }}>
+            <span class="num">{worked() ?? "Work log"}</span>
+            <ChevronRight size={13} class="chev" data-open={unfolded() || undefined} />
+        </button>
+    );
+    // The work log's box holds its rows only when they're drawn in it: a turn built finished, or one whose work was
+    // folded since. A turn that finishes with its work open keeps its rows where they are (built again in the box,
+    // the last turn's rows would all be drawn again as it ends, a long turn's 200 calls in some 160 ms).
+    const [boxed, setBoxed] = createSignal(untrack(foldable));
+    createComputed(() => {
+        if (!foldable()) setBoxed(false);
+        else if (!showWork()) setBoxed(true);
+    });
     // Who started it, for screen readers: read once (a turn's prompt never changes sender), as a live read here would
     // rebuild the turn's work each time the turn is replaced.
     const said = untrack(() => p.turn.prompt?.from) ? "Another session said" : "You said";
     // How many of its first rows are notices from before its first step (lib/notices.ts).
     const lead = createMemo(() => (hasWork() ? leadingNotices(segs()) : 0));
+    // In the box: the steps and what was said on the way, up to the last step; after it, the rest.
+    const logged = createMemo(() => {
+        const all = segs();
+        const end = all.findLastIndex((s) => s.kind === "work") + 1;
+        const inside: number[] = [];
+        const outside: number[] = [];
+        const every: number[] = [];
+        for (let n = lead(); n < all.length; n++) {
+            const s = all[n]!;
+            (n < end && (s.kind === "work" || s.interim) ? inside : outside).push(n);
+            every.push(n);
+        }
+        return { inside, outside, all: every };
+    }, undefined, { equals: (a, b) => !!a && a.all.join() === b.all.join() && a.inside.join() === b.inside.join() });
 
     return (
         <article class={`turn ${p.turn.archived ? "archived" : ""} ${p.turn.imported ? "imported" : ""} ${p.held ? "chained" : ""} ${foldable() ? "done" : ""} ${empty() ? "empty" : ""} ${attached() ? "attached" : ""}`} data-turn={p.turn.id} aria-busy={running()} ref={(el) => (article = el, p.onElement?.(el, p.turn.id))}>
@@ -805,28 +845,37 @@ function TurnViewContent(p: TurnViewProps) {
                     {/* Notices from before its first step, where they happened: above "Worked for". */}
                     <Index each={segs().slice(0, lead())}>{(seg, i) => renderSeg(seg, i)}</Index>
                     <Show when={foldable() && hasWork() && !folding()}>
-                        <button class="fold acts-h worked" classList={{ arrived: arrived() }} aria-expanded={unfolded()} onPointerEnter={wholeTurn} onFocus={wholeTurn} onClick={(event) => {
-                            const toggle = () => (unfolded() ? unfold(false) : openByClick());
-                            if (p.onToggleWork) p.onToggleWork(event.currentTarget, toggle);
-                            else toggle();
-                        }}>
-                            <span class="num">{worked() ?? "Work log"}</span>
-                            <ChevronRight size={13} class="chev" />
-                        </button>
+                        <Show when={boxed()} fallback={foldButton()}>
+                            {/* The design's work log: its line, and opened, its rows on a rail. What isn't work (a plan's
+                                card, a notice) stays out of it, after it, as it shows with the work folded. */}
+                            <div class="worklog" data-open={showWork() || undefined}>
+                                {foldButton()}
+                                <Show when={showWork()}>
+                                    <div class="worklog-body">
+                                        <For each={logged().inside}>{(n) => renderSeg(() => segs()[n]!, n)}</For>
+                                    </div>
+                                </Show>
+                            </div>
+                        </Show>
                     </Show>
-                    <Index each={segs().slice(lead())}>{(seg, i) => renderSeg(seg, lead() + i)}</Index>
+                    {/* Keyed by place: what stays out of the box is the same row in either case, not built again. */}
+                    <For each={boxed() && hasWork() ? logged().outside : logged().all}>{(n) => renderSeg(() => segs()[n]!, n)}</For>
                     <Show when={foldable() && !p.turn.archived && !p.turn.imported}>
                         <ChangesCard turn={p.turn} cwd={p.state.cwd} sessionId={p.state.id} busy={p.state.busy} agents={p.agents} provider={p.state.model?.provider} />
                     </Show>
                     <Show when={foldable() && p.turn.prompt}>
                         {/* An error's card says how the turn ended: no second line under it. */}
                         <Show when={END_TEXT[p.turn.status] && !(p.turn.status === "error" && hasErrorCard(p.turn.blocks))}>
-                            <div class={`notice end-note end-${p.turn.status}`} data-find-skip>
-                                {p.turn.status === "aborted" ? <Square size={9} fill="currentColor" class="end-stop" /> : p.turn.status === "error" || p.turn.status === "blocked" ? <AlertCircle size={14} /> : <AlertTriangle size={14} />}
-                                <span>{p.turn.status === "aborted" ? stoppedText(p.turn, p.state) : END_TEXT[p.turn.status]}</span>
+                            <div class={`stopped end-note end-${p.turn.status}`} role="status" data-find-skip>
+                                <span class="stopped-line" />
+                                <span class="stopped-label">
+                                    <Square size={9} fill="currentColor" stroke-width={0} />
+                                    {p.turn.status === "aborted" ? stoppedText(p.turn, p.state) : END_TEXT[p.turn.status]}
+                                </span>
+                                <span class="stopped-line" />
                             </div>
                         </Show>
-                        <div class="turn-foot">
+                        <div class={`turn-foot ${p.last ? "turn-foot-last" : ""}`}>
                             <Show when={reply().trim()}>
                                 <CopyButton text={reply} label="Copy response" words="Copy response" />
                             </Show>

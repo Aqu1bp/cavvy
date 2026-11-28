@@ -74,7 +74,7 @@ export async function checkTranscriptScroll(target: HTMLElement) {
         await scroll(scroller().scrollTop + y('[data-find="note10"]') - 100);
         const workTop = y('[data-find="note10"]');
         setView("turns", 0, "status", "done"); setView("state", "busy", false); await settle();
-        check(row(".worklog"), "completion retains work away from bottom");
+        check(row(".wseg"), "completion retains work away from bottom");
         near(y('[data-find="note10"]'), workTop, "completion preserves text under the reader");
         await mount(b); await mount(a);
         near(y('[data-find="note10"]'), workTop, "retained work survives session switch");

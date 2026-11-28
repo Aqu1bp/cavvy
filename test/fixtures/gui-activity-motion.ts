@@ -779,7 +779,7 @@ test("a turn sent with its work folded shows its rows as it's opened, asks for i
     try {
         h.setView(produce((v: any) => Object.assign(v.turns[0], { status: "done", endedAt: 9000, folded: true })));
         const worked = () => all(h.root).find((n) => n.tag === "button" && has(n, "worked"))!;
-        const work = () => all(h.root).find((n) => has(n, "worklog"));
+        const work = () => all(h.root).find((n) => has(n, "wseg"));
         // Folded: "Worked for", nothing asked for.
         expect(worked().props["aria-expanded"]).toBe(false);
         expect(turnLoads).toEqual([]);
@@ -805,7 +805,7 @@ test("a turn sent whole isn't asked for again as its work is opened", () => {
         h.setView(produce((v: any) => Object.assign(v.turns[0], { status: "done", endedAt: 9000 })));
         const worked = () => all(h.root).find((n) => n.tag === "button" && has(n, "worked"))!;
         worked().props.onClick({ currentTarget: worked() });
-        expect(all(h.root).some((n) => has(n, "worklog"))).toBe(true);
+        expect(all(h.root).some((n) => has(n, "wseg"))).toBe(true);
         expect(turnLoads).toEqual([]);
     } finally {
         h.dispose();
