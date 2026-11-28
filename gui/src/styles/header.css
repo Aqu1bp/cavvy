@@ -138,6 +138,31 @@ button.main-project:hover {
     color: var(--text-4);
 }
 
+/* A sub-agent's view (Agents.tsx): the crumbs that lead back, a mark beside a name, and the agent itself as the
+   design's .crumb-here. Their names truncate (.truncate), so a crumb shrinks rather than its mark. */
+.main-crumb {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(6 * var(--sp));
+    flex: 0 1 auto;
+    min-width: 0;
+}
+
+.main-crumb > :not(.truncate),
+.crumb-here > :not(.truncate) {
+    flex: none;
+}
+
+.crumb-here {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    min-width: 0;
+    color: var(--text);
+    font-size: 0.929rem;
+    font-weight: 500;
+}
+
 .main-title-btn {
     min-width: 0;
     margin-left: calc(-6 * var(--sp));
