@@ -9,7 +9,6 @@ import { activate, reportError, restoredFrom, rpc } from "../state/app";
 import { deletedOpen, setDeletedOpen } from "../state/ui";
 import { ago } from "../lib/format";
 import { Dialog } from "./ui/Dialog";
-import { Spinner } from "./ui/bits";
 
 export function RecentlyDeleted() {
     const [list, setList] = createSignal<TrashedSessionSummary[]>();
@@ -70,7 +69,7 @@ export function RecentlyDeleted() {
                 </button>,
             ]}
         >
-            <Show when={list()?.length || !more() ? list() : undefined} fallback={<div class="blank"><Spinner size={14} class="blank-spinner" /></div>}>
+            <Show when={list()?.length || !more() ? list() : undefined} fallback={<div class="blank">Loading…</div>}>
                 {(items) => (
                     <Show when={items().length} fallback={<div class="blank"><p class="blank-title">{silent().length ? `Not shown: ${silent().join(", ")}.` : "Nothing deleted in the past week."}</p></div>}>
                         <ul class="dlg-rows">
@@ -89,10 +88,8 @@ export function RecentlyDeleted() {
                                             <Show
                                                 when={back()}
                                                 fallback={
-                                                    <button class="btn btn-sm rd-btn" aria-label={busy() === s.id ? "Restoring" : undefined} disabled={busy() !== undefined} onClick={() => void restore(s.id, s.machine)}>
-                                                        <Show when={busy() === s.id} fallback="Restore">
-                                                            <Spinner size={12} />
-                                                        </Show>
+                                                    <button class="btn btn-sm rd-btn" disabled={busy() !== undefined} onClick={() => void restore(s.id, s.machine)}>
+                                                        {busy() === s.id ? "Restoring…" : "Restore"}
                                                     </button>
                                                 }
                                             >

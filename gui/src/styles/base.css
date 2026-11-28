@@ -79,6 +79,12 @@ textarea,
     -webkit-user-select: none;
 }
 
+/* Nor are a control's words, mono ones included (a branch on a select, a path on a row): a click never selects them. */
+button :is(.mono, code) {
+    user-select: none;
+    -webkit-user-select: none;
+}
+
 /* The window's ground, which the rail shows (the sheet covers the rest, shell.css): its tint over the native material
    in the macOS app (Liquid Glass, or the sidebar material before macOS 26). A browser has no desktop behind the page,
    and the app elsewhere gets a transparent window with no material, so those get the tint over a calm gradient. The

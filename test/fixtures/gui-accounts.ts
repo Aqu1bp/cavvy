@@ -185,7 +185,7 @@ test("not installed offers Install and no menu; installed but off offers to use 
         expect(connects).toBe(1);
         setConnecting(true);
         expect(use.props.disabled).toBe(true);
-        expect(off.nodes().some((n) => n.tag === "spinner")).toBe(true);
+        expect(text(use)).toBe("Connecting…");
     } finally { off.dispose(); }
 });
 

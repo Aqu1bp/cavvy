@@ -1,5 +1,5 @@
 import { For, Show } from "solid-js";
-import { Check, ChevronDown, FilePen, Hand, Map as MapIcon, ShieldAlert, ShieldCheck } from "lucide-solid";
+import { ChevronDown, FilePen, Hand, Map as MapIcon, ShieldAlert, ShieldCheck } from "lucide-solid";
 import { MODE_LABELS, type PermissionModeId } from "@shared/protocol";
 import { setMode } from "../state/actions";
 import { Menu } from "./ui/Menu";
@@ -48,7 +48,7 @@ export function ModePicker(p: ComposerMenu & { /** The session it's for (default
                 <span class="bar-main">{MODE_LABELS[p.mode].label}</span>
                 <ChevronDown size={13} class="bar-chev" />
             </button>
-            <Menu label="Permission mode" open={p.open} anchor={() => anchor} onClose={() => p.setOpen(false)} placement={p.placement ?? "top"} align="start" offset={8} width={336} class="menu menu-wide">
+            <Menu label="Permission mode" open={p.open} anchor={() => anchor} onClose={() => p.setOpen(false)} placement={p.placement ?? "top"} align="start" offset={8} width={336} class="menu menu-wide menu-choice">
                 <div class="menu-label">Permission mode</div>
                 <For each={MODES}>
                     {(m) => {
@@ -64,11 +64,6 @@ export function ModePicker(p: ComposerMenu & { /** The session it's for (default
                                     void setMode(m, p.sessionId);
                                 }}
                             >
-                                <span class="menu-check">
-                                    <Show when={p.mode === m}>
-                                        <Check size={14} />
-                                    </Show>
-                                </span>
                                 <span class="menu-item-text">
                                     <span class="menu-item-name">{MODE_LABELS[m].label}</span>
                                     {/* Off, what turns it on matters more than what it does. */}

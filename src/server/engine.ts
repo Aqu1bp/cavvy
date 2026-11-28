@@ -4727,6 +4727,8 @@ export class Engine {
             }
             case "fs.dirs":
                 return listDirs(str(p.path, "path"));
+            case "fs.mkdir":
+                return makeDir(str(p.path, "path"), str(p.name, "name"));
             case "editors.list":
                 return this.editorsList();
             case "fs.open":
@@ -4932,6 +4934,23 @@ function listDirs(path: string): { path: string; parent?: string; dirs: string[]
     }
     const parent = dirname(p);
     return { path: p, parent: parent !== p ? parent : undefined, dirs };
+}
+
+/** A new folder `name` (one name, no path) in the folder `path`: made once, never over something already there. */
+function makeDir(path: string, name: string): { path: string } {
+    const parent = resolve(expandHome(path || "~"));
+    const n = name.trim();
+    if (!n) throw new RpcError("Name the folder.");
+    if (n === "." || n === ".." || /[/\\\0]/.test(n)) throw new RpcError("Use a name without slashes.");
+    if (!isDir(parent)) throw new RpcError(`${parent} isn't a folder`);
+    const dir = join(parent, n);
+    try {
+        mkdirSync(dir);
+    } catch (e) {
+        const code = (e as NodeJS.ErrnoException).code;
+        throw new RpcError(code === "EEXIST" ? "Something here already has that name." : code === "EACCES" || code === "EPERM" || code === "EROFS" ? "Can't make a folder here." : (e as Error).message);
+    }
+    return { path: dir };
 }
 
 /**

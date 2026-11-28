@@ -64,13 +64,13 @@ test("Home drawn before the window is shown is marked to skip its entrance; one 
         React: { Fragment: "Fragment" },
         ChevronDown: stub, FolderGit2: stub, motionMs: () => 0, FolderOpen: stub, KeyRound: stub, Plug: stub, ShieldAlert: stub, Shield: stub, ShieldQuestion: stub,
         app: { conn: "open", homeCwd: "/project", providers: [], projects: [], models: [] }, refreshProjects: stub, reportError: stub, rpc: {}, rpcFor: () => ({}), homeOn: () => undefined, chooseProject: stub, homeProjects: () => [], noModel: () => false, createEffect: (fn: () => void) => fn(), machine: undefined, isElectron: false, serversUi: stub, connectCli: stub, openProject: stub, trustAndContinue: stub, homeJumped: () => false, inspect: stub, inspectedBefore: () => undefined, forgetInspected: stub,
-        requestComposerFocus: stub, setSettingsTab: stub, columnHeight: () => "800px", shellLayout: () => ({ column: { h: 800 } }), sp: (n: number) => n,
+        requestComposerFocus: stub, setSettingsTab: stub, homeHeld: () => false, setHomeHeld: stub, columnHeight: () => "800px", shellLayout: () => ({ column: { h: 800 } }), sp: (n: number) => n,
         ago: stub, basename: (p: string) => p, tildify: (p: string) => p, now: stub, isWindowShown: () => shown,
         CliSessions: stub, Composer: stub, ErrorCards: stub, Menu: stub, ProviderIcon: stub, WorktreePicker: stub,
     }) as () => { tag: string; props: { class: string; classList?: Record<string, boolean> } };
     const atLaunch = Home();
     expect(atLaunch.props.class).toBe("home");
-    expect(atLaunch.props.classList).toEqual({ instant: true, "home-jumped": false });
+    expect(atLaunch.props.classList).toEqual({ instant: true, "home-jumped": false, "home-held": false });
     shown = true;
-    expect(Home().props.classList).toEqual({ instant: false, "home-jumped": false });
+    expect(Home().props.classList).toEqual({ instant: false, "home-jumped": false, "home-held": false });
 });

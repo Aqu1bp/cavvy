@@ -8,7 +8,6 @@ import { comparePicks, setAddAccountFor, setComparePicks, setSettingsTab } from 
 import { isMod, mod } from "../lib/platform";
 import { menuIndex, menuTypeahead } from "../lib/menu";
 import { Menu } from "./ui/Menu";
-import { Spinner } from "./ui/bits";
 import { ProviderIcon } from "./ui/ProviderIcon";
 import { withShortcut } from "../state/keybindings";
 import { effortAt, effortBeside, effortKey, effortLevels, effortOf, takesEffort, type Effort } from "../lib/effort";
@@ -218,11 +217,6 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
         const all = new Map(groups().flatMap((g) => g.models.map((m) => [m.ref, m] as const)));
         return prefs.favoriteModels.map((ref) => all.get(ref)).filter((m): m is ModelSummary => Boolean(m));
     });
-    // The panel's height (px at text size 14): the search box, filters and foot, and the longest of the lists a tab
-    // shows (Favorites or one provider's), so it keeps one height from tab to tab and a short list isn't left in a
-    // tall panel. At most seven and a half rows, so a cut-off row says there's more: a longer list scrolls, and the
-    // search finds the rest.
-    const fit = createMemo(() => Math.max(200, Math.min(104 + (p.compare ? 40 : 0) + 7.5 * 35, 104 + (p.compare ? 40 : 0) + Math.max(1, favorites().length, ...groups().map((g) => g.models.length)) * 35)));
     const group = () => groups().find((g) => g.provider === filter());
     /** One provider's models, or the favorites; searching looks through every provider's, under its name. */
     const sections = createMemo((): Section[] => {
@@ -623,7 +617,9 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                 width={348}
                 maxHeight={480}
                 minHeight={view() === "effort" ? 0 : 200}
-                class="menu mp"
+                // The models: one height (model-picker.css .mp-fixed), whatever the tab, the search or how many rows; the
+                // rows scroll in it. The effort view keeps its own size.
+                class={view() === "models" ? `menu mp mp-fixed${p.compare ? " mp-has-foot" : ""}` : "menu mp"}
                 exit
             >
                 <Show when={view() === "effort"}>
@@ -650,7 +646,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                 </Show>
                 <Show when={view() === "models"}>
                 {/* A click anywhere else in the picker closes the accounts list. */}
-                <div class="mp-models" style={{ "--mp-fit": fit() }} onPointerDown={(e) => acctOpen() && !acctEl?.contains(e.target as Node) && setAcctOpen(false)}>
+                <div class="mp-models" onPointerDown={(e) => acctOpen() && !acctEl?.contains(e.target as Node) && setAcctOpen(false)}>
                     <div class="mp-search">
                         {/* Back to the effort, where the picker opened on it. */}
                         <Show when={hasEffortView()} fallback={<Search size={14} class="mp-search-icon" />}>
@@ -659,10 +655,9 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                             </button>
                         </Show>
                         <input ref={input} role="combobox" aria-expanded="true" aria-controls={listId} aria-autocomplete="list" aria-activedescendant={rows()[sel()] ? `${listId}-${sel()}` : undefined} value={q()} onInput={(e) => (setQ(e.currentTarget.value), setSel(0))} placeholder="Search models…" aria-label="Search models" spellcheck={false} />
-                        <button class="icon-btn icon-btn-sm" title="Refresh model lists" aria-label="Refresh model lists" onClick={() => void refreshModelsFor(p.sessionId, true)} disabled={app.modelsLoading}>
-                            <Show when={app.modelsLoading} fallback={<RefreshCw size={13} />}>
-                                <Spinner size={13} />
-                            </Show>
+                        {/* While the lists come in, the button rests (dimmed); the list itself says it's loading when it's empty. */}
+                        <button class="icon-btn icon-btn-sm" title={app.modelsLoading ? "Refreshing…" : "Refresh model lists"} aria-label="Refresh model lists" onClick={() => void refreshModelsFor(p.sessionId, true)} disabled={app.modelsLoading}>
+                            <RefreshCw size={13} />
                         </button>
                         <button class="icon-btn icon-btn-sm" title="Providers…" aria-label="Set up providers" onClick={() => (p.setOpen(false), setSettingsTab("providers"))}>
                             <Settings2 size={14} />
@@ -739,9 +734,6 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                             when={rows().length}
                             fallback={
                                 <div class="mp-empty" role="status">
-                                    <Show when={empty().icon === "loading"}>
-                                        <Spinner size={14} />
-                                    </Show>
                                     <p>{empty().text}</p>
                                     <Show when={empty().action}>
                                         {(a) => (

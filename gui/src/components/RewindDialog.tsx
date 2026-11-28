@@ -9,7 +9,6 @@ import { rewindTimes } from "../lib/rewind-times";
 import { refreshGitChanges } from "../state/changes";
 import { undoRestore } from "../state/actions";
 import { Dialog } from "./ui/Dialog";
-import { Spinner } from "./ui/bits";
 import "../styles/rewind.css";
 import { userMovedFocus } from "../lib/focus-trap";
 
@@ -208,7 +207,7 @@ export function RewindDialog() {
     return (
         <Dialog open={rewindOpen()} onClose={close} title={empty() ? "Rewind" : "Rewind to before which prompt?"} width={560} class="rw" footer={actions}>
             <Show when={!busySession()} fallback={<div class="panel-empty">Wait for the response to finish, or stop it.</div>}>
-                <Show when={list()} fallback={<Spinner />}>
+                <Show when={list()} fallback={<div class="panel-empty">Loading…</div>}>
                     <Show when={list()!.length} fallback={<div class="panel-empty">Nothing to rewind to yet.</div>}>
                         <div class="rw-list" role="radiogroup" aria-label="Prompts" ref={listEl} onKeyDown={onListKey}>
                             <For each={list()}>
@@ -223,7 +222,7 @@ export function RewindDialog() {
                             </For>
                         </div>
                         <Show when={planning()}>
-                            <Spinner />
+                            <p class="rw-checking dim">Checking what it changes…</p>
                         </Show>
                         <Show when={plan()}>
                             <div class="rw-plan">

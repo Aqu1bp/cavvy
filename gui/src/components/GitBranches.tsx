@@ -336,10 +336,10 @@ function BranchDialog(p: { cwd: string; sessionId?: string; query?: string }) {
                     <Show when={syncWords(sync())}>{(w) => <> · {w()}</>}</Show>
                 </span>
                 <button class="btn btn-sm" disabled={Boolean(busy())} onClick={() => void fetchNow()}>
-                    <Show when={busy() === "fetch"} fallback={<CloudDownload size={13} />}><Spinner size={12} /></Show> Fetch
+                    <CloudDownload size={13} /> {busy() === "fetch" ? "Fetching…" : "Fetch"}
                 </button>
                 <button class="btn btn-sm" disabled={Boolean(busy()) || !sync()?.upstream || sync()?.gone} onClick={() => void pull()} title={sync()?.upstream ? `Fast-forward to ${sync()!.upstream}` : "No upstream"}>
-                    <Show when={busy() === "pull"} fallback={<ArrowDown size={13} />}><Spinner size={12} /></Show> Pull
+                    <ArrowDown size={13} /> {busy() === "pull" ? "Pulling…" : "Pull"}
                 </button>
             </div>
         </Dialog>

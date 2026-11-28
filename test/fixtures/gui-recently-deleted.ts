@@ -77,7 +77,7 @@ test("Restore puts it back and offers Open, which closes the dialog and opens it
         await settle();
         button(d.rows()[1]!, "Restore")!.props.onClick();
         expect(d.calls.rpc.at(-1)).toEqual(["session.restore", { id: "a" }]);
-        // One at a time: every Restore waits while one runs (the one restoring shows a spinner in its place).
+        // One at a time: every Restore waits while one runs (the one restoring says "Restoring…").
         expect(d.rows().map((r) => byClass(r, "rd-btn")[0]!.props.disabled)).toEqual([true, true]);
         release();
         await settle();
@@ -112,7 +112,7 @@ test("what was deleted on a server is listed with this machine's, says where, an
         d.setOpen(true);
         await settle();
         // This machine has none, and the servers haven't said: not "Nothing deleted" yet.
-        expect(byClass(d.root, "blank").map(text)).toEqual([""]);
+        expect(byClass(d.root, "blank").map(text)).toEqual(["Loading…"]);
         servers([{ id: "b1", title: "On the server", projectName: "app", deletedAt: 5, machine: "box" }]);
         await settle();
         expect(d.rows().map((r) => text(byClass(r, "row-sub")[0]!))).toEqual(["box · app · Deleted 5m ago"]);

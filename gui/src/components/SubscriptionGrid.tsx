@@ -199,7 +199,7 @@ export default function SubscriptionGrid(p: { here: string; servers: readonly st
                         <Show when={q.head}><span class="sg-muted" data-tip={problem()}>Offline</span></Show>
                     </Match>
                     <Match when={!list()}>
-                        <Show when={q.head}><Spinner size={12} /></Show>
+                        <Show when={q.head}><span class="sg-muted">Loading…</span></Show>
                     </Match>
                     <Match when={!cli()?.installed && cli()?.installing}>
                         <Show when={q.head} fallback={<span />}>

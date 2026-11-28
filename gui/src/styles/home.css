@@ -30,6 +30,15 @@
     animation: rise-in 240ms var(--ease);
 }
 
+/* The window's first Home, until it knows what it shows (Home.tsx homeHeld): not drawn yet, and its entrance waits. */
+.home.home-held {
+    opacity: 0;
+}
+
+.home.home-held .home-stack {
+    animation: none;
+}
+
 /* Drawn before the window came up, at launch: it's all there when the window is. */
 .home.instant .home-stack {
     animation: none;

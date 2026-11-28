@@ -164,7 +164,6 @@ contextBridge.exposeInMainWorld("cavvyDesktop", {
         shown?.();
     },
     focusWindow: () => ipcRenderer.send("focus_window"),
-    pickFolder: (o: { defaultPath?: string; title: string }) => ipcRenderer.invoke("pick_folder", o),
     openExternal: (url: string) => ipcRenderer.invoke("open_external", url),
     revealPath: (path: string) => ipcRenderer.invoke("reveal_path", path),
     convertImage: (bytes: Uint8Array): Promise<Uint8Array | undefined> => ipcRenderer.invoke("convert_image", bytes),

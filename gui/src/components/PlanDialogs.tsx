@@ -51,7 +51,7 @@ function PlanDialog(p: { sessionId: string; planId?: string; kind: "view" | "sav
             when={!info.error && info()}
             fallback={
                 <Dialog open onClose={close} title="Plan" width={480}>
-                    <Show when={info.error} fallback={<div class="blank"><Spinner size={14} class="blank-spinner" /></div>}>
+                    <Show when={info.error} fallback={<div class="blank">Loading…</div>}>
                         <div class="note" data-tone="red">
                             <span class="note-body">{info.error instanceof Error ? info.error.message : String(info.error)}</span>
                         </div>
@@ -164,7 +164,7 @@ function SavePlan(p: { sessionId: string; info: PlanInfo; busy: boolean; setBusy
                     Cancel
                 </button>,
                 <button type="submit" form={formId} class={replacing() ? "btn btn-danger-solid" : "btn btn-primary"} disabled={p.busy || !path().trim()}>
-                    {p.busy ? <Spinner size={12} /> : replacing() ? "Replace" : "Save"}
+                    {p.busy ? "Saving…" : replacing() ? "Replace" : "Save"}
                 </button>,
             ]}
         >

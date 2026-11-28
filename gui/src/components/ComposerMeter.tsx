@@ -1,10 +1,10 @@
-import { createEffect, createMemo, createSignal, createUniqueId, For, on, onCleanup, Show } from "solid-js";
-import { planLimitKey, type AccountInfo } from "@shared/protocol";
-import { app, handleFor, limitsFor, providersFor, reportError, rpc, rpcFor, servedFor, toast } from "../state/app";
+import { createEffect, createMemo, createUniqueId, on, Show } from "solid-js";
+import { planLimitKey } from "@shared/protocol";
+import { app, handleFor, limitsFor, providersFor, reportError, rpc, servedFor } from "../state/app";
 import { contextCardOpen, setContextCardOpen } from "../state/ui";
 import { keysHere, usePane } from "../state/split";
 import { now } from "../lib/clock";
-import { limitAlternatives, limitFor, limitName, meterOf, nearLimit, planTitle, resolvedOn } from "../lib/limits";
+import { limitFor, limitName, meterOf, nearLimit, planTitle, resolvedOn } from "../lib/limits";
 import { contextView } from "../lib/context";
 import { tokens } from "../lib/format";
 import { Popover } from "./ui/Popover";
@@ -18,9 +18,6 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
     createEffect(on(() => app.activeId, () => setOpen(false), { defer: true }));
     const panelId = `composer-usage-${createUniqueId()}`;
     let panel: HTMLDivElement | undefined;
-    const [accounts, setAccounts] = createSignal<AccountInfo[]>([]);
-    const [checking, setChecking] = createSignal(false);
-    const [switching, setSwitching] = createSignal(false);
     const state = () => p.sessionId ? handleFor(p.sessionId)?.view.state : undefined;
     const provider = () => state()?.model?.provider ?? p.provider;
     const providerInfo = () => providersFor(p.sessionId).find((x) => x.id === provider());
@@ -40,56 +37,21 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
     };
     const stop = createMemo(() => limitFor(meter(), model()));
     const name = () => planTitle(providerInfo(), accountId(), "Plan").title;
-    const alternatives = () => limitAlternatives(accounts(), accountId());
-    // A limit can arrive before Settings has ever checked account status.
-    const refreshKey = createMemo(() => {
-        const others = providerInfo()?.agentCli?.accounts?.filter((a) => a.id !== accountId()).map((a) => a.id);
-        return p.sessionId && stop() && others?.length ? JSON.stringify([provider(), accountId(), limits()?.at, others]) : undefined;
-    });
-    createEffect(on(refreshKey, (key) => {
-        setAccounts([]);
-        setChecking(false);
-        if (!key) return;
-        let active = true;
-        setChecking(true);
-        void rpcFor(p.sessionId).call("accounts.list", { provider: provider()!, refresh: true }).then((items) => {
-            if (active) setAccounts(items);
-        }).catch((error) => { if (active) reportError(error); }).finally(() => { if (active) setChecking(false); });
-        onCleanup(() => { active = false; });
-    }));
-    async function switchTo(id: string) {
-        const selectedProvider = provider();
-        if (!selectedProvider || !p.sessionId) return;
-        setSwitching(true);
-        try {
-            await rpc.call("session.setAccount", { id: p.sessionId, provider: selectedProvider, accountId: id });
-            close();
-            // On credits the turn didn't stop: there's nothing to send again.
-            toast(stop()?.credits ? "Account switched" : "Account switched. Send again.", "info");
-        } catch (error) { reportError(error); }
-        finally { setSwitching(false); }
-    }
     const view = () => contextView(state(), open());
-    // The ring is the context, measured to where it compacts: plan limits are in the rail's footer. With no
-    // size known it stays empty and neutral rather than implying a share.
+    // The context alone, measured to where it compacts: plan limits are in the rail's footer and Settings → Usage, a
+    // reached one in the conversation's card (with the accounts to switch to). With no size known it stays neutral
+    // rather than implying a share.
     const urgency = () => view().pct ?? 0;
-    // A reached limit is the one plan state shown here, since it stops this session: red while it blocks,
-    // amber past it on credits, where nothing is blocked but it costs (#426).
     const tone = (): "danger" | "warning" | "normal" => {
-        const ctx = view().pct ?? 0, credits = Boolean(stop()?.credits);
-        if (ctx >= 0.85 || (stop() && !credits)) return "danger";
-        if (ctx >= 0.7 || (stop() && credits)) return "warning";
-        return "normal";
+        const ctx = view().pct ?? 0;
+        return ctx >= 0.85 ? "danger" : ctx >= 0.7 ? "warning" : "normal";
     };
     // The limit that stops this model, in words: "Fable limit reached, resets Mon 9:00 AM".
     const stopWords = () => {
         const st = stop();
         return st && `${st.window ? `${limitName(st.window)} limit reached` : "Limit reached"}${st.credits ? ", using credits" : ""}${st.resets ? `, resets ${st.resets}` : ""}`;
     };
-    const label = () => [
-        view().pct === undefined ? "Context: size unknown" : `Context: ${Math.round(view().pct! * 100)}% used`,
-        stopWords() && `${name()}: ${stopWords()}`,
-    ].filter(Boolean).join(". ");
+    const label = () => (view().pct === undefined ? "Context: size unknown" : `Context: ${Math.round(view().pct! * 100)}% used`);
     const cli = () => Boolean(providerInfo()?.agentCli);
     const autoOff = () => !cli() && app.settings.autoCompact === false;
     /** Where "full" comes from, on the numbers' tooltip. */
@@ -169,29 +131,13 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
                 <span class="num" aria-hidden="true">{shownPct() === undefined ? "Context" : `${shownPct()}% context`}</span>
             </button>
             <Popover open={open()} anchor={() => btn} onClose={close} placement="top" align="start" offset={6} width={width} class="menu ctx-card">
-                <div ref={panel} id={panelId} style={{ outline: "none" }} role="dialog" aria-label="Context and session" tabIndex={-1}
+                <div ref={panel} id={panelId} style={{ outline: "none" }} role="dialog" aria-label="Context" tabIndex={-1}
                     onFocusOut={(e) => {
                         const to = e.relatedTarget as Node | null;
                         if (to && !panel?.contains(to) && to !== btn) close();
                     }}>
-                    <div class="ctx-title">Context and session</div>
-                    {/* A reached limit stops this session, so it's the one plan state said here, with the accounts to switch to. */}
-                    <Show when={stop()}>{(st) => (
-                        <section class="ctx-block" aria-label="Plan limit">
-                            {/* Named by the limit that stops this session, the one that lifts last: "Fable limit reached", "Weekly limit reached". */}
-                            <p class={`ctx-limit ${st().credits ? "" : "stop"}`}>{`${st().window ? `${limitName(st().window!)} limit reached` : "Limit reached"}${st().credits ? ", using credits" : ""}`}</p>
-                            <div class="ctx-line">
-                                <span class="ctx-name">{name()}</span>
-                                <Show when={st().resets}>{(r) => <span class="ctx-dim">Resets {r()}</span>}</Show>
-                            </div>
-                            <Show when={p.sessionId}>
-                                <Show when={checking()}><span class="ctx-dim" role="status">Checking accounts…</span></Show>
-                                <For each={alternatives()}>{(a) => <button class="btn btn-sm ctx-account" disabled={busy() || switching()} onClick={() => void switchTo(a.id)} title="Then send again">Use {a.name} account</button>}</For>
-                            </Show>
-                        </section>
-                    )}</Show>
-                    {/* What the context holds, the bar under it, then the one thing to do. (What the session has used is
-                        Settings → Usage's.) */}
+                    {/* What the context holds, the bar under it, then the one thing to do. (Plan limits: the rail's foot and
+                        Settings → Usage; a reached one, with other accounts to use, is the conversation's limit card.) */}
                     <section class="ctx-block">
                         <div class="ctx-line">
                             <span class="ctx-name">Context</span>

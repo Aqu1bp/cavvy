@@ -177,19 +177,14 @@ function rowStatus(s: SessionSummary, unread?: boolean): "working" | "needs" | "
     return s.messages > 0 || unread || s.woke ? "done" : "idle";
 }
 
-/** A row's start: how it's doing (a still glyph: nothing in the rail animates), or a box while rows are being picked, ticked when it's one. */
+/** A row's start: how it's doing (a glyph; working, a dot that pulses, the rail's one loop), or a box while rows are being picked, ticked when it's one. */
 function RowLead(p: { s: SessionSummary; picking?: boolean; picked?: boolean; unread?: boolean }) {
     const status = () => rowStatus(p.s, p.unread);
     return (
         <Show when={!p.picking} fallback={<span class="srow-pick" data-on={p.picked || undefined} aria-hidden="true"><Show when={p.picked}><Check size={11} stroke-width={3} /></Show></span>}>
             <span class="status-icon" data-status={status()} aria-hidden="true">
                 <Switch>
-                    <Match when={status() === "working"}>
-                        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
-                            <circle cx="8" cy="8" r="6" opacity="0.22" />
-                            <path d="M8 2a6 6 0 0 1 6 6" stroke-linecap="round" />
-                        </svg>
-                    </Match>
+                    <Match when={status() === "working"}><span class="status-working" /></Match>
                     <Match when={status() === "needs"}><span class="status-dot" /></Match>
                     <Match when={status() === "done" && (p.unread || p.s.woke)}><span class="status-unread" /></Match>
                     <Match when={status() === "done"}><Check size={14} stroke-width={2.4} /></Match>
@@ -222,13 +217,9 @@ function RowMeta(p: { s: SessionSummary; unread: boolean }) {
     );
 }
 
-/** A shortcut as its keys, a box each ("⌘" "N"). */
-function NavKeys(p: { action: string }) {
-    return (
-        <Show when={shortcut(p.action)}>
-            {(k) => <span class="kbd-group" aria-hidden="true"><For each={k().split("+")}>{(key) => <kbd class="kbd">{keyText(key)}</kbd>}</For></span>}
-        </Show>
-    );
+/** A row's shortcut, as words that show while you point at the row ("⌘N"). */
+function NavKey(p: { action: string }) {
+    return <Show when={shortcut(p.action)}>{(k) => <span class="nav-row-key" aria-hidden="true">{keyText(k())}</span>}</Show>;
 }
 
 /** The plans' chips and their card (PlanFooter.tsx): loaded a moment after the window, not with it. */
@@ -267,7 +258,7 @@ type RowKind = "needs" | "card" | "slim";
 
 /**
  * A session's row, the design's markup for all three: the glyph, the title with its time or status, and (not slim)
- * a line under it. Archive and More come up over the time while you point at it.
+ * a line under it. More (and Pin, on a slim row) comes up over the time while you point at it.
  *
  * Under Needs you, a session waiting on you, its one row in the rail until it's answered (lib/session-order.ts
  * listedOnce): what it's asking, in amber. Any click opens it. Rows are picked together in the list below, which
@@ -370,18 +361,9 @@ function SessionRow(p: { s: SessionSummary; kind: RowKind; hold: (id: string, he
                     </span>
                 </button>
                 <div class="srow-actions" hidden={p.s.making}>
-                    <Show
-                        when={slim}
-                        fallback={
-                            /* A session waiting for you isn't archived from under its question. */
-                            <Show when={!waiting() && !p.s.archived}>
-                                <button class="icon-btn icon-btn-sm" title="Archive" aria-label={`Archive ${p.s.title}`} onClick={() => void archive(p.s.id, true)}>
-                                    <Archive size={14} />
-                                </button>
-                            </Show>
-                        }
-                    >
-                        {/* Snoozed: Pin is in its menu, and when it wakes stays in sight. */}
+                    {/* A full row: More alone (Archive is in it). A slim one: Pin too, except snoozed, where Pin is in its
+                        menu and when it wakes stays in sight. */}
+                    <Show when={slim}>
                         <Show when={!snoozed()}>
                             <button class="icon-btn icon-btn-sm" title={p.s.pinned ? "Unpin" : "Pin"} aria-label={`${p.s.pinned ? "Unpin" : "Pin"} ${p.s.title}`} onClick={() => void pin(p.s.id, !p.s.pinned)}>
                                 <Show when={p.s.pinned} fallback={<Pin size={14} />}>
@@ -796,16 +778,16 @@ export function Sidebar() {
                 </>
             }
         >
-            <div class="sidebar-actions">
-                <button class="new-session nav-row" title={withShortcut("New session", "app:newSession")} onClick={() => (setSettingsTab(undefined), newSession(app.homeCwd))}>
-                    <SquarePen size={15} />
-                    <span>New session</span>
-                    <NavKeys action="app:newSession" />
+            <div class="side-nav">
+                <button class="nav-row" title={withShortcut("New session", "app:newSession")} onClick={() => (setSettingsTab(undefined), newSession(app.homeCwd))}>
+                    <SquarePen size={16} />
+                    <span class="nav-row-label">New session</span>
+                    <NavKey action="app:newSession" />
                 </button>
-                <button class="search" title={withShortcut("Search", "app:commandPalette")} onClick={() => setPaletteOpen(true)}>
-                    <Search size={14} class="search-icon" />
-                    <span class="search-label">Search</span>
-                    <NavKeys action="app:commandPalette" />
+                <button class="nav-row" title={withShortcut("Search", "app:commandPalette")} onClick={() => setPaletteOpen(true)}>
+                    <Search size={16} />
+                    <span class="nav-row-label">Search</span>
+                    <NavKey action="app:commandPalette" />
                 </button>
             </div>
 
