@@ -568,14 +568,16 @@
     background: var(--amber-strong);
 }
 
-/* Working: the accent's dot, breathing. Opacity alone, in 100ms steps on the stream clock's grid, paused with the
-   window's other loops: rows working together step together, on the compositor. */
+/* Working: the accent's dot, breathing. Opacity alone, a change every 400ms on the stream clock's grid, paused with
+   the window's other loops: rows working together step together, on the compositor. Each change draws the window
+   again, so few of them: 100ms steps cost a window with a session working out of sight 36 → 99 million instructions
+   a second (perf:bench textLongOffScreen); 400ms steps are a quarter as many changes. */
 .status-working {
     width: calc(8 * var(--sp));
     height: calc(8 * var(--sp));
     border-radius: 50%;
     background: var(--accent);
-    animation: srow-working 1.2s steps(6) infinite;
+    animation: srow-working 1.6s steps(2) infinite;
     animation-play-state: var(--loops);
 }
 
