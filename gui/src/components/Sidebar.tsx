@@ -316,6 +316,8 @@ function SessionRow(p: { s: SessionSummary; kind: RowKind; hold: (id: string, he
             classList={{ cur: current() }}
             data-session-id={needs ? undefined : p.s.id}
             data-needs-id={needs ? p.s.id : undefined}
+            // The benches' hooks (desktop-electron/bench-*.ts): the row, and its button below.
+            data-session-row={needs ? undefined : p.s.id}
             data-selected={current() || undefined}
             data-beside={beside(p.s.id) || undefined}
             data-picked={picked() || undefined}
@@ -338,7 +340,7 @@ function SessionRow(p: { s: SessionSummary; kind: RowKind; hold: (id: string, he
                 }
             >
                 <button
-                    class="srow-main"
+                    class={needs ? "srow-main" : `srow-main ${slim ? "slim-hit" : "card-hit"}`}
                     onClick={click}
                     onDblClick={(e) => !needs && !e.shiftKey && !e.metaKey && !e.ctrlKey && r.setEditing(true)}
                     aria-current={current() ? "page" : undefined}
