@@ -1689,7 +1689,7 @@ export async function refreshKeybindings() {
     if (keybindingsLoaded) return;
     keybindingsLoaded = true;
     const issues = keymap().issues;
-    if (fatal || issues.length) toast(`Your keybindings file has ${issues.length === 1 ? "a problem" : `${issues.length} problems`}: ${issues[0]!.message}`, issues.some((i) => i.level === "error") ? "error" : "warn", { label: "Show", run: () => void setSettingsTab("shortcuts") });
+    if (fatal || issues.length) toast(`Your keybindings file has ${issues.length === 1 ? "a problem" : `${issues.length} problems`}`, issues.some((i) => i.level === "error") ? "error" : "warn", { label: "Show", run: () => void setSettingsTab("shortcuts") });
 }
 
 /** A save of the keybindings file: applied at once, and a word on how it went. */
@@ -1700,7 +1700,7 @@ function keybindingsChanged(next: Parameters<typeof applyKeybindingsFile>[0]) {
     const issues = keymap().issues;
     if (issues.length) {
         const errors = issues.filter((i) => i.level === "error").length;
-        return toast(`Keybindings reloaded with ${issues.length} problem${issues.length === 1 ? "" : "s"}: ${issues[0]!.message}`, errors ? "error" : "warn", show);
+        return toast(`Keybindings reloaded with ${issues.length} problem${issues.length === 1 ? "" : "s"}`, errors ? "error" : "warn", show);
     }
     toast(next.text === undefined ? "Keybindings file removed: default shortcuts" : "Keybindings reloaded", "info");
 }

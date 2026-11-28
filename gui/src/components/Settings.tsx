@@ -560,7 +560,7 @@ const serverList = () => servers()?.serverList() ?? [];
 async function connectThere(pr: ProviderInfo, at: ProvidersAt, failed: (e: unknown) => void): Promise<boolean> {
     try {
         const r = await at.link.call("providers.connectCli", { provider: pr.id });
-        toast(`Using your ${pr.agentCli?.plan ?? pr.name} on ${at.server} (${r.description})`, "success");
+        toast(`Using your ${pr.agentCli?.plan ?? pr.name} on ${at.server}`, "success");
         if (r.warning) toast(r.warning, "warn");
     } catch (e) {
         failed(e);
