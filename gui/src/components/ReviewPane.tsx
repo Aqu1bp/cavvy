@@ -62,6 +62,15 @@ function fileTag(f: Row): string | undefined {
     return changeOf(f) === "renamed" && f.from ? `Renamed from ${f.from}` : undefined;
 }
 
+/** A view's second line when Cavvy has nothing more particular to say (its base, the commit, why it can't be picked). */
+const BLURB: Record<ViewItem["scope"], string> = {
+    uncommitted: "The working tree against the last commit",
+    branch: "Everything since the branch left its base",
+    commit: "One commit's changes",
+    "last-turn": "What the latest prompt changed",
+    cavvy: "Only what Cavvy's edit tools changed",
+};
+
 /** Git's letter, the tile's tone, and the word: M, A, D as the design has them; R and T on the modified tone. */
 const KIND: Record<GitFileDiff["change"], [string, string, string]> = {
     modified: ["M", "modified", "Modified"],
@@ -228,17 +237,15 @@ function ViewMenu(p: {
                 </Show>
                 <ChevronDown size={13} class="select-caret" />
             </button>
-            <Menu label="Which changes" class="rv-view-menu" open={open()} anchor={() => anchor} onClose={() => setOpen(false)} placement="bottom" align="start" width={336} maxHeight={680}>
+            <Menu label="Which changes" class="menu-wide rv-view-menu" open={open()} anchor={() => anchor} onClose={() => setOpen(false)} placement="bottom" align="start" width={336} maxHeight={680}>
                 <div class="menu-label">Which changes</div>
                 <For each={p.menu.views}>
                     {(v) => (
-                        <Radio on={v.on} disabled={v.disabled} two={Boolean(v.desc || v.disabled)} onPick={() => p.onView(v.scope)}>
-                            <Show when={v.desc || v.disabled} fallback={<span class="menu-item-name">{v.label}</span>}>
-                                <span class="menu-item-text">
-                                    <span class="menu-item-name">{v.label}</span>
-                                    <span class="menu-item-sub">{v.disabled ?? v.desc}</span>
-                                </span>
-                            </Show>
+                        <Radio on={v.on} disabled={v.disabled} two onPick={() => p.onView(v.scope)}>
+                            <span class="menu-item-text">
+                                <span class="menu-item-name">{v.label}</span>
+                                <span class="menu-item-sub">{v.disabled ?? v.desc ?? BLURB[v.scope]}</span>
+                            </span>
                         </Radio>
                     )}
                 </For>
@@ -264,6 +271,7 @@ function ViewMenu(p: {
                             <For each={shortList()}>
                                 {(w) => {
                                     const named = () => workNamed(work().get(w.path));
+                                    const name = () => (w.current ? "This session" : <span class="mono rv-menu-branch">{worktreeLabel(w)}</span>);
                                     const who = () => {
                                         const n = named();
                                         if (!n.length) return facts(w);
@@ -271,16 +279,15 @@ function ViewMenu(p: {
                                     };
                                     return (
                                         <Radio on={isOn(w)} two={Boolean(who())} disabled={usable(w) ? undefined : facts(w)} title={`${w.path}${facts(w) ? `\n${facts(w)}` : ""}`} onPick={() => p.onWorktree(w.current ? undefined : w.path)}>
-                                            <Show when={who()} fallback={<span class="menu-item-name mono rv-menu-branch">{worktreeLabel(w)}</span>}>
+                                            {/* The session's own: "This session", its branch beside it; another: its branch. */}
+                                            <Show when={who()} fallback={<span class="menu-item-name">{name()}</span>}>
                                                 <span class="menu-item-text">
-                                                    <span class="menu-item-name mono rv-menu-branch">{worktreeLabel(w)}</span>
+                                                    <span class="menu-item-name">{name()}</span>
                                                     <span class="menu-item-sub">{who()}</span>
                                                 </span>
                                             </Show>
                                             <Show when={w.current}>
-                                                <span class="menu-item-note">
-                                                    <span class="tag">This session</span>
-                                                </span>
+                                                <span class="menu-item-note">{worktreeLabel(w)}</span>
                                             </Show>
                                         </Radio>
                                     );
@@ -323,7 +330,7 @@ function FilesMenu(p: { label: string; files: Row[]; more?: string; comments: (f
                 <span class="select-value">{p.label}</span>
                 <ChevronDown size={13} class="select-caret" />
             </button>
-            <Menu label="Files" class="rv-files-menu" open={open()} anchor={() => anchor} onClose={() => setOpen(false)} placement="bottom" align="start" width={400} maxHeight={560}>
+            <Menu label="Files" class="menu-scroll rv-files-menu" open={open()} anchor={() => anchor} onClose={() => setOpen(false)} placement="bottom" align="start" width={400} maxHeight={560}>
                 <Show when={open()}>
                     <For each={p.files}>
                         {(f) => (
