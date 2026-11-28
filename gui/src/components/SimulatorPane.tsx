@@ -414,9 +414,9 @@ export function SimulatorPane(p: { handle: SessionHandle }) {
                     {(d) => (
                         <button class="menu-item compact sim-pick" role="menuitemradio" aria-checked={d.udid === device()?.udid} onClick={() => pick(d)}>
                             <DeviceIcon kind={d.kind} size={14} />
-                            <span class="menu-text">
-                                <span class="menu-label truncate">{d.name}</span>
-                                <span class="menu-desc">{deviceDetail(d)}</span>
+                            <span class="menu-item-text">
+                                <span class="menu-item-name truncate">{d.name}</span>
+                                <span class="menu-item-sub">{deviceDetail(d)}</span>
                             </span>
                             <Show when={d.udid === device()?.udid}>
                                 <Check size={14} class="menu-check" />
@@ -474,7 +474,7 @@ export function SimulatorPane(p: { handle: SessionHandle }) {
                     {(taken) => (
                         <div class="sim-taken" role="status">
                             <span>{taken()}</span>
-                            <button class="btn sm" disabled={busy()} title="Restarts its home screen, closing its apps" onClick={() => command("take_control")}>
+                            <button class="btn btn-sm" disabled={busy()} title="Restarts its home screen, closing its apps" onClick={() => command("take_control")}>
                                 Take control
                             </button>
                         </div>
@@ -492,12 +492,12 @@ export function SimulatorPane(p: { handle: SessionHandle }) {
                                     <span class="selectable">{n().detail}</span>
                                 </Show>
                                 <Show when={n().start}>
-                                    <button class="btn primary sm sim-start" disabled={busy()} onClick={() => command(n().show ? "select" : "boot", n().show ? device()?.udid : undefined)}>
+                                    <button class="btn btn-primary btn-sm sim-start" disabled={busy()} onClick={() => command(n().show ? "select" : "boot", n().show ? device()?.udid : undefined)}>
                                         {n().show ? "Show" : "Start"}
                                     </button>
                                 </Show>
                                 <Show when={n().retry}>
-                                    <button class="btn sm sim-start" onClick={() => watch()}>
+                                    <button class="btn btn-sm sim-start" onClick={() => watch()}>
                                         Try again
                                     </button>
                                 </Show>

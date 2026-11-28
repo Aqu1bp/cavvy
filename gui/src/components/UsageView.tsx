@@ -305,14 +305,14 @@ export function UsageView() {
             <Show when={view() !== "limits"}><Segmented label="Usage time range" size="sm" value={String(days())} options={RANGES} onChange={v => { if (Number(v) !== days()) setDays(Number(v) as UsageDays); }} /></Show>
             <button class="hb sm" title="Refresh" aria-label={view() === "limits" ? "Refresh limits" : "Refresh usage"} disabled={loading()} onClick={() => void load()}><Show when={loading()} fallback={<RotateCcw size={14} />}><Spinner size={14} /></Show></button>
         </div>
-        <Show when={error()}><div class="set-group u-state" role="alert"><b>Couldn't read usage</b><p>{error()}</p><button class="btn secondary sm" onClick={() => void load()}>Try again</button></div></Show>
+        <Show when={error()}><div class="set-group u-state" role="alert"><b>Couldn't read usage</b><p>{error()}</p><button class="btn btn-sm" onClick={() => void load()}>Try again</button></div></Show>
         <Show when={view() === "limits"} fallback={<>
             <Show when={loading() && !data()}><p class="set-note" role="status">Loading usage…</p></Show>
             <Show when={!error() && data()}>{d => <div class={`usage-body ${stale() ? "busy" : ""}`}>
                 <Show when={d().truncated}><div class="u-partial" role="status"><Info size={14} /><span>Only part of this range is counted: {d().truncated} A shorter range counts everything.</span></div></Show>
                 <Show when={d().waiting?.length && d().days === days()}><div class="u-partial" role="status"><Info size={14} /><span>Adding {d().waiting!.join(", ")}…</span></div></Show>
                 <Show when={d().uncounted?.length}><div class="u-partial" role="status"><Info size={14} /><span>Not counted: {d().uncounted!.join(", ")}.</span></div></Show>
-                <Show when={d().rows.length} fallback={noModel() && !d().truncated ? <div class="set-group u-state"><b>No model connected.</b><button class="btn secondary sm" onClick={() => setSettingsTab("providers")}>Connect a model</button></div> : <div class="set-group u-state"><b>{emptyText(d())}</b><Show when={!d().truncated}><p>Sessions show up here after their first reply.</p></Show><Show when={!d().truncated && d().days < 90}><button class="btn secondary sm" onClick={() => setDays(90)}>Show the last 90 days</button></Show></div>}>
+                <Show when={d().rows.length} fallback={noModel() && !d().truncated ? <div class="set-group u-state"><b>No model connected.</b><button class="btn btn-sm" onClick={() => setSettingsTab("providers")}>Connect a model</button></div> : <div class="set-group u-state"><b>{emptyText(d())}</b><Show when={!d().truncated}><p>Sessions show up here after their first reply.</p></Show><Show when={!d().truncated && d().days < 90}><button class="btn btn-sm" onClick={() => setDays(90)}>Show the last 90 days</button></Show></div>}>
                     <UsageDashboard data={d()} metric={view() === "tokens" ? "tokens" : "cost"} />
                 </Show>
             </div>}</Show>

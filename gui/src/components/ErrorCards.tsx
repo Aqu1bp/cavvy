@@ -7,6 +7,7 @@
 // the window's. An error that belongs to something on screen shows there instead (a provider's row
 // in Settings → Providers).
 
+import { Portal } from "solid-js/web";
 import { createEffect, createSignal, For, on, onCleanup, Show } from "solid-js";
 import { CircleAlert, Copy, X } from "lucide-solid";
 import { dismissToast, runToastChoice, toast, toasts, type Toast } from "../state/app";
@@ -60,13 +61,13 @@ function ErrorCard(p: { toast: Toast }) {
                 <div class="error-card-actions">
                     <For each={actions()}>
                         {(action, index) => (
-                            <button class={`btn sm ${index() === 0 ? "primary" : "ghost"}`} disabled={t().running} onClick={() => void runToastChoice(t().id, index())}>
+                            <button class={`btn btn-sm ${index() === 0 ? "btn-primary" : "btn-ghost"}`} disabled={t().running} onClick={() => void runToastChoice(t().id, index())}>
                                 {action.label}
                             </button>
                         )}
                     </For>
                     <button
-                        class="btn sm ghost"
+                        class="btn btn-sm btn-ghost"
                         onClick={async () => {
                             const copied = await copyText(t().message);
                             toast(copied ? "Copied error" : "Couldn't copy error", copied ? "success" : "info");
@@ -113,9 +114,12 @@ export function ErrorCards(p: { place: ErrorPlace }) {
     const more = () => errors().length - shown().length;
     return (
         <div class={`feedback at-${place}`}>
-            <div class="toast-region" role="status" aria-live="polite" aria-relevant="additions text">
-                <For each={notes()}>{(t) => <ToastItem toast={t} />}</For>
-            </div>
+            {/* At the window's top centre, as the design has them: out of this place's box. */}
+            <Portal>
+                <div class="toasts" role="status" aria-live="polite" aria-relevant="additions text">
+                    <For each={notes()}>{(t) => <ToastItem toast={t} />}</For>
+                </div>
+            </Portal>
             <div class={`error-cards at-${place}`} classList={{ empty: !shown().length }} role="alert" aria-live="assertive" aria-relevant="additions text">
                 <For each={shown()}>{(t) => <ErrorCard toast={t} />}</For>
                 <Show when={more() > 0}>

@@ -262,7 +262,7 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean; on?: string; 
             <Show when={!currentTabs().length}>
                 <div class="terminal-message">
                     <span>{full() ? `${MAX_TABS} terminals are open in other projects. Close one to open a terminal here.` : conn() !== "open" ? "Not connected to Cavvy server." : "No terminal in this project."}</span>
-                    <Show when={!full()}><button class="btn secondary sm" disabled={!restored() || conn() !== "open"} onClick={add}><Plus size={12} /> New terminal</button></Show>
+                    <Show when={!full()}><button class="btn btn-sm" disabled={!restored() || conn() !== "open"} onClick={add}><Plus size={12} /> New terminal</button></Show>
                 </div>
             </Show>
             {/* `shown` worked out once, owned by the tab: `visible={a() && b()}` makes a memo each time it's read, and the

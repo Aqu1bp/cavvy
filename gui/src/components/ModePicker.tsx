@@ -49,7 +49,7 @@ export function ModePicker(p: ComposerMenu & { /** The session it's for (default
             </button>
             <Menu label="Permission mode" open={p.open} anchor={() => anchor} onClose={() => p.setOpen(false)} placement={p.placement ?? "top"} width={340}>
                 <div class="mode-menu">
-                    <div class="menu-head">
+                    <div class="menu-label">
                         <span>Permission mode</span>
                         <kbd>⇧Tab</kbd>
                     </div>
@@ -68,11 +68,11 @@ export function ModePicker(p: ComposerMenu & { /** The session it's for (default
                                         void setMode(m, p.sessionId);
                                     }}
                                 >
-                                    <span class="menu-text">
-                                        <span class="menu-label">{MODE_LABELS[m].label}</span>
+                                    <span class="menu-item-text">
+                                        <span class="menu-item-name">{MODE_LABELS[m].label}</span>
                                         {/* Off, what turns it on matters more than what it does. */}
-                                        <Show when={disabled()} fallback={<span class="menu-desc">{describe(m)}</span>}>
-                                            <span class="menu-desc menu-hint">{BYPASS_OFF}</span>
+                                        <Show when={disabled()} fallback={<span class="menu-item-sub">{describe(m)}</span>}>
+                                            <span class="menu-item-sub menu-hint">{BYPASS_OFF}</span>
                                         </Show>
                                     </span>
                                     <Show when={p.mode === m}>

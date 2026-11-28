@@ -47,8 +47,8 @@
     --sp: calc(1px * var(--font-scale));
 
     /* Type: the UI's text is 13 at text size 14 (body, base.css), the conversation's 14.5, code 12.5. */
-    --chat-size: 1.036rem;
-    --code-size: 0.893rem;
+    --chat-size: calc(14.5 * var(--sp));
+    --code-size: calc(12.5 * var(--sp));
 
     /* Shape: cards 10, wells and rows 8, controls 8 (--pill, the name from when they were full pills), menus 10,
        dialogs 12. --round is a full capsule: switches, bars, counts. */
@@ -183,7 +183,7 @@
 
     --fg: #1d1c1a;
     --fg-2: #56524c;
-    --fg-3: #5f5b54; /* the design's #8a857c, darkened for AA over every Window and tint */
+    --fg-3: #8a857c;
     --fg-4: #b0aba2; /* glyphs and rules only: too faint for text */
     --line: #e7e3dc;
     --line-strong: #d3cdc3; /* control outlines, rings' tracks */
@@ -208,17 +208,20 @@
     --rail-float: #f4f2ee;
 
     --accent: #2f55e8;
+    --accent-hover: #2448cf;
+    --accent-soft: #e9eeff;
+    --accent-text: #2444c4;
     --accent-ink: #ffffff;
 
-    --ok: #146137;
+    --ok: #1c8651;
     /* A session at work, as a word: fixed whatever accent is picked. */
     --working: #2444c4;
-    --warn: #7b4700;
+    --warn: #a86200;
     --warn-bg: rgba(217, 138, 11, 0.14);
     /* A request card's edge and the dot of a line that waits on you; its hairline. Marks, not text. */
     --warn-mark: #d98a0b;
     --warn-line: #ecd4a0;
-    --danger: #a02419;
+    --danger: #c7372a;
     --danger-line: #f1c4bd;
     /* Usage sources (data colours, not the accent): fixed whatever accent is picked, and checked for
        colour-blind separation as a set in each scheme (all pairs ΔE ≥ 9.2 light, 9.4 dark). */
@@ -227,17 +230,17 @@
     --src-api: #1baf7a;
     --add-bg: #e3f4e9;
     --add-bg-strong: #d2ecdb;
-    --add-fg: #146137;
+    --add-fg: #17703f;
     --del-bg: #fdeae7;
     --del-bg-strong: #f8d6d1;
-    --del-fg: #a2251a;
+    --del-fg: #b0281c;
     --find: rgba(217, 138, 11, 0.3);
     --find-cur: rgba(217, 138, 11, 0.62);
 
     --syn-keyword: #a32e8c;
     --syn-string: #1c7a4a;
     --syn-function: #2448cf;
-    --syn-comment: #6f6a62; /* the design's #979187, darkened for AA */
+    --syn-comment: #979187;
     --syn-type: #0b7480;
 
     --plan: #7c4dff;
@@ -247,6 +250,20 @@
     --stop: #c7372a;
     --shadow-sm: 0 1px 2px rgba(29, 28, 26, 0.05);
     --scrollbar: rgba(29, 28, 26, 0.18);
+
+    /* The design's own fills, tints and marks: opaque, laid on any surface as they are. */
+    --fill-1: #f1eeea;
+    --fill-2: #e9e5df;
+    --fill-3: #ddd8d0;
+    --green-soft: #e4f3ea;
+    --amber-soft: #fbf0d8;
+    --red-soft: #fcebe8;
+    --code-head: #f1eeea;
+    --shadow-card: 0 1px 2px rgba(29, 28, 26, 0.05), 0 0 0 1px rgba(29, 28, 26, 0.06);
+    --hl-number: #ad5a07;
+    --hl-attr: #7b5a0c;
+    --hl-meta: #7c776f;
+    --logo-dot: #2a6bff;
 }
 
 /* ---- Dark ------------------------------------------------------------- */
@@ -275,7 +292,7 @@
     --term-bg: transparent;
     --group: #211f1e;
     --seg-on: #393633;
-    --raised: #2c2a28;
+    --raised: #211f1e;
     --sheet-shadow: none;
 
     --ink: #edebe7;
@@ -284,7 +301,7 @@
 
     --fg: #edebe7;
     --fg-2: #b5b0a8;
-    --fg-3: #a7a39c; /* the design's #86817a, lightened for AA over every Window and tint */
+    --fg-3: #86817a;
     --fg-4: #5f5b55; /* glyphs and rules only: too faint for text */
     --line: #2b2927;
     --line-strong: #3d3a37;
@@ -309,6 +326,9 @@
     --rail-float: #121110;
 
     --accent: #7b95ff;
+    --accent-hover: #93a9ff;
+    --accent-soft: #212945;
+    --accent-text: #a6b7ff;
     --accent-ink: #10142a;
 
     --ok: #52c48c;
@@ -317,7 +337,7 @@
     --warn-bg: rgba(240, 176, 74, 0.13);
     --warn-mark: #f0b04a;
     --warn-line: #574219;
-    --danger: #ff8372;
+    --danger: #ff7b69;
     --danger-line: #5c2a23;
     --src-claude: #d95926;
     --src-codex: #3987e5;
@@ -334,7 +354,7 @@
     --syn-keyword: #e391d8;
     --syn-string: #84d6a7;
     --syn-function: #94a9ff;
-    --syn-comment: #98928a; /* the design's #7a756e, lightened for AA */
+    --syn-comment: #7a756e;
     --syn-type: #68ccd6;
 
     --plan: #a78bfa;
@@ -344,20 +364,24 @@
     --stop: #ff7b69;
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
     --scrollbar: rgba(255, 255, 255, 0.16);
+
+    --fill-1: #232120;
+    --fill-2: #2c2a28;
+    --fill-3: #393633;
+    --green-soft: #17301f;
+    --amber-soft: #33270f;
+    --red-soft: #371b17;
+    --code-head: #242220;
+    --shadow-card: 0 0 0 1px rgba(255, 255, 255, 0.06);
+    --hl-number: #efb46c;
+    --hl-attr: #d8be78;
+    --hl-meta: #99938b;
+    --logo-dot: #5b8cff;
 }
 
 /* ---- Window (Settings → Appearance) -----------------------------------
    How much of the desktop shows through the rail: Glass the most, Tinted a
-   little, Solid none. The sheet, cards and what floats stay opaque. Over
-   the see-through rail the quietest text is a step stronger, to stay
-   readable whatever the desktop shows. */
-[data-glass="glass"][data-theme="light"] {
-    --fg-3: #58554e;
-}
-
-[data-glass="glass"][data-theme="dark"] {
-    --fg-3: #aaa69f;
-}
+   little, Solid none. The sheet, cards and what floats stay opaque. */
 
 [data-glass="tinted"][data-theme="light"] {
     --win-tint: rgba(239, 238, 235, 0.94);
@@ -455,13 +479,21 @@
     --tint-backdrop: linear-gradient(180deg, color-mix(in srgb, var(--accent) 22%, #0b0f1a), color-mix(in srgb, var(--accent) 8%, #0b0f1a));
 }
 
-/* ---- Contrast (Settings → Appearance): stronger text and edges -------- */
+/* ---- Contrast (Settings → Appearance): stronger text and edges --------
+   The design's secondary text and status colours are below AA in places
+   (the owner's call, 2026-11-28); Increased brings every one of them to AA. */
 [data-contrast="high"][data-theme="light"] {
     --fg-2: #3f3c37;
     --fg-3: #4a463f;
     --line: #cfc9bf;
     --line-strong: #a39d92;
     --card-stroke: #cfc9bf;
+    --ok: #146137;
+    --warn: #7b4700;
+    --danger: #a02419;
+    --add-fg: #146137;
+    --del-fg: #a2251a;
+    --syn-comment: #6f6a62;
 }
 
 [data-contrast="high"][data-theme="dark"] {
@@ -470,39 +502,36 @@
     --line: #47443f;
     --line-strong: #6c6862;
     --card-stroke: #47443f;
+    --danger: #ff8372;
+    --syn-comment: #98928a;
 }
 
 /* ---- Accents ----------------------------------------------------------
-   Blue is the design's, and the default (no data-accent). The others are the
-   design's where white reads on them, else darkened until it does. */
-[data-scheme="light"][data-accent="blue"] { --accent: #2f55e8; }
-[data-scheme="light"][data-accent="indigo"] { --accent: #4f46e5; }
-[data-scheme="light"][data-accent="violet"] { --accent: #7c3aed; }
-[data-scheme="light"][data-accent="pink"] { --accent: #c8236c; }
-[data-scheme="light"][data-accent="red"] { --accent: #cd2424; }
-[data-scheme="light"][data-accent="orange"] { --accent: #b8450a; }
-[data-scheme="light"][data-accent="green"] { --accent: #17703f; }
-[data-scheme="light"][data-accent="teal"] { --accent: #0a776e; }
-[data-scheme="light"][data-accent="graphite"] { --accent: #55524c; }
+   The design's nine, light and dark: each its fill, hover, soft tint, text and
+   (dark) the ink on it. Blue is the default (no data-accent). */
+[data-scheme="light"][data-accent="blue"] { --accent: #2f55e8; --accent-hover: #2448cf; --accent-soft: #e9eeff; --accent-text: #2444c4; }
+[data-scheme="light"][data-accent="indigo"] { --accent: #4f46e5; --accent-hover: #4338ca; --accent-soft: #ecebff; --accent-text: #3f37c9; }
+[data-scheme="light"][data-accent="violet"] { --accent: #7c3aed; --accent-hover: #6d28d9; --accent-soft: #f1eaff; --accent-text: #6425d0; }
+[data-scheme="light"][data-accent="pink"] { --accent: #d6336c; --accent-hover: #c02a5e; --accent-soft: #fdebf1; --accent-text: #b3245a; }
+[data-scheme="light"][data-accent="red"] { --accent: #d93a2b; --accent-hover: #c23024; --accent-soft: #fdebe8; --accent-text: #b52c20; }
+[data-scheme="light"][data-accent="orange"] { --accent: #d9660b; --accent-hover: #c25a08; --accent-soft: #fdefe0; --accent-text: #a85005; }
+[data-scheme="light"][data-accent="green"] { --accent: #1c8651; --accent-hover: #177246; --accent-soft: #e4f3ea; --accent-text: #17703f; }
+[data-scheme="light"][data-accent="teal"] { --accent: #0c8a8a; --accent-hover: #0a7676; --accent-soft: #e0f3f3; --accent-text: #0a6f6f; }
+[data-scheme="light"][data-accent="graphite"] { --accent: #55524c; --accent-hover: #3f3d38; --accent-soft: #ecebe8; --accent-text: #3f3d38; }
 [data-scheme="light"][data-accent] { --accent-ink: #ffffff; }
 
-[data-scheme="dark"][data-accent="blue"] { --accent: #7b95ff; }
-[data-scheme="dark"][data-accent="indigo"] { --accent: #8f8bff; }
-[data-scheme="dark"][data-accent="violet"] { --accent: #a98bff; }
-[data-scheme="dark"][data-accent="pink"] { --accent: #ff7fae; }
-[data-scheme="dark"][data-accent="red"] { --accent: #ff7b69; }
-[data-scheme="dark"][data-accent="orange"] { --accent: #f59e4b; }
-[data-scheme="dark"][data-accent="green"] { --accent: #52c48c; }
-[data-scheme="dark"][data-accent="teal"] { --accent: #45c4c4; }
-[data-scheme="dark"][data-accent="graphite"] { --accent: #b5b0a8; }
-[data-scheme="dark"][data-accent] { --accent-ink: #10142a; }
+[data-scheme="dark"][data-accent="blue"] { --accent: #7b95ff; --accent-hover: #93a9ff; --accent-soft: #212945; --accent-text: #a6b7ff; --accent-ink: #10142a; }
+[data-scheme="dark"][data-accent="indigo"] { --accent: #8f8bff; --accent-hover: #a5a2ff; --accent-soft: #25244a; --accent-text: #b3b0ff; --accent-ink: #12112e; }
+[data-scheme="dark"][data-accent="violet"] { --accent: #a98bff; --accent-hover: #bba3ff; --accent-soft: #2b2248; --accent-text: #c4afff; --accent-ink: #170f30; }
+[data-scheme="dark"][data-accent="pink"] { --accent: #ff7fae; --accent-hover: #ff9bc0; --accent-soft: #40202d; --accent-text: #ffa5c5; --accent-ink: #2e0d1a; }
+[data-scheme="dark"][data-accent="red"] { --accent: #ff7b69; --accent-hover: #ff9485; --accent-soft: #3d1e1a; --accent-text: #ffa092; --accent-ink: #2e0f0a; }
+[data-scheme="dark"][data-accent="orange"] { --accent: #f59e4b; --accent-hover: #f8b16c; --accent-soft: #3a2812; --accent-text: #f8b877; --accent-ink: #2b1803; }
+[data-scheme="dark"][data-accent="green"] { --accent: #52c48c; --accent-hover: #6dd3a0; --accent-soft: #17301f; --accent-text: #7bd8a9; --accent-ink: #06200f; }
+[data-scheme="dark"][data-accent="teal"] { --accent: #45c4c4; --accent-hover: #62d4d4; --accent-soft: #12302f; --accent-text: #76dada; --accent-ink: #04201f; }
+[data-scheme="dark"][data-accent="graphite"] { --accent: #b5b0a8; --accent-hover: #cdc8c0; --accent-soft: #2c2a28; --accent-text: #cfcac2; --accent-ink: #181716; }
 
-/* Derived from whichever accent is showing. Accent-coloured text leans
-   toward --fg, so it reads on the sheet; hover darkens the fill. */
+/* Derived from whichever accent is showing. */
 :root {
-    --accent-text: color-mix(in srgb, var(--accent) 74%, var(--fg));
-    --accent-hover: color-mix(in srgb, var(--accent) 88%, #000);
-    --accent-soft: color-mix(in srgb, var(--accent) 10%, transparent);
     --accent-softer: color-mix(in srgb, var(--accent) 6%, transparent);
     --accent-border: color-mix(in srgb, var(--accent) 40%, transparent);
     --ring: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
@@ -515,19 +544,24 @@
     --well-head: color-mix(in srgb, var(--fg) 3%, var(--well));
 }
 
-/* In dark, accent text and a hovered fill go lighter, not darker. */
-[data-theme="dark"] {
-    --accent-text: color-mix(in srgb, var(--accent) 70%, var(--fg));
+/* A theme's accent (src/themes/palette.ts sets --accent and --accent-text): its hover and tint follow it. */
+:root[data-themed] {
+    --accent-hover: color-mix(in srgb, var(--accent) 88%, #000);
+    --accent-soft: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+:root[data-themed][data-theme="dark"] {
     --accent-hover: color-mix(in srgb, var(--accent) 85%, #fff);
     --accent-soft: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
-/* The new design's token names, so its rules come over as they are. Text takes Cavvy's
-   colours (moved for AA); glyphs, fills and hairlines keep the design's own values. */
+/* ---- The design's names ------------------------------------------------
+   The remix's stylesheets use these; each is one of the tokens above, so its
+   rules come over unchanged and themes, Window and Contrast still apply. */
 :root {
     --bg: var(--sheet);
     --bg-side: var(--rail-float);
-    --surface: var(--card);
+    --surface: var(--raised);
     --text: var(--fg);
     --text-2: var(--fg-2);
     --text-3: var(--fg-3);
@@ -536,71 +570,32 @@
     --focus: var(--accent);
     --on-ink: var(--ink-fg);
     --green: var(--ok);
-    --green-soft: var(--ok-soft);
     --amber: var(--warn);
     --amber-strong: var(--warn-mark);
     --amber-line: var(--warn-line);
     --red: var(--danger);
     --red-line: var(--danger-line);
     --code-bg: var(--well);
-    --shadow-pop: var(--pop-shadow);
-    --shadow-composer: var(--ctl-shadow);
-    --scroll: var(--scrollbar);
-    --radius-s: var(--radius-sm);
-    --radius-m: var(--radius-md);
-    --radius-l: var(--radius-lg);
-    --radius-xl: calc(16 * var(--sp));
-    --chat-width: var(--column-w);
-    --fill-1: #f1eeea;
-    --fill-2: #e9e5df;
-    --fill-3: #ddd8d0;
-    --glyph-3: #8a857c;
-    --amber-soft: #fbf0d8;
-    --red-soft: #fcebe8;
-    --code-head: #f1eeea;
-    --shadow-card: 0 1px 2px rgba(29, 28, 26, 0.05), 0 0 0 1px rgba(29, 28, 26, 0.06);
-}
-
-[data-theme="dark"] {
-    --fill-1: #232120;
-    --fill-2: #2c2a28;
-    --fill-3: #393633;
-    --glyph-3: #86817a;
-    --amber-soft: #33270f;
-    --red-soft: #371b17;
-    --code-head: #242220;
-    --shadow-card: 0 0 0 1px rgba(255, 255, 255, 0.06);
-}
-
-/* ---- More of the design's token names, for the conversation (styles/remix-conversation.css) ----
-   Diffs and code take Cavvy's colours. The green wash is the design's own, as its other washes are. Under a
-   theme, the design's fills and glyph grey give way to the theme's own tokens. */
-:root {
     --diff-add: var(--add-bg);
     --diff-add-gutter: var(--add-bg-strong);
     --diff-add-text: var(--add-fg);
     --diff-del: var(--del-bg);
     --diff-del-gutter: var(--del-bg-strong);
     --diff-del-text: var(--del-fg);
+    --shadow-pop: var(--pop-shadow);
+    --shadow-composer: var(--ctl-shadow);
+    --scroll: var(--scrollbar);
     --hl-keyword: var(--syn-keyword);
     --hl-string: var(--syn-string);
-    --hl-function: var(--syn-function);
     --hl-comment: var(--syn-comment);
+    --hl-function: var(--syn-function);
     --hl-type: var(--syn-type);
-    --green-soft: #e4f3ea;
-}
-
-[data-theme="dark"] {
-    --green-soft: #17301f;
-}
-
-[data-themed] {
-    --glyph-3: var(--fg-3);
-    --fill-1: var(--hover);
-    --fill-2: var(--press);
-    --fill-3: var(--press);
-    --code-head: var(--well-head);
-    --green-soft: var(--ok-soft);
-    --amber-soft: var(--warn-bg);
-    --red-soft: var(--danger-soft);
+    --radius-s: var(--radius-sm);
+    --radius-m: var(--radius-md);
+    --radius-l: var(--radius-lg);
+    --radius-xl: calc(16 * var(--sp));
+    --chat-width: var(--column-w);
+    --traffic-red: #ff5f57;
+    --traffic-yellow: #febc2e;
+    --traffic-green: #28c840;
 }

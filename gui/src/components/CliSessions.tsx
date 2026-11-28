@@ -134,7 +134,7 @@ export function CliSessions(p: { cwd: string; rows?: number; onShown?: (rows: nu
             </section>
             </Show>
             {/* Outside the section: open, it stays while the list reloads (or fails to). */}
-            <Dialog open={all()} onClose={() => setAll(false)} title="Continue from your terminal" width={520} class="cli-dialog" footer={<button class="btn secondary" onClick={() => setAll(false)}>Done</button>}>
+            <Dialog open={all()} onClose={() => setAll(false)} title="Continue from your terminal" width={520} class="cli-dialog" footer={<button class="btn" onClick={() => setAll(false)}>Done</button>}>
                 <p>{sourceNames()} sessions started in {basename(p.cwd)}.</p>
                 <div class="cl-list">
                     <Show when={list.loading || sessions().length}>

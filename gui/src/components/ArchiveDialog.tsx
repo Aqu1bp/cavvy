@@ -88,7 +88,7 @@ function ArchiveWorktree(p: { id: string; title: string; offer: NonNullable<Retu
                         <AlertTriangle size={14} />
                         <span>{m().message}</span>
                         <Show when={m().code === "needs_trust"}>
-                            <button class="btn secondary sm" disabled={busy()} onClick={() => void remove(ignored()?.confirm, m().folder ?? w.path)}>
+                            <button class="btn btn-sm" disabled={busy()} onClick={() => void remove(ignored()?.confirm, m().folder ?? w.path)}>
                                 Trust and remove
                             </button>
                         </Show>
@@ -96,7 +96,7 @@ function ArchiveWorktree(p: { id: string; title: string; offer: NonNullable<Retu
                 )}
             </Show>
             <div class="dialog-actions">
-                <button class="btn ghost" disabled={busy()} onClick={close}>
+                <button class="btn btn-ghost" disabled={busy()} onClick={close}>
                     Cancel
                 </button>
                 <span class="grow" />
@@ -104,19 +104,19 @@ function ArchiveWorktree(p: { id: string; title: string; offer: NonNullable<Retu
                     <Show
                         when={ignored()}
                         fallback={
-                            <button class="btn danger" disabled={busy()} onClick={() => void remove()}>
+                            <button class="btn btn-danger-solid" disabled={busy()} onClick={() => void remove()}>
                                 {busy() ? <Spinner size={12} /> : "Archive and remove worktree"}
                             </button>
                         }
                     >
                         {(i) => (
-                            <button class="btn danger" disabled={busy()} onClick={() => void remove(i().confirm)}>
+                            <button class="btn btn-danger-solid" disabled={busy()} onClick={() => void remove(i().confirm)}>
                                 {busy() ? <Spinner size={12} /> : "Delete them and remove"}
                             </button>
                         )}
                     </Show>
                 </Show>
-                <button class="btn primary" autofocus disabled={busy()} onClick={() => void archiveOnly()}>
+                <button class="btn btn-primary" autofocus disabled={busy()} onClick={() => void archiveOnly()}>
                     Archive only
                 </button>
             </div>

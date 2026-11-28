@@ -112,7 +112,7 @@ export function Submenu(p: { icon?: JSX.Element; label: string; width?: number; 
                         tabIndex={-1}
                         data-submenu=""
                         data-side={pos()?.side ?? "right"}
-                        class="popover submenu"
+                        class="popover menu submenu"
                         style={{ left: `${pos()?.left ?? -9999}px`, top: `${pos()?.top ?? 0}px`, width: `${pos()?.width ?? sp(p.width ?? 220)}px`, "max-height": pos() ? `${pos()!.maxHeight}px` : undefined }}
                         onPointerEnter={() => clearTimeout(timer)}
                         onPointerLeave={(e) => e.pointerType === "mouse" && later(hide, CLOSE_MS)}

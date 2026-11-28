@@ -323,10 +323,10 @@ function BranchDialog(p: { cwd: string; sessionId?: string; query?: string }) {
                     <b>{sync()?.branch ?? (sync()?.detached ? "Detached HEAD" : list()?.current ?? "")}</b>
                     <Show when={syncWords(sync())}>{(w) => <span class="muted"> · {w()}</span>}</Show>
                 </span>
-                <button class="btn sm" disabled={Boolean(busy())} onClick={() => void fetchNow()}>
+                <button class="btn btn-sm" disabled={Boolean(busy())} onClick={() => void fetchNow()}>
                     <Show when={busy() === "fetch"} fallback={<CloudDownload size={14} />}><Spinner size={13} /></Show> Fetch
                 </button>
-                <button class="btn sm" disabled={Boolean(busy()) || !sync()?.upstream || sync()?.gone} onClick={() => void pull()} title={sync()?.upstream ? `Fast-forward to ${sync()!.upstream}` : "No upstream"}>
+                <button class="btn btn-sm" disabled={Boolean(busy()) || !sync()?.upstream || sync()?.gone} onClick={() => void pull()} title={sync()?.upstream ? `Fast-forward to ${sync()!.upstream}` : "No upstream"}>
                     <Show when={busy() === "pull"} fallback={<ArrowDown size={14} />}><Spinner size={13} /></Show> Pull
                 </button>
             </div>
@@ -487,10 +487,10 @@ function PrDialog(p: { cwd: string; sessionId?: string; query?: string; start?: 
                     <div class="br-note error br-fail" role="alert">
                         <span>{f().text}<Show when={f().code === "sign_in" && !signInSession()}> Run <code>gh auth login</code> in a terminal.</Show></span>
                         <Show when={f().code === "sign_in" && signInSession()}>
-                            <button class="btn sm" disabled={Boolean(busy())} onClick={() => void signIn()}>Sign in to GitHub</button>
+                            <button class="btn btn-sm" disabled={Boolean(busy())} onClick={() => void signIn()}>Sign in to GitHub</button>
                         </Show>
                         <Show when={f().code === "needs_trust" && f().folder && f().ref}>
-                            <button class="btn sm" disabled={Boolean(busy())} onClick={() => void start(f().ref!, f().folder)}>Trust and continue</button>
+                            <button class="btn btn-sm" disabled={Boolean(busy())} onClick={() => void start(f().ref!, f().folder)}>Trust and continue</button>
                         </Show>
                     </div>
                 )}

@@ -389,17 +389,17 @@ export default function TerminalScreen(p: { tab: Tab; visible: boolean; onClose:
         <Menu label="Terminal actions" open={!!menuAt()} point={menuAt()} anchor={() => container} returnFocus={() => term.textarea} onClose={closeMenu} width={200}>
             <For each={menuItems()}>{(it) => (
                 <button role="menuitem" class="menu-item compact" disabled={it.off} onClick={() => (closeMenu(), it.run())}>
-                    <it.icon size={14} /> <span class="menu-label">{it.label}</span>
+                    <it.icon size={14} /> <span class="menu-item-name">{it.label}</span>
                 </button>
             )}</For>
         </Menu>
         <Show when={loginOutputLost()}><div class="terminal-message">
             <span>Login output isn't kept. Restart login for a new sign-in prompt.</span>
-            <Show when={!away() && !ended()}><button class="btn secondary sm" disabled={conn() !== "open" || restarting()} onClick={restart}><RotateCw size={12} /> Restart login</button></Show>
+            <Show when={!away() && !ended()}><button class="btn btn-sm" disabled={conn() !== "open" || restarting()} onClick={restart}><RotateCw size={12} /> Restart login</button></Show>
         </div></Show>
         <Show when={away() || ended()}><div class="terminal-message">
             <span>{away() ? "Disconnected. The process stays on the server and reconnects here." : ended()}</span>
-            <Show when={!away()}><button class="btn secondary sm" disabled={conn() !== "open" || restarting()} onClick={restart}><RotateCw size={12} /> {p.tab.login?.install ? "Run again" : p.tab.login ? "Restart login" : "Restart shell"}</button></Show>
+            <Show when={!away()}><button class="btn btn-sm" disabled={conn() !== "open" || restarting()} onClick={restart}><RotateCw size={12} /> {p.tab.login?.install ? "Run again" : p.tab.login ? "Restart login" : "Restart shell"}</button></Show>
         </div></Show>
     </div>;
 }

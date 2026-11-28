@@ -220,7 +220,7 @@ export function CommitDialog() {
                                 <Show when={toNew()}>
                                     <div class="commit-generate">
                                         <input class="input mono grow" aria-label="New branch name" placeholder={naming() ? "Suggesting…" : "feature/my-change"} spellcheck={false} autocomplete="off" maxLength={200} value={newName()} disabled={committing() || naming()} onInput={(e) => setNewName(e.currentTarget.value)} />
-                                        <button class="btn ghost sm" disabled={committing() || naming()} title={nameNote()?.model ? `Suggested by ${draftedBy(nameNote()!.model!, commitRequest()?.id)}` : undefined} onClick={() => void suggestName()}>
+                                        <button class="btn btn-ghost btn-sm" disabled={committing() || naming()} title={nameNote()?.model ? `Suggested by ${draftedBy(nameNote()!.model!, commitRequest()?.id)}` : undefined} onClick={() => void suggestName()}>
                                             {naming() ? "Suggesting…" : "Suggest"}
                                         </button>
                                     </div>
@@ -279,7 +279,7 @@ export function CommitDialog() {
                         }}
                     />
                     <div class="commit-generate">
-                        <button class="btn ghost" disabled={!ready() || generating() || committing()} title={model() ? `Drafted by ${draftedBy(model()!, commitRequest()?.id)}` : undefined} onClick={() => void generate()}>
+                        <button class="btn btn-ghost" disabled={!ready() || generating() || committing()} title={model() ? `Drafted by ${draftedBy(model()!, commitRequest()?.id)}` : undefined} onClick={() => void generate()}>
                             {generating() ? "Generating…" : "Generate message"}
                         </button>
                         <Show when={before() !== undefined && !generating()}>
@@ -296,11 +296,11 @@ export function CommitDialog() {
                 </Show>
                 <div class="dialog-actions">
                     <span class="grow" />
-                    <button class="btn ghost" disabled={committing()} onClick={close}>
+                    <button class="btn btn-ghost" disabled={committing()} onClick={close}>
                         Cancel
                     </button>
                     <span title={blocked()}>
-                        <button class="btn primary" disabled={!ready() || !message().trim() || committing() || generating() || naming() || (branching() && !newName().trim())} onClick={() => void commit()}>
+                        <button class="btn btn-primary" disabled={!ready() || !message().trim() || committing() || generating() || naming() || (branching() && !newName().trim())} onClick={() => void commit()}>
                             {committing() ? "Committing…" : branching() ? "Commit to new branch" : "Commit"}
                             <kbd aria-hidden="true">{os === "macos" ? "⌘↵" : `${mod}+↵`}</kbd>
                         </button>

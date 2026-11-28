@@ -4,6 +4,7 @@ import type { ToolBlock } from "@shared/protocol";
 import { ActivityGroup } from "../src/components/blocks/Activity";
 import "../src/styles/tokens.css";
 import "../src/styles/base.css";
+import "../src/styles/kit.css";
 import "../src/styles/transcript.css";
 import "../src/styles/remix-conversation.css";
 

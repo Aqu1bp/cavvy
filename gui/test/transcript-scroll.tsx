@@ -6,6 +6,7 @@ import { setPrefs } from "../src/state/prefs";
 import { setFindOpen, setFindQuery } from "../src/state/ui";
 import "../src/styles/tokens.css";
 import "../src/styles/base.css";
+import "../src/styles/kit.css";
 import "../src/styles/transcript.css";
 import "../src/styles/markdown.css";
 

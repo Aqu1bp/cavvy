@@ -59,10 +59,10 @@ export function CommentBox(p: { label: string; initial?: string; submitLabel?: s
             />
             <div class="dc-actions">
                 <span class="dc-hint">{mod}+Enter to {p.submitLabel ? p.submitLabel.toLowerCase() : "add"} · Esc to cancel</span>
-                <button class="btn sm ghost" onClick={() => p.onCancel()}>
+                <button class="btn btn-sm btn-ghost" onClick={() => p.onCancel()}>
                     Cancel
                 </button>
-                <button class="btn sm primary" disabled={!text().trim()} onClick={submit}>
+                <button class="btn btn-sm btn-primary" disabled={!text().trim()} onClick={submit}>
                     {p.submitLabel ?? "Comment"}
                 </button>
             </div>

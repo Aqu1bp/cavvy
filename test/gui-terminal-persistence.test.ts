@@ -373,7 +373,7 @@ test("real screen reattaches exited shells and waits for close before restarting
         m.connection("reconnecting"); m.connection("open");
         expect(m.calls.filter((c) => c.method === "terminal.attach")).toHaveLength(2);
         m.calls[1]!.resolve({ id: "shell", cwd: "/p", exitCode: 3 }); await tick();
-        const restart = m.nodes.find((n) => n.tag === "button" && n.props.class === "btn secondary sm");
+        const restart = m.nodes.find((n) => n.tag === "button" && n.props.class === "btn btn-sm");
         restart.props.onClick(); await tick();
         m.terminals[0]!.drain();
         expect(m.calls.some((c) => c.method === "terminal.open")).toBe(false);
@@ -425,7 +425,7 @@ test("a running login can explicitly restart for a new prompt after reconnect, c
         const attaching = m.calls.find((c) => c.method === "terminal.attach")!;
         expect(attaching.params).toEqual({ id: "shell" });
         attaching.resolve({ id: "shell", cwd: "/p", login }); await tick();
-        const restart = m.nodes.find((n) => n.tag === "button" && n.props.class === "btn secondary sm");
+        const restart = m.nodes.find((n) => n.tag === "button" && n.props.class === "btn btn-sm");
         expect(restart).toBeDefined();
         restart.props.onClick(); await tick();
         expect(m.calls.filter((c) => c.method === "terminal.open")).toHaveLength(1);

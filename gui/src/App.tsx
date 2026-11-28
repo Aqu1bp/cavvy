@@ -62,7 +62,7 @@ function Disconnected() {
                     <p class="muted">{isDesktop ? "The background process stopped. Quit and reopen the app." : "Is `cavvy gui` still running? Still trying to reconnect…"}</p>
                 </Match>
             </Switch>
-            <button class="btn secondary" onClick={() => rpc.reconnectNow()}>
+            <button class="btn" onClick={() => rpc.reconnectNow()}>
                 Reconnect now
             </button>
         </div>

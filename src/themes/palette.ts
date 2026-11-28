@@ -107,7 +107,12 @@ export function palette(look: Look, scheme: Scheme, o: PaletteOptions = {}): Pal
         "--term-bg": dark ? rgba(BLACK, 0.2) : rgba(WHITE, 0.36),
         "--group": rgba(lift, dark ? 0.05 : 0.5),
         "--seg-on": dark ? rgba(T, 0.16) : "#ffffff",
-        "--raised": rgba(lift, dark ? 0.05 : 0.7),
+        "--raised": toHex(mix(B, lift, dark ? 0.935 : 0.4)),
+        // The design's fills, a step at a time toward the text (tokens.css --fill-1..3).
+        "--fill-1": toHex(mix(B, T, dark ? 0.95 : 0.945)),
+        "--fill-2": toHex(mix(B, T, dark ? 0.9 : 0.905)),
+        "--fill-3": toHex(mix(B, T, dark ? 0.83 : 0.84)),
+        "--code-head": toHex(mix(B, T, dark ? 0.935 : 0.94)),
         "--ink": toHex(T),
         "--ink-fg": toHex(B),
         "--ink-hover": toHex(mix(T, B, 0.86)),

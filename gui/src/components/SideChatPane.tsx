@@ -193,7 +193,7 @@ function Chat(p: { parent: SessionHandle; id: string; views: ChatViews }) {
     return (
         <>
             <Head>
-                <button class="btn secondary sm sc-back" title="Attach the last answer, or what's selected, to your message" aria-label="Bring back" disabled={!answer()} onMouseDown={(e) => e.preventDefault()} onClick={bringBack}>
+                <button class="btn btn-sm sc-back" title="Attach the last answer, or what's selected, to your message" aria-label="Bring back" disabled={!answer()} onMouseDown={(e) => e.preventDefault()} onClick={bringBack}>
                     <CornerDownLeft size={13} />
                     <span class="sc-back-l">Bring back</span>
                 </button>

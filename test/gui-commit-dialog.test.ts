@@ -81,7 +81,7 @@ for (const branch of ["main", undefined]) {
         const d = await mountDialog(branch);
         const tree = d.tree();
         find(tree, (n) => n.tag === "textarea")!.props.onInput({ currentTarget: { value: "feat: selected file" } });
-        find(tree, (n) => n.tag === "button" && n.props.class === "btn primary")!.props.onClick();
+        find(tree, (n) => n.tag === "button" && n.props.class === "btn btn-primary")!.props.onClick();
         await Promise.resolve();
         expect(d.calls).toEqual([[d.request.id, d.request.paths, "feat: selected file", branch ? { branch, detached: false } : { sha: d.sha, detached: true }, []]]);
         expect(d.activeRequest).toBeUndefined();
@@ -112,13 +112,13 @@ test("Generate replaces what was typed, and Undo puts it back, after Generate ag
         const d = await mountDialog("feature", { generated: "feat: drafted" });
         const tree = d.tree();
         find(tree, (n) => n.tag === "textarea")!.props.onInput({ currentTarget: { value: "wip: my own words" } });
-        const generate = find(tree, (n) => n.tag === "button" && n.props.class === "btn ghost")!;
+        const generate = find(tree, (n) => n.tag === "button" && n.props.class === "btn btn-ghost")!;
         for (let i = 0; i < times; i++) {
             generate.props.onClick();
             for (let j = 0; j < 8; j++) await Promise.resolve();
         }
         if (undo) find(tree, (n) => n.tag === "button" && n.children.includes("Undo"))!.props.onClick();
-        find(tree, (n) => n.tag === "button" && n.props.class === "btn primary")!.props.onClick();
+        find(tree, (n) => n.tag === "button" && n.props.class === "btn btn-primary")!.props.onClick();
         await Promise.resolve();
         expect(d.calls[0]?.[2]).toBe(undo ? "wip: my own words" : `feat: drafted ${times}`);
     }
@@ -134,7 +134,7 @@ test("a file shown redacted is checked, and left out, by its handle, as the Revi
     box().props.onChange({ currentTarget: { checked: false } });
     expect(box().props.checked).toBe(false);
     find(tree, (n) => n.tag === "textarea")!.props.onInput({ currentTarget: { value: "fix: plain only" } });
-    find(tree, (n) => n.tag === "button" && n.props.class === "btn primary")!.props.onClick();
+    find(tree, (n) => n.tag === "button" && n.props.class === "btn btn-primary")!.props.onClick();
     await Promise.resolve();
     // Unchecked, its handle no longer goes with the commit.
     expect(d.calls).toEqual([[d.request.id, ["selected.txt"], "fix: plain only", { branch: "feature", detached: false }, []]]);

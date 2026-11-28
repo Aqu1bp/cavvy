@@ -75,7 +75,7 @@ export function RecentlyDeleted() {
                                             <Show
                                                 when={back()}
                                                 fallback={
-                                                    <button class="btn sm secondary" disabled={busy() !== undefined} onClick={() => void restore(s.id, s.machine)}>
+                                                    <button class="btn btn-sm" disabled={busy() !== undefined} onClick={() => void restore(s.id, s.machine)}>
                                                         <Show when={busy() === s.id} fallback={<ArchiveRestore size={14} />}>
                                                             <Spinner />
                                                         </Show>
@@ -83,7 +83,7 @@ export function RecentlyDeleted() {
                                                     </button>
                                                 }
                                             >
-                                                <button class="btn sm secondary" onClick={() => (close(), s.machine && restoredFrom(s.id, s.machine), void activate(s.id))}>
+                                                <button class="btn btn-sm" onClick={() => (close(), s.machine && restoredFrom(s.id, s.machine), void activate(s.id))}>
                                                     Open
                                                 </button>
                                             </Show>

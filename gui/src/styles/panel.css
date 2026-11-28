@@ -181,53 +181,6 @@
     min-width: 0;
 }
 
-/* Controls in the inspector are pills, per the mockup's .btn. */
-.insp .btn {
-    height: calc(30 * var(--sp));
-    padding: 0 calc(14 * var(--sp));
-    border: 0;
-    border-radius: var(--pill);
-    font-size: 0.929rem;
-    font-weight: 600;
-    transition: transform 160ms var(--ease), filter 140ms, opacity 140ms, background 140ms, color 140ms;
-}
-
-.insp .btn:active:not(:disabled) {
-    transform: scale(0.96);
-}
-
-.insp .btn.sm {
-    height: calc(26 * var(--sp));
-    padding: 0 calc(11 * var(--sp));
-    font-size: 0.857rem;
-}
-
-.insp .btn.ghost,
-.insp .btn.secondary {
-    color: var(--fg);
-    background: var(--press);
-    box-shadow: none;
-}
-
-.insp .btn.ghost:hover:not(:disabled),
-.insp .btn.secondary:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--fg) 15%, transparent);
-}
-
-.insp .btn.primary {
-    background: var(--ink);
-    color: var(--ink-fg);
-    box-shadow: none;
-}
-
-.insp .btn.primary:hover:not(:disabled) {
-    background: var(--ink-hover);
-}
-
-.insp .btn:disabled {
-    opacity: 0.45;
-}
-
 .insp .btn svg {
     flex: none;
 }
@@ -654,7 +607,7 @@
 }
 
 /* The workspace menu's head: the project, and its branch. */
-.menu-head.insp-ws {
+.menu-label.insp-ws {
     flex-direction: column;
     align-items: flex-start;
     gap: calc(2 * var(--sp));
