@@ -11,6 +11,7 @@ import { childEnv } from "../util/env";
 import { thisBuild, UNKNOWN_BUILD } from "./build";
 import { ServerLink, type LinkState } from "./connect";
 import type { HostCheck, HostStatus } from "./host";
+import { notUpdatedNote, updateAgentClis } from "./cli-update";
 import { ensureBuildThere, ServerBusy, setUpServer, type SetupProgress, type SetupResult } from "./install";
 import { LOGIN, LOGIN_EXIT, NOT_SET_UP, probeServer, REMOTE_CURRENT, REMOTE_DIR, remoteBuildDir } from "./remote";
 import { applyBuild, BOOT_TAKEN, bootCommand, NotSetUp, previousBuild, remoteCheck, remoteStatus, revokeOverSsh, serviceReport, stopRemote, UpdateFailed, type ServiceReport } from "./service";
@@ -459,11 +460,13 @@ async function update(args: string[]): Promise<number> {
         return 1;
     }
     const e = requireServer(name);
-    const { value: r } = await withTrust(e, (entry) => setUpServer(entry, setupOptions(entry, { force, update: true })), { saved: true });
+    // Its agent CLIs with it, over the same connection settings (the entry as trusted).
+    const { value: { r, clis } } = await withTrust(e, async (entry) => ({ r: await setUpServer(entry, setupOptions(entry, { force, update: true })), clis: notUpdatedNote(entry.name, await updateAgentClis(entry, { progress: progress() })) }), { saved: true });
     if (r.kept === "newer") out(`${e.name} runs a newer Cavvy than this machine, so it was left as it is. Update Cavvy here, or use --force.`);
     else if (r.kept) out(`${e.name} was left on its own version.`);
     else out(r.replaced ? `${e.name} is updated.` : `${e.name} is up to date.`);
     for (const line of serviceLines(e.name, r.service)) out(line);
+    if (clis) out(clis);
     return 0;
 }
 

@@ -462,7 +462,10 @@ function MachineCover(p: { reconnect: () => void }) {
         try {
             const r = await servers().call("servers.update", { name: machine, force });
             setUpdating(undefined);
-            if (r.status === "updated") retry();
+            if (r.status === "updated") {
+                if (r.note) toast(r.note, "info");
+                retry();
+            }
             else if (r.status === "busy") setBusy(r.working ? `${r.working} ${r.working === 1 ? "session is" : "sessions are"} working there.` : `${r.waiting} ${r.waiting === 1 ? "session is" : "sessions are"} waiting for you there.`);
             else if (r.status === "unknown-host") setMachineIssue({ kind: "unknown-host", unknown: r.unknown });
             // Still the same question, with why it didn't work: the window's connection waits on the answer to it.

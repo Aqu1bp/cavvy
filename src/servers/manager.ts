@@ -16,6 +16,7 @@ import { compareBuilds, thisBuild, thisBuildTime, UNKNOWN_BUILD, type BuildSourc
 import { exchangeCode, ServerLink, type LinkState } from "./connect";
 import { countCopied, describeCopy, describeLeft, planCopy, sendCopy } from "./copy";
 import type { HostCheck } from "./host";
+import { notUpdatedNote, updateAgentClis } from "./cli-update";
 import { ServerBusy, setUpServer, type SetupProgress } from "./install";
 import { probeServer } from "./remote";
 import { NotSetUp, remoteCheck, remoteStatus, revokeOverSsh, serviceReport, stopRemote, StoppedThere } from "./service";
@@ -439,9 +440,12 @@ export class ServerLinks {
                 },
                 confirmReplace: async (theirs) => force || theirs === "different",
             });
+            // Its agent CLIs with it: nothing else there ever asks them to update.
+            const clis = notUpdatedNote(name, await updateAgentClis(entry, { progress: this.progress(name) }));
             // Its Cavvy restarted: what signed this one in there is gone, and the next connect signs in again.
             await this.drop(name, false);
-            return { status: "updated", ...(r.kept === "newer" ? { note: "It runs a newer Cavvy than this machine, so it was left as it is." } : {}) };
+            const note = [r.kept === "newer" ? "It runs a newer Cavvy than this machine, so it was left as it is." : undefined, clis].filter(Boolean).join(" ");
+            return { status: "updated", ...(note ? { note } : {}) };
         } catch (e) {
             if (e instanceof ServerBusy) return { status: "busy", working: busy?.working ?? e.busy.working, waiting: busy?.waiting ?? e.busy.waiting };
             const unknown = await this.unknown(name, entry, e).catch(() => undefined);

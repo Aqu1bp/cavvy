@@ -1,14 +1,17 @@
 import { createEffect, createMemo, createSignal, createUniqueId, For, on, onCleanup, Show } from "solid-js";
 import { planLimitKey, type AccountInfo } from "@shared/protocol";
-import { app, handleFor, limitsFor, providersFor, reportError, rpc, rpcFor, servedFor, toast } from "../state/app";
+import { app, awayMachine, checkLimits, handleFor, limitsFor, providersFor, reportError, rpc, rpcFor, servedFor, toast } from "../state/app";
 import { contextCardOpen, setContextCardOpen } from "../state/ui";
 import { keysHere, usePane } from "../state/split";
 import { now } from "../lib/clock";
 import { Gauge, Shrink } from "lucide-solid";
-import { limitAlternatives, limitFor, limitName, meterOf, nearLimit, planTitle, resolvedOn } from "../lib/limits";
+import { limitAlternatives, limitFor, limitName, meterOf, nearLimit, planCheckDue, planTitle, resolvedOn } from "../lib/limits";
 import { contextView } from "../lib/context";
 import { tokens } from "../lib/format";
 import { Popover } from "./ui/Popover";
+/** When each plan was last asked about as the window came back, by machine and plan: every composer's. */
+const planAsked = new Map<string, number>();
+
 /** `home`: a new session's composer, which shows the limit pill (nearLimit) in place of the ring. */
 export function ComposerMeter(p: { provider?: string; sessionId?: string; home?: boolean; /** A side chat: nothing until there's a figure (no lone "Context"). */ aside?: boolean; /** The model a turn would use (Home's chosen one): a model's limit counts only for the models it covers. */ model?: { id: string; resolvedModel?: string; resolvedFor?: string } }) {
     let btn: HTMLButtonElement | undefined;
@@ -29,6 +32,29 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
     // The plan limits of the session's machine's accounts: another machine's session opened here has that machine's.
     const limits = () => limitsFor(p.sessionId)[planLimitKey(provider() ?? "", accountId())];
     const meter = createMemo(() => meterOf(limits(), now()));
+    // Back at the window: this composer's plan is asked about when its figures are old (planCheckDue). Only the
+    // composer on screen asks, not one of a session out of sight.
+    const backAtWindow = () => {
+        const cli = providerInfo()?.agentCli;
+        // Home's composer has no ring to look for: it's on screen while no session is.
+        const onScreen = p.home ? !app.activeId : Boolean(btn?.offsetParent);
+        if (document.visibilityState !== "visible" || app.conn !== "open" || !cli || !onScreen) return;
+        const plan = { provider: provider()!, accountId: accountId() };
+        // The window's own machine (undefined) isn't this computer seen from a server's window (""): kept apart.
+        const key = JSON.stringify([awayMachine(p.sessionId) ?? null, planLimitKey(plan.provider, plan.accountId)]);
+        if (!planCheckDue(limits(), Date.now(), planAsked.get(key))) return;
+        planAsked.set(key, Date.now());
+        void checkLimits(p.sessionId, [plan]);
+    };
+    // Only in a window: a render with none (a test's) has nothing to come back to.
+    if (typeof window !== "undefined") {
+        window.addEventListener("focus", backAtWindow);
+        document.addEventListener("visibilitychange", backAtWindow);
+        onCleanup(() => {
+            window.removeEventListener("focus", backAtWindow);
+            document.removeEventListener("visibilitychange", backAtWindow);
+        });
+    }
     // What stops this session's turns: the plan's limit, or a model's (Fable's) that covers its model. Another
     // model's limit says nothing here.
     // The model by the one its CLI served (this session's, else last on this account), or listed it as for this

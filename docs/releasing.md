@@ -39,6 +39,11 @@ The certificate is harder. A release signed with another certificate has another
 
 ## Each release
 
+Two things in the source are kept by hand, so look at them first:
+
+- **Anthropic's models.** Their prices, sizes and what each accepts are a table in `src/providers/anthropic-models.ts` (the API doesn't say prices). A model it doesn't list is priced like its family's latest and asked for nothing new, so add any model released since.
+- **The agent CLIs.** `bun scripts/probes/check-versions.ts` says when the Claude Code or Codex installed here is newer than the one the protocol fixtures were recorded on. When it is, run that CLI's probes again ([protocol probes](cli-protocol-probes.md)).
+
 Set the version in `package.json`, `desktop-electron/package.json` and `APP_VERSION` in `src/config/paths.ts` (all three the same), merge to `main`, then tag that commit and push the tag:
 
 ```bash

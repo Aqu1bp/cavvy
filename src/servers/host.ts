@@ -678,11 +678,18 @@ export async function hostCommand(args: string[], env: HostRunEnv): Promise<numb
         print(await hostCheck());
         return 0;
     }
+    if (sub === "update-clis") {
+        const { adoptLoginPath } = await import("../server/login-env");
+        // The CLIs the server runs: found with the tools your login shell puts on PATH.
+        await (await adoptLoginPath(paths.loginPath())).answered;
+        print(await (await import("./cli-update")).hostUpdateClis());
+        return 0;
+    }
     if (sub === "login") {
         const accountId = flag("--account") ?? "default";
         const cliId = rest.find((a, i) => !a.startsWith("-") && rest[i - 1] !== "--account");
         return hostLogin(cliId, accountId);
     }
-    process.stderr.write(`Usage: ${APP_NAME} host <run|status|pair|revoke|stop|check|login|version>\n\nWhat a server runs for the machines that connect to it. \`${APP_NAME} servers\` on your own machine sets it up.\n`);
+    process.stderr.write(`Usage: ${APP_NAME} host <run|status|pair|revoke|stop|check|update-clis|login|version>\n\nWhat a server runs for the machines that connect to it. \`${APP_NAME} servers\` on your own machine sets it up.\n`);
     return sub === undefined || sub === "-h" || sub === "--help" ? 0 : 1;
 }

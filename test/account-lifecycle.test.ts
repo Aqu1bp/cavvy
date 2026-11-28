@@ -673,6 +673,27 @@ for (const provider of ["claude-code", "codex"] as const) test(`${provider}: a s
     }
 });
 
+test("a turn that stops signed out marks the account signed out for Settings and the model picker", async () => {
+    process.env.FAKE_SCENARIO = "auth-failed";
+    const cwd = realpathSync(tempDir("account-signed-out-"));
+    const engine = new Engine({ startCwd: cwd });
+    const changed: string[] = [];
+    const client = { subs: new Set<string>(), send: (m: { type?: string }) => void (m.type === "models.changed" && changed.push(m.type)) };
+    engine.clients.add(client as never);
+    try {
+        const rt = await engine.createSession(cwd, { model: "claude-code:default" });
+        const account = async () => (await engine.handle(client, "accounts.list", { provider: "claude-code" })).find((a: { id: string }) => a.id === "default");
+        expect((await account()).signedIn).not.toBe(false);
+        await engine.handle(client, "session.send", { id: rt.session.meta.id, text: "hello" });
+        await until(() => !rt.busy && rt.snapshot().turns.some((t) => t.prompt), "the turn ends");
+        await until(() => changed.length > 0, "the windows are told");
+        expect(await account()).toMatchObject({ signedIn: false, description: "not signed in" });
+    } finally {
+        await engine.stop();
+        rmSync(cwd, { recursive: true, force: true });
+    }
+}, 30_000);
+
 /** A session's agent on the fake live Claude Code, through the real Agent loop. */
 async function liveClaudeAgent(cwd: string, session: InstanceType<typeof import("../src/agent/session").Session>) {
     const { Agent } = await import("../src/agent/agent");

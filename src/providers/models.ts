@@ -6,7 +6,7 @@
 // timeout because they come and go.
 
 import { createHash } from "crypto";
-import { existsSync } from "fs";
+import { existsSync, realpathSync, statSync } from "fs";
 import { AnthropicProvider } from "./anthropic";
 import { OpenAICompatProvider, compatModelInfo } from "./openai-compat";
 import { apiFastModeInfo } from "./fast-mode";
@@ -18,6 +18,7 @@ import { ProviderError, parseModelRef, type ModelInfo, type ProviderClient } fro
 import { getKey } from "../auth/credentials";
 import { createBackend } from "../backends/index";
 import { agentCli, baseCli } from "../backends/defs";
+import { findCli } from "../backends/cli";
 import { backendModel, isAgentBackend } from "../backends/types";
 import { acpModelTraits } from "../backends/acp/agents";
 import { readJson, writeJson } from "../config/settings";
@@ -69,6 +70,23 @@ function envPart(provider: string): string {
     return fp ? `|env:${fp}` : "";
 }
 
+/**
+ * Which program an agent CLI is now: the file its command resolves to and when that was written. A CLI that updated
+ * itself is another file (Claude Code's link moves to the new version) or a rewritten one (an npm install), and
+ * lists other models. Undefined for a provider that isn't a CLI, or one that isn't installed.
+ */
+export function cliProgram(providerId: string): string | undefined {
+    const cli = agentCli(providerId)?.cli;
+    const bin = cli && findCli(providerId, cli);
+    if (!bin) return undefined;
+    try {
+        const real = realpathSync(bin);
+        return `${real}|${statSync(real).mtimeMs}`;
+    } catch {
+        return undefined;
+    }
+}
+
 function providerConfiguration(def: ProviderDef): string {
     return JSON.stringify([resolveBaseUrl(def), def.deepseekCompat, def.modelEffortLevels]);
 }
@@ -109,13 +127,17 @@ function fingerprint(key: string | undefined): string {
 // Cache
 
 const CACHE_VERSION = 3;
-const TTL_MS = 12 * 60 * 60 * 1000;
+/** How long a provider's list is used before it's asked again. */
+export const MODEL_LIST_TTL_MS = 12 * 60 * 60 * 1000;
+const TTL_MS = MODEL_LIST_TTL_MS;
 
 interface CacheEntry {
     fetchedAt: number;
     fp: string;
     models: ModelInfo[];
     configuration?: string;
+    /** The CLI's program when it listed these (cliProgram): another one since lists again. */
+    cli?: string;
 }
 
 interface CacheFile {
@@ -226,7 +248,8 @@ export async function listAllModels(opts: ListOptions = {}): Promise<ProviderLis
                     return l;
                 }
                 if (opts.cachedOnly) return cached && cached.fp === fp && !def.local ? { provider: def, models: cached.models, status: "cached", fetchedAt: cached.fetchedAt } : undefined;
-                if (!def.local && !refresh && cached && cached.fp === fp && Date.now() - cached.fetchedAt < TTL_MS) {
+                const cli = def.auth === "cli" ? cliProgram(def.id) : undefined;
+                if (!def.local && !refresh && cached && cached.fp === fp && cached.cli === cli && Date.now() - cached.fetchedAt < TTL_MS) {
                     const l: ProviderListing = { provider: def, models: cached.models, status: "cached", fetchedAt: cached.fetchedAt };
                     opts.onProvider?.(l);
                     return l;
@@ -234,7 +257,7 @@ export async function listAllModels(opts: ListOptions = {}): Promise<ProviderLis
                 const listed = await shared(`${def.id}\0${fp}`, () => clientFor(def.id).then((client) => client.listModels(AbortSignal.timeout(def.local ? 1500 : 20_000))), opts.signal);
                 const models = def.sorted ? listed : sortModels(listed);
                 if (!def.local) {
-                    cache.providers[def.id] = { fetchedAt: Date.now(), fp, models, configuration: providerConfiguration(def) };
+                    cache.providers[def.id] = { fetchedAt: Date.now(), fp, models, configuration: providerConfiguration(def), ...(cli ? { cli } : {}) };
                     dirty = true;
                 }
                 const l: ProviderListing = { provider: def, models, status: "ok", fetchedAt: Date.now() };

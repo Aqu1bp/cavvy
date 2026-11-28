@@ -5,3 +5,19 @@ updates:
     directory: /
     schedule:
       interval: weekly
+  # The packages each part is built from (its bun.lock). Monthly, a few at a time: each is a pull request to read.
+  - package-ecosystem: bun
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+  - package-ecosystem: bun
+    directory: /gui
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+  - package-ecosystem: bun
+    directory: /desktop-electron
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3

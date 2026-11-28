@@ -4601,6 +4601,9 @@ export class Runtime {
         // While a goal keeps going its turns don't each notify: the goal says when it stops (GoalHost.alert).
         if (!(this.goal.active && this.goal.view()?.state !== "paused")) notify();
         if (reason && !this.closed) this.schedules.turnEnded(reason, agent.limitStop);
+        if (reason && this.model) this.engine.cliUsed(this.model.provider);
+        // Settings and the model picker say so too, from the turn that found out, not at the next start.
+        if (reason === "error" && agent.signedOutStop) this.engine.cliSignedOut(agent.signedOutStop.target, agent.signedOutStop.account);
         if (reason === "error" && agent.signedOutStop && !this.closed) this.offerSignIn(agent.signedOutStop);
         // A command in the turn said something isn't signed in, and the agent didn't ask: the user is asked all the same.
         else if (reason === "done" && agent.signedOutUnasked && !this.closed) this.offerSignIn({ target: agent.signedOutUnasked.target, account: "", advice: "" }, true);

@@ -73,6 +73,15 @@ export function resetLabel(ms: number, now: number, exact = false): string {
     return `${day ? `${day} ` : ""}${clock(ms)}${ms > now ? `, in ${until(ms, now)}` : ""}`;
 }
 
+/**
+ * Whether to ask where a plan stands as the window comes back: its figures are shown and old (the plan may have been
+ * used elsewhere since, with no turn here to say so), and it wasn't asked within that time (a check that can't read
+ * leaves them old).
+ */
+export function planCheckDue(l: PlanLimits | undefined, now: number, askedAt: number | undefined): boolean {
+    return Boolean(planNow(l, now)?.stale) && (askedAt === undefined || now - askedAt > STALE_MS);
+}
+
 export function meterOf(l: PlanLimits | undefined, now: number): Meter | undefined {
     const p = planNow(l, now);
     if (!l || !p) return undefined;
