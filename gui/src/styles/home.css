@@ -9,7 +9,7 @@
     inset: 0;
     display: flex;
     flex-direction: column;
-    --dock-w: calc(var(--column-w) + 100 * var(--sp));
+    --dock-w: var(--column-w);
 }
 
 .home-scroll {
@@ -33,6 +33,11 @@
 
 /* Drawn before the window came up, at launch: it's all there when the window is. */
 .home.instant .home-stack {
+    animation: none;
+}
+
+/* Just moved to another machine (state/actions.ts goHomeOn): drawn where it ends up, in one change. */
+.home.home-jumped .home-stack {
     animation: none;
 }
 
@@ -336,7 +341,7 @@
 /* ---- The composer, at the foot ---- */
 .home-foot {
     flex: none;
-    padding: 0 calc(18 * var(--sp)) calc(12 * var(--sp));
+    padding: 0 calc(32 * var(--sp)) calc(10 * var(--sp));
 }
 
 /* The composer's prefixes: a key and its word; a click types it in the composer. */

@@ -169,7 +169,7 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
                 {/* Under the composer, in words: "4% context". */}
                 <span class="ctx-num num" aria-hidden="true">{shownPct() === undefined ? "Context" : `${shownPct()}% context`}</span>
             </button>
-            <Popover open={open()} anchor={() => btn} onClose={close} placement="top" align="end" width={width} class="ctx-card">
+            <Popover open={open()} anchor={() => btn} onClose={close} placement="top" align="start" width={width} class="ctx-card">
                 <div ref={panel} id={panelId} class="cx" role="dialog" aria-label="Context and session" tabIndex={-1}
                     onFocusOut={(e) => {
                         const to = e.relatedTarget as Node | null;

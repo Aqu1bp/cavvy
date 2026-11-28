@@ -58,7 +58,7 @@ export function ModePicker(p: ComposerMenu & { /** The session it's for (default
                             const disabled = () => m === "bypassPermissions" && !p.bypassAllowed;
                             return (
                                 <button
-                                    class={`menu-item ${p.mode === m ? "on" : ""} ${m === "bypassPermissions" ? "danger" : ""}`}
+                                    class={`menu-item ${m === "bypassPermissions" ? "danger" : ""}`}
                                     role="menuitemradio"
                                     aria-checked={p.mode === m}
                                     disabled={disabled()}

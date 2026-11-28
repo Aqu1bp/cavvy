@@ -1,5 +1,5 @@
 import { createEffect, createMemo, createSignal, createUniqueId, For, on, Show } from "solid-js";
-import { Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Layers, Plus, RefreshCw, Search, Settings2, Star, Zap } from "lucide-solid";
+import { ArrowLeft, Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Layers, Plus, RefreshCw, Search, Settings2, Star, Zap } from "lucide-solid";
 import { planLimitKey, type AccountInfo, type EffortLevel, type ModelSummary, type ProviderModels } from "@shared/protocol";
 import { app, awayMachine, handleFor, limitsFor, modelsFor, noModel, providersFor, refreshModels, refreshModelsFor, servedFor, toast } from "../state/app";
 import { setEffort, setModel, setFastMode, setAccount } from "../state/actions";
@@ -480,9 +480,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                     </span>
                     {/* One line: the name, then what it stands for (or whose it is, its window and price) dimmed, cut first. */}
                     <span class="mr-text">
-                        <Show when={r.line}>
-                            <span class="mr-ic" aria-hidden="true"><ProviderIcon id={r.m.provider} name={r.line} size={14} /></span>
-                        </Show>
+                        <span class="mr-ic" aria-hidden="true"><ProviderIcon id={r.m.provider} name={providerName(r.m.provider)} size={14} /></span>
                         <span class="mr-name truncate">{name}</span>
                         {/* Its model limit reached: marked as an account at its limit is. */}
                         <Show when={stopped()}>
@@ -629,7 +627,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                 onClose={() => p.setOpen(false)}
                 placement={p.placement ?? "top"}
                 // One width for both views: at 288 the effort's heading cut a name like "Default (recommended)" short.
-                width={340}
+                width={348}
                 maxHeight={460}
                 minHeight={view() === "effort" ? 0 : 200}
                 class={`mp ${view() === "effort" ? "mp-effort" : ""}`}
@@ -666,7 +664,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                         {/* Back to the effort, where the picker opened on it. */}
                         <Show when={hasEffortView()} fallback={<Search size={14} />}>
                             <button class="hb sm mp-back" title="Back" aria-label="Back to effort" onClick={toEffort}>
-                                <ChevronLeft size={15} />
+                                <ArrowLeft size={14} />
                             </button>
                         </Show>
                         <input ref={input} role="combobox" aria-expanded="true" aria-controls={listId} aria-autocomplete="list" aria-activedescendant={rows()[sel()] ? `${listId}-${sel()}` : undefined} value={q()} onInput={(e) => (setQ(e.currentTarget.value), setSel(0))} placeholder="Search models…" aria-label="Search models" spellcheck={false} />

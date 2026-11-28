@@ -44,7 +44,7 @@ test("the column's size steps stand for the queries they replaced, at the same s
     expect(columnSteps(701, COLUMN_NARROW)).toBe("");
     expect(columnSteps(700, COLUMN_NARROW)).toBe("700");
     expect(columnSteps(600, COLUMN_NARROW)).toBe("700 640 600");
-    expect(columnSteps(300, COLUMN_SHORT)).toBe("600 560 360");
+    expect(columnSteps(300, COLUMN_SHORT)).toBe("560 360");
 });
 
 test("the column is the sheet less a docked inspector and the terminal's row, and waits behind a maximized terminal at its size", () => {

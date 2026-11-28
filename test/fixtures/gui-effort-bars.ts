@@ -146,7 +146,7 @@ test("the model picker's effort: a change the server refuses goes back to the le
         menuIndex: () => 0, menuTypeahead: () => () => -1, comparePicks: () => undefined, setComparePicks: stub, planLimitKey: () => "", meterOf: () => undefined, nearLimit: () => undefined, limitBadge: () => "", planTitle: () => ({ title: "", plan: "" }), limitFor: () => undefined, limitName: () => "", covers: () => false, resolvedOn: () => undefined, servedFor: () => ({}),
         now: () => 0, sendsAccountPick: () => false, setAccount: stub, prefs: { favoriteModels: [] }, setPrefs: stub, handleFor: () => undefined, noModel: () => false, refreshModels: stub, setModel: stub,
         setAddAccountFor: stub, toast: stub, isMod: () => false, mod: "Ctrl", withShortcut: (label: string) => label, requestAnimationFrame: () => 0,
-        ...names(["ProviderIcon", "Spinner", "Check", "ChevronDown", "ChevronLeft", "ChevronRight", "CircleAlert", "Layers", "Plus", "RefreshCw", "Search", "Settings2", "Star", "Zap"]),
+        ...names(["ProviderIcon", "Spinner", "ArrowLeft", "Check", "ChevronDown", "ChevronLeft", "ChevronRight", "CircleAlert", "Layers", "Plus", "RefreshCw", "Search", "Settings2", "Star", "Zap"]),
     });
     Object.assign(app, { providers: [], limits: {} });
     const current = { id: "m", ref: "mock:m", name: "M", provider: "mock", supportsReasoning: true, effortLevels: ["low", "medium", "high", "xhigh"] };
