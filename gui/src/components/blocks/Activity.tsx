@@ -924,7 +924,7 @@ function EditCardContent(p: { tool: ToolBlock }) {
                 }}
             >
                 <span class="tcard-ic">
-                    <Show when={!live()} fallback={<Spinner size={12} class="tone-accent" />}>
+                    <Show when={!live()} fallback={<Spinner size={14} class="tone-accent" />}>
                         <Show when={t().diff?.status === "added" || (t().name === "Write" && !t().diff)} fallback={<FilePen size={14} />}>
                             <FilePlus2 size={14} />
                         </Show>
@@ -1143,7 +1143,7 @@ function CommandCardContent(p: { tool: ToolBlock }) {
                 <span class="cmd-what">
                     <span class="ic" title={t().sandboxed ? "Ran in the sandbox" : undefined}>
                         <Show when={live() || background()} fallback={<SquareTerminal size={14} />}>
-                            <Spinner size={12} />
+                            <Spinner size={14} />
                         </Show>
                     </span>
                     <span class="sr-only" data-find-skip>{label().verb}{" "}</span>

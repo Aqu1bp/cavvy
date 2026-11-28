@@ -19,15 +19,16 @@ export function Shine(p: { text: string }) {
     );
 }
 
-/** It turns as a box around the svg: Chromium turns an svg itself on the main thread, every frame, for as long as it shows. */
+/**
+ * Something under way: the live line's three dots, at the size of the icon it stands in for (`size`, as an icon's), in
+ * the colour of what's around it. Boxes, not an svg: Chromium animates an svg on the main thread, a box on the compositor.
+ */
 export function Spinner(p: { size?: number; class?: string }) {
-    const s = p.size ?? 14;
     return (
-        <span class={`spinner ${p.class ?? ""}`} aria-hidden="true">
-            <svg width={s} height={s} viewBox="0 0 16 16">
-                <circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-opacity="0.2" stroke-width="2" />
-                <path d="M14 8a6 6 0 0 0-6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-            </svg>
+        <span class={`spinner ${p.class ?? ""}`} style={{ "--spin": `calc(${p.size ?? 14} * var(--sp))` }} aria-hidden="true">
+            <i />
+            <i />
+            <i />
         </span>
     );
 }

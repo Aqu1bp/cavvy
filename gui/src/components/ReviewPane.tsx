@@ -683,7 +683,7 @@ function FileCard(p: {
                             when={!shown().deferred}
                             fallback={
                                 <div class="rf-wait selectable">
-                                    <Show when={!full.loading && full()?.error} fallback={<Spinner size={14} />}>
+                                    <Show when={!full.loading && full()?.error} fallback={<span class="dim">Loading…</span>}>
                                         {full()!.error}{" "}
                                         <button class="link-btn" onClick={() => void refetch()}>
                                             Try again
@@ -1193,7 +1193,7 @@ function DiffReader(p: { handle: SessionHandle }) {
                     </Show>
                     <Show when={askedFor() && !asked()?.file}>
                         <div class="note selectable">
-                            <Show when={!unlisted.loading && asked()?.error} fallback={<Spinner size={13} />}>
+                            <Show when={!unlisted.loading && asked()?.error} fallback={<span class="note-body dim">Loading…</span>}>
                                 <span class="note-body">
                                     {picked()?.path}: {asked()!.error}
                                 </span>
@@ -1228,7 +1228,7 @@ function DiffReader(p: { handle: SessionHandle }) {
                 <Show when={!files().length && !asked()?.file}>
                     <Show when={!error()} fallback={<ErrorNote error={error()!} base={base()} onReset={() => setBase(undefined)} />}>
                         <div class="blank selectable">
-                            <Show when={view()} fallback={<Spinner class="blank-spinner" />}>
+                            <Show when={view()} fallback={<p class="blank-title">Loading…</p>}>
                                 <p class="blank-title">{empty()}</p>
                             </Show>
                         </div>

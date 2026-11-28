@@ -17,7 +17,6 @@ import { Transcript } from "./Transcript";
 import { FloatingBrowser } from "./FloatingBrowser";
 import { Composer } from "./Composer";
 import { AgentView } from "./Agents";
-import { Spinner } from "./ui/bits";
 
 const titleOf = (id: string) => (app.sessions.find((s) => s.id === id) ?? app.archived.find((s) => s.id === id))?.title;
 
@@ -81,7 +80,7 @@ function OpeningPane(p: { id: string }) {
         <>
             <Header title={titleOf(p.id)} />
             <div class="session-opening" aria-busy={!opening()?.error}>
-                <Show when={opening()?.error} fallback={<Show when={opening()?.visible}><div role="status"><Spinner size={16} /> Opening session…</div><div class="session-skeleton" aria-hidden="true"><i /><i /><i /></div></Show>}>
+                <Show when={opening()?.error} fallback={<Show when={opening()?.visible}><div role="status">Opening session…</div><div class="session-skeleton" aria-hidden="true"><i /><i /><i /></div></Show>}>
                     <p role="alert" class="selectable">Couldn't open this session: {opening()!.error}</p>
                     <button class="ghost-btn" disabled={app.conn !== "open"} onClick={() => void activate(p.id)}>Retry opening session</button>
                 </Show>

@@ -1378,6 +1378,15 @@
     color: var(--fg);
 }
 
+/* Under way: the live dots in the accent, as a running row's icon is; left running in the background, quieter. */
+.cmd-h .ic > .spinner {
+    color: var(--accent);
+}
+
+.cmd-row.bg .cmd-h .ic > .spinner {
+    color: var(--fg-3);
+}
+
 /* What it's for, in the model's words: said like any row's verb ("Read", "Search"), not brighter. */
 .cmd-l {
     flex: 0 1 auto;

@@ -2,11 +2,12 @@
 // where it stands, and buttons to pause, resume or clear it.
 
 import { createSignal, Show } from "solid-js";
-import { ChevronRight, LoaderCircle, Pause, Play, Target, X } from "lucide-solid";
+import { ChevronRight, Pause, Play, Target, X } from "lucide-solid";
 import type { GoalState } from "@shared/protocol";
 import { reportError, rpc } from "../state/app";
 import { now } from "../lib/clock";
 import { plural, tokens, turnDuration } from "../lib/format";
+import { Spinner } from "./ui/bits";
 
 /** "Working · 4m 10s · 3 checks · 120k tokens" and the like. */
 export function goalStatus(g: GoalState, at: number): string {
@@ -46,7 +47,7 @@ export function GoalTab(p: { sessionId: string; goal: GoalState }) {
         <div class={`crow crow-goal st-${g().state}`} data-open={open() ? "" : undefined} role="status" aria-label="Goal">
             <div class="crow-line">
                 <Show when={g().state === "checking" || g().state === "waiting"} fallback={<Target size={14} class="crow-icon" aria-hidden="true" />}>
-                    <span class="crow-icon spinner" aria-hidden="true"><LoaderCircle size={14} /></span>
+                    <Spinner size={14} class="crow-icon" />
                 </Show>
                 <span class="crow-label">Goal</span>
                 {/* A CLI's own goal: whose it is. */}

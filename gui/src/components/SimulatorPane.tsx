@@ -480,7 +480,6 @@ export function SimulatorPane(p: { handle: SessionHandle }) {
                 />
                 <Show when={running() && (!hasPicture() || !connected())}>
                     <div class="br-status" role="status">
-                        <Spinner size={13} />
                         {connected() ? "Connecting…" : "Reconnecting…"}
                     </div>
                 </Show>
@@ -488,7 +487,7 @@ export function SimulatorPane(p: { handle: SessionHandle }) {
                     {(n) => (
                         <div class="blank">
                             <Show when={n().busy || busy()}>
-                                <Spinner size={14} class="blank-spinner" />
+                                <Spinner size={16} class="blank-spinner" />
                             </Show>
                             <Show when={n().title}>
                                 <p class="blank-title">{n().title}</p>

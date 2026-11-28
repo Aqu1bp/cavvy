@@ -279,26 +279,55 @@ h3 {
     --decor: paused;
 }
 
-@keyframes spin {
-    to {
-        transform: rotate(360deg);
-    }
-}
-
 /* Looping motion goes on an HTML box, never on an svg: Chromium runs an svg's animation on the main thread (style,
    paint and a commit every frame, 120 a second here), a box's on the compositor. */
-.spinner,
 .pulse {
     display: inline-flex;
     flex: none;
 }
 
-/* Its own size in a flex column too: stretched across it, it turned round its middle, off its box and out of sight, and
-   made a dialog's body scroll (a Tab stop with nothing to show). */
+/* Something under way (bits.tsx Spinner): the live line's three dots (remix-conversation.css .working-dots), as big as
+   the icon they stand in for (--spin), in the colour of their words. Its own size in a flex column too. */
 .spinner {
+    display: inline-flex;
+    flex: none;
     align-self: center;
-    animation: spin 0.8s steps(16) infinite;
+    align-items: center;
+    justify-content: center;
+    gap: calc(var(--spin) / 8);
+    width: var(--spin);
+    height: var(--spin);
+}
+
+.spinner i {
+    width: calc(var(--spin) / 4);
+    height: calc(var(--spin) / 4);
+    border-radius: 50%;
+    background: currentColor;
+    /* The live dots' rise and fade (bounce), stepped on the stream clock's grid, paused with the window's loops. */
+    animation: dot-rise 1.2s steps(6) infinite;
     animation-play-state: var(--loops);
+}
+
+.spinner i:nth-child(2) {
+    animation-delay: 0.15s;
+}
+
+.spinner i:nth-child(3) {
+    animation-delay: 0.3s;
+}
+
+@keyframes dot-rise {
+    0%,
+    50%,
+    100% {
+        opacity: 0.3;
+        transform: translateY(0);
+    }
+    25% {
+        opacity: 1;
+        transform: translateY(calc(var(--spin) / -6));
+    }
 }
 
 @keyframes pulse {
@@ -400,9 +429,9 @@ h3 {
         animation-iteration-count: 1 !important;
         transition-duration: 0.001ms !important;
     }
-    .spinner {
-        animation: spin 1.6s steps(32) infinite !important;
-        animation-play-state: var(--loops) !important;
+    .spinner i {
+        animation: none !important;
+        opacity: 0.6;
     }
 }
 
