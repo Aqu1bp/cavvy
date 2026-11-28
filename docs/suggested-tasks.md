@@ -1,6 +1,6 @@
 # Suggested tasks
 
-While an agent works, it may come across a problem that has nothing to do with its task: a bug, a UI glitch, a test failing for a reason its change didn't cause. Instead of fixing it there or only mentioning it, it suggests a task: a card in the conversation with a title, what it saw, and the prompt a new session would start with. Nothing starts until you press Start.
+While an agent works, it may come across a problem that has nothing to do with its task: a bug, a UI glitch, a test failing for a reason its change didn't cause. Instead of fixing it there or only mentioning it, it suggests a task: a card in the conversation with a title, what it saw, and the prompt a new session would start with. Nothing starts until you press Start. Whether an agent suggests one on its own depends on the model and on how the problem shows up: a test that fails while it works is suggested far more often than a bug it only reads past, which it may just mention in its reply.
 
 On the card you pick the model and effort, the machine (this Mac or one of your connected servers), the folder, and whether it gets a new worktree; you can edit the title and the prompt. Then Start, or Dismiss (Restore brings it back).
 
