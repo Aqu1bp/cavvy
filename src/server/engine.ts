@@ -266,10 +266,14 @@ interface GuiStore {
     runs?: RunRecord[];
     /** Sessions started from suggested tasks (tasks.start), by their origin key, newest first: a repeat start finds its session. */
     suggestedTasks?: { key: string; session: string; at: number }[];
+    /** A suggested task's first prompt, refused by a hook after its start was answered: back in its composer when it's opened, until something is said in it. */
+    taskDrafts?: { session: string; text: string; at: number }[];
 }
 
 /** Started suggested tasks remembered (each one's session also says so, in its file). */
 const MAX_SUGGESTED_TASKS = 500;
+/** Refused first prompts kept for their sessions (GuiStore.taskDrafts). */
+const MAX_TASK_DRAFTS = 20;
 /** How long a suggested task's start waits past its longest UserPromptSubmit hook timeout for their verdict (startTaskOnce). */
 const TASK_VERDICT_MARGIN_MS = 3_000;
 /** And at most: a hook with no timeout set has a longer default (60 s for a command). */
@@ -1129,6 +1133,14 @@ export class Engine {
         for (const s of listAllSessions(limit, { match: (s) => arch.has(s.id) === archived && !this.decidingTasks.has(s.id) })) {
             out.set(s.id, { id: s.id, cwd: s.cwd, projectName: basename(s.cwd) || s.cwd, title: s.title, createdAt: s.createdAt, updatedAt: s.updatedAt, messages: s.messages, status: "idle", pinned: pinned.has(s.id), archived: arch.has(s.id), settled: settled.has(s.id), model: s.model, live: false, run: runs.get(s.id) });
         }
+        // A suggested task's session with only its refused prompt (in its composer): listed, though nothing's said in it.
+        for (const d of readStore().taskDrafts ?? []) {
+            if (out.has(d.session) || this.runtimes.has(d.session) || arch.has(d.session) !== archived) continue;
+            const file = findSessionAnywhere(d.session);
+            const label = file && sessionLabel(file);
+            if (!label || !label.cwd) continue;
+            out.set(d.session, { id: d.session, cwd: label.cwd, projectName: basename(label.cwd) || label.cwd, title: label.title, createdAt: d.at, updatedAt: d.at, messages: 0, status: "idle", pinned: pinned.has(d.session), archived: arch.has(d.session), settled: settled.has(d.session), live: false });
+        }
         for (const rt of this.runtimes.values()) {
             // A suggested task's session is listed while it's loaded, empty too (a refused prompt back in its composer): its card opens it.
             if (rt.guest || this.decidingTasks.has(rt.id) || (!rt.session.messageCount && !rt.busy && !rt.session.meta.suggestedBy) || arch.has(rt.id) !== archived) continue;
@@ -1920,6 +1932,31 @@ export class Engine {
     }
 
     /**
+     * A suggested task's first prompt, refused once its start was answered, goes back in its composer and is kept: the
+     * session is put on disk (nothing else is in it yet) and listed, and opened again it has the prompt back, so the
+     * card's Open finds it after it's closed or Cavvy restarts.
+     */
+    private keepRefusedPrompt(rt: Runtime, prompt: string) {
+        if (!rt.session.keepFile()) this.o.log?.(`suggested task ${rt.id}: couldn't keep its session on disk`);
+        updateStore((s) => {
+            s.taskDrafts = [{ session: rt.id, text: prompt, at: Date.now() }, ...(s.taskDrafts ?? []).filter((d) => d.session !== rt.id)].slice(0, MAX_TASK_DRAFTS);
+        });
+        this.draft(rt, prompt);
+        this.sessionChanged(rt);
+    }
+
+    /** The refused first prompt kept for `rt`, while nothing is said in it; forgotten once something is. */
+    private taskDraftOf(rt: Runtime): string | undefined {
+        const d = readStore().taskDrafts?.find((x) => x.session === rt.id);
+        if (!d) return undefined;
+        if (!rt.session.messageCount) return d.text;
+        updateStore((s) => {
+            s.taskDrafts = (s.taskDrafts ?? []).filter((x) => x.session !== rt.id);
+        });
+        return undefined;
+    }
+
+    /**
      * The worktree an earlier failed start of `key` made, to go on in: only while it's there at the commit it was left
      * at (no commits since), with no changes in it and no session in it (open here, closing, or held by a terminal).
      * Otherwise forgotten, and a start makes its own.
@@ -2015,9 +2052,8 @@ export class Engine {
             try {
                 const w = resume ? listWorktrees(cwd).find((x) => x.managed && x.exists && x.branch && (resolve(x.path) === resolve(resume) || realPath(x.path) === realPath(resume))) : undefined;
                 if (w) made = { path: w.path, branch: w.branch! };
-                else if (asked) throw new RpcError(`${asked} isn't a worktree Cavvy made in this repository.`, "worktree_failed");
                 else {
-                    // None asked for, or the one remembered is gone: a new one.
+                    // None asked for, or the one asked for or remembered is gone (removed, or not Cavvy's any more): a new one.
                     const r = await createWorktreeWithHooks({ path: cwd, branch: taskBranch(cwd, taskSlug(title)) }, this.o.log);
                     made = { path: r.path, branch: r.branch, commit: r.commit };
                 }
@@ -2108,7 +2144,7 @@ export class Engine {
                 });
                 // Nothing kept, queued (the user's) or to be delivered (another session's message, a watch's event).
                 if (waiting) runEnded(next.session.messageCount === 0 && !next.queuedCount && !next.toolState.wakes?.size);
-                else this.draft(next, prompt);
+                else this.keepRefusedPrompt(next, prompt);
             };
             let decided!: () => void;
             const decision = new Promise<void>((r) => (decided = r));
@@ -2140,7 +2176,7 @@ export class Engine {
         this.watch(client, next.id);
         this.decidingTasks.delete(next.id);
         this.sessionChanged(next);
-        if (blocked !== undefined) this.draft(next, prompt);
+        if (blocked !== undefined) this.keepRefusedPrompt(next, prompt);
         if (!this.refusedTasks.has(next.id)) {
             updateStore((s) => {
                 s.suggestedTasks = [{ key: origin.key, session: next.id, at: Date.now() }, ...(s.suggestedTasks ?? []).filter((t) => t.key !== origin.key)].slice(0, MAX_SUGGESTED_TASKS);
@@ -3469,6 +3505,9 @@ export class Engine {
                 const since = p.since && typeof p.since === "object" ? (p.since as { epoch?: unknown; seq?: unknown }) : undefined;
                 const resumed = loaded && since && typeof since.epoch === "string" && typeof since.seq === "number" ? rt.resume(since.epoch, since.seq) : undefined;
                 if (resumed) return resumed;
+                // Opened again after it was closed (no window had it): a refused first prompt kept for it goes back in its composer.
+                const kept = loaded ? undefined : this.taskDraftOf(rt);
+                if (kept !== undefined) client.send({ type: "draft", sessionId: rt.id, text: kept });
                 // Its earlier turns waited for only when what's asked for reaches them (a first open builds them after).
                 const last = typeof p.last === "number" && Number.isInteger(p.last) && p.last >= 0 ? p.last : undefined;
                 const budget = typeof p.budget === "number" && p.budget > 0 ? p.budget : undefined;
