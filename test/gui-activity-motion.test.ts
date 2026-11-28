@@ -19,7 +19,12 @@ test("activity motion is continuous, compositor friendly and disabled for reduce
     expect(shimmer).toMatch(/transform:/);
     expect(shimmer).not.toMatch(/@keyframes[^{]*\{[^}]*(background|color|mask)/);
     expect(shimmer).toMatch(/prefers-reduced-motion: reduce[\s\S]*animation: none/);
-    for (const name of ["wkids", "tool-detail", "agl"]) {
-        expect(transcript.match(new RegExp(`\\.${name} \\{([^}]+)\\}`))?.[1]).not.toMatch(/animation:/);
+    // What holds a run's rows, or a group's agents, is the same element before and after its line comes: no fade.
+    const remix = readFileSync(new URL("../gui/src/styles/remix-conversation.css", import.meta.url), "utf8");
+    for (const name of ["tools-list", "agents-list"]) {
+        for (const sheet of [transcript, remix]) {
+            for (const m of sheet.matchAll(new RegExp(`\\.${name} \\{([^}]+)\\}`, "g"))) expect(m[1]).not.toMatch(/animation:/);
+        }
+        expect(remix).toContain(`.${name} {`);
     }
 });

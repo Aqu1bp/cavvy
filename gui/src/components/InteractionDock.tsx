@@ -7,7 +7,7 @@
 // number keys and Esc work when you're not typing.
 
 import { createEffect, createResource, createUniqueId, createSignal, For, lazy, Match, on, onCleanup, onMount, Show, Suspense, Switch, type JSX } from "solid-js";
-import { AlertTriangle, Eye, EyeOff, KeyRound } from "lucide-solid";
+import { AlertTriangle, Eye, EyeOff } from "lucide-solid";
 import type { ConfirmInteraction, Interaction, PermissionInteraction, PlanInteraction, QuestionInteraction, SecretInteraction, SignInInteraction } from "@shared/protocol";
 import { openAgents, respond } from "../state/actions";
 import { handleFor, rpc } from "../state/app";
@@ -17,7 +17,7 @@ import { cardsKey, typingIn } from "../lib/card-keys";
 import { AgentMark } from "./ui/AgentMark";
 import { columnHeight, setPlanDialog, settingsTab } from "../state/ui";
 import { cardArrived } from "../lib/terminal-keys";
-import { Counts, DiffView } from "./blocks/DiffView";
+import { DiffView } from "./blocks/DiffView";
 import { Markdown } from "./blocks/Markdown";
 import { keysHere, usePane } from "../state/split";
 
@@ -69,9 +69,11 @@ export function InteractionTab(p: { sessionId: string; items: Interaction[] }) {
             {(_id) => (
                 // A terminal that took the keyboard by itself gives it up, so the card's keys answer it.
                 cardArrived(),
-                <div class={`ask card-surface itab itab-${first()!.kind} ${(first()!.kind === "permission" && (first() as PermissionInteraction).dangerous) || (first()!.kind === "confirm" && (first() as ConfirmInteraction).danger) ? "danger" : ""}`} style={{ "--column-h": columnHeight() }} role="alertdialog" aria-label="Waiting for you">
+                <div class={`ask card-surface itab dock`} data-kind={first()!.kind} data-danger={(first()!.kind === "permission" && (first() as PermissionInteraction).dangerous) || (first()!.kind === "confirm" && (first() as ConfirmInteraction).danger) || undefined} style={{ "--column-h": columnHeight() }} role="alertdialog" aria-label="Waiting for you">
                     <Show when={p.items.length > 1}>
-                        <div class="itab-count">1 of {p.items.length} waiting</div>
+                        <div class="dock-pager">
+                            <span class="num">1 of {p.items.length} waiting</span>
+                        </div>
                     </Show>
                     <Switch>
                         <Match when={first()!.kind === "permission"}>
@@ -110,12 +112,14 @@ export function InteractionTab(p: { sessionId: string; items: Interaction[] }) {
  * stays whole: "Always allow `cat, wc…` in project", not "… in proj".
  */
 function FitLabel(p: { text: string }) {
+    const parts = () => p.text.split(/(`[^`]+`)/).filter(Boolean);
+    const code = (part: string) => part.startsWith("`") && part.endsWith("`") && part.length > 2;
     return (
-        <span class="plabel">
-            <For each={p.text.split(/(`[^`]+`)/).filter(Boolean)}>
-                {(part) => (part.startsWith("`") && part.endsWith("`") && part.length > 2 ? <span class="mono plabel-c">{part.slice(1, -1)}</span> : <span class="plabel-t">{part}</span>)}
-            </For>
-        </span>
+        <Show when={parts().some(code)} fallback={<span class="dock-btn-label">{p.text}</span>}>
+            <span class="dock-btn-label plabel">
+                <For each={parts()}>{(part) => (code(part) ? <span class="mono plabel-c">{part.slice(1, -1)}</span> : <span class="plabel-t">{part}</span>)}</For>
+            </span>
+        </Show>
     );
 }
 
@@ -126,19 +130,28 @@ function FitLabel(p: { text: string }) {
 export function Head(p: { title: JSX.Element; sub?: JSX.Element; note?: string; end?: JSX.Element }) {
     return (
         <>
-            <div class="ask-h">
-                <span class="ask-title selectable">{p.title}</span>
-                <Show when={p.end}>
-                    <span class="ask-end">{p.end}</span>
-                </Show>
+            <div class="dock-head">
+                <h3 class="dock-title selectable">
+                    {p.title}
+                    {p.end}
+                </h3>
             </div>
             <Show when={p.sub}>
-                <div class="itab-sub selectable">{p.sub}</div>
+                <p class="dock-sub selectable">{p.sub}</p>
             </Show>
             <Show when={p.note}>
-                <div class="itab-sub selectable">{p.note}</div>
+                <p class="dock-line selectable">{p.note}</p>
             </Show>
         </>
+    );
+}
+
+/** A key that answers the card, after its button's words (the number keys, Esc). */
+export function Key(p: { k: string }) {
+    return (
+        <span class="kbd-group" aria-hidden="true">
+            <kbd class="kbd">{p.k}</kbd>
+        </span>
     );
 }
 
@@ -175,7 +188,7 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
     });
     const Choice = (c: { o: PermissionInteraction["options"][number]; key: number }) => (
         <button
-            class={`btn ${c.o.id === "yes" ? "btn-primary" : c.o.id === "no" ? "deny" : "wide"}`}
+            class={`btn ${c.o.id === "yes" ? "btn-primary" : c.o.id === "no" ? "btn-danger" : ""}`}
             disabled={busy()}
             title={c.o.label.replaceAll("`", "")}
             onClick={() => {
@@ -184,7 +197,7 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
             }}
         >
             <FitLabel text={c.o.id === "no" && feedback() !== undefined ? "Deny" : c.o.short ?? c.o.label} />
-            <kbd>{c.o.id === "no" ? "Esc" : c.key}</kbd>
+            <Key k={c.o.id === "no" ? "Esc" : String(c.key)} />
         </button>
     );
     return (
@@ -194,7 +207,7 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
                     <>
                         {question().before}
                         <Show when={question().code}>
-                            <code class="ask-code mono">{question().code}</code>
+                            <code>{question().code}</code>
                         </Show>
                         ?
                     </>
@@ -202,8 +215,13 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
                 end={
                     <Show when={p.it.diff}>
                         {(d) => (
-                            <span class="stat">
-                                <Counts added={d().added} removed={d().removed} />
+                            <span class="stat dock-stat">
+                                <Show when={d().added}>
+                                    <span class="stat-add">+{d().added!.toLocaleString()}</span>
+                                </Show>
+                                <Show when={d().removed}>
+                                    <span class="stat-del">−{d().removed!.toLocaleString()}</span>
+                                </Show>
                             </span>
                         )}
                     </Show>
@@ -224,79 +242,80 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
                     ) : undefined
                 }
             />
-            <div class="itab-body">
-                <Show when={p.it.plain}>
-                    <div class="itab-desc selectable">
-                        <span class="lbl">{p.it.plainLabel ?? "AI summary"}:</span> {p.it.plain}
-                    </div>
+            <Show when={p.it.plain}>
+                <p class="dock-line selectable">
+                    <span class="dock-line-label">{p.it.plainLabel ?? "AI summary"}:</span> {p.it.plain}
+                </p>
+            </Show>
+            <Show when={p.it.dangerous}>
+                <p class="dock-warn selectable">
+                    <AlertTriangle size={13} /> {p.it.reason ?? "This action looks potentially destructive."}
+                </p>
+            </Show>
+            <Show when={p.it.command !== undefined}>
+                <Show when={!question().inline}>
+                    <pre class="dock-code">{p.it.command}</pre>
                 </Show>
-                <Show when={p.it.dangerous}>
-                    <div class="itab-warn selectable">
-                        <AlertTriangle size={14} /> {p.it.reason ?? "This action looks potentially destructive."}
-                    </div>
+                {/* Not a shell command's: those are the agent's own words for it, and the command is right there. */}
+                <Show when={p.it.description && p.it.toolName !== "Bash" && p.it.toolName !== "Monitor"}>
+                    <p class="dock-line selectable">{p.it.description}</p>
                 </Show>
-                <Show when={p.it.command !== undefined}>
-                    <Show when={!question().inline}>
-                        <pre class="itab-code ask-cmd mono">{p.it.command}</pre>
-                    </Show>
-                    {/* Not a shell command's: those are the agent's own words for it, and the command is right there. */}
-                    <Show when={p.it.description && p.it.toolName !== "Bash" && p.it.toolName !== "Monitor"}>
-                        <div class="itab-desc why selectable">{p.it.description}</div>
-                    </Show>
-                    <Show when={p.it.hosts?.length}>
-                        <div class="itab-desc why selectable">Sandboxed, with network access to {p.it.hosts!.join(", ")}</div>
-                    </Show>
-                    <Show when={p.it.secrets?.length}>
-                        <div class="itab-desc secret-names selectable">
-                            <KeyRound size={13} /> It gets <span class="mono">{p.it.secrets!.map((n) => `$${n}`).join(", ")}</span> in its environment.
-                        </div>
-                    </Show>
+                <Show when={p.it.hosts?.length}>
+                    <p class="dock-line selectable">Sandboxed, with network access to {p.it.hosts!.join(", ")}</p>
                 </Show>
-                <Show when={p.it.diff}>
-                    <DiffView diff={p.it.diff!} maxLines={40} class="inline itab-diff" />
+                <Show when={p.it.secrets?.length}>
+                    <p class="dock-line selectable">
+                        It gets <code>{p.it.secrets!.map((n) => `$${n}`).join(", ")}</code> in its environment.
+                    </p>
                 </Show>
-                <Show when={!p.it.diff && p.it.path && !question().inline}>
-                    <div class="itab-code mono">{p.it.path}</div>
+            </Show>
+            <Show when={p.it.diff}>
+                <div class="tool-card dock-diff">
+                    <DiffView diff={p.it.diff!} maxLines={40} class="inline" />
+                </div>
+            </Show>
+            <Show when={!p.it.diff && p.it.path && !question().inline}>
+                <pre class="dock-code">{p.it.path}</pre>
+            </Show>
+            <Show when={p.it.url}>
+                <pre class="dock-code">{p.it.url}</pre>
+                <Show when={p.it.description}>
+                    <p class="dock-line selectable">{p.it.description}</p>
                 </Show>
-                <Show when={p.it.url}>
-                    <div class="itab-code mono">{p.it.url}</div>
-                    <Show when={p.it.description}>
-                        <div class="itab-desc why selectable">{p.it.description}</div>
-                    </Show>
-                </Show>
-                <Show when={p.it.json}>
-                    <div class="itab-desc selectable">{p.it.title}</div>
-                    <pre class="itab-code mono">{p.it.json}</pre>
-                </Show>
-                {/* Nothing more to show: what it does in words, or, for a tool no heading names, its call. */}
-                <Show when={!p.it.command && !p.it.diff && !p.it.path && !p.it.url && !p.it.json && (p.it.description || p.it.heading === "Use a tool")}>
-                    <div class="itab-desc selectable">{p.it.description ?? p.it.title}</div>
-                </Show>
-                <Show when={!p.it.dangerous && p.it.reason && p.it.toolName !== "Bash" && p.it.toolName !== "Monitor"}>
-                    <div class="itab-desc why selectable">{p.it.reason}</div>
-                </Show>
-                <Show when={feedback() !== undefined}>
-                    <textarea
-                        class="itab-feedback"
-                        rows={2}
-                        placeholder="Tell it what to do instead (optional), then press Enter"
-                        value={feedback()}
-                        onInput={(e) => setFeedback(e.currentTarget.value)}
-                        onKeyDown={(e) => {
-                            if (e.key === "Enter" && !e.shiftKey) {
-                                e.preventDefault();
-                                void answer("no");
-                            } else if (e.key === "Escape") {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                setFeedback(undefined);
-                            }
-                        }}
-                        ref={(el) => requestAnimationFrame(() => el.focus())}
-                    />
-                </Show>
-            </div>
-            <div class="itab-actions ask-row perm-row">
+            </Show>
+            <Show when={p.it.json}>
+                <p class="dock-line selectable">{p.it.title}</p>
+                <pre class="dock-code">{p.it.json}</pre>
+            </Show>
+            {/* Nothing more to show: what it does in words, or, for a tool no heading names, its call. */}
+            <Show when={!p.it.command && !p.it.diff && !p.it.path && !p.it.url && !p.it.json && (p.it.description || p.it.heading === "Use a tool")}>
+                <p class="dock-line selectable">{p.it.description ?? p.it.title}</p>
+            </Show>
+            <Show when={!p.it.dangerous && p.it.reason && p.it.toolName !== "Bash" && p.it.toolName !== "Monitor"}>
+                <p class="dock-line selectable">{p.it.reason}</p>
+            </Show>
+            <Show when={feedback() !== undefined}>
+                <textarea
+                    class="input dock-input"
+                    rows={1}
+                    placeholder="Tell it what to do instead (optional), then press Enter"
+                    aria-label="What to do instead"
+                    value={feedback()}
+                    onInput={(e) => setFeedback(e.currentTarget.value)}
+                    onKeyDown={(e) => {
+                        if (e.key === "Enter" && !e.shiftKey) {
+                            e.preventDefault();
+                            void answer("no");
+                        } else if (e.key === "Escape") {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setFeedback(undefined);
+                        }
+                    }}
+                    ref={(el) => requestAnimationFrame(() => el.focus())}
+                />
+            </Show>
+            <div class="dock-actions">
                 <For each={choices().row}>{Choice}</For>
             </div>
         </>
@@ -320,7 +339,9 @@ function SecretCard(p: { sessionId: string; it: SecretInteraction }) {
     const [busy, setBusy] = createSignal(false);
     // Exactly as typed: spaces can be part of a password.
     const value = () => input.value;
-    const check = () => setReady(value().length >= MIN_SECRET);
+    // Whether anything is typed, for the hint; the value itself stays in the input.
+    const [typed, setTyped] = createSignal(false);
+    const check = () => (setReady(value().length >= MIN_SECRET), setTyped(value().length > 0));
     const provide = async () => {
         if (busy() || !ready()) return;
         setBusy(true);
@@ -346,50 +367,52 @@ function SecretCard(p: { sessionId: string; it: SecretInteraction }) {
     });
     return (
         <>
-            <Head title={<>Provide <code class="ask-code mono">{p.it.name}</code>?</>} sub="Only its shell commands see the value" />
-            <div class="itab-body">
-                <p class="secret-purpose selectable" id={descriptionId}>{p.it.purpose}<span class="sr-only"> At least {MIN_SECRET} characters.</span></p>
-                <div class="secret-field">
-                    <input
-                        ref={input}
-                        class={`itab-input mono ${!shown() && MASKS ? "masked" : ""}`}
-                        type={shown() || MASKS ? "text" : "password"}
-                        name={`secret-${p.it.id}`}
-                        autocomplete={shown() || MASKS ? "off" : "new-password"}
-                        autocapitalize="off"
-                        autocorrect="off"
-                        spellcheck={false}
-                        data-1p-ignore=""
-                        data-lpignore="true"
-                        data-bwignore=""
-                        data-form-type="other"
-                        placeholder={`Value for ${p.it.name}`}
-                        aria-label={`Value for ${p.it.name}`}
-                        aria-describedby={descriptionId}
-                        onInput={check}
-                        onKeyDown={(e) => {
-                            if (e.key === "Enter") {
-                                e.preventDefault();
-                                void provide();
-                            } else if (e.key === "Escape") {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                decline();
-                            }
-                        }}
-                    />
-                    <button class="act hb sm" title={shown() ? "Hide" : "Show"} aria-label={shown() ? "Hide the value" : "Show the value"} aria-pressed={shown()} onClick={() => setShown((s) => !s)}>
-                        {shown() ? <EyeOff size={14} /> : <Eye size={14} />}
-                    </button>
-                </div>
+            <Head title={<>Provide <code>{p.it.name}</code>?</>} sub="Only its shell commands see the value" />
+            <p class="dock-line selectable" id={descriptionId}>{p.it.purpose}<span class="sr-only"> At least {MIN_SECRET} characters.</span></p>
+            <div class="dock-secret">
+                <input
+                    ref={input}
+                    class={`input mono ${!shown() && MASKS ? "masked" : ""}`}
+                    type={shown() || MASKS ? "text" : "password"}
+                    name={`secret-${p.it.id}`}
+                    autocomplete={shown() || MASKS ? "off" : "new-password"}
+                    autocapitalize="off"
+                    autocorrect="off"
+                    spellcheck={false}
+                    data-1p-ignore=""
+                    data-lpignore="true"
+                    data-bwignore=""
+                    data-form-type="other"
+                    placeholder={`Value for ${p.it.name}`}
+                    aria-label={`Value for ${p.it.name}`}
+                    aria-describedby={descriptionId}
+                    onInput={check}
+                    onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                            e.preventDefault();
+                            void provide();
+                        } else if (e.key === "Escape") {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            decline();
+                        }
+                    }}
+                />
+                <button class="icon-btn" title={shown() ? "Hide" : "Show"} aria-label={shown() ? "Hide the value" : "Show the value"} aria-pressed={shown()} onClick={() => setShown((s) => !s)}>
+                    {shown() ? <EyeOff size={15} /> : <Eye size={15} />}
+                </button>
             </div>
-            <div class="itab-actions ask-row">
+            <div class="dock-actions">
                 <button class="btn btn-primary" aria-busy={busy()} disabled={!ready() || busy()} title={ready() ? undefined : `At least ${MIN_SECRET} characters`} onClick={() => void provide()}>
-                    Provide
+                    <span class="dock-btn-label">Provide</span>
                 </button>
                 <button class="btn" onClick={decline}>
-                    Decline <kbd>Esc</kbd>
+                    <span class="dock-btn-label">Decline</span>
+                    <Key k="Esc" />
                 </button>
+                <Show when={typed() && !ready()}>
+                    <span class="dock-hint">At least {MIN_SECRET} characters</span>
+                </Show>
             </div>
         </>
     );
@@ -400,6 +423,11 @@ function PlanCard(p: { sessionId: string; it: PlanInteraction }) {
     const approve = (mode: "acceptEdits" | "default" | "auto") => respond(p.sessionId, p.it.id, { kind: "plan", approved: true, mode });
     const reject = () => respond(p.sessionId, p.it.id, { kind: "plan", approved: false, feedback: feedback()?.trim() || undefined });
     let body: HTMLDivElement | undefined;
+    // The plan's first heading is its title, over the rest.
+    const planParts = () => {
+        const m = /^\s*#{1,3}\s+(.+)\n+/.exec(p.it.plan);
+        return m ? { title: m[1]!.trim(), body: p.it.plan.slice(m[0].length) } : { title: undefined, body: p.it.plan };
+    };
     createEffect(on(() => p.it.id, () => body?.scrollTo({ top: 0 })));
     // Whether there's a repository to make a worktree in (and, if not, why).
     const [info] = createResource(() => p.it.id, () => rpc.call("session.planInfo", { id: p.sessionId, toolId: p.it.toolId ?? p.it.id }).catch(() => undefined));
@@ -418,58 +446,62 @@ function PlanCard(p: { sessionId: string; it: PlanInteraction }) {
     return (
         <>
             <Head title="Go ahead with this plan?" sub="Nothing has been changed yet" />
-            <div class="itab-body">
-                <div class="plan-body" ref={body}>
-                    <Markdown text={p.it.plan} />
-                </div>
-                <Show when={feedback() !== undefined}>
-                    <textarea
-                        class="itab-feedback plan-fb"
-                        rows={2}
-                        placeholder="What should change? Enter sends, Esc cancels"
-                        aria-label="What should change in the plan"
-                        value={feedback()}
-                        onInput={(e) => setFeedback(e.currentTarget.value)}
-                        onKeyDown={(e) => {
-                            if (e.key === "Enter" && !e.shiftKey) {
-                                e.preventDefault();
-                                void reject();
-                            } else if (e.key === "Escape") {
-                                // Like the permission card's: closes the field, without stopping the turn.
-                                e.preventDefault();
-                                e.stopPropagation();
-                                setFeedback(undefined);
-                            }
-                        }}
-                        ref={(el) => requestAnimationFrame(() => el.focus())}
-                    />
-                </Show>
+            <div class="dock-plan" ref={body} tabIndex={0}>
+                <Show when={planParts().title}>{(t) => <h4 class="dock-plan-title">{t()}</h4>}</Show>
+                <Markdown text={planParts().body} />
             </div>
-            <div class="itab-actions ask-row plan-row">
+            <Show when={feedback() !== undefined}>
+                <textarea
+                    class="input dock-input"
+                    rows={1}
+                    placeholder="What should change? Enter sends, Esc cancels"
+                    aria-label="What should change in the plan"
+                    value={feedback()}
+                    onInput={(e) => setFeedback(e.currentTarget.value)}
+                    onKeyDown={(e) => {
+                        if (e.key === "Enter" && !e.shiftKey) {
+                            e.preventDefault();
+                            void reject();
+                        } else if (e.key === "Escape") {
+                            // Like the permission card's: closes the field, without stopping the turn.
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setFeedback(undefined);
+                        }
+                    }}
+                    ref={(el) => requestAnimationFrame(() => el.focus())}
+                />
+            </Show>
+            <div class="dock-actions">
                 <button class="btn btn-primary" onClick={() => void approve("acceptEdits")}>
-                    Approve, auto-accept edits <kbd>1</kbd>
+                    <span class="dock-btn-label">Approve, auto-accept edits</span>
+                    <Key k="1" />
                 </button>
                 <button class="btn" onClick={() => void approve("default")}>
-                    Approve, ask for edits <kbd>2</kbd>
+                    <span class="dock-btn-label">Approve, ask for edits</span>
+                    <Key k="2" />
                 </button>
                 <button class="btn" onClick={() => void approve("auto")}>
-                    Auto mode <kbd>3</kbd>
+                    <span class="dock-btn-label">Auto mode</span>
+                    <Key k="3" />
                 </button>
                 <button class="btn" onClick={() => (feedback() === undefined ? setFeedback("") : void reject())}>
-                    {feedback() === undefined ? "Keep planning" : "Send feedback"} <kbd>4</kbd>
+                    <span class="dock-btn-label">{feedback() === undefined ? "Keep planning" : "Send feedback"}</span>
+                    <Key k="4" />
                 </button>
-            </div>
-            <div class="itab-actions ask-row plan-row quiet-row">
+                <span class="grow" />
                 <button
                     class="btn"
                     disabled={!info()?.git}
                     title={info()?.notGit ?? "Implement in a new worktree; this session stops, still in plan mode"}
                     onClick={worktree}
                 >
-                    New worktree… <kbd>5</kbd>
+                    <span class="dock-btn-label">New worktree…</span>
+                    <Key k="5" />
                 </button>
                 <button class="btn" title="Save as Markdown" onClick={save}>
-                    Save… <kbd>6</kbd>
+                    <span class="dock-btn-label">Save…</span>
+                    <Key k="6" />
                 </button>
             </div>
         </>

@@ -164,75 +164,9 @@
 
 /* ---- Find in the conversation (⌘F) ---------------------------------- */
 
-/* A small floating bar under the title bar, on the right (the remix's .findbar). */
-.find-bar.glass {
-    position: absolute;
-    top: 58px;
-    right: 24px;
-    z-index: 26;
-    display: flex;
-    align-items: center;
-    gap: 2px;
-    height: 36px;
-    max-width: calc(100% - 48 * var(--sp));
-    padding: 0 calc(5 * var(--sp)) 0 calc(12 * var(--sp));
-    border-radius: var(--r-well);
-    background: var(--card);
-    box-shadow: var(--pop-shadow);
-    animation: pop-in 160ms var(--ease);
-    transform-origin: top right;
-}
-
-.find-bar.glass input {
-    flex: 1;
-    width: calc(200 * var(--sp));
-    min-width: 0;
-    padding: 0;
-    border: 0;
-    outline: 0;
-    background: none;
-    color: var(--fg);
-}
-
-.find-bar.glass input::placeholder {
-    color: var(--fg-3);
-    opacity: 1;
-}
-
-.find-bar.glass input:focus-visible {
-    outline: none;
-}
-
-.find-bar.glass .find-count {
-    min-width: calc(64 * var(--sp));
-    margin-right: calc(4 * var(--sp));
-    color: var(--fg-3);
-    font-size: 0.857rem;
-    text-align: right;
-    white-space: nowrap;
-}
-
-.find-btn {
-    display: inline-grid;
-    place-items: center;
-    flex: none;
-    width: calc(24 * var(--sp));
-    height: calc(24 * var(--sp));
-    border-radius: var(--radius-sm);
-    color: var(--fg-2);
-}
-
-.find-btn:hover:not(:disabled) {
-    background: var(--hover);
-    color: var(--fg);
-}
-
-.find-btn:disabled {
-    opacity: 0.4;
-}
-
+/* The bar is the design's .findbar (remix-conversation.css). With forced colours, its field shows it has the keyboard. */
 @media (forced-colors: active) {
-    .find-bar.glass input:focus-visible {
+    .findbar input:focus-visible {
         outline: 2px solid Highlight;
     }
 }
@@ -876,13 +810,9 @@
 
 /* ---- Rewind, folder picker, trust ----------------------------------- */
 
-/* Rewind (the remix's .rw): the prompts, edge to edge under the title, the chosen one tinted; what going back
-   does under them. */
-.dialog.rw .dialog-body {
-    padding-top: 0;
-}
-
-.rw-list {
+/* Rewind is the design's .rw (remix-conversation.css). The MCP servers dialog lists its servers the way it once
+   did: its list keeps these. */
+:where(.dialog:not(.rw)) .rw-list {
     display: flex;
     flex-direction: column;
     flex: none;
@@ -893,7 +823,7 @@
     border-bottom: 1px solid var(--line);
 }
 
-.rw-item {
+:where(.dialog:not(.rw)) .rw-item {
     display: flex;
     align-items: center;
     gap: calc(11 * var(--sp));
@@ -905,130 +835,31 @@
     transition: background 0.1s;
 }
 
-.rw-item + .rw-item {
+:where(.dialog:not(.rw)) .rw-item + .rw-item {
     border-top: 1px solid var(--line);
 }
 
-.rw-item:hover {
+:where(.dialog:not(.rw)) .rw-item:hover {
     background: var(--hover);
 }
 
-.rw-item.on {
+:where(.dialog:not(.rw)) .rw-item.on {
     background: color-mix(in srgb, var(--accent-soft) 55%, transparent);
 }
 
 /* Inside the row: the list scrolls, and would clip a ring drawn outside it. */
-.rw-item:focus-visible {
+:where(.dialog:not(.rw)) .rw-item:focus-visible {
     outline-offset: -2px;
 }
 
-.radio-dot {
-    position: relative;
-    flex: none;
-    width: calc(16 * var(--sp));
-    height: calc(16 * var(--sp));
-    border-radius: 50%;
-    box-shadow: inset 0 0 0 1.5px var(--line-strong);
-}
-
-.rw-item.on > .radio-dot {
-    background: var(--accent);
-    box-shadow: none;
-}
-
-.rw-item.on > .radio-dot::after {
-    content: "";
-    position: absolute;
-    inset: calc(5 * var(--sp));
-    border-radius: 50%;
-    background: var(--accent-ink);
-}
-
-.rw-text {
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.rw-changed {
-    flex: none;
-    color: var(--fg-3);
-    font-size: 0.857rem;
-    font-variant-numeric: tabular-nums;
-}
-
-.rw-plan {
+:where(.dialog:not(.rw)) .rw-plan {
     display: flex;
     flex-direction: column;
     gap: calc(8 * var(--sp));
 }
 
-.rw-plan > * {
+:where(.dialog:not(.rw)) .rw-plan > * {
     flex: none;
-}
-
-.rw-head {
-    font-weight: 600;
-}
-
-.rw-files {
-    border-radius: var(--r-well);
-    box-shadow: inset 0 0 0 1px var(--line);
-}
-
-.rw-file {
-    display: flex;
-    align-items: center;
-    gap: calc(10 * var(--sp));
-    min-width: 0;
-    height: calc(30 * var(--sp));
-    padding: 0 calc(10 * var(--sp)) 0 calc(12 * var(--sp));
-}
-
-.rw-file + .rw-file {
-    border-top: 1px solid var(--line);
-}
-
-.rw-file .mono {
-    flex: 1;
-    font-size: 0.857rem;
-}
-
-.rw-action {
-    flex: none;
-    width: calc(58 * var(--sp));
-    color: var(--fg-3);
-    font-size: 0.857rem;
-}
-
-.rw-action.del {
-    color: var(--danger);
-}
-
-.rw-none,
-.rw-foot {
-    color: var(--fg-3);
-    font-size: 0.893rem;
-}
-
-/* Why some files can't be put back: amber notes (the remix's .note). */
-.rw-warn {
-    display: flex;
-    align-items: flex-start;
-    gap: calc(8 * var(--sp));
-    min-width: 0;
-    padding: calc(8 * var(--sp)) calc(10 * var(--sp));
-    border-radius: var(--r-well);
-    background: var(--warn-bg);
-    color: var(--warn);
-    font-size: 0.893rem;
-}
-
-.rw-warn > svg {
-    flex: none;
-    margin-top: calc(2 * var(--sp));
 }
 
 /* A question that needs an answer before going on: a red note. */
@@ -1053,9 +884,6 @@
     flex: none;
 }
 
-.rw-undo {
-    font-size: 0.893rem;
-}
 
 /* A form in a dialog (worktrees, servers, plans, commits): a label over its field, a hint or an error under it. */
 .wt-form {
@@ -1327,12 +1155,12 @@
 
 /* ---- Image viewer -------------------------------------------------- */
 
-/* The picture alone on a darkened window: no card around it. Its
-   size is set inline (lib/image-view.ts); the max sizes are for before it's known. */
+/* The design's .viewer (remix-conversation.css) is the darkened window and the picture on it; the dialog around it
+   (ui/Dialog: focus kept in, Esc) draws nothing of its own. */
 .dialog-backdrop:has(> .image-viewer) {
     padding: 0;
-    background: rgba(12, 11, 10, 0.86);
-    animation: fade-in 140ms;
+    background: none;
+    animation: none;
 }
 
 .dialog.image-viewer {
@@ -1356,9 +1184,6 @@
 }
 
 .iv {
-    position: relative;
-    width: 100%;
-    height: 100%;
     outline: none;
 }
 
@@ -1375,20 +1200,14 @@
 }
 
 .iv-frame {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: calc(10 * var(--sp));
     margin: auto;
 }
 
+/* Its size is set inline (lib/image-view.ts): the image fills it. */
 .iv-img {
     position: relative;
     flex: none;
     overflow: hidden;
-    border-radius: calc(6 * var(--sp));
-    background: #fff;
-    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
     outline: none;
     user-select: none;
     -webkit-user-select: none;
@@ -1398,8 +1217,6 @@
     display: block;
     width: 100%;
     height: 100%;
-    max-width: calc(100vw - 144 * var(--sp));
-    max-height: calc(100vh - 112 * var(--sp));
     -webkit-user-drag: none;
 }
 
@@ -1418,76 +1235,17 @@
     outline-offset: 3px;
 }
 
-.iv-img.can-zoom {
-    cursor: zoom-in;
-}
-
-.iv.zoomed .iv-img img {
-    max-width: none;
-    max-height: none;
-}
-
-.iv.zoomed .iv-img {
-    border-radius: 0;
-    box-shadow: none;
-    cursor: grab;
+/* Only one larger than the window opens at 1:1: no zoom cursor on one that can't. */
+.iv-img:not(.can-zoom) {
+    cursor: default;
 }
 
 .iv.grabbing .iv-img {
     cursor: grabbing;
 }
 
-/* Name and pixel size, at the bottom of the window (the remix's .viewer-caption). */
-.iv-caption {
-    position: fixed;
-    bottom: calc(18 * var(--sp));
-    left: 50%;
-    transform: translateX(-50%);
-    display: flex;
-    align-items: center;
-    gap: calc(8 * var(--sp));
-    max-width: 92vw;
-    padding: calc(5 * var(--sp)) calc(10 * var(--sp));
-    border-radius: var(--radius-sm);
-    background: rgba(0, 0, 0, 0.5);
-    color: rgba(255, 255, 255, 0.86);
-    font-size: 0.893rem;
-    font-variant-numeric: tabular-nums;
-    white-space: nowrap;
-}
-
-.iv-count {
-    flex: none;
-    color: rgba(255, 255, 255, 0.6);
-}
-
-.iv-step {
-    position: absolute;
-    top: 50%;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: calc(36 * var(--sp));
-    height: calc(36 * var(--sp));
-    margin-top: calc(-18 * var(--sp));
-    border-radius: var(--r-well);
-    background: rgba(255, 255, 255, 0.1);
-    color: #fff;
-}
-
-.iv-step.prev {
-    left: calc(20 * var(--sp));
-}
-
-.iv-step.next {
-    right: calc(20 * var(--sp));
-}
-
-.iv-step:hover:not(:disabled) {
-    background: rgba(255, 255, 255, 0.2);
-}
-
-.iv-step:disabled {
+/* No wrapping round: the first and the last can't step further. */
+.viewer-nav:disabled {
     opacity: 0.35;
 }
 

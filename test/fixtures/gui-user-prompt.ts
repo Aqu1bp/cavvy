@@ -42,13 +42,13 @@ const at = new Date(2026, 9, 22, 9, 41).getTime();
 
 test("your words: the bubble, then under it (outside it) the time, Copy and Rewind", () => {
     const { row, dispose } = mount({ prompt: { text: "status?", index: 4 }, startedAt: at }, (i) => rewinds.push(i));
-    expect(classOf(row)).toEqual(["user-row"]);
-    expect(kids(row).map((c) => classOf(c)[0])).toEqual(["user-bubble", "user-actions"]);
+    expect(classOf(row)).toEqual(["msg-user"]);
+    expect(kids(row).map((c) => classOf(c)[0])).toEqual(["bubble", "msg-actions"]);
     const bubble = kids(row)[0]!;
     expect(bubble.props["data-find"]).toBe("prompt");
     expect(classOf(bubble)).toContain("short");
     // Nothing but the words is in what find searches.
-    expect(find(bubble, "user-actions")).toBeUndefined();
+    expect(find(bubble, "msg-actions")).toBeUndefined();
     expect(text(bubble)).toBe("status?");
     const actions = kids(row)[1]!;
     expect(actions.props["data-find-skip"]).toBe(true);
@@ -76,20 +76,21 @@ test("no time when the turn has none, and no Rewind for a steered prompt (no ind
     noHandler.dispose();
 });
 
-test("what came with it sits above the bubble: the schedule, then the attachments", () => {
+test("what came with it sits above the bubble: the schedule, then the images, then the files", () => {
     const { row, dispose } = mount({ prompt: { text: "Look at this, it's a longer message that wraps over more than one line of the bubble", scheduled: "Scheduled (every 10m)", images: 1, files: [{ name: "notes.txt", size: 12, lines: 2 }], index: 1 }, startedAt: at });
-    expect(kids(row).map((c) => classOf(c)[0])).toEqual(["prompt-scheduled", "prompt-attachments", "user-bubble", "user-actions"]);
+    expect(kids(row).map((c) => classOf(c)[0])).toEqual(["msg-tag", "msg-images", "msg-files", "bubble", "msg-actions"]);
     expect(kids(row)[0]!.props["data-find-skip"]).toBe(true);
     expect(kids(row)[1]!.props["data-find-skip"]).toBe(true);
+    expect(kids(row)[2]!.props["data-find-skip"]).toBe(true);
     expect(text(kids(row)[1]!)).toContain("1 image");
-    expect(text(kids(row)[1]!)).toContain("notes.txt");
-    expect(classOf(kids(row)[2]!)).not.toContain("short");
+    expect(text(kids(row)[2]!)).toContain("notes.txt");
+    expect(classOf(kids(row)[3]!)).not.toContain("short");
     dispose();
 });
 
 test("a message that's only attachments (a side chat's answer brought back) has no empty bubble, nor Copy", () => {
     const { row, dispose } = mount({ prompt: { text: "", files: [{ name: "Side chat answer", size: 40, lines: 3, from: "side-chat" }], index: 2 }, startedAt: at }, () => {});
-    expect(kids(row).map((c) => classOf(c)[0])).toEqual(["prompt-attachments", "user-actions"]);
+    expect(kids(row).map((c) => classOf(c)[0])).toEqual(["msg-files", "msg-actions"]);
     expect(text(kids(row)[0]!)).toContain("3 lines");
     expect(all(row).some((n) => n.tag === "copy")).toBe(false);
     expect(all(row).some((n) => n.props["aria-label"] === "Rewind to before this prompt")).toBe(true);
@@ -160,14 +161,14 @@ test("each kind keeps its look: a shell line, a command, a long prompt clamped w
     shell.dispose();
 
     const command = mount({ prompt: { text: "/review", command: true, index: 1 } });
-    expect(classOf(kids(command.row)[0]!)).toEqual(expect.arrayContaining(["user-bubble", "command", "short"]));
+    expect(classOf(kids(command.row)[0]!)).toEqual(expect.arrayContaining(["bubble", "bubble-command", "short"]));
     command.dispose();
 
     const long = mount({ prompt: { text: Array.from({ length: 20 }, (_, i) => `line ${i}`).join("\n"), index: 1 } });
     const bubble = kids(long.row)[0]!;
     expect(classOf(bubble)).toContain("clamped");
     expect(classOf(bubble)).not.toContain("short");
-    const more = find(bubble, "more")!;
+    const more = find(bubble, "bubble-more")!;
     expect(text(more)).toBe("Show more");
     expect(more.props["aria-expanded"]).toBe(false);
     more.props.onClick();
@@ -178,8 +179,11 @@ test("each kind keeps its look: a shell line, a command, a long prompt clamped w
     const comment = ["Please address these.", "", '<review_comment file="src/a.ts" lines="12">', "Make it configurable.", "", "```diff", "@@ -0,0 +12,1 @@", "+x", "```", "</review_comment>"].join("\n");
     const reviewed = mount({ prompt: { text: comment, index: 1 } });
     const b = kids(reviewed.row)[0]!;
-    expect(find(b, "prompt-comments")).toBeDefined();
-    expect(text(find(b, "prompt-comment-text")!)).toBe("Make it configurable.");
+    // The comments under the bubble, each a card that shows its file in the review.
+    const comments = kids(reviewed.row)[1]!;
+    expect(classOf(comments)).toEqual(["msg-comments"]);
+    expect(text(find(comments, "msg-comment-text")!)).toBe("Make it configurable.");
+    expect(text(find(comments, "msg-comment-loc")!)).toBe("a.ts:12");
     // A comment makes it more than one short line.
     expect(classOf(b)).not.toContain("short");
     reviewed.dispose();
@@ -189,7 +193,7 @@ test("a wake row is unchanged: no bubble, no actions", () => {
     const { row, dispose } = mount({ prompt: { text: "CI passed", wake: true }, startedAt: at });
     expect(classOf(row)).toEqual(["wake-row"]);
     expect(row.props["data-find"]).toBe("prompt");
-    expect(find(row, "user-actions")).toBeUndefined();
+    expect(find(row, "msg-actions")).toBeUndefined();
     expect(text(row)).toBe("CI passed");
     dispose();
 });

@@ -22,7 +22,6 @@ import "../src/styles/usage.css";
 import "../src/styles/runs.css";
 import "../src/styles/transcript.css";
 import "../src/styles/composer.css";
-import "../src/styles/plan.css";
 import "../src/styles/overlays.css";
 import "../src/styles/markdown.css";
 const result = document.getElementById("result")!;

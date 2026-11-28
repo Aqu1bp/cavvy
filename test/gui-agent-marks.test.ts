@@ -100,7 +100,8 @@ test("the transcript's card, the side panel and the dock draw a sub-agent with t
     const read = (f: string) => Bun.file(new URL(`../gui/src/components/${f}`, import.meta.url)).text();
     const [activity, panel, dock] = await Promise.all([read("blocks/Activity.tsx"), read("BackgroundTasks.tsx"), read("InteractionDock.tsx")]);
     const card = activity.slice(activity.indexOf("export function SubAgentsRow"), activity.indexOf("function StatusIcon"));
-    expect(card).toContain("<ProviderStack providers={p.runs.map(providerOf)} />");
+    // The group's line is words only ("2 sub-agents · 1 done"): each row has its agent's mark.
+    expect(card).not.toContain("<ProviderStack");
     expect(card).toContain("<AgentMark provider={providerOf(a)} />");
     expect(card).not.toContain("<Bot");
     expect(panel).toContain('<AgentMark provider={id()} class="pm" />');

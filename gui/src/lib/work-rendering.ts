@@ -5,7 +5,7 @@
 import { finishEntrancesIn } from "./entrances";
 import { settlingObserver, type SettlingObserver } from "./settling-observer";
 
-const ROW = ".worklog > :not(.steps), .steps > *, .reply > .md > *";
+const ROW = ".wseg > :not(.steps), .steps > *, .reply > .md > *";
 const TRACKED = "data-work-row";
 const FAR = "data-work-far";
 /**

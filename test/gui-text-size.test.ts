@@ -32,9 +32,9 @@ const KEY: [file: string, selector: string, property: string, at14: string][] = 
     ["sidebar.css", ".new-session", "height", "34px"],
     ["composer.css", ".send-btn", "width", "28px"],
     ["composer-trays.css", ".queue-row", "height", "30px"],
-    ["transcript.css", ".tool-line", "height", "30px"],
-    ["transcript.css", ".acts-h", "padding", "4px 7px"],
-    ["transcript.css", ".code-body", "padding", "12px 14px"],
+    ["remix-conversation.css", ".tool-row", "height", "30px"],
+    ["remix-conversation.css", ".tools-head", "padding", "4px 7px"],
+    ["remix-conversation.css", ".codeblock-body", "padding", "12px 14px"],
     ["overlays.css", ".pal-row", "min-height", "32px"],
     ["kit.css", ".toast", "padding", "8px 8px 8px 14px"],
     ["terminal.css", ".terminal-tab", "height", "26px"],
@@ -91,8 +91,8 @@ const FRAME: [file: string, selector: string, property: string, value: string][]
     ["sidebar.css", ".side-top .hb", "width", "28px"],
     ["sidebar.css", ".side-top .hb", "height", "28px"],
     ["sidebar.css", ".resize-handle", "width", "6px"],
-    ["overlays.css", ".find-bar.glass", "top", "58px"],
-    ["overlays.css", ".find-bar.glass", "height", "36px"],
+    ["remix-conversation.css", ".findbar", "top", "calc(var(--header-h) + 10px)"],
+    ["remix-conversation.css", ".findbar", "height", "36px"],
     // The scrollbar's width is a token: the title bar stops short of it (shell.css), and the fade leaves it out (stage.css).
     ["tokens.css", ":root", "--scrollbar-w", "10px"],
     ["base.css", "::-webkit-scrollbar", "width", "var(--scrollbar-w)"],
@@ -117,7 +117,7 @@ const FRAME_RULES: Record<string, RegExp> = {
     "shell.css": /^(\[data-inspmode="(float|fill)"\] \.insp|(\.app\.electron )?\.insp-resizer|\[data-lead\] \.(insp-lead|inspector-head|rv-bar)|\.stage-pane > \.header)$/,
     "sidebar.css": /^(\.side-top( \.hb)?|\.resize-handle(\.left)?)$/,
     "terminal.css": /^(\.terminal-resizer(::after)?|\.app\.tauri\.os-macos(\.rail-off|\[data-rail="overlay"\]) \.terminal-panel\.max \.terminal-bar)$/,
-    "overlays.css": /^\.find-bar\.glass$/,
+    "remix-conversation.css": /^\.findbar$/,
     // A theme's stage: 1600 × 1000 units, the coordinates its layers are placed in, scaled whole to cover the window
     // or a tile (--tb-scale, the tile's own scale). No text sits on it.
     "theme-backdrop.css": /^\.tb-stage$/,

@@ -10,6 +10,7 @@ import { refreshGitChanges } from "../state/changes";
 import { undoRestore } from "../state/actions";
 import { Dialog } from "./ui/Dialog";
 import { Spinner } from "./ui/bits";
+import "../styles/rewind.css";
 import { userMovedFocus } from "../lib/focus-trap";
 
 /** "Claude Code", "Claude Code and Codex". */
@@ -186,15 +187,33 @@ export function RewindDialog() {
             setBusy(false);
         }
     };
+    const actions = (
+        <>
+            <button class={`btn btn-ghost ${empty() ? "" : "dlg-foot-left"}`} onClick={close}>
+                {empty() ? "Close" : "Cancel"}
+            </button>
+            <Show when={!empty()}>
+                <button class="btn" disabled={!plan() || busy() || !plan()!.restore.length} onClick={() => void go(true, false)}>
+                    Code only
+                </button>
+                <button class="btn" disabled={!plan() || busy()} onClick={() => void go(false, true)}>
+                    Conversation only
+                </button>
+                <button class="btn btn-primary" disabled={!plan() || busy() || !plan()!.restore.length} onClick={() => void go(true, true)}>
+                    Restore both
+                </button>
+            </Show>
+        </>
+    );
     return (
-        <Dialog open={rewindOpen()} onClose={close} title={empty() ? "Rewind" : "Rewind to before which prompt?"} width={560} class="rw">
+        <Dialog open={rewindOpen()} onClose={close} title={empty() ? "Rewind" : "Rewind to before which prompt?"} width={560} class="rw" footer={actions}>
             <Show when={!busySession()} fallback={<div class="panel-empty">Wait for the response to finish, or stop it.</div>}>
                 <Show when={list()} fallback={<Spinner />}>
                     <Show when={list()!.length} fallback={<div class="panel-empty">Nothing to rewind to yet.</div>}>
-                        <div class="rw-list" ref={listEl} onKeyDown={onListKey}>
+                        <div class="rw-list" role="radiogroup" aria-label="Prompts" ref={listEl} onKeyDown={onListKey}>
                             <For each={list()}>
                                 {(t, i) => (
-                                    <button class={`rw-item ${chosen() === t.index ? "on" : ""}`} aria-pressed={chosen() === t.index} onClick={() => setChosen(t.index)}>
+                                    <button class={`rw-item ${chosen() === t.index ? "on" : ""}`} role="radio" aria-checked={chosen() === t.index} onClick={() => setChosen(t.index)}>
                                         <span class="radio-dot" />
                                         <span class="rw-text">{promptPreview(t.text) || "(empty prompt)"}</span>
                                         <Show when={changedLabel(t)}>{(label) => <span class="rw-changed">{label()}</span>}</Show>
@@ -209,24 +228,24 @@ export function RewindDialog() {
                         <Show when={plan()}>
                             <div class="rw-plan">
                                 <Show when={plan()!.forked}>
-                                    <div class="rw-warn">
+                                    <div class="note" data-tone="amber">
                                         <AlertTriangle size={13} />
-                                        <span>Files changed before the fork can only be restored in the original session.</span>
+                                        <div class="note-body">Files changed before the fork can only be restored in the original session.</div>
                                     </div>
                                 </Show>
                                 <Show when={plan()!.refused}>
-                                    <div class="rw-warn">
+                                    <div class="note" data-tone="amber">
                                         <AlertTriangle size={13} />
-                                        <span>{onlyOwnEdits(plan()!.refused!, plan()!.backends, plan()!.restore.length > 0)}</span>
+                                        <div class="note-body">{onlyOwnEdits(plan()!.refused!, plan()!.backends, plan()!.restore.length > 0)}</div>
                                     </div>
                                 </Show>
                                 {/* With a refusal, its line says this too. */}
                                 <Show when={plan()!.backends?.length && !plan()!.whole && !plan()!.refused}>
-                                    <div class="rw-warn">
+                                    <div class="note" data-tone="amber">
                                         <AlertTriangle size={13} />
-                                        <span>
+                                        <div class="note-body">
                                             What {names(plan()!.backends!)} changed in files isn't undone{plan()!.restore.length ? ", except in the files below" : ""}. Use git for that.
-                                        </span>
+                                        </div>
                                     </div>
                                 </Show>
                                 <Show when={plan()!.restore.length} fallback={<Show when={!plan()!.refused}><div class="rw-none">{plan()!.forked ? "No file changes to undo since the fork." : plan()!.tracked ? (plan()!.backends?.length && !plan()!.whole ? "Cavvy made no file changes to undo since then." : "No file changes to undo since then.") : "File changes from then can't be undone."}</div></Show>}>
@@ -238,13 +257,15 @@ export function RewindDialog() {
                                         <For each={plan()!.restore}>
                                             {(r) => (
                                                 <div class="rw-file">
-                                                    <span class={`rw-action ${r.action === "delete" ? "del" : ""}`}>{r.action === "delete" ? "Delete" : r.action === "create" ? "Recreate" : "Restore"}</span>
-                                                    <span class="mono truncate split-path" title={r.path}>
-                                                        <span class="dir">{r.path.slice(0, r.path.lastIndexOf("/") + 1)}</span>
-                                                        <span class="name">{r.path.slice(r.path.lastIndexOf("/") + 1)}</span>
+                                                    <span class={`rw-action ${r.action === "delete" ? "rw-action-del" : ""}`}>{r.action === "delete" ? "Delete" : r.action === "create" ? "Recreate" : "Restore"}</span>
+                                                    <span class="path" title={r.path}>
+                                                        <Show when={r.path.lastIndexOf("/") >= 0}>
+                                                            <span class="path-dir">{r.path.slice(0, r.path.lastIndexOf("/") + 1)}</span>
+                                                        </Show>
+                                                        <span class="path-base">{r.path.slice(r.path.lastIndexOf("/") + 1)}</span>
                                                     </span>
                                                     <Show when={r.outside}>
-                                                        <span class="pill warn">changed outside</span>
+                                                        <span class="tag" data-tone="amber">changed outside</span>
                                                     </Show>
                                                 </div>
                                             )}
@@ -256,10 +277,11 @@ export function RewindDialog() {
                                 </Show>
                                 <For each={plan()!.skipped}>
                                     {(s) => (
-                                        <div class="rw-warn">
+                                        <div class="note" data-tone="amber">
                                             <AlertTriangle size={13} />
-                                            <span class="mono truncate">{s.path}</span>
-                                            <span>{s.reason}</span>
+                                            <div class="note-body">
+                                                <span class="mono">{s.path}</span> {s.reason}
+                                            </div>
                                         </div>
                                     )}
                                 </For>
@@ -268,10 +290,10 @@ export function RewindDialog() {
                                     <div class="rw-foot">Changes made by shell commands aren't undone.</div>
                                 </Show>
                                 <Show when={confirming()}>
-                                    <div class="rw-confirm">
+                                    <div class="note" data-tone="red">
                                         <AlertTriangle size={13} />
-                                        <span>Restoring files marked “changed outside” loses the edits made to them since.</span>
-                                        <button class="btn btn-danger-solid btn-sm" onClick={() => void go(confirming()!.code, confirming()!.conversation)}>
+                                        <div class="note-body">Restoring files marked “changed outside” loses the edits made to them since.</div>
+                                        <button class="btn btn-sm btn-danger" onClick={() => void go(confirming()!.code, confirming()!.conversation)}>
                                             Restore anyway
                                         </button>
                                     </div>
@@ -299,26 +321,6 @@ export function RewindDialog() {
                     </button>
                 </div>
             </Show>
-            <div class="dialog-actions">
-                <Show when={empty()}>
-                    <span class="grow" />
-                </Show>
-                <button class="btn btn-ghost" onClick={close}>
-                    {empty() ? "Close" : "Cancel"}
-                </button>
-                <Show when={!empty()}>
-                    <span class="grow" />
-                    <button class="btn" disabled={!plan() || busy() || !plan()!.restore.length} onClick={() => void go(true, false)}>
-                        Code only
-                    </button>
-                    <button class="btn" disabled={!plan() || busy()} onClick={() => void go(false, true)}>
-                        Conversation only
-                    </button>
-                    <button class="btn btn-primary" disabled={!plan() || busy() || !plan()!.restore.length} onClick={() => void go(true, true)}>
-                        Restore both
-                    </button>
-                </Show>
-            </div>
         </Dialog>
     );
 }

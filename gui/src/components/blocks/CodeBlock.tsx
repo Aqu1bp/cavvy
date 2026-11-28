@@ -126,14 +126,14 @@ function CodeBlockContent(p: { code: string; lang?: string; streaming?: boolean;
     const skippedAt = createMemo(() => (p.streaming ? undefined : `auto calc(${linesOf(p.code)} * var(--code-line, 1lh))`));
     const label = () => (p.lang ? (LABELS[p.lang.toLowerCase()] ?? p.lang) : "");
     return (
-        <div class={`code${p.bare ? " bare" : ""}${p.streaming ? " writing" : ""}`} ref={box}>
+        <div class={`codeblock code${p.bare ? " bare" : ""}${p.streaming ? " writing" : ""}`} ref={box}>
             <Show when={!p.bare}>
-                <div class="code-head" data-find-skip>
-                    <span class="code-lang">{label() || "Code"}</span>
+                <div class="codeblock-head" data-find-skip>
+                    <span class="codeblock-lang">{label() || "Code"}</span>
                     <CopyButton text={() => p.code} label="Copy code" words="Copy" />
                 </div>
             </Show>
-            <pre class="code-body" style={{ ...(p.maxHeight ? { "max-height": `${p.maxHeight}px` } : {}), "contain-intrinsic-block-size": skippedAt() }}>
+            <pre class="codeblock-body code-body" style={{ ...(p.maxHeight ? { "max-height": `${p.maxHeight}px` } : {}), "contain-intrinsic-block-size": skippedAt() }}>
                 <code>
                     <Show when={head()}>{(h) => <span class="code-lit" classList={{ lines: h().lines }} ref={(el) => {
                         const show = growing(el);

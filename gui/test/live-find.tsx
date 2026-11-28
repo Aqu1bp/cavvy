@@ -17,6 +17,7 @@ import "../src/styles/tokens.css";
 import "../src/styles/base.css";
 import "../src/styles/kit.css";
 import "../src/styles/transcript.css";
+import "../src/styles/remix-conversation.css";
 
 const root = document.getElementById("root")!;
 const result = document.getElementById("result")!;

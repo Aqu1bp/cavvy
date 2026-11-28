@@ -44,11 +44,8 @@ body.resizing .br-host-tab {
     --br-float-r: calc(10 * var(--sp));
 }
 
+/* The card and its head are the design's (remix-conversation.css): as wide as it's been made, within its room. */
 .br-float {
-    position: absolute;
-    top: calc(var(--header-h) + 12 * var(--sp));
-    right: calc(22 * var(--sp));
-    z-index: 20;
     width: min(calc(400 * var(--sp)), calc(100% - 32 * var(--sp)));
     transform-origin: top right;
     animation: br-float-in calc(var(--dur-panel) * 1.25) var(--ease-out);

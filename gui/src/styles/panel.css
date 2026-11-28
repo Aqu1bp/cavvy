@@ -113,20 +113,7 @@
     font-variant-numeric: tabular-nums;
 }
 
-.rail-dot {
-    position: absolute;
-    top: calc(5 * var(--sp));
-    right: calc(5 * var(--sp));
-    width: calc(6 * var(--sp));
-    height: calc(6 * var(--sp));
-    border-radius: 50%;
-    background: var(--accent);
-    box-shadow: 0 0 0 1.5px var(--bg-side);
-}
-
-.rail-dot[data-tone="amber"] {
-    background: var(--amber-strong);
-}
+/* .rail-dot and its amber tone are header.css's (the title bar's sidebar button has one too). */
 
 /* The side chat stopped with an error. */
 .rail-dot[data-tone="red"] {
