@@ -2210,6 +2210,9 @@ span.tool-target {
 .dock-stat {
     margin-left: calc(8 * var(--sp));
     font-weight: 500;
+    /* Cavvy's base.css .stat sets line-height 1 and nowrap (its font shorthand), which the design's .stat leaves alone. */
+    line-height: inherit;
+    white-space: inherit;
 }
 
 .dock-sub {
@@ -2397,13 +2400,16 @@ span.tool-target {
 
 /* secret */
 
-.dock-secret {
+/* .dock-field: a question's answer and its attach button, laid out as the secret's field and its eye. */
+.dock-secret,
+.dock-field {
     display: flex;
     align-items: center;
     gap: calc(4 * var(--sp));
 }
 
-.dock-secret .input {
+.dock-secret .input,
+.dock-field .input {
     flex: 1;
 }
 
@@ -2513,6 +2519,133 @@ span.tool-target {
 
 .dock-facts dt {
     color: var(--text-3);
+}
+
+/* ---- the cards' pieces from the design's base.css and kit.css ---- */
+
+/* The design's reset, for what the cards are built of (Cavvy's base.css keeps these elements' margins). */
+:where(.dock-sub, .dock-line, .dock-warn, .dock-plan-title, .si-services, .dock-facts, .dock-facts dd) {
+    margin: 0;
+    padding: 0;
+}
+
+:where(.si-services) {
+    list-style: none;
+}
+
+:where(.dock) .kbd-group {
+    display: inline-flex;
+    gap: calc(2 * var(--sp));
+    flex: none;
+}
+
+/* The key again, at a weight over composer.css's `.ask kbd`: the card keeps .ask (perf-rules reads it). */
+:where(.dock) kbd.kbd {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: calc(18 * var(--sp));
+    height: calc(18 * var(--sp));
+    padding: 0 calc(4 * var(--sp));
+    border-radius: calc(4 * var(--sp));
+    background: var(--fill-1);
+    box-shadow: inset 0 0 0 1px var(--line);
+    color: var(--text-3);
+    font-family: var(--font-ui);
+    font-size: calc(11 * var(--sp));
+    font-weight: 500;
+    line-height: 1;
+}
+
+:where(.dock) .icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+:where(.dock) .input.mono {
+    font-size: calc(12 * var(--sp));
+}
+
+:where(.dock) .btn .kbd {
+    margin-left: calc(2 * var(--sp));
+    background: color-mix(in srgb, currentColor 14%, transparent);
+    box-shadow: none;
+    color: inherit;
+    opacity: 0.8;
+}
+
+/* ---- Cavvy's own, in the cards' patterns ---- */
+
+/* A secret or token: masked without being a password field, which browsers offer to save. */
+:where(.dock) .masked {
+    -webkit-text-security: disc;
+}
+
+/* Feedback: a textarea (Shift+Enter is a new line), one line high like the design's field until it's longer. */
+textarea.dock-input {
+    height: auto;
+    min-height: 0;
+    max-height: calc(120 * var(--sp));
+    padding: calc(7 * var(--sp)) calc(10 * var(--sp));
+    line-height: calc(18 * var(--sp));
+    resize: none;
+    field-sizing: content;
+}
+
+/* A question's options scroll in a short window (the card is capped: composer.css .ask), the rest stays in sight. */
+.dock > .dock-options {
+    flex: 0 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+}
+
+/* Files dropped on a question go with its answer: the card is the drop target. */
+.dock-q {
+    display: contents;
+}
+
+.dock:has(.dock-q.dragging) {
+    box-shadow: inset 0 0 0 1.5px var(--accent), var(--shadow-composer);
+}
+
+.dock-attached {
+    flex: none;
+}
+
+/* A CLI's prompt, typed into: its own text, the caret after it. */
+pre.si-term {
+    margin: 0;
+    max-height: calc(160 * var(--sp));
+    overflow: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    outline: none;
+    cursor: text;
+}
+
+pre.si-term:focus-visible {
+    box-shadow: inset 0 0 0 1px var(--focus);
+}
+
+.si-caret {
+    display: inline-block;
+    width: 0.6em;
+    height: 1.1em;
+    vertical-align: text-bottom;
+    background: currentColor;
+    opacity: 0.35;
+}
+
+.si-term:focus .si-caret {
+    opacity: 1;
+}
+
+.si-link {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(4 * var(--sp));
+    align-self: flex-start;
 }
 
 /* ---------- rewind ---------- */

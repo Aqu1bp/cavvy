@@ -12,10 +12,9 @@ import { home } from "../lib/machines";
 import { awayMachine, rpc } from "../state/app";
 import { signInPressed } from "../lib/card-keys";
 import { terminalActions } from "../state/ui";
-import { Head, mayFocus, useKeys } from "./InteractionDock";
+import { Head, Key, mayFocus, useKeys } from "./InteractionDock";
 import { usePane } from "../state/split";
 import { CopyButton, Spinner } from "./ui/bits";
-import "../styles/sign-in.css";
 
 /** Masks a text field without making it a password field, which browsers offer to save. */
 const MASKS = typeof CSS !== "undefined" && CSS.supports("-webkit-text-security", "disc");
@@ -103,12 +102,12 @@ export default function SignInCard(p: { sessionId: string; it: SignInInteraction
             <Show when={named()}>
                 {/* One Cavvy has no name for is a command's: shown as one. */}
                 <Show when={it().name === it().target && it().step === "command"} fallback={it().name}>
-                    <span class="mono ask-code">{it().name}</span>
+                    <code>{it().name}</code>
                 </Show>
             </Show>
             <Show when={where()}>
                 {" on "}
-                <span class="mono ask-code">{where()}</span>
+                <code>{where()}</code>
             </Show>
             ?
         </>
@@ -117,13 +116,14 @@ export default function SignInCard(p: { sessionId: string; it: SignInInteraction
     const Out = () => (
         <>
             <button class="btn" onClick={() => void send({ action: "later" })}>
-                {it().back && it().step !== "list" && it().step !== "token" ? "Back" : "Later"} <kbd>Esc</kbd>
+                <span class="dock-btn-label">{it().back && it().step !== "list" && it().step !== "token" ? "Back" : "Later"}</span>
+                <Key k="Esc" />
             </button>
         </>
     );
     const Problem = () => (
         <Show when={it().error}>
-            <div class="si-error selectable" role="alert">{it().error}</div>
+            <p class="dock-warn selectable" role="alert">{it().error}</p>
         </Show>
     );
     return (
@@ -131,63 +131,60 @@ export default function SignInCard(p: { sessionId: string; it: SignInInteraction
             <Head title={title()} sub={it().step === "ask" ? it().warning : undefined} />
             <Switch>
                 <Match when={it().step === "list"}>
-                    <div class="itab-body">
-                        <div class="si-rows">
-                            <For each={it().rows ?? []}>
-                                {(r) => (
-                                    <div class="si-row">
-                                        <span class="si-name">{r.name}</span>
-                                        <Show
-                                            when={r.state === "in"}
-                                            fallback={
-                                                <button class="btn sm" disabled={sending()} aria-label={`Sign in to ${r.name}`} onClick={() => void send({ action: "pick", target: r.target })}>
-                                                    Sign in
-                                                </button>
-                                            }
-                                        >
-                                            <span class="si-done">
-                                                <Check size={13} /> {r.who ?? "Signed in"}
-                                            </span>
-                                        </Show>
-                                    </div>
-                                )}
-                            </For>
-                        </div>
-                    </div>
-                    <div class="itab-actions ask-row">
+                    <ul class="si-services">
+                        <For each={it().rows ?? []}>
+                            {(r) => (
+                                <li class="si-service">
+                                    <span class="si-service-name">{r.name}</span>
+                                    <Show
+                                        when={r.state === "in"}
+                                        fallback={
+                                            <button class="btn btn-sm" disabled={sending()} aria-label={`Sign in to ${r.name}`} onClick={() => void send({ action: "pick", target: r.target })}>
+                                                Sign in
+                                            </button>
+                                        }
+                                    >
+                                        <span class="si-who">
+                                            <Check size={13} /> {r.who ?? "Signed in"}
+                                        </span>
+                                    </Show>
+                                </li>
+                            )}
+                        </For>
+                    </ul>
+                    <div class="dock-actions">
                         <Out />
                     </div>
                 </Match>
                 <Match when={failed()}>
-                    <div class="itab-body">
-                        <Show when={it().step === "typed" && it().term}>
-                            <pre class="si-term mono">{it().term}</pre>
-                        </Show>
-                        <Show when={it().step !== "typed"}>
-                            <Problem />
-                        </Show>
-                    </div>
-                    <div class="itab-actions ask-row">
-                        <button class="btn primary" disabled={sending()} onClick={() => void send({ action: "retry" })}>
-                            Try again <kbd>1</kbd>
+                    <Show when={it().step === "typed" && it().term}>
+                        <pre class="si-term">{it().term}</pre>
+                    </Show>
+                    <Show when={it().step !== "typed"}>
+                        <Problem />
+                    </Show>
+                    <div class="dock-actions">
+                        <button class="btn btn-primary" disabled={sending()} onClick={() => void send({ action: "retry" })}>
+                            <span class="dock-btn-label">Try again</span>
+                            <Key k="1" />
                         </button>
                         <Out />
                     </div>
                 </Match>
                 <Match when={it().step === "ask"}>
                     <Show when={it().busy}>
-                        <div class="itab-body">
-                            <Waiting text="Starting" />
-                        </div>
+                        <Waiting text="Starting" />
                     </Show>
-                    <div class="itab-actions ask-row">
+                    <div class="dock-actions">
                         <Show when={!it().busy}>
-                            <button class="btn primary" disabled={sending()} onClick={() => void send({ action: "start" })}>
-                                Sign in <kbd>1</kbd>
+                            <button class="btn btn-primary" disabled={sending()} onClick={() => void send({ action: "start" })}>
+                                <span class="dock-btn-label">Sign in</span>
+                                <Key k="1" />
                             </button>
                             <Show when={it().canToken}>
                                 <button class="btn" disabled={sending()} onClick={() => void send({ action: "token" })}>
-                                    Use a token <kbd>2</kbd>
+                                    <span class="dock-btn-label">Use a token</span>
+                                    <Key k="2" />
                                 </button>
                             </Show>
                         </Show>
@@ -195,15 +192,14 @@ export default function SignInCard(p: { sessionId: string; it: SignInInteraction
                     </div>
                 </Match>
                 <Match when={it().step === "browser"}>
-                    <div class="itab-body">
-                        <Waiting text={it().busy ? "Starting" : "Finish in your browser"} />
-                    </div>
-                    <div class="itab-actions ask-row">
+                    <Waiting text={it().busy ? "Starting" : "Finish in your browser"} />
+                    <div class="dock-actions">
                         <Show when={it().url && !it().busy}>
-                            <button class={`btn ${it().open ? "primary" : ""}`} onClick={open}>
-                                <ExternalLink size={13} /> {it().open ? <>Open {host(it().site)}</> : "Open again"}
+                            <button class={`btn ${it().open ? "btn-primary" : ""}`} onClick={open}>
+                                <ExternalLink size={13} />
+                                <span class="dock-btn-label">{it().open ? <>Open {host(it().site)}</> : "Open again"}</span>
                                 <Show when={it().open}>
-                                    <kbd>1</kbd>
+                                    <Key k="1" />
                                 </Show>
                             </button>
                         </Show>
@@ -211,28 +207,31 @@ export default function SignInCard(p: { sessionId: string; it: SignInInteraction
                     </div>
                 </Match>
                 <Match when={it().step === "code"}>
-                    <div class="itab-body">
-                        <div class={`si-code ${it().expired ? "old" : ""}`}>
-                            <span class="mono selectable">{it().code}</span>
-                            <Show when={!it().expired}>
-                                <CopyButton text={() => it().code ?? ""} label="Copy the code" />
-                            </Show>
-                        </div>
-                        <Show when={it().expired} fallback={<Waiting text={`Enter the code at ${it().site ?? "the page"}`} />}>
-                            <div class="si-wait">This code expired</div>
-                        </Show>
-                    </div>
-                    <div class="itab-actions ask-row">
+                    <Show when={it().expired} fallback={
+                        <>
+                            <div class="si-code">
+                                <span class="si-code-value mono selectable">{it().code}</span>
+                                <CopyButton text={() => it().code ?? ""} label="Copy the code" class="icon-btn-sm" />
+                            </div>
+                            <Waiting text={`Enter the code at ${it().site ?? "the page"}`} />
+                        </>
+                    }>
+                        <p class="dock-line">This code expired</p>
+                    </Show>
+                    <div class="dock-actions">
                         <Show
                             when={it().expired}
                             fallback={
-                                <button class="btn primary" onClick={open}>
-                                    <ExternalLink size={13} /> Open {host(it().site)} <kbd>1</kbd>
+                                <button class="btn btn-primary" onClick={open}>
+                                    <ExternalLink size={13} />
+                                    <span class="dock-btn-label">Open {host(it().site)}</span>
+                                    <Key k="1" />
                                 </button>
                             }
                         >
-                            <button class="btn primary" disabled={sending()} onClick={() => void send({ action: "retry" })}>
-                                New code <kbd>1</kbd>
+                            <button class="btn btn-primary" disabled={sending()} onClick={() => void send({ action: "retry" })}>
+                                <span class="dock-btn-label">New code</span>
+                                <Key k="1" />
                             </button>
                         </Show>
                         <Out />
@@ -241,7 +240,8 @@ export default function SignInCard(p: { sessionId: string; it: SignInInteraction
                 <Match when={it().step === "paste"}>
                     <Field it={it()} label="Code" placeholder="Paste the code from the page" send={send} masked={false} action="Continue">
                         <button class="btn" onClick={open}>
-                            <ExternalLink size={13} /> Open page
+                            <ExternalLink size={13} />
+                            <span class="dock-btn-label">Open page</span>
                         </button>
                     </Field>
                 </Match>
@@ -249,38 +249,38 @@ export default function SignInCard(p: { sessionId: string; it: SignInInteraction
                     <Field it={it()} label={`${it().name} token`} placeholder="Token" send={send} masked action="Sign in" link={it().tokenUrl}>
                         <Show when={it().back}>
                             <button class="btn" onClick={() => void send({ action: "back" })}>
-                                Back
+                                <span class="dock-btn-label">Back</span>
                             </button>
                         </Show>
                     </Field>
                 </Match>
                 <Match when={it().step === "typed"}>
-                    <div class="itab-body">
-                        <Prompt term={it().term ?? ""} keys={(value) => void respond(p.sessionId, p.it.id, { kind: "signin", action: "keys", value })} later={() => void send({ action: "later" })} />
-                    </div>
-                    <div class="itab-actions ask-row">
+                    <Prompt term={it().term ?? ""} keys={(value) => void respond(p.sessionId, p.it.id, { kind: "signin", action: "keys", value })} later={() => void send({ action: "later" })} />
+                    <div class="dock-actions">
                         <Out />
                     </div>
                 </Match>
                 <Match when={it().step === "command"}>
-                    <div class="itab-body">
-                        <pre class="itab-code mono selectable">{it().command}</pre>
-                    </div>
-                    <div class="itab-actions ask-row">
+                    <pre class="dock-code selectable">{it().command}</pre>
+                    <div class="dock-actions">
                         <Show
                             when={it().ran}
                             fallback={
-                                <button class="btn primary" onClick={openTerminal}>
-                                    <SquareTerminal size={13} /> Open in terminal <kbd>1</kbd>
+                                <button class="btn btn-primary" onClick={openTerminal}>
+                                    <SquareTerminal size={13} />
+                                    <span class="dock-btn-label">Open in terminal</span>
+                                    <Key k="1" />
                                 </button>
                             }
                         >
-                            <button class="btn primary" disabled={sending()} onClick={() => void send({ action: "done" })}>
-                                Done <kbd>1</kbd>
+                            <button class="btn btn-primary" disabled={sending()} onClick={() => void send({ action: "done" })}>
+                                <span class="dock-btn-label">Done</span>
+                                <Key k="1" />
                             </button>
                             <Show when={it().canSave}>
                                 <button class="btn" disabled={sending()} title="Runs automatically next time" onClick={() => void send({ action: "done", save: true })}>
-                                    Done, and remember <kbd>2</kbd>
+                                    <span class="dock-btn-label">Done, and remember</span>
+                                    <Key k="2" />
                                 </button>
                             </Show>
                         </Show>
@@ -297,9 +297,9 @@ const host = (site: string | undefined) => site?.split("/")[0] ?? "the page";
 
 function Waiting(p: { text: string }) {
     return (
-        <div class="si-wait" role="status">
+        <p class="dock-line si-wait" role="status">
             <Spinner size={13} /> {p.text}
-        </div>
+        </p>
     );
 }
 
@@ -324,54 +324,51 @@ function Field(p: { it: SignInInteraction; label: string; placeholder: string; m
     });
     return (
         <>
-            <div class="itab-body">
-                <div class="secret-field">
-                    <input
-                        ref={input}
-                        class={`itab-input mono ${p.masked && MASKS ? "masked" : ""}`}
-                        type={p.masked && !MASKS ? "password" : "text"}
-                        name={`signin-${p.it.id}`}
-                        autocomplete={p.masked && !MASKS ? "new-password" : "off"}
-                        autocapitalize="off"
-                        autocorrect="off"
-                        spellcheck={false}
-                        data-1p-ignore=""
-                        data-lpignore="true"
-                        data-bwignore=""
-                        data-form-type="other"
-                        placeholder={p.placeholder}
-                        aria-label={p.label}
-                        disabled={p.it.busy}
-                        onInput={() => setReady(Boolean(input.value.trim()))}
-                        onKeyDown={(e) => {
-                            if (e.key === "Enter") {
-                                e.preventDefault();
-                                void submit();
-                            } else if (e.key === "Escape") {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                void p.send({ action: "later" });
-                            }
-                        }}
-                    />
-                </div>
-                <Show when={p.it.error}>
-                    <div class="si-error selectable" role="alert">{p.it.error}</div>
-                </Show>
-                <Show when={p.link}>
-                    <button class="link-btn si-link" onClick={() => void openExternal(p.link!)}>
-                        New token <ExternalLink size={11} />
-                    </button>
-                </Show>
-            </div>
-            <div class="itab-actions ask-row">
+            <input
+                ref={input}
+                class={`input dock-input mono ${p.masked && MASKS ? "masked" : ""}`}
+                type={p.masked && !MASKS ? "password" : "text"}
+                name={`signin-${p.it.id}`}
+                autocomplete={p.masked && !MASKS ? "new-password" : "off"}
+                autocapitalize="off"
+                autocorrect="off"
+                spellcheck={false}
+                data-1p-ignore=""
+                data-lpignore="true"
+                data-bwignore=""
+                data-form-type="other"
+                placeholder={p.placeholder}
+                aria-label={p.label}
+                disabled={p.it.busy}
+                onInput={() => setReady(Boolean(input.value.trim()))}
+                onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                        e.preventDefault();
+                        void submit();
+                    } else if (e.key === "Escape") {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        void p.send({ action: "later" });
+                    }
+                }}
+            />
+            <Show when={p.it.error}>
+                <p class="dock-warn selectable" role="alert">{p.it.error}</p>
+            </Show>
+            <Show when={p.link}>
+                <button class="link-btn si-link" onClick={() => void openExternal(p.link!)}>
+                    New token <ExternalLink size={11} />
+                </button>
+            </Show>
+            <div class="dock-actions">
                 <Show when={!p.masked}>{p.children}</Show>
-                <button class="btn primary" aria-busy={p.it.busy} disabled={!ready() || p.it.busy} onClick={() => void submit()}>
-                    {p.action}
+                <button class="btn btn-primary" aria-busy={p.it.busy} disabled={!ready() || p.it.busy} onClick={() => void submit()}>
+                    <span class="dock-btn-label">{p.action}</span>
                 </button>
                 <Show when={p.masked}>{p.children}</Show>
-                                <button class="btn" onClick={() => void p.send({ action: "later" })}>
-                    Later <kbd>Esc</kbd>
+                <button class="btn" onClick={() => void p.send({ action: "later" })}>
+                    <span class="dock-btn-label">Later</span>
+                    <Key k="Esc" />
                 </button>
             </div>
         </>
@@ -386,7 +383,7 @@ function Prompt(p: { term: string; keys: (text: string) => void; later: () => vo
     return (
         <pre
             ref={el}
-            class="si-term mono"
+            class="si-term"
             tabIndex={0}
             role="textbox"
             aria-label="Sign-in prompt"
@@ -436,34 +433,35 @@ export function ConfirmCard(p: { sessionId: string; it: ConfirmInteraction }) {
     return (
         <>
             <Head title={<>{p.it.title}?</>} />
-            <div class="itab-body">
-                <Show when={p.it.facts?.length}>
-                    <dl class="si-facts">
-                        <For each={p.it.facts}>
-                            {([k, v]) => (
-                                <>
-                                    <dt>{k}</dt>
-                                    <dd class={`selectable ${k === "Name" || k === "Key" || k === "Address" ? "mono" : ""}`}>{v}</dd>
-                                </>
-                            )}
-                        </For>
-                    </dl>
-                </Show>
-                <Show when={p.it.commands?.length}>
-                    <pre class="itab-code mono selectable">{p.it.commands!.join("\n")}</pre>
-                </Show>
-            </div>
-            <div class="itab-actions ask-row">
-                <button class="btn primary" disabled={busy()} onClick={() => void answer("yes")}>
-                    {p.it.yes} <kbd>1</kbd>
+            <Show when={p.it.facts?.length}>
+                <dl class="dock-facts">
+                    <For each={p.it.facts}>
+                        {([k, v]) => (
+                            <div>
+                                <dt>{k}</dt>
+                                <dd class={`selectable ${k === "Name" || k === "Key" || k === "Address" ? "mono" : ""}`}>{v}</dd>
+                            </div>
+                        )}
+                    </For>
+                </dl>
+            </Show>
+            <Show when={p.it.commands?.length}>
+                <pre class="dock-code selectable">{p.it.commands!.join("\n")}</pre>
+            </Show>
+            <div class="dock-actions">
+                <button class="btn btn-primary" disabled={busy()} onClick={() => void answer("yes")}>
+                    <span class="dock-btn-label">{p.it.yes}</span>
+                    <Key k="1" />
                 </button>
                 <Show when={p.it.other}>
                     <button class="btn" disabled={busy()} onClick={() => void answer("other")}>
-                        {p.it.other} <kbd>2</kbd>
+                        <span class="dock-btn-label">{p.it.other}</span>
+                        <Key k="2" />
                     </button>
                 </Show>
-                                <button class="btn" disabled={busy()} onClick={() => void answer("no")}>
-                    {p.it.no} <kbd>Esc</kbd>
+                <button class="btn" disabled={busy()} onClick={() => void answer("no")}>
+                    <span class="dock-btn-label">{p.it.no}</span>
+                    <Key k="Esc" />
                 </button>
             </div>
         </>
