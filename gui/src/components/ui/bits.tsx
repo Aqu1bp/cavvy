@@ -20,8 +20,9 @@ export function Shine(p: { text: string }) {
 }
 
 /**
- * Something under way: the live line's three dots, at the size of the icon it stands in for (`size`, as an icon's), in
- * the colour of what's around it. Boxes, not an svg: Chromium animates an svg on the main thread, a box on the compositor.
+ * Something under way: three dots, as the live line has, lit in turn (base.css), at the size of the icon it stands in
+ * for (`size`, as an icon's), in the colour of what's around it. Boxes, not an svg: Chromium animates an svg on the main
+ * thread, a box on the compositor.
  */
 export function Spinner(p: { size?: number; class?: string }) {
     return (

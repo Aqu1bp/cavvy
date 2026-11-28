@@ -292,7 +292,7 @@ h3 {
     flex: none;
 }
 
-/* Something under way (bits.tsx Spinner): the live line's three dots (remix-conversation.css .working-dots), as big as
+/* Something under way (bits.tsx Spinner): three dots, as the live line has (remix-conversation.css .working-dots), as big as
    the icon they stand in for (--spin), in the colour of their words. Its own size in a flex column too. */
 .spinner {
     display: inline-flex;
@@ -310,30 +310,28 @@ h3 {
     height: calc(var(--spin) / 4);
     border-radius: 50%;
     background: currentColor;
-    /* The live line's wave and rest (remix-conversation.css live-dot), stepped on the stream clock's grid, paused with
-       the window's loops: its steps in 0.9 s of each 2.4, where the spinner it replaced turned every 50 ms. */
-    animation: dot-rise 2.4s steps(6) infinite;
+    /* One lit at a time, in turn: opacity alone, a change every 400ms on the stream clock's grid, as the sidebar's
+       working dot (sidebar.css .status-working), paused with the window's loops. The spinner it replaced turned every
+       50ms; a wave like the live line's stepped every 50ms through most of its cycle. */
+    animation: dot-chase 1.2s steps(1) infinite;
     animation-play-state: var(--loops);
 }
 
 .spinner i:nth-child(2) {
-    animation-delay: calc(150ms - 2400ms);
+    animation-delay: calc(400ms - 1200ms);
 }
 
 .spinner i:nth-child(3) {
-    animation-delay: calc(300ms - 2400ms);
+    animation-delay: calc(800ms - 1200ms);
 }
 
-@keyframes dot-rise {
-    0%,
-    25%,
+@keyframes dot-chase {
+    0% {
+        opacity: 1;
+    }
+    33.333%,
     100% {
         opacity: 0.3;
-        transform: translateY(0);
-    }
-    12.5% {
-        opacity: 1;
-        transform: translateY(calc(var(--spin) / -6));
     }
 }
 
