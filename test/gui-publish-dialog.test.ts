@@ -19,6 +19,7 @@ function dialog(info = defaults, read?: () => Promise<unknown>, prText?: () => P
         // The desktop app's window.open opens nothing (it returns null); a browser's gives the tab.
         window: { open: () => (browserTab.opens = (browserTab.opens ?? 0) + 1, browserTab.next ?? null) },
         Dialog: "Dialog", Spinner: "Spinner", Show: "Show", React: { Fragment: "Fragment" }, node,
+        CheckIcon: "CheckIcon", CircleAlert: "CircleAlert", GitPullRequest: "GitPullRequest", Sparkles: "Sparkles", TriangleAlert: "TriangleAlert", ProviderIcon: "ProviderIcon",
     });
     // The dialog and its footer, where the buttons are.
     const shown = render(props);
@@ -42,7 +43,7 @@ test("opening only previews; push requires protected acknowledgement and sends d
     expect(d.closed()).toBe(true);
 });
 
-test("the buttons are in the dialog's footer, kept in view; its tick boxes are the app's check rows", async () => {
+test("the buttons are in the dialog's footer, kept in view; its tick boxes are the kit's checks", async () => {
     const d = dialog({ ...defaults, protected: true });
     await d.effects[0]!();
     const [body, footer] = d.tree as [any, any];
@@ -51,7 +52,7 @@ test("the buttons are in the dialog's footer, kept in view; its tick boxes are t
     expect(elements(body.children, "button").map(text)).not.toContain("Push");
     const rows = elements(body.children, "label").filter((l) => elements(l.children, "input").some((i) => i.props.type === "checkbox"));
     expect(rows).toHaveLength(2);
-    for (const row of rows) expect(row.props.class.split(" ")).toContain("check-row");
+    for (const row of rows) expect(row.props.class.split(" ")).toContain("check");
     // One Cancel, not one per layout: the keyboard put on it while the dialog loaded stays on it once the form comes.
     expect(elements(footer, "button").filter((b) => text(b) === "Cancel")).toHaveLength(1);
     expect(footer.children.flat(Infinity).filter((n: any) => n?.tag === "button").map(text)).toContain("Cancel");
@@ -165,7 +166,7 @@ test("PR state refresh is visible-only, at most every 60 seconds, and cleans up"
         rpc: { call: async () => { count++; return {}; } }, sessionReadReady: () => true, openExternal() {},
         setInterval: (callback: () => void, ms: number) => { expect(ms).toBe(60_000); interval = callback; return 1; }, clearInterval: () => { cleared = true; },
         Date: { now: () => now }, document, window: document,
-        Show: "Show", PublishDialog: "PublishDialog", React: { Fragment: "Fragment" }, node,
+        Show: "Show", PublishDialog: "PublishDialog", React: { Fragment: "Fragment" }, node, GitPullRequest: "GitPullRequest",
     });
     render({ handle: { id: "one", view: { state: { trusted: true } } }, onClose() {} });
     effects[0]!(); await tick(); expect(count).toBe(1);
@@ -185,7 +186,7 @@ test("a pre-push PR refresh cannot overwrite the newly published PR", async () =
         createEffect: (callback: () => unknown) => effects.push(callback), onCleanup() {},
         rpc: { call: () => new Promise((done) => { resolve = done; }) }, sessionReadReady: () => true, openExternal() {},
         setInterval() {}, clearInterval() {}, Date: { now: () => 100_000 }, document, window: document,
-        Show: "Show", PublishDialog: "PublishDialog", React: { Fragment: "Fragment" }, node,
+        Show: "Show", PublishDialog: "PublishDialog", React: { Fragment: "Fragment" }, node, GitPullRequest: "GitPullRequest",
     });
     const tree = render({ handle: { id: "one", view: { state: { trusted: true } } }, onClose() {} });
     effects[0]!();

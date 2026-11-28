@@ -124,22 +124,24 @@ test("closing the reader in the middle of a drag ends it: no resizing class or l
     expect(frames.pending()).toBe(0);
 });
 
-test("the side-by-side toggle sets the shared split signal, and says so pressed", () => {
+test("the layout's two radios set the shared split signal, and say which is on", () => {
     const [reviewSplit, setReviewSplit] = solid.createSignal(false);
-    const Toggle = component(between(review, "function SplitToggle(", "/**\n * The reader's left edge"), "SplitToggle", {
+    const Toggle = component(between(review, "function SplitToggle(", "/** Lines that differ only in whitespace"), "SplitToggle", {
         reviewSplit, setReviewSplit,
         Columns2: () => node("icon"),
+        Rows2: () => node("icon"),
     });
     const root = node("root");
     const dispose = renderer.render(() => Toggle(), root);
     try {
-        const button = () => all(root).find((n) => n.tag === "button")!;
-        expect(button().props["aria-pressed"]).toBe(false);
-        button().props.onClick();
+        const radio = (label: string) => all(root).find((n) => n.tag === "button" && n.props["aria-label"] === label)!;
+        expect(radio("Unified").props["aria-checked"]).toBe(true);
+        expect(radio("Side by side").props["aria-checked"]).toBe(false);
+        radio("Side by side").props.onClick();
         expect(reviewSplit()).toBe(true);
-        expect(button().props["aria-pressed"]).toBe(true);
-        expect(button().props.title).toBe("Unified");
-        button().props.onClick();
+        expect(radio("Side by side").props["aria-checked"]).toBe(true);
+        expect(radio("Unified").props["aria-checked"]).toBe(false);
+        radio("Unified").props.onClick();
         expect(reviewSplit()).toBe(false);
     } finally {
         dispose();

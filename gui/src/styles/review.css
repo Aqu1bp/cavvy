@@ -94,8 +94,8 @@
 }
 
 .rv[data-full] .rv-body {
-    padding-left: max(calc(16 * var(--sp)), calc((100% - 1240px) / 2));
-    padding-right: max(calc(16 * var(--sp)), calc((100% - 1240px) / 2));
+    padding-left: max(calc(16 * var(--sp)), calc((100% - 1240 * var(--sp)) / 2));
+    padding-right: max(calc(16 * var(--sp)), calc((100% - 1240 * var(--sp)) / 2));
 }
 
 .rv-list {
@@ -251,7 +251,7 @@
 .rv-file-note {
     flex: 0 20 auto;
     min-width: 0;
-    margin-left: 2px;
+    margin-left: calc(2 * var(--sp));
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -262,7 +262,7 @@
 .rv-file-comments {
     display: inline-flex;
     align-items: center;
-    gap: 3px;
+    gap: calc(3 * var(--sp));
     flex: none;
     color: var(--accent-text);
     font-size: calc(11.5 * var(--sp));
@@ -604,7 +604,7 @@
     left: calc(2 * var(--sp));
     width: calc(16 * var(--sp));
     height: calc(16 * var(--sp));
-    border-radius: 4px;
+    border-radius: calc(4 * var(--sp));
     background: var(--accent);
     color: var(--on-accent);
     font-weight: 700;
@@ -680,7 +680,7 @@
     display: flex;
     align-items: center;
     gap: calc(8 * var(--sp));
-    margin-top: 3px;
+    margin-top: calc(3 * var(--sp));
 }
 
 .rv-comment-lines {
@@ -887,10 +887,10 @@
 
 .rv-wt-dot {
     position: absolute;
-    right: -3px;
-    bottom: -3px;
-    width: 7px;
-    height: 7px;
+    right: calc(-3 * var(--sp));
+    bottom: calc(-3 * var(--sp));
+    width: calc(7 * var(--sp));
+    height: calc(7 * var(--sp));
     border-radius: 50%;
     box-shadow: 0 0 0 1.5px var(--surface);
 }

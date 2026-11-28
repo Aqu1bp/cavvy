@@ -1,4 +1,4 @@
-import { createEffect, createSignal, on, Show, type JSX } from "solid-js";
+import { createEffect, createSignal, on, Show } from "solid-js";
 import { Check as CheckIcon, CircleAlert, GitPullRequest, Sparkles, TriangleAlert } from "lucide-solid";
 import type { GitPublishInfo, GitPrInfo } from "@shared/protocol";
 import { handleFor, rpc, toast } from "../state/app";
@@ -169,82 +169,71 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
             <Show when={prs()}><button class="btn btn-primary" disabled={!ready() || generating() || !title().trim() || !baseOr()} onClick={() => void publish("pr")}>Open pull request</button></Show>
         </>
     );
-    const Check = (c: { checked: boolean; disabled?: boolean; ref?: (el: HTMLInputElement) => void; autofocus?: boolean; onChange: (on: boolean) => void; children: JSX.Element }) => (
-        <label class="check" data-disabled={c.disabled || undefined}>
-            <input ref={c.ref} autofocus={c.autofocus} type="checkbox" checked={c.checked} disabled={c.disabled} onChange={(e) => c.onChange(e.currentTarget.checked)} />
-            <span class="check-box" aria-hidden="true">
-                <CheckIcon size={11} stroke-width={3} />
-            </span>
-            <span class="check-label">{c.children}</span>
-        </label>
-    );
     // Without the GitHub CLI, signed out of it, or on the base branch, it can only push: titled for that.
     const heading = () => (view() && !prs() ? `Push ${view()!.branch}?` : !view() && error() ? "Push?" : "Push and open a pull request?");
     return (
         <Dialog open={Boolean(p.id)} onClose={close} title={heading()} width={500} footer={actions()}>
             <Show when={!loading()} fallback={<Spinner class="blank-spinner" />}>
                 <Show when={view()}>
-                    {(v) => (
-                        <>
                             <dl class="push-facts">
                                 <div>
                                     <dt>Push</dt>
-                                    <dd class="mono push-remote">{v().branch}</dd>
+                                    <dd class="mono push-remote">{view()?.branch}</dd>
                                 </div>
                                 {/* Where it goes; its URL on hover. */}
-                                <div title={v().destination}>
+                                <div title={view()?.destination}>
                                     <dt>To</dt>
-                                    <dd class="mono push-remote">{v().remote}/{v().target}</dd>
+                                    <dd class="mono push-remote">{view()?.remote}/{view()?.target}</dd>
                                 </div>
-                                <Show when={remoteAt(v().destination)}>
-                                    {(at) => (
-                                        <div>
-                                            <dt>Remote</dt>
-                                            <dd class="mono push-remote">{at()}</dd>
-                                        </div>
-                                    )}
+                                <Show when={remoteAt(view()?.destination)}>
+                                    <div>
+                                        <dt>Remote</dt>
+                                        <dd class="mono push-remote">{remoteAt(view()?.destination)}</dd>
+                                    </div>
                                 </Show>
-                                <Show when={(!v().hasUpstream && v().ahead == null) || (v().ahead != null && v().behind != null)}>
+                                <Show when={(!view()?.hasUpstream && view()?.ahead == null) || (view()?.ahead != null && view()?.behind != null)}>
                                     <div>
                                         <dt>Commits</dt>
-                                        <dd class="num">{!v().hasUpstream && v().ahead == null ? "New branch" : syncWords(v().ahead ?? 0, v().behind ?? 0)}</dd>
+                                        <dd class="num">{!view()?.hasUpstream && view()?.ahead == null ? "New branch" : syncWords(view()?.ahead ?? 0, view()?.behind ?? 0)}</dd>
                                     </div>
                                 </Show>
                             </dl>
-                            <Show when={v().protected}>
+                            <Show when={view()?.protected}>
                                 <div class="note git-note" data-tone="amber">
                                     <TriangleAlert size={13} />
                                     <span class="note-body">
-                                        <Check ref={(el) => (confirmEl = el)} autofocus={first() === "confirm"} checked={confirmed()} disabled={busy()} onChange={setConfirmed}>
-                                            Push to this protected branch
-                                        </Check>
+                                        <label class="check" data-disabled={busy() || undefined}>
+                                            <input ref={confirmEl} autofocus={first() === "confirm"} type="checkbox" checked={confirmed()} disabled={busy()} onChange={(e) => setConfirmed(e.currentTarget.checked)} />
+                                            <span class="check-box" aria-hidden="true">
+                                                <CheckIcon size={11} stroke-width={3} />
+                                            </span>
+                                            <span class="check-label">Push to this protected branch</span>
+                                        </label>
                                     </span>
                                 </div>
                             </Show>
-                            <Show when={v().prError}>
+                            <Show when={view()?.prError}>
                                 <div class="note git-note" data-tone="amber">
                                     <GitPullRequest size={13} />
-                                    <span class="note-body">PR state unavailable: {v().prError}</span>
+                                    <span class="note-body">PR state unavailable: {view()?.prError}</span>
                                 </div>
                             </Show>
-                            <Show when={v().pr}>
-                                {(pr) => (
-                                    <div class="note git-note">
-                                        <GitPullRequest size={13} />
-                                        <span class="note-body truncate">
-                                            <span class="rv-pr-num">#{pr().number}</span> {pr().title}
-                                            <span class="dim"> · {pr().state}</span>
-                                        </span>
-                                        <button class="link-btn" onClick={() => void openExternal(pr().url)}>Open</button>
-                                    </div>
-                                )}
+                            <Show when={view()?.pr}>
+                                <div class="note git-note">
+                                    <GitPullRequest size={13} />
+                                    <span class="note-body truncate">
+                                        <span class="rv-pr-num">#{view()?.pr?.number}</span> {view()?.pr?.title}
+                                        <span class="dim"> · {view()?.pr?.state}</span>
+                                    </span>
+                                    <button class="link-btn" onClick={() => void openExternal(view()!.pr!.url)}>Open</button>
+                                </div>
                             </Show>
-                            <Show when={prs()} fallback={<Show when={!v().gh}>
+                            <Show when={prs()} fallback={<Show when={!view()?.gh}>
                                 <div class="note git-note">
                                     <ProviderIcon id="github" size={13} />
-                                    <span class="note-body">{v().ghSignedOut ? "Pull requests need GitHub." : "Pull requests need the GitHub CLI."}</span>
-                                    <Show when={v().compareUrl}><button class="link-btn" onClick={() => void openExternal(v().compareUrl!)}>Compare on GitHub</button></Show>
-                                    <Show when={v().ghSignedOut}>
+                                    <span class="note-body">{view()?.ghSignedOut ? "Pull requests need GitHub." : "Pull requests need the GitHub CLI."}</span>
+                                    <Show when={view()?.compareUrl}><button class="link-btn" onClick={() => void openExternal(view()?.compareUrl!)}>Compare on GitHub</button></Show>
+                                    <Show when={view()?.ghSignedOut}>
                                         <button class="btn btn-sm" disabled={busy()} onClick={() => void signIn()}>Sign in to GitHub</button>
                                     </Show>
                                 </div>
@@ -252,7 +241,7 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
                                 <div class="push-pr">
                                     <div class="push-pr-row">
                                         <label class="field-label" for="pr-base">Base branch</label>
-                                        <input id="pr-base" class="input input-sm mono" placeholder={v().base ?? "main"} value={base()} disabled={busy()} onInput={(e) => setBase(e.currentTarget.value)} />
+                                        <input id="pr-base" class="input input-sm mono" placeholder={view()?.base ?? "main"} value={base()} disabled={busy()} onInput={(e) => setBase(e.currentTarget.value)} />
                                     </div>
                                     <label class="field">
                                         <span class="field-label">Pull request title</span>
@@ -275,13 +264,17 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
                                         <Show when={genError()}><span class="field-hint field-error" role="status">{genError()}</span></Show>
                                         {/* The pull request's own option, at the row's end, under the description it goes with. */}
                                         <span class="push-draft">
-                                            <Check checked={draft()} disabled={busy()} onChange={setDraft}>Draft</Check>
+                                            <label class="check" data-disabled={busy() || undefined}>
+                                                <input type="checkbox" checked={draft()} disabled={busy()} onChange={(e) => setDraft(e.currentTarget.checked)} />
+                                                <span class="check-box" aria-hidden="true">
+                                                    <CheckIcon size={11} stroke-width={3} />
+                                                </span>
+                                                <span class="check-label">Draft</span>
+                                            </label>
                                         </span>
                                     </div>
                                 </div>
                             </Show>
-                        </>
-                    )}
                 </Show>
             </Show>
             <Show when={blocked()}>

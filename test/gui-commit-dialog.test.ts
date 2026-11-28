@@ -7,7 +7,7 @@ const source = readFileSync(new URL("../gui/src/components/CommitDialog.tsx", im
 const compiled = new Bun.Transpiler({
     loader: "tsx",
     tsconfig: { compilerOptions: { jsx: "react", jsxFactory: "node" } },
-}).transformSync(source).replace(/^import .*;\n/gm, "").replace("export function CommitDialog", "function CommitDialog");
+}).transformSync(source).replace(/^import\b.*\n/gm, "").replace("export function CommitDialog", "function CommitDialog");
 
 type Node = { tag: unknown; props: Record<string, any>; children: unknown[] };
 function node(tag: unknown, props: Record<string, any> | null, ...children: unknown[]): Node {
@@ -17,7 +17,8 @@ function find(tree: unknown, match: (node: Node) => boolean): Node | undefined {
     if (!tree || typeof tree !== "object" || !("tag" in tree)) return;
     const current = tree as Node;
     if (match(current)) return current;
-    for (const child of current.children.flat(Infinity)) {
+    // The dialog's buttons are its footer, a prop.
+    for (const child of [...current.children.flat(Infinity), current.props.footer]) {
         const found = find(child, match);
         if (found) return found;
     }
@@ -62,6 +63,14 @@ async function mountDialog(branch: string | undefined, o: { paths?: string[]; fi
         os: "macos",
         mod: "⌘",
         Spinner: "Spinner",
+        Kbd: "Kbd",
+        React: { Fragment: "Fragment" },
+        Counts: "Counts",
+        CheckIcon: "CheckIcon",
+        Sparkles: "Sparkles",
+        TriangleAlert: "TriangleAlert",
+        dirOf: (p: string) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/") + 1) : ""),
+        nameOf: (p: string) => p.slice(p.lastIndexOf("/") + 1),
         node,
     };
     const render = new Function(...Object.keys(dependencies), `${compiled}\nreturn CommitDialog;`)(...Object.values(dependencies));
@@ -112,7 +121,7 @@ test("Generate replaces what was typed, and Undo puts it back, after Generate ag
         const d = await mountDialog("feature", { generated: "feat: drafted" });
         const tree = d.tree();
         find(tree, (n) => n.tag === "textarea")!.props.onInput({ currentTarget: { value: "wip: my own words" } });
-        const generate = find(tree, (n) => n.tag === "button" && n.props.class === "btn btn-ghost")!;
+        const generate = find(tree, (n) => n.tag === "button" && n.children.flat(Infinity).includes("Generate message"))!;
         for (let i = 0; i < times; i++) {
             generate.props.onClick();
             for (let j = 0; j < 8; j++) await Promise.resolve();

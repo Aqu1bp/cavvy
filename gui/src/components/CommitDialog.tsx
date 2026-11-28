@@ -1,4 +1,4 @@
-import { createEffect, createSignal, For, on, Show, type JSX } from "solid-js";
+import { createEffect, createSignal, For, on, Show } from "solid-js";
 import { Check as CheckIcon, Sparkles, TriangleAlert } from "lucide-solid";
 import type { GitChangesInfo, GitFileDiff } from "@shared/protocol";
 import { app, handleFor, rpc } from "../state/app";
@@ -193,15 +193,6 @@ export function CommitDialog() {
         void commit();
     };
 
-    const Check = (c: { checked: boolean; disabled?: boolean; onChange: (on: boolean) => void; children: JSX.Element }) => (
-        <label class="check" data-disabled={c.disabled || undefined}>
-            <input type="checkbox" checked={c.checked} disabled={c.disabled} onChange={(e) => c.onChange(e.currentTarget.checked)} />
-            <span class="check-box" aria-hidden="true">
-                <CheckIcon size={11} stroke-width={3} />
-            </span>
-            <span class="check-label">{c.children}</span>
-        </label>
-    );
     const footer = (
         <>
             <button class="btn" disabled={committing()} onClick={close}>
@@ -236,16 +227,21 @@ export function CommitDialog() {
                             </div>
                         </Show>
                         <div class="commit-branch">
-                            <Check
-                                checked={toNew()}
-                                disabled={committing()}
-                                onChange={(on) => {
-                                    setToNew(on);
-                                    if (on && !newName()) void suggestName();
-                                }}
-                            >
-                                Commit to a new branch
-                            </Check>
+                            <label class="check" data-disabled={committing() || undefined}>
+                                <input
+                                    type="checkbox"
+                                    checked={toNew()}
+                                    disabled={committing()}
+                                    onChange={(e) => {
+                                        setToNew(e.currentTarget.checked);
+                                        if (e.currentTarget.checked && !newName()) void suggestName();
+                                    }}
+                                />
+                                <span class="check-box" aria-hidden="true">
+                                    <CheckIcon size={11} stroke-width={3} />
+                                </span>
+                                <span class="check-label">Commit to a new branch</span>
+                            </label>
                             <Show when={toNew()}>
                                 <div class="commit-branch-row">
                                     <input class="input mono" aria-label="New branch name" placeholder={naming() ? "Suggesting…" : "feature/my-change"} spellcheck={false} autocomplete="off" maxLength={200} value={newName()} disabled={committing() || naming()} onInput={(e) => setNewName(e.currentTarget.value)} />
@@ -262,22 +258,29 @@ export function CommitDialog() {
                         <For each={files()}>
                             {(f) => (
                                 <div class="commit-file">
-                                    <Check
-                                        checked={paths().includes(key(f))}
-                                        disabled={committing()}
-                                        onChange={(on) => {
-                                            revision++;
-                                            // By its handle when its name was shown redacted, as the request and `chosen` go.
-                                            setPaths((old) => (on ? [...old, key(f)] : old.filter((p) => p !== key(f))));
-                                        }}
-                                    >
-                                        <span class="path" title={f.from ? `${f.from} → ${f.path}` : f.path}>
-                                            <Show when={dirOf(f.path)}>
-                                                <span class="path-dir">{dirOf(f.path)}</span>
-                                            </Show>
-                                            <span class="path-base">{nameOf(f.path)}</span>
+                                    <label class="check" data-disabled={committing() || undefined}>
+                                        <input
+                                            type="checkbox"
+                                            checked={paths().includes(key(f))}
+                                            disabled={committing()}
+                                            onChange={(e) => {
+                                                revision++;
+                                                // By its handle when its name was shown redacted, as the request and `chosen` go.
+                                                setPaths((old) => (e.currentTarget.checked ? [...old, key(f)] : old.filter((p) => p !== key(f))));
+                                            }}
+                                        />
+                                        <span class="check-box" aria-hidden="true">
+                                            <CheckIcon size={11} stroke-width={3} />
                                         </span>
-                                    </Check>
+                                        <span class="check-label">
+                                            <span class="path" title={f.from ? `${f.from} → ${f.path}` : f.path}>
+                                                <Show when={dirOf(f.path)}>
+                                                    <span class="path-dir">{dirOf(f.path)}</span>
+                                                </Show>
+                                                <span class="path-base">{nameOf(f.path)}</span>
+                                            </span>
+                                        </span>
+                                    </label>
                                     <span class="stat">
                                         <Counts added={f.added} removed={f.removed} />
                                     </span>
