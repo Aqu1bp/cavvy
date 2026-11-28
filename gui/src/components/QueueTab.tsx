@@ -1,5 +1,5 @@
 import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
-import { CirclePause, CornerDownRight, GripVertical, ListEnd, Paperclip, Pencil, X } from "lucide-solid";
+import { CornerDownRight, GripVertical, Paperclip, Pencil, Send, X } from "lucide-solid";
 import type { SessionState } from "@shared/protocol";
 import { reportError, rpc, toast } from "../state/app";
 import { clampDrag, dragTarget, joiningRow, moved, movedAnnouncement, queueRow, settleMs, slotOf, stepTarget } from "../lib/queue";
@@ -37,11 +37,11 @@ function nextFrame(fn: () => void) {
 const reducedMotion = () => typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 /**
- * Up next: the messages sent while a turn runs, in a small tray on top of the composer, numbered in the
- * order they go. Each says what it will do (join the turn at its next step, run after it, or wait for you
- * after a restart); on hover its buttons take the hint's place: Steer (while it runs) or Send now, Edit,
- * Remove. With more than one, a row moves: drag it (from anywhere but its buttons), or focus it and
- * press ↑/↓. The others slide out of its way and the numbers follow the order being made.
+ * Up next: the messages sent while a turn runs, in a tray on top of the composer, numbered in the order
+ * they go. Each says what it will do (join the turn at its next step, run after it, or wait for you after
+ * a restart), then its buttons: Steer (while it runs) or Send now, Edit, Remove. With more than one, a row
+ * moves: drag it (from anywhere but its buttons), or focus it and press ↑/↓. The others slide out of its
+ * way and the numbers follow the order being made.
  */
 export function QueueTab(p: { sessionId: string; state: SessionState; dequeue: (i: number, edit: boolean) => void }) {
     const [sort, setSort] = createSignal<Sort>();
@@ -50,7 +50,7 @@ export function QueueTab(p: { sessionId: string; state: SessionState; dequeue: (
     const many = () => p.state.queued.length > 1;
     const modes = () => p.state.queuedModes ?? p.state.queued.map(() => undefined);
     const joining = createMemo(() => joiningRow(modes(), busy()));
-    let list: HTMLDivElement | undefined;
+    let list: HTMLUListElement | undefined;
     let tokens = 0;
     let settleTimer: ReturnType<typeof setTimeout> | undefined;
     /** ↑/↓ pressed while a move is still going: done next, in the order pressed, on the same message. */
@@ -61,7 +61,7 @@ export function QueueTab(p: { sessionId: string; state: SessionState; dequeue: (
     onMount(() => (mounted = true));
     onCleanup(() => clearTimeout(settleTimer));
 
-    const rowOf = (id: number) => list?.querySelector<HTMLElement>(`.uq-row[data-qid="${id}"]`) ?? undefined;
+    const rowOf = (id: number) => list?.querySelector<HTMLElement>(`.queue-row[data-qid="${id}"]`) ?? undefined;
     /** Rows are a fixed height apart: measured when a move starts, so density and font size are taken in. */
     const pitchOf = (row: HTMLElement) => row.offsetHeight + (parseFloat(getComputedStyle(list!).rowGap) || 0);
 
@@ -224,10 +224,10 @@ export function QueueTab(p: { sessionId: string; state: SessionState; dequeue: (
     const sorting = () => sort() !== undefined;
 
     return (
-        <div class="uq-tray card-surface">
-            <div
+        <div class="tray tray-queue" aria-label="Up next">
+            <ul
                 ref={list}
-                class={`uq-list ${sorting() && sort()!.phase !== "wait" ? "sorting" : ""} ${sort()?.phase === "wait" ? "still" : ""}`}
+                class={`queue-list ${sorting() && sort()!.phase !== "wait" ? "sorting" : ""} ${sort()?.phase === "wait" ? "still" : ""}`}
                 role="list"
                 aria-label={`Up next: ${plural(p.state.queued.length, "message")}`}
             >
@@ -252,7 +252,7 @@ export function QueueTab(p: { sessionId: string; state: SessionState; dequeue: (
                             const dy = (slot() - i()) * s.pitch;
                             return dy ? `translateY(${dy}px)` : undefined;
                         };
-                        let el!: HTMLDivElement;
+                        let el!: HTMLLIElement;
                         // One that comes in later rises into place: by the Web Animations API, once it's in the
                         // document, so moving the row afterwards doesn't replay it (a CSS animation would).
                         const late = mounted;
@@ -260,9 +260,9 @@ export function QueueTab(p: { sessionId: string; state: SessionState; dequeue: (
                             if (late && !reducedMotion()) el.animate?.([{ opacity: 0, transform: "translateY(8px) scale(0.98)" }, { opacity: 1, transform: "none" }], { duration: 260, easing: "cubic-bezier(0.22, 1, 0.36, 1)" });
                         });
                         return (
-                            <div
+                            <li
                                 ref={el}
-                                class={`uq-row q-${mode() ?? "steer"}`}
+                                class="queue-row"
                                 classList={{ lifted: held() && sort()!.phase === "drag", settling: held() && sort()!.phase === "settle", movable: many() }}
                                 style={{ transform: transform() }}
                                 data-qid={id}
@@ -278,14 +278,18 @@ export function QueueTab(p: { sessionId: string; state: SessionState; dequeue: (
                                     step(id, e.key === "ArrowUp" ? "up" : "down");
                                 }}
                             >
-                                <span class="uq-n" title={many() ? "Drag or ↑↓ to reorder" : undefined} aria-hidden="true">
-                                    <b class="num">{slot() + 1}</b>
-                                    <Show when={many()}>
-                                        <GripVertical size={13} />
-                                    </Show>
+                                {/* With more than one, a row moves: drag it, or focus it and press ↑/↓. */}
+                                <Show when={many()}>
+                                    <span class="queue-grip" title="Drag or ↑↓ to reorder" aria-hidden="true">
+                                        <GripVertical size={12} />
+                                    </span>
+                                </Show>
+                                <span class="queue-n num" aria-hidden="true">
+                                    {slot() + 1}
                                 </span>
-                                <span class="uq-kind" title={info().detail} aria-hidden="true">
-                                    {mode() === "held" ? <CirclePause size={14} /> : mode() === "steer" || mode() === undefined ? <CornerDownRight size={14} /> : <ListEnd size={14} />}
+                                <span class="queue-kind" data-kind={mode() === "held" ? "held" : mode() === "steer" || mode() === undefined ? "next" : "after"} classList={{ joining: joining() === i() }} title={info().detail}>
+                                    {info().hint}
+                                    <span class="sr-only">: {info().detail}</span>
                                 </span>
                                 <QueuedText text={text()} empty={p.state.queuedAttached?.[i()] ? "" : "(empty)"} />
                                 <Show when={p.state.queuedAttached?.[i()]}>
@@ -295,35 +299,26 @@ export function QueueTab(p: { sessionId: string; state: SessionState; dequeue: (
                                         </span>
                                     )}
                                 </Show>
-                                <span class="uq-end">
-                                    <span class="uq-hint" classList={{ joining: joining() === i() }}>
-                                        {info().hint}
-                                        <span class="sr-only">: {info().detail}</span>
-                                    </span>
-                                    <span class="uq-acts">
-                                        <Show when={info().action}>
-                                            {(action) => (
-                                                <button class="uq-send" title={action().title} onClick={() => void sendNow(i())}>
-                                                    <Show when={action().label === "Steer"}>
-                                                        <CornerDownRight size={13} stroke-width={2.25} aria-hidden="true" />
-                                                    </Show>
-                                                    {action().label}
-                                                </button>
-                                            )}
-                                        </Show>
-                                        <button class="uq-ib" title="Edit" aria-label="Edit queued message" onClick={() => p.dequeue(i(), true)}>
-                                            <Pencil size={13} />
-                                        </button>
-                                        <button class="uq-ib" title="Remove from the queue" aria-label="Remove from the queue" onClick={() => p.dequeue(i(), false)}>
-                                            <X size={14} />
-                                        </button>
-                                    </span>
+                                <span class="queue-actions">
+                                    <Show when={info().action}>
+                                        {(action) => (
+                                            <button class="icon-btn icon-btn-sm" title={action().title} aria-label={action().label} onClick={() => void sendNow(i())}>
+                                                {action().label === "Steer" ? <CornerDownRight size={13} /> : <Send size={13} />}
+                                            </button>
+                                        )}
+                                    </Show>
+                                    <button class="icon-btn icon-btn-sm" title="Edit" aria-label="Edit queued message" onClick={() => p.dequeue(i(), true)}>
+                                        <Pencil size={13} />
+                                    </button>
+                                    <button class="icon-btn icon-btn-sm" title="Remove from the queue" aria-label="Remove from the queue" onClick={() => p.dequeue(i(), false)}>
+                                        <X size={13} />
+                                    </button>
                                 </span>
-                            </div>
+                            </li>
                         );
                     }}
                 </For>
-            </div>
+            </ul>
             <div class="sr-only" role="status" aria-live="polite">
                 {said()}
             </div>
@@ -335,7 +330,7 @@ export function QueueTab(p: { sessionId: string; state: SessionState; dequeue: (
 function QueuedText(p: { text: string; empty: string }) {
     const parts = createMemo(() => splitComments(p.text));
     return (
-        <span class="uq-text truncate">
+        <span class="queue-text">
             {parts().text || (parts().comments.length ? "" : p.empty)}
             <Show when={parts().comments.length}>
                 <span class="queue-attached"> {parts().text ? "· " : ""}{plural(parts().comments.length, "review comment")}</span>

@@ -25,6 +25,8 @@ import "./styles/composer.css";
 import "./styles/requests.css";
 import "./styles/plan.css";
 import "./styles/overlays.css";
+// After overlays.css: its lists open in popovers, and their own padding and width are the design's.
+import "./styles/composer-trays.css";
 import "./styles/markdown.css";
 import "./styles/theme.css";
 import "./state/prefs";

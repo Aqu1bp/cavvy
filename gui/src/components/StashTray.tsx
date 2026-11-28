@@ -1,9 +1,9 @@
 // The prompts put away with the stash key: a tab standing on the composer's top edge, at its far end.
-// Click it and it opens along the card into their list, newest first: a row brings its prompt back,
-// its ✕ throws it away.
+// Click it and their list opens above it, newest first: a row brings its prompt back, its ✕ throws it away.
 
 import { createSignal, createUniqueId, For, Show } from "solid-js";
-import { Archive, ChevronDown, FileText, Paperclip, X } from "lucide-solid";
+import { Paperclip, X } from "lucide-solid";
+import { Popover } from "./ui/Popover";
 import type { Attachment } from "../lib/attachments";
 import { plural } from "../lib/format";
 
@@ -18,19 +18,17 @@ const firstLine = (text: string) => text.trim().split("\n", 1)[0]!.trim();
 export function StashTray(p: { items: Stashed[]; /** The message box: where the focus goes when the list closes. */ box: () => HTMLElement | undefined; onRestore: (item: Stashed) => void; onDiscard: (item: Stashed) => void }) {
     const [open, setOpen] = createSignal(false);
     const listId = `stash-${createUniqueId()}`;
+    let tab: HTMLButtonElement | undefined;
     let root: HTMLDivElement | undefined;
     const files = (item: Stashed) => (item.attachments.length ? plural(item.attachments.length, "attachment") : "");
     const said = (item: Stashed) => [firstLine(item.text), files(item)].filter(Boolean).join(", ");
-    const picks = () => [...(root?.querySelectorAll<HTMLElement>(".stash-pick") ?? [])];
+    const picks = () => [...(root?.querySelectorAll<HTMLElement>(".stash-text") ?? [])];
+    // Closed by Escape or a click elsewhere: the keys go back to the box.
+    const close = () => {
+        setOpen(false);
+        p.box()?.focus();
+    };
     const onKeyDown = (e: KeyboardEvent) => {
-        if (e.key === "Escape" && open()) {
-            // Its own Esc: closes the list, never stops the turn.
-            e.preventDefault();
-            e.stopPropagation();
-            setOpen(false);
-            p.box()?.focus();
-            return;
-        }
         const rows = picks();
         const at = rows.indexOf(document.activeElement as HTMLElement);
         if (e.key === "ArrowDown" || e.key === "ArrowUp") {
@@ -49,39 +47,40 @@ export function StashTray(p: { items: Stashed[]; /** The message box: where the 
     // Its buttons don't take the focus from the box when clicked: what's typed next goes there.
     const keepFocus = (e: MouseEvent) => e.preventDefault();
     return (
-        <div ref={root} class="stash-tray" classList={{ open: open() }} onKeyDown={onKeyDown}>
-            <button class="stash-head" aria-expanded={open()} aria-controls={open() ? listId : undefined} aria-label={`Stashed prompts: ${p.items.length}`} title={open() ? undefined : "Stashed prompts"} onMouseDown={keepFocus} onClick={() => setOpen(!open())}>
-                <Archive size={13} aria-hidden="true" />
-                <span class="stash-word">Stash</span>
-                <Show when={open() || p.items.length > 1}>
-                    <span class="stash-n num">{p.items.length}</span>
-                </Show>
-                <Show when={open()}>
-                    <ChevronDown size={14} class="chev" aria-hidden="true" />
-                </Show>
+        <>
+            <button ref={tab} class="stash-tab" aria-expanded={open()} aria-controls={open() ? listId : undefined} aria-label={`Stashed prompts: ${p.items.length}`} title={open() ? undefined : "Stashed prompts"} onMouseDown={keepFocus} onClick={() => setOpen(!open())}
+                onKeyDown={(e) => {
+                    // ↓ or ↑ on the tab goes into the list (opening it).
+                    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+                    e.preventDefault();
+                    setOpen(true);
+                    requestAnimationFrame(() => (e.key === "ArrowDown" ? picks()[0] : picks().at(-1))?.focus());
+                }}>
+                Stash
+                <span class="num">{p.items.length}</span>
             </button>
-            <Show when={open()}>
-                <div class="stash-list" id={listId} role="list">
+            <Popover open={open()} anchor={() => tab} onClose={close} placement="top" align="end" offset={6} width={340} maxHeight={300} class="menu stash-list">
+                <div ref={root} id={listId} role="list" onKeyDown={onKeyDown}>
                     <For each={p.items}>
                         {(item) => (
                             <div class="stash-row" role="listitem">
-                                <button class="stash-pick" title="Restore" aria-label={`Restore: ${said(item)}`} aria-keyshortcuts="Delete" onMouseDown={keepFocus} onClick={() => p.onRestore(item)}>
-                                    <FileText size={14} aria-hidden="true" />
-                                    <span class="stash-text truncate">{firstLine(item.text) || files(item)}</span>
+                                <button class="stash-text" title="Restore" aria-label={`Restore: ${said(item)}`} aria-keyshortcuts="Delete" onMouseDown={keepFocus} onClick={() => (setOpen(false), p.onRestore(item))}>
+                                    {firstLine(item.text) || files(item)}
                                     <Show when={item.attachments.length && firstLine(item.text)}>
                                         <span class="queue-attached">
+                                            {" "}
                                             <Paperclip size={12} /> {item.attachments.length}
                                         </span>
                                     </Show>
                                 </button>
-                                <button class="stash-drop" tabIndex={-1} title="Discard" aria-label={`Discard: ${said(item)}`} onMouseDown={keepFocus} onClick={() => p.onDiscard(item)}>
-                                    <X size={14} />
+                                <button class="icon-btn icon-btn-sm" tabIndex={-1} title="Discard" aria-label={`Discard: ${said(item)}`} onMouseDown={keepFocus} onClick={() => p.onDiscard(item)}>
+                                    <X size={13} />
                                 </button>
                             </div>
                         )}
                     </For>
                 </div>
-            </Show>
-        </div>
+            </Popover>
+        </>
     );
 }

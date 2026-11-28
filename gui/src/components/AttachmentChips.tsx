@@ -1,6 +1,6 @@
 import { createSignal, For, Match, onCleanup, Show, Switch } from "solid-js";
-import { FileText, FileX, File as FileIcon, Image as ImageIcon, MessageSquareText, TextCursorInput, X } from "lucide-solid";
-import { extensionOf, formatSize, previewNow, previewOf, tintOf, type Attachment, type ImageAttachment } from "../lib/attachments";
+import { ArrowDown, FileX, File as FileIcon, Image as ImageIcon, MessageSquareText, Type, X } from "lucide-solid";
+import { extensionOf, formatSize, previewNow, previewOf, type Attachment, type ImageAttachment } from "../lib/attachments";
 import { plural } from "../lib/format";
 import { setViewedImage } from "../state/ui";
 import { Markdown } from "./blocks/Markdown";
@@ -39,12 +39,12 @@ export function AttachmentChips(p: { items: Attachment[]; readsPdf: boolean; blo
     };
     const Remove = (r: { name: string; i: number }) => (
         <button class="att-x" title="Remove" aria-label={`Remove ${r.name}`} onClick={() => p.onRemove(r.i)}>
-            <X size={11} stroke-width={2.25} />
+            <X size={11} stroke-width={2.6} />
         </button>
     );
     return (
-        <div class="attachments-wrap">
-            <div class="attachments">
+        <div class="atts">
+            <div class="atts-list">
                 <For each={p.items}>
                     {(a, i) => (
                         <Switch>
@@ -62,20 +62,20 @@ export function AttachmentChips(p: { items: Attachment[]; readsPdf: boolean; blo
                                         return Boolean(s && (s[0] < 52 || s[1] < 52));
                                     };
                                     return (
-                                        <div class={`att ${named() ? "att-file" : "att-image"} ${small() ? "small" : ""}`} title={`${img().name} · ${formatSize(img().size)}`}>
-                                            <button class={named() ? "att-card" : "att-open"} aria-label={`View ${img().name}`} onClick={(e) => view(img(), e.currentTarget)}>
+                                        <span class={`att ${named() ? "att-file" : "att-image"} ${small() ? "small" : ""}`} title={`${img().name} · ${formatSize(img().size)}`}>
+                                            <button class={named() ? "att-main" : "att-thumb"} aria-label={`View ${img().name}`} onClick={(e) => view(img(), e.currentTarget)}>
                                                 <Show when={named()} fallback={<Preview image={img()} onSize={(w, h) => setSize([w, h])} />}>
-                                                    <span class="att-tile" aria-hidden="true">
-                                                        <ImageIcon size={16} />
+                                                    <span class="att-ext" aria-hidden="true">
+                                                        <ImageIcon size={13} />
                                                     </span>
-                                                    <span class="att-body">
-                                                        <span class="att-name truncate">{img().name}</span>
-                                                        <span class="att-meta truncate">{size()![0] ? `${size()![0]}×${size()![1]} · ${formatSize(img().size)}` : formatSize(img().size)}</span>
+                                                    <span class="att-text">
+                                                        <span class="att-name">{img().name}</span>
+                                                        <span class="att-meta">{size()![0] ? `${size()![0]}×${size()![1]} · ${formatSize(img().size)}` : formatSize(img().size)}</span>
                                                     </span>
                                                 </Show>
                                             </button>
                                             <Remove name={img().name} i={i()} />
-                                        </div>
+                                        </span>
                                     );
                                 }}
                             </Match>
@@ -97,44 +97,40 @@ export function AttachmentChips(p: { items: Attachment[]; readsPdf: boolean; blo
                                     };
                                     const ext = () => (pasted() || sideChat() ? undefined : extensionOf(f().name));
                                     const isOpen = () => shown() === f();
-                                    const Body = () => (
-                                        <>
-                                            <span class="att-tile" data-tint={problem() ? "bad" : tintOf(f().name)} aria-hidden="true">
-                                                <Switch fallback={<FileIcon size={16} />}>
-                                                    <Match when={problem()}>
-                                                        <FileX size={16} />
-                                                    </Match>
-                                                    <Match when={pasted()}>
-                                                        <FileText size={16} />
-                                                    </Match>
-                                                    <Match when={sideChat()}>
-                                                        <MessageSquareText size={16} />
-                                                    </Match>
-                                                    <Match when={ext()}>{(e) => <span class={`att-ext ${e().length > 3 ? "long" : ""}`}>{e()}</span>}</Match>
-                                                </Switch>
-                                            </span>
-                                            <span class="att-body">
-                                                <span class="att-name truncate">{f().name}</span>
-                                                {/* A model that can't read it: the note under the tiles says so, and what to do. */}
-                                                <span class="att-meta truncate">{f().kind === "refused" ? problem() : meta()}</span>
-                                            </span>
-                                        </>
-                                    );
+                                    // Its kind on the tile: the extension (a paste and a side chat's answer read as text), or a mark.
+                                    const kind = () => (pasted() || sideChat() ? "txt" : (ext() ?? "").toLowerCase());
+                                    const canOpen = () => f().kind === "text";
                                     return (
-                                        <div class={`att att-file ${problem() ? "refused" : ""} ${isOpen() ? "open" : ""}`} title={problem() ? `${f().name}: ${problem()}` : f().name}>
+                                        <span class="att att-file" data-refused={problem() ? "" : undefined} data-open={isOpen() ? "" : undefined} title={problem() ? `${f().name}: ${problem()}` : f().name}>
                                             {/* Text opens below to read; anything else is only what it is. */}
-                                            <Show when={f().kind === "text"} fallback={<span class="att-card"><Body /></span>}>
-                                                <button class="att-card" aria-expanded={isOpen()} aria-label={`${isOpen() ? "Hide" : "Show"} ${f().name}`} onClick={() => setOpen(isOpen() ? undefined : f())}>
-                                                    <Body />
-                                                </button>
-                                            </Show>
+                                            <button class="att-main" disabled={!canOpen()} aria-expanded={canOpen() ? isOpen() : undefined} aria-label={canOpen() ? `${isOpen() ? "Hide" : "Show"} ${f().name}` : undefined} onClick={() => setOpen(isOpen() ? undefined : f())}>
+                                                <span class="att-ext" data-ext={kind() || undefined} aria-hidden="true">
+                                                    <Switch fallback={<FileIcon size={13} />}>
+                                                        <Match when={problem()}>
+                                                            <FileX size={13} />
+                                                        </Match>
+                                                        <Match when={pasted()}>
+                                                            <Type size={13} />
+                                                        </Match>
+                                                        <Match when={sideChat()}>
+                                                            <MessageSquareText size={13} />
+                                                        </Match>
+                                                        <Match when={ext()}>{(e) => e().slice(0, 4)}</Match>
+                                                    </Switch>
+                                                </span>
+                                                <span class="att-text">
+                                                    <span class="att-name">{pasted() ? "Pasted text" : f().name}</span>
+                                                    {/* A model that can't read it: the note under the tiles says so, and what to do. */}
+                                                    <span class="att-meta">{problem() ?? meta()}</span>
+                                                </span>
+                                            </button>
                                             <Show when={pasted() && p.onToText}>
-                                                <button class="att-act" title="Put back as text" aria-label="Put back as text" onClick={() => p.onToText?.(i())}>
-                                                    <TextCursorInput size={11} stroke-width={2.25} />
+                                                <button class="att-back" title="Put back as text" aria-label="Put back as text" onClick={() => p.onToText?.(i())}>
+                                                    <ArrowDown size={12} />
                                                 </button>
                                             </Show>
                                             <Remove name={f().name} i={i()} />
-                                        </div>
+                                        </span>
                                     );
                                 }}
                             </Match>
@@ -144,10 +140,10 @@ export function AttachmentChips(p: { items: Attachment[]; readsPdf: boolean; blo
             </div>
             <Show when={shown()}>
                 {/* A side chat's answer reads as it did there, not as the Markdown it was written in. */}
-                {(t) => (t().from === "side-chat" ? <div class="attachment-preview prose"><Markdown text={t().text} class="small" /></div> : <pre class="attachment-preview mono">{t().text.length > 100_000 ? `${t().text.slice(0, 100_000)}\n… (${plural(t().lines, "line")} in all)` : t().text}</pre>)}
+                {(t) => (t().from === "side-chat" ? <div class="att-preview prose"><Markdown text={t().text} class="small" /></div> : <pre class="att-preview" tabIndex={0}>{t().text.length > 100_000 ? `${t().text.slice(0, 100_000)}\n… (${plural(t().lines, "line")} in all)` : t().text}</pre>)}
             </Show>
             <Show when={p.blocked}>
-                <div class="attachments-note">{p.blocked}</div>
+                <p class="atts-note">{p.blocked}</p>
             </Show>
         </div>
     );

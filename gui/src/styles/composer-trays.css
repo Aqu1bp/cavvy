@@ -1,0 +1,747 @@
+/* The composer's trays, the rows inside its card, and the chips over its text (StepsTray, QueueTab, StashTray,
+   GoalTab, ScheduleTab, ReviewCommentChips, AttachmentChips): the design's rules as they are, px with the text
+   size (--sp). After them, what only Cavvy has, in the same language. */
+
+/* The design's base resets lists and paragraphs; Cavvy's base doesn't, so these do it for theirs. */
+:is(.queue-list, .goal-checks, .atts-note) {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.queue-list {
+    display: flex;
+    flex-direction: column;
+    gap: calc(2 * var(--sp));
+    max-height: calc(132 * var(--sp));
+    overflow-y: auto;
+}
+
+.queue-n {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    width: calc(18 * var(--sp));
+    height: calc(18 * var(--sp));
+    border-radius: 50%;
+    background: var(--fill-2);
+    color: var(--text-3);
+    font-size: calc(11 * var(--sp));
+    font-weight: 600;
+}
+
+.queue-text {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: calc(13 * var(--sp));
+}
+
+/* ---------- rows inside the card: goal, schedules ---------- */
+
+.crow {
+    border-bottom: 1px solid var(--line);
+}
+
+.crow-line {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    min-height: calc(34 * var(--sp));
+    padding: 0 calc(6 * var(--sp)) 0 calc(12 * var(--sp));
+    font-size: calc(12.5 * var(--sp));
+}
+
+.crow-icon {
+    display: inline-flex;
+    flex: none;
+    color: var(--glyph-3);
+}
+
+.crow-label {
+    flex: none;
+    font-weight: 600;
+}
+
+.crow-text {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.crow-when {
+    flex: none;
+    margin-right: calc(2 * var(--sp));
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.crow[data-paused] .crow-text {
+    color: var(--text-3);
+}
+
+.crow-more {
+    display: block;
+    width: 100%;
+    padding: calc(5 * var(--sp)) calc(12 * var(--sp));
+    border-bottom: 1px solid var(--line);
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
+    text-align: left;
+}
+
+.crow-more:hover {
+    color: var(--text);
+}
+
+.goal-checks {
+    display: flex;
+    flex-direction: column;
+    gap: calc(3 * var(--sp));
+    padding: 0 calc(12 * var(--sp)) calc(9 * var(--sp)) calc(34 * var(--sp));
+    color: var(--text-2);
+    font-size: calc(12.5 * var(--sp));
+}
+
+.goal-mark {
+    display: inline-block;
+    width: calc(16 * var(--sp));
+    color: var(--red);
+}
+
+.goal-checks li[data-ok] .goal-mark {
+    color: var(--green);
+}
+
+/* ---------- review comment chips ---------- */
+
+.cchips {
+    padding: calc(8 * var(--sp)) calc(8 * var(--sp)) 0;
+}
+
+.cchips-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: calc(6 * var(--sp));
+}
+
+.cchip {
+    display: inline-flex;
+    align-items: stretch;
+    max-width: 100%;
+    border-radius: var(--radius-s);
+    background: var(--fill-1);
+    box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.cchip-main {
+    display: inline-flex;
+    align-items: baseline;
+    gap: calc(8 * var(--sp));
+    min-width: 0;
+    height: calc(26 * var(--sp));
+    padding: 0 calc(4 * var(--sp)) 0 calc(8 * var(--sp));
+    line-height: calc(26 * var(--sp));
+}
+
+.cchip-loc {
+    flex: none;
+    color: var(--accent-text);
+    font-size: calc(11.5 * var(--sp));
+}
+
+.cchip-text {
+    max-width: calc(260 * var(--sp));
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: calc(12.5 * var(--sp));
+}
+
+.cchip-x {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: calc(22 * var(--sp));
+    border-radius: 0 var(--radius-s) var(--radius-s) 0;
+    color: var(--glyph-3);
+}
+
+.cchip-x:hover {
+    background: var(--fill-2);
+    color: var(--text);
+}
+
+.cchips-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: calc(12 * var(--sp));
+    padding: calc(6 * var(--sp)) calc(4 * var(--sp)) 0;
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
+}
+
+/* ---------- attachments ---------- */
+
+.atts {
+    padding: calc(8 * var(--sp)) calc(8 * var(--sp)) 0;
+}
+
+.atts-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: calc(6 * var(--sp));
+}
+
+.att {
+    position: relative;
+    display: inline-flex;
+    align-items: stretch;
+    height: calc(44 * var(--sp));
+    border-radius: var(--radius-m);
+    background: var(--fill-1);
+    box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.att-image {
+    width: calc(62 * var(--sp));
+    background: none;
+}
+
+.att-thumb {
+    width: 100%;
+    height: 100%;
+    border-radius: var(--radius-m);
+    overflow: hidden;
+    box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.att-thumb img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: inherit;
+}
+
+.att-main {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    min-width: 0;
+    max-width: calc(220 * var(--sp));
+    padding: 0 calc(28 * var(--sp)) 0 calc(6 * var(--sp));
+    border-radius: var(--radius-m);
+    text-align: left;
+}
+
+.att-main:disabled {
+    cursor: default;
+}
+
+.att-main:not(:disabled):hover {
+    background: var(--fill-2);
+}
+
+.att-file:has(.att-back) .att-main {
+    padding-right: calc(50 * var(--sp));
+}
+
+.att-ext {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    width: calc(32 * var(--sp));
+    height: calc(32 * var(--sp));
+    border-radius: var(--radius-s);
+    background: var(--accent-soft);
+    color: var(--accent-text);
+    font-family: var(--font-mono);
+    font-size: calc(10 * var(--sp));
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.att-ext[data-ext="pdf"] {
+    background: var(--red-soft);
+    color: var(--red);
+}
+
+.att-ext[data-ext="json"],
+.att-ext[data-ext="csv"],
+.att-ext[data-ext="log"] {
+    background: var(--amber-soft);
+    color: var(--amber);
+}
+
+.att-ext[data-ext="md"],
+.att-ext[data-ext="txt"] {
+    background: var(--fill-2);
+    color: var(--text-2);
+}
+
+.att-text {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.att-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: calc(12.5 * var(--sp));
+    font-weight: 500;
+    line-height: calc(16 * var(--sp));
+}
+
+.att-meta {
+    color: var(--text-3);
+    font-size: calc(11.5 * var(--sp));
+    line-height: calc(15 * var(--sp));
+    white-space: nowrap;
+}
+
+.att[data-refused] {
+    background: var(--red-soft);
+    box-shadow: inset 0 0 0 1px var(--red-line);
+}
+
+.att[data-refused] .att-ext {
+    background: color-mix(in srgb, var(--red) 16%, transparent);
+    color: var(--red);
+}
+
+.att[data-refused] .att-meta {
+    color: var(--red);
+}
+
+.att-x,
+.att-back {
+    position: absolute;
+    top: calc(4 * var(--sp));
+    right: calc(4 * var(--sp));
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: calc(18 * var(--sp));
+    height: calc(18 * var(--sp));
+    border-radius: calc(5 * var(--sp));
+    background: var(--surface);
+    box-shadow: 0 0 0 1px var(--line-strong);
+    color: var(--text-2);
+}
+
+.att-back {
+    right: calc(26 * var(--sp));
+}
+
+.att-x:hover,
+.att-back:hover {
+    color: var(--text);
+    background: var(--fill-1);
+}
+
+.att-preview {
+    max-height: calc(160 * var(--sp));
+    margin: calc(6 * var(--sp)) 0 0;
+    padding: calc(8 * var(--sp)) calc(10 * var(--sp));
+    border-radius: var(--radius-m);
+    background: var(--code-bg);
+    box-shadow: inset 0 0 0 1px var(--line);
+    overflow: auto;
+    font-size: calc(12 * var(--sp));
+    line-height: 1.5;
+}
+
+.atts-note {
+    padding: calc(6 * var(--sp)) calc(2 * var(--sp)) 0;
+    color: var(--red);
+    font-size: calc(12 * var(--sp));
+}
+
+/* ---------- trays above the card ---------- */
+
+.trays {
+    display: flex;
+    flex-direction: column;
+}
+
+.tray {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    min-height: calc(34 * var(--sp));
+    padding: 0 calc(6 * var(--sp)) 0 calc(12 * var(--sp));
+    background: var(--fill-1);
+    box-shadow: inset 0 0 0 1px var(--line-strong);
+    margin-bottom: -1px;
+    font-size: calc(12.5 * var(--sp));
+    animation: rise-in 0.18s var(--ease);
+}
+
+.tray:first-child {
+    border-radius: calc(10 * var(--sp)) calc(10 * var(--sp)) 0 0;
+}
+
+.tray-main {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    flex: 1;
+    min-width: 0;
+    height: calc(34 * var(--sp));
+    margin-left: calc(-4 * var(--sp));
+    padding: 0 calc(4 * var(--sp));
+    border-radius: var(--radius-s);
+}
+
+.tray-count {
+    flex: none;
+    font-weight: 500;
+}
+
+.tray-text {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: left;
+    color: var(--text-2);
+}
+
+.tray-text b {
+    color: var(--text);
+    font-weight: 500;
+}
+
+.tray-chev {
+    transform: rotate(-90deg);
+}
+
+.tray-main[aria-expanded="true"] .tray-chev {
+    transform: rotate(90deg);
+}
+
+.tray-signin .btn-sm {
+    height: calc(24 * var(--sp));
+}
+
+.steps-list {
+    width: calc(360 * var(--sp));
+    max-height: calc(320 * var(--sp));
+    overflow-y: auto;
+    padding: calc(8 * var(--sp)) calc(6 * var(--sp));
+}
+
+.steps-item {
+    display: flex;
+    align-items: flex-start;
+    gap: calc(9 * var(--sp));
+    padding: calc(4 * var(--sp)) calc(8 * var(--sp));
+    color: var(--text-2);
+    font-size: calc(12.5 * var(--sp));
+}
+
+.steps-mark {
+    flex: none;
+    width: calc(12 * var(--sp));
+    height: calc(12 * var(--sp));
+    margin-top: calc(3 * var(--sp));
+    border-radius: 50%;
+    box-shadow: inset 0 0 0 1.5px var(--line-strong);
+}
+
+.steps-item[data-state="doing"] {
+    color: var(--text);
+    font-weight: 500;
+}
+
+.steps-item[data-state="doing"] .steps-mark {
+    box-shadow: inset 0 0 0 1.5px var(--accent), inset 0 0 0 3.5px var(--surface), inset 0 0 0 6px var(--accent);
+}
+
+.steps-item[data-state="done"] {
+    color: var(--text-3);
+    text-decoration: line-through;
+}
+
+.steps-item[data-state="done"] .steps-mark {
+    background: var(--text-4);
+    box-shadow: none;
+}
+
+.tray-queue {
+    display: block;
+    padding: calc(4 * var(--sp));
+}
+
+.queue-list {
+    gap: 0;
+    max-height: calc(136 * var(--sp));
+}
+
+.queue-row {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    height: calc(30 * var(--sp));
+    padding: 0 calc(2 * var(--sp)) 0 calc(2 * var(--sp));
+    border-radius: var(--radius-s);
+}
+
+.queue-row:hover {
+    background: var(--fill-2);
+}
+
+.queue-row[data-dragging] {
+    opacity: 0.5;
+}
+
+.queue-grip {
+    display: inline-flex;
+    flex: none;
+    color: var(--text-4);
+    cursor: grab;
+    border-radius: calc(3 * var(--sp));
+}
+
+.queue-n {
+    flex: none;
+    width: calc(14 * var(--sp));
+    height: auto;
+    background: none;
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
+    font-weight: 500;
+    text-align: center;
+}
+
+.queue-kind {
+    flex: none;
+    width: calc(92 * var(--sp));
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
+}
+
+.queue-kind[data-kind="next"] {
+    color: var(--accent-text);
+}
+
+.queue-kind[data-kind="held"] {
+    color: var(--amber);
+}
+
+.queue-actions {
+    display: inline-flex;
+    flex: none;
+}
+
+.stash-tab {
+    position: absolute;
+    top: calc(-22 * var(--sp));
+    right: calc(12 * var(--sp));
+    z-index: 1;
+    display: inline-flex;
+    align-items: center;
+    gap: calc(6 * var(--sp));
+    height: calc(22 * var(--sp));
+    padding: 0 calc(9 * var(--sp));
+    border-radius: calc(6 * var(--sp)) calc(6 * var(--sp)) 0 0;
+    background: var(--fill-1);
+    box-shadow: inset 0 0 0 1px var(--line-strong);
+    color: var(--text-2);
+    font-size: calc(11.5 * var(--sp));
+    font-weight: 500;
+}
+
+.stash-tab .num {
+    color: var(--text-3);
+}
+
+.stash-tab:hover,
+.stash-tab[aria-expanded="true"] {
+    color: var(--text);
+    background: var(--fill-2);
+}
+
+.stash-list {
+    width: calc(340 * var(--sp));
+    max-height: calc(300 * var(--sp));
+    overflow-y: auto;
+}
+
+.stash-row {
+    display: flex;
+    align-items: center;
+    gap: calc(4 * var(--sp));
+    border-radius: calc(6 * var(--sp));
+}
+
+.stash-row:hover {
+    background: var(--fill-2);
+}
+
+.stash-text {
+    flex: 1;
+    min-width: 0;
+    padding: calc(7 * var(--sp)) calc(9 * var(--sp));
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: left;
+}
+
+
+/* ---------- Cavvy's own, in the same language ---------- */
+
+/* Schedules past a few rows scroll, so the conversation keeps its room. */
+.crow-list {
+    display: flex;
+    flex-direction: column;
+    max-height: min(calc(160 * var(--sp)), 20vh);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+/* Due: it runs when this turn ends. */
+.crow-when.due {
+    color: var(--accent-text);
+}
+
+.goal-checks {
+    max-height: min(calc(140 * var(--sp)), 18vh);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+/* Comments past a few lines scroll. */
+.cchips-list {
+    max-height: calc(92 * var(--sp));
+    overflow-y: auto;
+}
+
+/* An image smaller than the tile: at its own size, not blown up. */
+.att-image.small .att-thumb img {
+    object-fit: scale-down;
+}
+
+/* A side chat's answer, drawn as the conversation draws it. */
+.att-preview.prose {
+    max-height: calc(240 * var(--sp));
+    font-family: inherit;
+}
+
+pre.att-preview {
+    white-space: pre;
+}
+
+.att-thumb:focus-visible,
+.att-main:focus-visible,
+.att-back:focus-visible,
+.att-x:focus-visible,
+.stash-text:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: -2px;
+}
+
+/* What a queued or stashed message carries besides its words. */
+.queue-attached {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    gap: calc(4 * var(--sp));
+    max-width: 40%;
+    font-size: calc(12 * var(--sp));
+    color: var(--text-3);
+}
+
+/* Up next: with more than one, a row moves (drag it, or focus it and press up or down). */
+.queue-row {
+    position: relative;
+    outline: none;
+}
+
+.queue-row.movable {
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: none;
+    cursor: grab;
+}
+
+.queue-row:focus-visible {
+    background: var(--fill-2);
+    box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--focus) 55%, transparent);
+}
+
+/* The first steer, waiting for the turn's next step. */
+.queue-kind.joining::before {
+    content: "";
+    display: inline-block;
+    width: calc(6 * var(--sp));
+    height: calc(6 * var(--sp));
+    margin-right: calc(6 * var(--sp));
+    border-radius: 50%;
+    background: var(--accent);
+    vertical-align: middle;
+    animation: queue-joining 1.2s steps(12) infinite;
+    animation-play-state: var(--loops);
+}
+
+@keyframes queue-joining {
+    50% {
+        opacity: 0.3;
+        transform: scale(0.7);
+    }
+}
+
+/* Sorting: the others slide out of the way; the one held is lifted and follows the pointer. */
+.queue-list.sorting .queue-row {
+    transition: transform var(--dur-sort) var(--ease);
+}
+
+.queue-list .queue-row.lifted,
+.queue-list .queue-row.settling {
+    z-index: 2;
+    cursor: grabbing;
+    background: var(--surface);
+}
+
+.queue-list .queue-row.lifted {
+    box-shadow: var(--shadow-pop);
+}
+
+.queue-list .queue-row.settling {
+    transition: transform var(--dur-settle) var(--spring);
+}
+
+/* The move is in: every row takes its place and drops its transform at once. */
+.queue-list.still .queue-row {
+    transition: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .queue-list.sorting .queue-row,
+    .queue-list .queue-row.settling {
+        transition: none;
+    }
+
+    .queue-kind.joining::before {
+        animation: none;
+    }
+}
+
+/* A narrow column: what kind of message it is gives way first (the design's narrow-column rule). */
+:where(.main[data-narrow~="440"], .stage-pane[data-narrow~="440"]) .queue-kind {
+    display: none;
+}
