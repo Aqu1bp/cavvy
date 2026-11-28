@@ -386,13 +386,6 @@
     transform: translateX(-50%);
 }
 
-/* Nothing to show: the kit's blank, as the design spaces it (panel.css has an older .blank of its own). */
-.br-view > .blank,
-.sim-view > .blank {
-    gap: calc(10 * var(--sp));
-    padding: calc(24 * var(--sp));
-}
-
 /* No picture yet: the page's ground, the note in its middle. Reconnecting: the last picture dimmed under the note. */
 .br-view[data-wait="load"] {
     background: #fff;

@@ -204,11 +204,6 @@
     min-height: 0;
 }
 
-/* A paragraph, without the browser's margins (the design's base has none). */
-.terminal-body .blank-title {
-    margin: 0;
-}
-
 /* ---------- the screen: the emulator (xterm) and what's said under it ---------- */
 
 .tty {

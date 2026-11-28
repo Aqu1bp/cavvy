@@ -2274,10 +2274,6 @@
     color: var(--fg);
 }
 
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-}
-
 /* Long: its first lines, fading out, and Show more under them. */
 .peer-body.clamped {
     max-height: calc(10 * 1.55em);

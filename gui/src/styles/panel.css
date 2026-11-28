@@ -302,44 +302,6 @@ button.bg-main:hover {
     height: calc(24 * var(--sp));
 }
 
-.insp-foot {
-    display: flex;
-    gap: calc(8 * var(--sp));
-    padding: calc(10 * var(--sp));
-    flex: none;
-    border-top: 0.5px solid var(--line);
-}
-
-.insp-foot > .grow {
-    display: flex;
-    min-width: 0;
-}
-
-.insp-foot .btn {
-    flex: 1;
-    min-width: 0;
-}
-
-.insp .btn svg {
-    flex: none;
-}
-
-/* What's unusual about a file's change, as a quiet word after its name ("new", "deleted"), as on a turn's file rows. */
-.fs-w {
-    flex: none;
-    font: 600 0.786rem/1 var(--font-ui);
-    color: var(--fg-3);
-}
-
-.fs-w.added,
-.fs-w.untracked {
-    color: var(--add-fg);
-}
-
-.fs-w.deleted {
-    color: var(--del-fg);
-}
-
 /* An icon's status dot (here, and the sub-agent's bar and rows elsewhere). */
 .lic {
     position: relative;
@@ -349,36 +311,11 @@ button.bg-main:hover {
     color: var(--fg-3);
 }
 
-.nd {
-    position: absolute;
-    right: calc(-4 * var(--sp));
-    bottom: calc(-4 * var(--sp));
-    width: calc(8 * var(--sp));
-    height: calc(8 * var(--sp));
-    border-radius: 50%;
-    box-shadow: 0 0 0 2px var(--insp-bg);
-    background: var(--fg-4);
-}
 
-.nd.st-running {
-    background: var(--accent);
-}
 
-.nd.st-waiting {
-    background: var(--warn);
-}
 
-.nd.st-done {
-    background: var(--ok);
-}
 
-.nd.st-failed {
-    background: var(--danger);
-}
 
-.nd.st-stopped {
-    background: var(--fg-4);
-}
 
 /* "None": a quiet line, where a list has nothing (a command's output, usage). */
 .none {
