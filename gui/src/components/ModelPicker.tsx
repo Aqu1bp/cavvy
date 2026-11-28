@@ -11,7 +11,7 @@ import { Menu } from "./ui/Menu";
 import { Spinner } from "./ui/bits";
 import { ProviderIcon } from "./ui/ProviderIcon";
 import { withShortcut } from "../state/keybindings";
-import { effortAt, effortKey, effortLevels, effortOf, takesEffort, type Effort } from "../lib/effort";
+import { effortAt, effortBeside, effortKey, effortLevels, effortOf, takesEffort, type Effort } from "../lib/effort";
 import { sendsAccountPick } from "../lib/account-pick";
 import { limitBadge, limitFor, limitName, meterOf, nearLimit, planTitle, resolvedOn, windowShort, type NearLimit } from "../lib/limits";
 import { covers } from "@shared/plan-meter";
@@ -633,9 +633,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                             <button ref={modelRow} class="mp-current" title="Change model" aria-label={`${chipName()}. Change model`} onClick={() => toModels()}>
                                 <Show when={currentProvider()}>{(id) => <ProviderIcon id={id()} name={providerName(id())} size={15} />}</Show>
                                 <span class="mp-current-name">{chipModel()}</span>
-                                <Show when={reasoning()}>
-                                    <span class="bar-dim">{effortOf(effort())?.id ?? "default"}</span>
-                                </Show>
+                                <Show when={reasoning() && effortBeside(chipModel(), effort())}>{(w) => <span class="bar-dim">{w()}</span>}</Show>
                                 <ChevronRight size={13} class="mp-current-chev" />
                             </button>
                             <Show when={fastOk()}>
