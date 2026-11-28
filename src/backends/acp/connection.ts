@@ -30,6 +30,7 @@ import { MODE_INFO, type PermissionMode } from "../../permissions/modes";
 import type { PdfPart, Usage } from "../../providers/types";
 import type { ToolDisplay } from "../../tools/types";
 import { titleFor } from "../claude-code";
+import { redact } from "../../util/redact";
 import type { JsonLinesProcess } from "../cli";
 import { servedToolArgs, servedToolName } from "../served-tools";
 import type { AgentCliDef, CliCapabilities } from "../defs";
@@ -74,6 +75,8 @@ interface Turn {
     ref: string;
     /** Times its agent said it's waiting to try again (AcpAgent.stalled). */
     retries?: number;
+    /** It said so, and nothing of the turn has come since: what comes next ends the wait. */
+    stalled?: boolean;
     tools: Map<string, ToolState>;
     /** Tool calls the agent asked about, or Cavvy's gate answered. */
     asked: Set<string>;
@@ -238,13 +241,15 @@ export class AcpConnection implements CliConnection {
         this.rpc = new AcpRpc(proc, (m, p) => this.onNotification(m, p), (m, p) => this.onRequest(m, p));
         this.done = this.rpc.done.then(() => this.lost());
         // An error it waits out without a word over ACP (OpenCode's refusals): the turn says why it's waiting.
-        const stalled = agent.stalled;
-        if (stalled) {
+        // What it streamed stays: it goes on with the same prompt.
+        if (agent.stalled) {
             proc.onStderrLine = (line) => {
                 const turn = this.turn;
                 if (!turn || turn.ended || !this.sessionId) return;
-                const why = stalled.why(line, this.sessionId);
-                if (why) this.emit({ type: "retry", attempt: (turn.retries = (turn.retries ?? 0) + 1), delayMs: 0, reason: why });
+                const why = agent.stalled!(line, this.sessionId);
+                if (!why) return;
+                turn.stalled = true;
+                this.emit({ type: "retry", attempt: (turn.retries = (turn.retries ?? 0) + 1), delayMs: 0, reason: redact(why), keep: true });
             };
         }
     }
@@ -687,6 +692,11 @@ export class AcpConnection implements CliConnection {
             return;
         }
         const u = p.update ?? {};
+        // Going on after a wait it said (AcpAgent.stalled): no longer retrying.
+        if (this.turn?.stalled && !this.turn.ended && /^(agent_message_chunk|agent_thought_chunk|tool_call)/.test(String(u.sessionUpdate))) {
+            this.turn.stalled = false;
+            this.emit({ type: "activity" });
+        }
         switch (u.sessionUpdate) {
             case "config_option_update":
                 if (Array.isArray(u.configOptions)) this.config = u.configOptions;

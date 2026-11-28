@@ -138,7 +138,7 @@ export type AgentEvent =
     | { type: "tool_approved"; id: string; reason: string; sandboxed?: boolean }
     | { type: "tool_end"; call: ToolCallPart; result: ToolResult; durationMs: number; /** Its title now, when what it did was only known at its end (a backend's web search). */ title?: string }
     | { type: "notice"; level: "info" | "warn" | "error"; message: string; /** What it is, for the GUI to draw (#426); `message` stays the whole of it, as text. */ data?: NoticeData }
-    | { type: "retry"; attempt: number; delayMs: number; reason: string }
+    | { type: "retry"; attempt: number; delayMs: number; reason: string; /** What it streamed stands: it goes on with the same response. */ keep?: boolean }
     | { type: "usage"; usage: Usage; cost: CostEstimate; contextTokens: number; /** Already accounted for by the backend; only updates a sub-agent's display. */ displayOnly?: boolean }
     /** `idle`: compacting a conversation left idle, before its prompt cache expires. */
     | { type: "compact_start"; auto: boolean; idle?: boolean }

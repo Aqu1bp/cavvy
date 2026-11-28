@@ -719,6 +719,8 @@ export class Runtime {
     private argsSoFar = new Map<string, string>();
     /** The call whose start set the activity, and what it set it to: once it ends, its title would no longer be true. */
     private activityCall?: { id: string; label: string };
+    /** A retry kept what streamed (AgentEvent retry `keep`): the next words in the open block say it's writing again. */
+    private writingAgain = false;
     /** Background shell id -> the description of the call that started it, whole (a block's input is cut). */
     private shellDescriptions = new Map<string, string>();
     /** Each sub-agent's label (how its permission prompts name it) and its open text block while it writes. */
@@ -2973,7 +2975,8 @@ export class Runtime {
                     this.openText = id;
                     this.responseBlocks.push(id);
                     this.activity("Writing");
-                }
+                } else if (this.writingAgain) this.activity("Writing");
+                this.writingAgain = false;
                 this.op({ op: "append", turnId: this.turnId ?? this.currentTurn().id, blockId: this.openText, field: "text", text: redact(e.text) });
                 break;
             }
@@ -3104,13 +3107,17 @@ export class Runtime {
                 break;
             }
             case "retry": {
-                // The partial response is thrown away and asked for again.
+                // The partial response is thrown away and asked for again, unless it goes on (`keep`): then what
+                // streamed stays, in the same blocks, and its next words say it's writing again.
                 const turnId = this.turnId;
-                if (this.continuationText) this.patchBlock(this.continuationText.id, { text: this.continuationText.prefix }, turnId);
-                if (turnId) for (const id of this.responseBlocks) this.op({ op: "block.remove", turnId: this.responseTurn.get(id) ?? turnId, blockId: id });
-                this.responseBlocks = [];
-                this.responseTurn.clear();
-                this.openText = this.openThinking = undefined;
+                if (e.keep) this.writingAgain = true;
+                else {
+                    if (this.continuationText) this.patchBlock(this.continuationText.id, { text: this.continuationText.prefix }, turnId);
+                    if (turnId) for (const id of this.responseBlocks) this.op({ op: "block.remove", turnId: this.responseTurn.get(id) ?? turnId, blockId: id });
+                    this.responseBlocks = [];
+                    this.responseTurn.clear();
+                    this.openText = this.openThinking = undefined;
+                }
                 this.activity(`Retrying${e.delayMs > 0 ? ` in ${Math.ceil(e.delayMs / 1000)}s` : ""} · Stop to cancel`, `${e.reason.slice(0, 160)} (attempt ${e.attempt})`);
                 break;
             }

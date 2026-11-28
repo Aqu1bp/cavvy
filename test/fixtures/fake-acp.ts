@@ -32,8 +32,9 @@
 //   [[fail:KIND]]     a tool it doesn't ask about fails: `execute` a command that ran, `edit` an edit refused before
 //                     asking (must read first), `notrun` a command refused unrun; then waits a moment for session/cancel
 //   [[slow]]          starts a command and waits for session/cancel: answers cancelled
-//   [[stall]]         as OpenCode on a model that refuses: logs its title's and its reply's stream errors (to stderr,
-//                     with --print-logs) and says nothing more until session/cancel
+//   [[stall]]         as OpenCode on a model that refuses: says "Before", logs its title's and its reply's stream
+//                     errors (to stderr, with --print-logs) and says nothing more until session/cancel.
+//                     [[stall:resume]]: then, a moment later, goes on: " after" and ends end_turn
 //   [[crash]]         starts a command, says something, then writes "fatal: boom" to stderr and exits 3
 //   [[auth]]          answers -32000 Authentication required. [[disabled]]: -32603 Model access is disabled
 //   [[late]]          ends, then sends a message chunk after its answer
@@ -279,11 +280,18 @@ async function prompt(id: number, p: any) {
             if (await untilCancel(10_000)) return end("cancelled");
             break;
         case "stall": {
+            update(sid, { sessionUpdate: "agent_message_chunk", messageId: "m1", content: { type: "text", text: "Before" } });
+            await sleep(50);
             if (process.argv.includes("--print-logs")) {
                 const line = (small: boolean) => `timestamp=2026-11-28T00:12:19.614Z level=ERROR run=e01524ae message="stream error" providerID=opencode modelID=big-pickle session.id=${sid} small=${small} agent=${small ? "title" : "build"} mode=primary error.error="AI_APICallError: Free usage limit reached. Free models work in OpenCode (https://opencode.ai); subscribe to OpenCode Go to keep going: https://opencode.ai/go"\n`;
                 process.stderr.write(line(true));
                 process.stderr.write(line(false).replace(sid, `${sid}x`));
                 process.stderr.write(line(false));
+            }
+            if (arg === "resume") {
+                await sleep(300);
+                update(sid, { sessionUpdate: "agent_message_chunk", messageId: "m1", content: { type: "text", text: " after" } });
+                return end();
             }
             if (await untilCancel(10_000)) return end("cancelled");
             break;

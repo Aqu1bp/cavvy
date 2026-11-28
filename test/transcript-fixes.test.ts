@@ -175,6 +175,40 @@ describe("output token limit continuation", () => {
         }
     });
 
+    test("a retry that keeps what streamed (OpenCode waiting out a refusal): the text stays, and what follows is written as it streams", async () => {
+        const { Engine } = await import("../src/server/engine");
+        const engine = new Engine({ listModels: async () => [] });
+        try {
+            const rt = await engine.createSession(realpathSync(tempDir()));
+            await rt.ready;
+            rt.session.setTitle("Kept through a wait");
+            const seen: (string | undefined)[] = [];
+            const live: string[] = [];
+            const label = () => (rt as any).view.state.activity?.label as string | undefined;
+            const a = scripted((_req, _n, onEvent) => {
+                onEvent({ type: "text", text: "Before" });
+                onEvent({ type: "retry", attempt: 1, delayMs: 0, reason: "Free usage limit reached.", keep: true });
+                seen.push(label());
+                // As the connection says it when OpenCode goes on: straight to the runtime (the agent passes no
+                // provider's activity on).
+                (rt as any).onEvent({ type: "activity" });
+                seen.push(label());
+                onEvent({ type: "text", text: " after" });
+                seen.push(label());
+                live.push(...rt.snapshot().turns.at(-1)!.blocks.filter((b) => b.t === "text").map((b) => b.text));
+                return reply([{ type: "text", text: "Before after" }], "end_turn");
+            }, { session: rt.session, emit: (e) => (rt as any).onEvent(e) });
+            Object.assign(rt, { model: a.agent.model, agent: a.agent });
+            await rt.startTurn("hi");
+            expect(seen).toEqual(["Retrying · Stop to cancel", undefined, "Writing"]);
+            // One block as it streams: Markdown that spans the wait (a code fence) stays whole.
+            expect(live).toEqual(["Before after"]);
+            expect(rt.snapshot().turns[0]!.blocks.filter((b) => b.t === "text").map((b) => b.text).join("")).toBe("Before after");
+        } finally {
+            await engine.stop();
+        }
+    });
+
     test.each(["streamed", "unstreamed", "retry", "whitespace", "multiple text blocks"])("%s continuation stays one Markdown block after thinking, live and reopened", async (mode) => {
         const { Engine } = await import("../src/server/engine");
         const engine = new Engine({ listModels: async () => [] });

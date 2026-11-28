@@ -25,11 +25,10 @@ export interface AcpAgent {
      */
     status?(bin: string, signal?: AbortSignal, env?: Record<string, string>): Promise<{ signedIn: boolean; description: string; free?: boolean }>;
     /**
-     * Flags its process starts with so that `stalled` hears it (OpenCode's --print-logs), and a line of its stderr
-     * that says the running prompt hit an error it's waiting out by itself, unsaid over ACP: why. `sessionId`: the
-     * session Cavvy opened.
+     * A line of its stderr that says the running prompt hit an error it's waiting out by itself, unsaid over ACP: why.
+     * `sessionId`: the session Cavvy opened.
      */
-    stalled?: { args: string[]; why(line: string, sessionId: string): string | undefined };
+    stalled?(line: string, sessionId: string): string | undefined;
     /**
      * Its own plan mode, set to `plan` in Cavvy's plan mode and back to `normal` outside it: a config option
      * (`configId`), or its session mode (session/set_mode) when there's none.
@@ -248,10 +247,11 @@ async function opencodeStatus(bin: string, signal?: AbortSignal, env?: Record<st
 
 const OPENCODE: AcpAgent = {
     // The same in every mode: a mode change needs no restart. Cavvy decides each ask by its mode then.
-    spawn: (cfg) => ({ args: ["--cwd", cfg.cwd], env: opencodeEnv(cfg.trusted) }),
+    // Its log on stderr, errors only: what `stalled` reads.
+    spawn: (cfg) => ({ args: ["--print-logs", "--log-level", "ERROR", "--cwd", cfg.cwd], env: opencodeEnv(cfg.trusted) }),
     keepsFolder: true,
     status: opencodeStatus,
-    stalled: { args: ["--print-logs", "--log-level", "ERROR"], why: opencodeStalled },
+    stalled: opencodeStalled,
     // `opencode models`: provider/model, one a line (about half a second).
     async listModels(bin, signal, env) {
         const r = await runCli(bin, ["models"], { signal, timeoutMs: 30_000, env });

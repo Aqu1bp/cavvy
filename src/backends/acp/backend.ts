@@ -69,7 +69,7 @@ class AcpAdapter implements AgentCliAdapter {
     spawn(cfg: SpawnConfig): SpawnSpec {
         const bin = requireCli(this.def.id, this.def.cli);
         const own = this.agent.spawn(cfg);
-        const args = [...extraArgs(this.def.id), ...(this.def.acpArgs ?? []), ...(this.agent.stalled?.args ?? []), ...own.args];
+        const args = [...extraArgs(this.def.id), ...(this.def.acpArgs ?? []), ...own.args];
         // The user's variables for it (agent-env.ts), then what Cavvy sets for it (its permission config).
         const env = { ...cliEnv(this.def.id), ...own.env };
         return { bin, args, cwd: cfg.cwd, env, fingerprint: spawnFingerprint({ bin, args, cwd: cfg.cwd, env }) };

@@ -100,11 +100,18 @@ describe("OpenCode that waits out a refusal", () => {
         for (let i = 0; i < 200 && !events.some((e) => e.type === "retry"); i++) await Bun.sleep(20);
         await Bun.sleep(100);
         expect(events.filter((e) => e.type === "retry")).toEqual([
-            { type: "retry", attempt: 1, delayMs: 0, reason: "Free usage limit reached. Free models work in OpenCode (https://opencode.ai); subscribe to OpenCode Go to keep going: https://opencode.ai/go" },
+            { type: "retry", attempt: 1, delayMs: 0, reason: "Free usage limit reached. Free models work in OpenCode (https://opencode.ai); subscribe to OpenCode Go to keep going: https://opencode.ai/go", keep: true },
         ]);
         expect(logLines()[0].argv).toContain("--print-logs");
         stop.abort();
         await done;
+    });
+
+    test("one that goes on after the wait: what it said before stays, and the wait is over", async () => {
+        const { events, run } = await makeAgent();
+        await run("[[stall:resume]]");
+        const kinds = events.flatMap((e) => (e.type === "retry" ? ["retry"] : e.type === "activity" && !e.text ? ["resumed"] : e.type === "text" ? [`text:${e.text}`] : []));
+        expect(kinds).toEqual(["text:Before", "retry", "resumed", "text: after"]);
     });
 });
 

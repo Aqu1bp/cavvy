@@ -348,7 +348,7 @@ describe("OpenCode's spawn", () => {
         expect(plan.edit).toEqual({ "*": "deny", ".opencode/plans/*.md": "ask" });
         expect(plan.bash).toBe("ask");
         const spec = acpAgent("opencode").spawn({ cwd: "/w", trusted: true } as any);
-        expect(spec.args).toEqual(["--cwd", "/w"]);
+        expect(spec.args).toEqual(["--print-logs", "--log-level", "ERROR", "--cwd", "/w"]);
     });
 });
 
