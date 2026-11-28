@@ -18,7 +18,7 @@ export interface PopoverPlace {
  */
 export function placePopover(
     anchor: { top: number; bottom: number; left: number; right: number },
-    o: { width: number; least: number; placement: "top" | "bottom"; align?: "start" | "end"; vw: number; vh: number },
+    o: { width: number; least: number; placement: "top" | "bottom"; align?: "start" | "end"; vw: number; vh: number; offset?: number },
 ): PopoverPlace {
     const width = Math.max(0, Math.min(o.width, o.vw - 16));
     let left = o.align === "end" ? anchor.right - width : anchor.left;
@@ -26,7 +26,8 @@ export function placePopover(
     const below = o.vh - anchor.bottom - 12;
     const above = anchor.top - 12;
     const useTop = o.placement === "top" ? above >= o.least || above > below : below < o.least && above > below;
-    return useTop ? { left, width, bottom: o.vh - anchor.top + 6, maxHeight: Math.max(160, above) } : { left, width, top: anchor.bottom + 6, maxHeight: Math.max(160, below) };
+    const gap = o.offset ?? 6;
+    return useTop ? { left, width, bottom: o.vh - anchor.top + gap, maxHeight: Math.max(160, above) } : { left, width, top: anchor.bottom + gap, maxHeight: Math.max(160, below) };
 }
 
 /**

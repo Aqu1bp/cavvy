@@ -1,140 +1,323 @@
-/* Servers (components/Servers.tsx): the list of machines, adding one, and the cover while a window reaches its server. */
-.server-row {
+/* Servers (components/Servers.tsx): the machine menu, adding a server, and the cover while a window reaches its
+   server. Taken as is from the design's dialogs.css (servers section); px that sits with text is in --sp. */
+
+/* ---------- shared: forms, host keys, progress ---------- */
+
+/* A dialog that changes height between steps hangs from a fixed top edge, so it doesn't re-centre.
+   (Its keyframes, dlg-top-in, are overlays.css's: the palette uses them too.) */
+.dlg.dlg-top {
+    top: 21vh;
+    max-height: calc(79vh - 32 * var(--sp));
+    transform: translateX(-50%);
+    animation: dlg-top-in 0.18s var(--ease);
+}
+
+.form-stack .input.mono::placeholder {
+    font-family: var(--font-ui);
+    font-size: calc(13 * var(--sp));
+}
+
+.input-invalid,
+.input-invalid:focus {
+    box-shadow: inset 0 0 0 1px var(--red), 0 0 0 3px color-mix(in srgb, var(--red) 16%, transparent);
+}
+
+.fp {
+    margin: 0;
+    border-radius: var(--radius-m);
+    background: var(--code-bg);
+    box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.fp-row {
+    display: flex;
+    align-items: baseline;
+    gap: calc(12 * var(--sp));
+    min-width: 0;
+    padding: calc(7 * var(--sp)) calc(12 * var(--sp));
+}
+
+.fp-row + .fp-row {
+    border-top: 1px solid var(--line);
+}
+
+.fp-row dt {
+    flex: none;
+    width: calc(60 * var(--sp));
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.fp-row dd {
+    min-width: 0;
+    margin: 0;
+    font-size: calc(11 * var(--sp));
+    overflow-wrap: anywhere;
+    user-select: text;
+}
+
+.progress {
+    display: flex;
+    flex-direction: column;
+    gap: calc(10 * var(--sp));
+    padding: calc(2 * var(--sp)) 0 calc(4 * var(--sp));
+}
+
+.progress-top {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    min-width: 0;
+    color: var(--text-2);
+}
+
+.progress-top .spinner {
+    color: var(--accent);
+}
+
+.progress-text {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.progress-pct {
+    flex: none;
+    min-width: calc(34 * var(--sp));
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
+    text-align: right;
+}
+
+.progress .bar {
+    flex: none;
+    width: 100%;
+}
+
+.progress-inline {
+    display: flex;
+    align-items: center;
+    gap: calc(10 * var(--sp));
+    height: calc(20 * var(--sp));
+}
+
+.problem-line {
+    padding: calc(8 * var(--sp)) calc(10 * var(--sp));
+    border-radius: var(--radius-m);
+    background: var(--red-soft);
+    color: var(--red);
+    font-size: calc(12 * var(--sp));
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+    user-select: text;
+}
+
+.lacks {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    border-radius: var(--radius-m);
+    box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.lacks li {
+    padding: calc(8 * var(--sp)) calc(12 * var(--sp));
+    color: var(--text-2);
+    font-size: calc(12.5 * var(--sp));
+}
+
+.lacks li + li {
+    border-top: 1px solid var(--line);
+}
+
+/* ---------- the machine menu ---------- */
+
+.machine-menu {
+    min-width: calc(272 * var(--sp));
+}
+
+.machine-row {
     display: flex;
     align-items: center;
     gap: calc(2 * var(--sp));
 }
 
-.server-dialog {
-    display: flex;
-    flex-direction: column;
-    gap: calc(12 * var(--sp));
-    padding: calc(20 * var(--sp));
+.machine-row > .menu-item {
+    flex: 1;
+    min-width: 0;
+    width: auto;
 }
 
-.server-dialog h2 {
-    font-size: 1.05rem;
-}
-
-.server-dialog form {
-    display: flex;
-    flex-direction: column;
-    gap: calc(10 * var(--sp));
-}
-
-.server-dialog label {
-    display: flex;
-    flex-direction: column;
-    gap: calc(4 * var(--sp));
-    font-size: 0.86rem;
-    color: var(--fg-2);
-}
-
-/* Kept in sync with this machine: the Machines menu's sync switch, on. */
-.server-sync-on {
-    color: var(--accent);
-}
-
-.server-actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: calc(8 * var(--sp));
-    margin-top: calc(4 * var(--sp));
-}
-
-.server-working {
-    display: flex;
-    align-items: center;
-    gap: calc(8 * var(--sp));
-    color: var(--fg-2);
-}
-
-.server-key {
-    padding: calc(8 * var(--sp)) calc(10 * var(--sp));
-    border: 0.5px solid var(--line);
-    border-radius: calc(8 * var(--sp));
-    overflow-wrap: anywhere;
-    user-select: text;
-}
-
-.server-problem {
-    display: flex;
-    flex-direction: column;
-    gap: calc(4 * var(--sp));
-    overflow-wrap: anywhere;
-    user-select: text;
-}
-
-.server-lacks {
-    margin: 0;
-    padding-left: calc(18 * var(--sp));
-    display: flex;
-    flex-direction: column;
-    gap: calc(4 * var(--sp));
-    font-size: 0.86rem;
-    color: var(--fg-2);
-}
-
-.server-cover {
-    display: contents;
-}
-
-/* Over a window that had been on its server, when getting back needs the user. */
-.server-over {
-    position: fixed;
-    inset: 0;
-    z-index: 900;
-    background: var(--sheet);
-}
-
-.server-cover .server-actions {
-    justify-content: center;
-}
-
-.server-cover .server-key,
-.server-cover .server-problem {
-    max-width: calc(520 * var(--sp));
-}
-
-/* The servers that can't be reached as they are, between the sidebar's list and its foot (components/OtherMachines.tsx). */
-.sidebar .others {
-    flex: none;
-    padding: 0 calc(8 * var(--sp)) calc(4 * var(--sp));
-}
-
-.sidebar .others:empty {
-    display: none;
-}
-
-.others .om-h {
+.machine-name {
     display: flex;
     align-items: baseline;
     gap: calc(8 * var(--sp));
-    width: 100%;
-    padding: calc(4 * var(--sp)) calc(8 * var(--sp));
-    border: 0;
-    border-radius: calc(6 * var(--sp));
-    background: none;
-    color: var(--rail-fg-2);
-    font: inherit;
-    font-size: 0.786rem;
-    font-weight: 600;
-    text-align: left;
-    cursor: pointer;
+    flex: 1;
+    min-width: 0;
 }
 
-.others .om-h:hover {
-    color: var(--rail-fg);
-}
-
-.others .om-n {
+.machine-trouble {
     flex: none;
-    font-weight: 400;
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
+    white-space: nowrap;
 }
 
-.others .om-h:focus-visible {
-    outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
-    outline-offset: -2px;
+.machine-trouble[data-tone='red'] {
+    color: var(--red);
+}
+
+.machine-trouble[data-tone='amber'] {
+    color: var(--amber);
+}
+
+.machine-acts {
+    display: inline-flex;
+    justify-content: flex-end;
+    gap: 1px;
+    flex: none;
+    width: calc(49 * var(--sp));
+}
+
+.machine-act {
+    color: var(--text-3);
+    outline: none;
+}
+
+.machine-act:is(:hover, :focus-visible) {
+    background: var(--fill-2);
+    color: var(--text);
+}
+
+/* ---------- the cover: this window's server isn't ready ---------- */
+
+.cover {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: 1;
+    min-height: 0;
+    padding: calc(32 * var(--sp)) calc(32 * var(--sp)) 10vh;
+    overflow: auto;
+}
+
+.cover-card {
+    width: calc(500 * var(--sp));
+    max-width: 100%;
+    border-radius: var(--radius-l);
+    background: var(--surface);
+    box-shadow: var(--shadow-card), 0 6px 20px -10px rgba(0, 0, 0, 0.12);
+    animation: rise-in 0.2s var(--ease);
+}
+
+[data-theme='dark'] .cover-card {
+    background: var(--fill-1);
+}
+
+.cover-head {
+    display: flex;
+    align-items: flex-start;
+    gap: calc(10 * var(--sp));
+    padding: calc(16 * var(--sp)) calc(20 * var(--sp)) 0;
+}
+
+.cover-icon {
+    display: inline-flex;
+    flex: none;
+    margin-top: calc(2 * var(--sp));
+    color: var(--text-2);
+}
+
+.cover-icon[data-tone='red'] {
+    color: var(--red);
+}
+
+.cover-icon .spinner {
+    color: var(--accent);
+}
+
+.cover-heading {
+    flex: 1;
+    min-width: 0;
+}
+
+.cover-title {
+    font-size: calc(14.5 * var(--sp));
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    line-height: calc(20 * var(--sp));
+    overflow-wrap: anywhere;
+}
+
+.cover-sub {
+    margin-top: calc(2 * var(--sp));
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.cover-body {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    min-height: calc(34 * var(--sp));
+    padding: calc(14 * var(--sp)) calc(20 * var(--sp)) calc(18 * var(--sp)) calc(46 * var(--sp));
+}
+
+.cover-text {
+    color: var(--text-2);
+    font-size: calc(13 * var(--sp));
+}
+
+.cover-list {
+    border-radius: var(--radius-m);
+    box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.cover-list li {
+    padding: calc(7 * var(--sp)) calc(12 * var(--sp));
+}
+
+.cover-list li + li {
+    border-top: 1px solid var(--line);
+}
+
+.cover-foot {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    padding: calc(12 * var(--sp)) calc(16 * var(--sp)) calc(12 * var(--sp)) calc(12 * var(--sp));
+    border-top: 1px solid var(--line);
+    background: var(--bg-side);
+    border-radius: 0 0 var(--radius-l) var(--radius-l);
+}
+
+[data-theme='dark'] .cover-foot {
+    background: color-mix(in srgb, var(--bg-side) 60%, transparent);
+}
+
+/* ---------- from the design's kit: what these dialogs use that Cavvy's kit names otherwise ---------- */
+
+/* The design leaves out a body with nothing in it; Cavvy's dialog always has one. */
+.dlg-top .dlg-body:empty {
+    display: none;
+}
+
+/* Cavvy has a third button on a server's row (sync): its column is a button wider. */
+.machine-acts:has(> :nth-child(3)) {
+    width: calc(74 * var(--sp));
+}
+
+/* Kept in sync with this computer: the sync button, on. */
+.machine-act[aria-pressed="true"] {
+    color: var(--accent);
 }
 
 /* The server a set-aside or archived session is on, after its title (the sidebar's rows: components/Sidebar.tsx). */
@@ -144,15 +327,79 @@
     color: color-mix(in srgb, var(--rail-fg-2) 72%, transparent);
 }
 
-/* What a rented server costs, beside its name. */
-.server-cost {
-    flex: none;
-    font-size: 0.857rem;
-    color: var(--fg-3);
-    font-variant-numeric: tabular-nums;
+:where(.cover-card) p {
+    margin: 0;
 }
 
-/* The machine picked, while Home gets there (state/actions.ts goHomeOn). */
-.strip-ctl[aria-busy="true"] {
-    opacity: 0.6;
+/* Where the cover goes: in the window's splash, or over a window that had been on its server. */
+.server-cover {
+    display: flex;
+    flex: 1;
+    align-self: stretch;
+    min-height: 0;
+    /* The splash it sits in centres its text. */
+    text-align: start;
+}
+
+.server-over {
+    position: fixed;
+    inset: 0;
+    z-index: 900;
+    background: var(--sheet);
+}
+
+/* The servers that can't be reached as they are, between the sidebar's list and its foot (components/OtherMachines.tsx). */
+.server-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    flex: none;
+    padding: calc(6 * var(--sp));
+    border-top: 1px solid var(--line);
+}
+
+.server-rows:empty {
+    display: none;
+}
+
+.server-row {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    height: calc(28 * var(--sp));
+    padding: 0 calc(9 * var(--sp));
+    border-radius: calc(6 * var(--sp));
+    font-size: 0.893rem;
+    transition: background 0.1s;
+}
+
+.server-row:hover {
+    background: var(--rail-hover);
+}
+
+.server-row-icon {
+    flex: none;
+    color: var(--fg-3);
+}
+
+.server-row-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 500;
+}
+
+.server-row-word {
+    flex: none;
+    margin-left: auto;
+    font-size: 0.857rem;
+}
+
+.server-row-word[data-tone="red"] {
+    color: var(--danger);
+}
+
+.server-row-word[data-tone="amber"] {
+    color: var(--warn);
 }

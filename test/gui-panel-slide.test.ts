@@ -44,7 +44,7 @@ test("the column's size steps stand for the queries they replaced, at the same s
     expect(columnSteps(701, COLUMN_NARROW)).toBe("");
     expect(columnSteps(700, COLUMN_NARROW)).toBe("700");
     expect(columnSteps(600, COLUMN_NARROW)).toBe("700 640 600");
-    expect(columnSteps(300, COLUMN_SHORT)).toBe("600 560 360");
+    expect(columnSteps(300, COLUMN_SHORT)).toBe("560 360");
 });
 
 test("the column is the sheet less a docked inspector and the terminal's row, and waits behind a maximized terminal at its size", () => {
@@ -129,13 +129,14 @@ test("hiding the rail takes the sheet to the window's edges, and the conversatio
 });
 
 test("what the rail's hiding puts before the title opens with the slide, so the title moves to its place in step with it", () => {
-    // Shown and hidden at once, the rail's two buttons and the project pushed the title 215px one way while the bar
-    // slid the other. Each is a box of one column, 0fr while the rail shows, that opens over the slide's time.
+    // Shown and hidden at once, the rail's two buttons pushed the title one way while the bar slid the other. They're
+    // a box of one column, 0fr while the rail shows, that opens over the slide's time. (The project before the title
+    // shows whether the rail does or not.)
     const header = parseRules(read("styles/header.css"));
     const decls = (selector: string) => header.filter((r) => r.selectors.includes(selector)).reduce((all, r) => new Map([...all, ...r.decls]), new Map<string, string>());
     const slide = parseRules(read("styles/shell.css")).find((r) => r.selectors.includes(".win") && r.decls.has("transition"))!.decls.get("transition")!;
     expect(slide).toContain("grid-template-columns var(--dur-panel) var(--ease)");
-    for (const box of [".bar-rail", ".proj-box"]) {
+    for (const box of [".bar-rail"]) {
         const closed = decls(box);
         const open = decls(`.header.rail-off ${box}`);
         expect([box, closed.get("display"), closed.get("grid-template-columns"), open.get("grid-template-columns")]).toEqual([box, "grid", "0fr", "1fr"]);
@@ -152,16 +153,12 @@ test("what the rail's hiding puts before the title opens with the slide, so the 
     const ring = parseRules(read("styles/base.css")).find((r) => r.selectors.some((sel) => sel.includes(":focus-visible")) && r.decls.has("outline-offset"));
     expect([ring?.decls.get("outline")?.split(" ")[0], ring?.decls.get("outline-offset")]).toEqual(["2px", "2px"]);
     expect([decls(".bar-rail-in").get("padding"), decls(".bar-rail-in").get("margin")]).toEqual(["4px", "-4px"]);
-    expect([decls(".proj").get("min-width"), decls(".proj").get("overflow"), decls(".proj .truncate").get("flex")]).toEqual(["0", "hidden", "none"]);
-    // Closed, a box takes back the gap that would follow it: the bar's (12px), the crumbs' (10).
-    expect(decls(".header").get("gap")).toBe("12px");
-    expect([decls(".bar-rail").get("margin-right"), decls(".header.rail-off .bar-rail").get("margin-right")]).toEqual(["-12px", "0"]);
-    expect(decls(".crumbs").get("gap")).toBe("calc(10 * var(--sp))");
-    expect([decls(".proj-box").get("margin-right"), decls(".header.rail-off .proj-box").get("margin-right")]).toEqual(["calc(-10 * var(--sp))", "calc(-6 * var(--sp))"]);
+    // Closed, the box takes back the gap that would follow it: the bar's (10px).
+    expect(decls(".main-head").get("gap")).toBe("10px");
+    expect([decls(".bar-rail").get("margin-right"), decls(".header.rail-off .bar-rail").get("margin-right")]).toEqual(["-10px", "calc(2 * var(--sp))"]);
     // The boxes are in the bar whether the rail shows or not.
     const bar = read("components/Header.tsx");
-    expect(bar).toMatch(/<div class="bar-rail">\s*<div class="bar-rail-in">/);
-    expect(bar).toMatch(/<span class="proj-box">\s*<button class="proj"/);
+    expect(bar).toMatch(/<div class="bar-rail">\s*<div class="bar-rail-in main-head-lead">/);
 });
 
 test("the title bar keeps to the top line through the slide: its padding eases as the window's inset does", () => {
@@ -317,7 +314,7 @@ test("the title bar's parts for a hidden sidebar are hidden with the bar, behind
     // own bar, reached by Shift+Tab from it, and a hole in the window's drag strip.
     const css = readFileSync(join(import.meta.dir, "../gui/src/styles/header.css"), "utf8");
     const open = (part: string) => new RegExp(`\\.header\\.rail-off \\.${part},\\s*\\[data-rail="overlay"\\] \\.header \\.${part} \\{[^}]*\\}`).exec(css)?.[0] ?? "";
-    for (const part of ["bar-rail", "proj-box"]) {
+    for (const part of ["bar-rail"]) {
         expect(open(part)).toContain("visibility: inherit;");
         expect(open(part)).not.toContain("visibility: visible");
     }

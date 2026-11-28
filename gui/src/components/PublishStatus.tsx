@@ -35,7 +35,7 @@ export function PublishStatus(p: { handle: SessionHandle; request?: string; onCl
     onCleanup(() => { generation++; clearInterval(timer); window.removeEventListener("focus", focus); document.removeEventListener("visibilitychange", focus); });
     return <>
         <Show when={pr()}><div class="review-note"><button class="link-btn" onClick={() => void openExternal(pr()!.url)}>#{pr()?.number} {pr()?.title} · {pr()?.state}</button> · {pr()?.checks} checks</div></Show>
-        <Show when={error()}><div class="review-note" title={error()}>PR state unavailable. Open Push to check the repository.</div></Show>
+        <Show when={error()}><div class="review-note" title={error()}>Couldn't check the pull request</div></Show>
         <PublishDialog id={p.request} onClose={p.onClose} onPublished={(next) => { generation++; pending = false; setPr(next); setError(undefined); last = Date.now(); }} />
     </>;
 }

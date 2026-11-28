@@ -1,93 +1,55 @@
-/* ---- Runs: one prompt's sessions, together ------------------------------- */
+/* ---- Runs: one prompt's sessions, together (the rail's group is in sidebar.css) ---- */
 
-/* In the rail: the prompt as a heading like any other, its models' rows under it. */
-.run-group {
-    display: flex;
-    flex-direction: column;
-    margin: calc(6 * var(--sp)) 0 calc(4 * var(--sp));
-}
-
-.run-head {
-    display: flex;
-    align-items: center;
-    gap: calc(6 * var(--sp));
-    min-width: 0;
-    min-height: calc(26 * var(--sp));
-    padding: 0 var(--row-pad);
-    font-size: 0.857rem;
-    font-weight: 500;
-    color: var(--fg-3);
-}
-
-.run-head svg {
-    flex: none;
-}
-
-.run-count {
-    flex: none;
-    font-weight: 400;
-    opacity: 0.75;
-    font-variant-numeric: tabular-nums;
-}
-
-/* In the title bar: the run's models as a capsule of their own, beside the tools. */
-.run-switch {
+/* In the title bar: the run's models (the mock's head.css .runs). */
+.runs {
     display: flex;
     align-items: center;
     gap: 1px;
+    flex: 0 1 auto;
     min-width: 0;
-    max-width: calc(420 * var(--sp));
-    height: calc(34 * var(--sp));
-    padding: 0 calc(3 * var(--sp));
-    border-radius: var(--pill);
-    overflow: hidden;
+    height: calc(32 * var(--sp));
+    padding: 0 calc(2 * var(--sp));
+    border-radius: var(--radius-m);
+    box-shadow: inset 0 0 0 1px var(--line-strong);
 }
 
-.run-switch .rs {
-    display: flex;
+.runs-item {
+    display: inline-flex;
     align-items: center;
     gap: calc(6 * var(--sp));
-    height: calc(28 * var(--sp));
     min-width: 0;
-    max-width: calc(180 * var(--sp));
-    padding: 0 calc(10 * var(--sp));
-    border-radius: var(--pill);
-    font-size: 0.857rem;
+    height: calc(28 * var(--sp));
+    padding: 0 calc(9 * var(--sp)) 0 calc(8 * var(--sp));
+    border-radius: var(--radius-s);
+    color: var(--text-2);
+    font-size: 0.893rem;
     font-weight: 500;
-    color: var(--fg-2);
-    transition: background 140ms, color 140ms;
+    white-space: nowrap;
+    transition: background 0.12s, color 0.12s;
 }
 
-.run-switch .rs svg {
-    flex: none;
+.runs-item:hover {
+    background: var(--fill-1);
+    color: var(--text);
 }
 
-.run-switch .rs:hover {
-    background: var(--hover);
-    color: var(--fg);
+.runs-item[aria-selected="true"] {
+    background: var(--fill-2);
+    color: var(--text);
 }
 
-.run-switch .rs.on {
-    background: color-mix(in srgb, var(--accent) 12%, transparent);
-    color: var(--fg);
-}
-
-.rs-st {
-    flex: none;
-    font-weight: 400;
-    color: var(--fg-3);
-}
-
-.rs-st.st-running {
+.runs-item .spinner {
     color: var(--accent);
 }
 
-.rs-st.st-waiting {
-    color: var(--warn);
+.runs-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
-.rs-st.st-stopped {
-    color: var(--danger);
+.runs-item .status-icon {
+    width: calc(12 * var(--sp));
+    height: calc(14 * var(--sp));
 }
 
 /* Local usage dashboard: all colors follow the active theme. */

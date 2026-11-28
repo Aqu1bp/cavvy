@@ -166,7 +166,7 @@ export const PANE_NARROW = [...COLUMN_NARROW, 360, 240] as const;
  * the window's buttons on macOS, and the rail's two buttons with their hairline.
  */
 export const BAR_RAIL_ROOM = { traffic: 160, plain: 80 } as const;
-export const COLUMN_SHORT = [600, 560, 360] as const;
+export const COLUMN_SHORT = [560, 360] as const;
 
 /** The steps `size` is within, as an attribute's words: 650 against [700, 640, 600] is "700 640". */
 export function columnSteps(size: number, steps: readonly number[]): string {

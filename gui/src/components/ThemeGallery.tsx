@@ -26,7 +26,7 @@ const ASK = "Make me a Cavvy theme: ";
  * shows a frame or so after newSession.
  */
 function askAtHome(tries = 0) {
-    const ta = document.querySelector<HTMLTextAreaElement>('.composer.v-home textarea[aria-label="Message"]');
+    const ta = document.querySelector<HTMLTextAreaElement>('.composer-root.v-home textarea[aria-label="Message"]');
     if (!ta) return void (tries < 60 && requestAnimationFrame(() => askAtHome(tries + 1)));
     const end = ta.value.trimEnd().length;
     const text = (end ? "\n" : "") + ASK;

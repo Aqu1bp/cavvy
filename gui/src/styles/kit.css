@@ -963,3 +963,514 @@ button.menu-item:focus-visible {
 .dot:is([data-tone="accent"], .accent) {
     background: var(--accent);
 }
+
+/* ---------- the shell's parts of the design's kit (home, rail, composer, dialogs) ---------- */
+
+/* A button that opens a menu, drawn as the design's select: its own caret (.select-caret), not the native one's. */
+button.select {
+    padding: 0 calc(7 * var(--sp)) 0 calc(10 * var(--sp));
+    background-image: none;
+}
+
+button.select[aria-expanded="true"] {
+    background-color: var(--fill-1);
+}
+
+.copy-btn {
+    flex: none;
+    height: calc(22 * var(--sp));
+    padding: 0 calc(7 * var(--sp));
+    border-radius: calc(5 * var(--sp));
+    color: var(--text-3);
+    font-family: var(--font-ui);
+    font-size: calc(11.5 * var(--sp));
+    font-weight: 500;
+    transition: background 0.12s, color 0.12s;
+}
+
+.copy-btn:hover {
+    background: var(--fill-2);
+    color: var(--text);
+}
+
+.copy-btn.btn {
+    height: calc(32 * var(--sp));
+    padding: 0 calc(12 * var(--sp));
+    font-size: calc(13 * var(--sp));
+    border-radius: var(--radius-m);
+}
+
+.chev {
+    flex: none;
+    color: var(--text-3);
+    transition: transform 0.14s var(--ease);
+}
+
+.chev[data-open] {
+    transform: rotate(90deg);
+}
+
+.stat {
+    display: inline-flex;
+    gap: calc(6 * var(--sp));
+    flex: none;
+    font-family: var(--font-mono);
+    font-size: calc(11.5 * var(--sp));
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+}
+
+.stat-add,
+.stat .add {
+    color: var(--diff-add-text);
+}
+
+.stat-del,
+.stat .del {
+    color: var(--diff-del-text);
+}
+
+.path:not(.rf-h *) {
+    display: inline-flex;
+    min-width: 0;
+    font-family: var(--font-mono);
+    font-size: calc(12 * var(--sp));
+}
+
+.path-dir {
+    color: var(--text-3);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 0 1 auto;
+    min-width: 0;
+}
+
+.path-base {
+    color: var(--text);
+    white-space: nowrap;
+    flex: none;
+}
+
+.badge {
+    display: inline-flex;
+    align-items: center;
+    height: calc(18 * var(--sp));
+    padding: 0 calc(6 * var(--sp));
+    border-radius: calc(4 * var(--sp));
+    font-size: calc(11 * var(--sp));
+    font-weight: 500;
+    font-family: var(--font-mono);
+}
+
+.badge-fail {
+    background: var(--red-soft);
+    color: var(--red);
+}
+
+@keyframes rise-in {
+    from {
+        opacity: 0;
+        transform: translateY(6px);
+    }
+}
+
+button.menu-item:hover:not(:disabled,
+[aria-disabled="true"]),
+.menu-sub[aria-expanded="true"] {
+    background: var(--fill-2);
+}
+
+.menu-item-check {
+    align-items: flex-start;
+    padding: calc(7 * var(--sp)) calc(9 * var(--sp));
+}
+
+.menu-item-title svg {
+    color: var(--text-2);
+}
+
+.menu-vendor {
+    margin-left: calc(4 * var(--sp));
+    color: var(--text-3);
+    font-size: calc(11.5 * var(--sp));
+    font-weight: 400;
+}
+
+.menu-row {
+    display: flex;
+    align-items: center;
+    gap: calc(12 * var(--sp));
+    padding: calc(6 * var(--sp)) calc(6 * var(--sp)) calc(6 * var(--sp)) calc(9 * var(--sp));
+}
+
+.menu-row-text {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    flex: 1;
+    min-width: 0;
+}
+
+.menu-row-title {
+    font-weight: 500;
+}
+
+.provider-icon,
+.cavvy-mark {
+    flex: none;
+    display: block;
+}
+
+.provider-mono {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    border-radius: calc(4 * var(--sp));
+    background: var(--fill-2);
+    color: var(--text-2);
+    font-weight: 600;
+    line-height: 1;
+}
+
+.menu-item-two {
+    align-items: flex-start;
+    padding-top: calc(6 * var(--sp));
+    padding-bottom: calc(6 * var(--sp));
+}
+
+.menu-item-two > svg,
+.menu-item-two > span.menu-check {
+    margin-top: calc(2 * var(--sp));
+}
+
+.menu-item-two .menu-item-text {
+    flex: 1;
+}
+
+.menu .menu-check + svg,
+.menu .menu-check + .provider-icon {
+    margin-left: calc(-2 * var(--sp));
+}
+
+.note code {
+    padding: 1px calc(5 * var(--sp));
+    border-radius: calc(4 * var(--sp));
+    background: color-mix(in srgb, var(--text) 8%, transparent);
+    font-size: 0.9em;
+}
+
+.btn .kbd,
+.btn-primary .kbd {
+    margin-left: calc(2 * var(--sp));
+    background: color-mix(in srgb, currentColor 14%, transparent);
+    box-shadow: none;
+    color: inherit;
+    opacity: 0.8;
+}
+
+.check {
+    display: inline-flex;
+    align-items: flex-start;
+    gap: calc(8 * var(--sp));
+    min-width: 0;
+    cursor: default;
+}
+
+.check input {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.check-box {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    width: calc(15 * var(--sp));
+    height: calc(15 * var(--sp));
+    margin-top: calc(2 * var(--sp));
+    border-radius: calc(4 * var(--sp));
+    background: var(--surface);
+    box-shadow: inset 0 0 0 1px var(--line-strong);
+    color: transparent;
+    transition: background 0.12s, box-shadow 0.12s;
+}
+
+.check input:checked + .check-box {
+    background: var(--accent);
+    box-shadow: none;
+    color: var(--on-accent);
+}
+
+.check input:focus-visible + .check-box {
+    outline: 2px solid var(--focus);
+    outline-offset: 1px;
+}
+
+.check-label {
+    min-width: 0;
+    line-height: calc(19 * var(--sp));
+}
+
+.check[data-disabled] {
+    opacity: 0.5;
+}
+
+.select-sm {
+    height: calc(24 * var(--sp));
+    padding: 0 calc(5 * var(--sp)) 0 calc(8 * var(--sp));
+    font-size: calc(12 * var(--sp));
+}
+
+.select-value {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: left;
+}
+
+.select-value.mono {
+    font-size: calc(12 * var(--sp));
+    font-weight: 400;
+}
+
+.select-caret {
+    flex: none;
+    color: var(--text-3);
+}
+
+.tag {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(4 * var(--sp));
+    flex: none;
+    height: calc(18 * var(--sp));
+    padding: 0 calc(6 * var(--sp));
+    border-radius: calc(4 * var(--sp));
+    background: var(--fill-2);
+    color: var(--text-2);
+    font-size: calc(11 * var(--sp));
+    font-weight: 500;
+    line-height: 1;
+    white-space: nowrap;
+}
+
+.tag[data-tone="accent"] {
+    background: var(--accent-soft);
+    color: var(--accent-text);
+}
+
+.tag[data-tone="green"] {
+    background: var(--green-soft);
+    color: var(--green);
+}
+
+.tag[data-tone="amber"] {
+    background: var(--amber-soft);
+    color: var(--amber);
+}
+
+.tag[data-tone="red"] {
+    background: var(--red-soft);
+    color: var(--red);
+}
+
+.card {
+    border-radius: calc(10 * var(--sp));
+    background: var(--surface);
+    box-shadow: inset 0 0 0 1px var(--line);
+}
+
+[data-theme="dark"] .card {
+    background: var(--fill-1);
+}
+
+.card-head {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    min-height: calc(36 * var(--sp));
+    padding: 0 calc(8 * var(--sp)) 0 calc(14 * var(--sp));
+    border-bottom: 1px solid var(--line);
+    font-weight: 600;
+}
+
+.row:not(.nt,
+.nt *,
+.nw-body *) {
+    display: flex;
+    align-items: center;
+    gap: calc(10 * var(--sp));
+    min-height: calc(40 * var(--sp));
+    padding: calc(6 * var(--sp)) calc(10 * var(--sp)) calc(6 * var(--sp)) calc(14 * var(--sp));
+}
+
+.row + .row {
+    border-top: 1px solid var(--line);
+}
+
+button.row {
+    width: 100%;
+    transition: background 0.1s;
+}
+
+button.row:hover {
+    background: var(--fill-1);
+}
+
+.row-text {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    flex: 1;
+    min-width: 0;
+}
+
+.row-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 500;
+}
+
+.row-sub {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
+}
+
+.row-icon {
+    display: inline-flex;
+    flex: none;
+    color: var(--text-3);
+}
+
+.note {
+    display: flex;
+    align-items: flex-start;
+    gap: calc(8 * var(--sp));
+    padding: calc(8 * var(--sp)) calc(10 * var(--sp));
+    border-radius: var(--radius-m);
+    background: var(--fill-1);
+    color: var(--text-2);
+    font-size: calc(12.5 * var(--sp));
+    line-height: 1.45;
+}
+
+.note > svg {
+    flex: none;
+    margin-top: calc(2 * var(--sp));
+    color: var(--text-3);
+}
+
+.note[data-tone="amber"] {
+    background: var(--amber-soft);
+    color: var(--amber);
+}
+
+.note[data-tone="amber"] > svg {
+    color: var(--amber);
+}
+
+.note[data-tone="red"] {
+    background: var(--red-soft);
+    color: var(--red);
+}
+
+.note[data-tone="red"] > svg {
+    color: var(--red);
+}
+
+.note-body {
+    flex: 1;
+    min-width: 0;
+}
+
+.note .link-btn,
+.note .btn {
+    flex: none;
+    margin-left: auto;
+}
+
+.blank {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: calc(10 * var(--sp));
+    flex: 1;
+    min-height: calc(120 * var(--sp));
+    padding: calc(24 * var(--sp));
+    color: var(--text-3);
+    text-align: center;
+}
+
+.blank-title {
+    color: var(--text-2);
+    font-size: calc(13 * var(--sp));
+}
+
+.blank-title code {
+    font-size: calc(12 * var(--sp));
+}
+
+.blank-spinner {
+    color: var(--text-3);
+}
+
+.dim {
+    color: var(--text-3);
+}
+
+.num {
+    font-variant-numeric: tabular-nums;
+}
+
+.truncate {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+}
+
+.skeleton {
+    border-radius: calc(4 * var(--sp));
+    background: var(--fill-2);
+}
+
+.bar {
+    position: relative;
+    flex: 1;
+    height: calc(4 * var(--sp));
+    min-width: calc(40 * var(--sp));
+    border-radius: calc(2 * var(--sp));
+    background: var(--fill-2);
+    overflow: hidden;
+}
+
+.bar > i {
+    position: absolute;
+    inset: 0 auto 0 0;
+    border-radius: calc(2 * var(--sp));
+    background: var(--text-2);
+}
+
+.bar[data-tone="accent"] > i {
+    background: var(--accent);
+}
+
+.bar[data-tone="amber"] > i {
+    background: var(--amber-strong);
+}
+
+.bar[data-tone="red"] > i {
+    background: var(--red);
+}
+

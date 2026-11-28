@@ -10,6 +10,7 @@
 import { batch, createEffect, createRoot, For, on } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
 import { render } from "solid-js/web";
+import { Server } from "lucide-solid";
 import type { MachineOverview, ServerEvent, SessionSummary } from "@shared/protocol";
 import { listable, mayTake, otherRows, relisted, routeOf } from "../lib/machine-rows";
 import { home, switchMachine } from "../lib/machines";
@@ -38,7 +39,9 @@ let joined = new Set<string | undefined>();
 let here = "This computer";
 const NOTES: Partial<Record<MachineOverview["state"], string>> = { unreachable: "Can't reach it", stopped: "Stopped", "needs-you": "Open to connect", disconnected: "Disconnected" };
 /** The servers that can't be reached as they are, and why. */
-const [trouble, setTrouble] = createStore<{ list: { name: string; note: string }[] }>({ list: [] });
+const [trouble, setTrouble] = createStore<{ list: { name: string; note: string; tone?: string }[] }>({ list: [] });
+/** Can't be reached: red; waiting on something the user does: amber. */
+const TONES: Partial<Record<MachineOverview["state"], string>> = { unreachable: "red", "needs-you": "amber", disconnected: "amber" };
 
 /** How this computer's Cavvy last heard `name` was (servers.overview): undefined, not heard yet. */
 export const machineState = (name: string): MachineOverview["state"] | undefined => servers.get(name)?.state;
@@ -65,7 +68,7 @@ function seen(list: SessionSummary[], unlisted: string[] = []) {
  * is. Its own list takes these in when it comes (others.list).
  */
 function relist() {
-    setTrouble("list", reconcile([...servers.values()].flatMap((m) => (m.name !== machine && NOTES[m.state] ? [{ name: m.name, note: NOTES[m.state]! }] : [])), { key: "name" }));
+    setTrouble("list", reconcile([...servers.values()].flatMap((m) => (m.name !== machine && NOTES[m.state] ? [{ name: m.name, note: NOTES[m.state]!, tone: TONES[m.state] }] : [])), { key: "name" }));
     if (!app.sessionsLoaded) return;
     const ownOf = (list: SessionSummary[]) => list.filter((s) => s.machine === machine);
     const add = listable([...ownOf(app.sessions), ...ownOf(app.archived)], rows());
@@ -174,9 +177,10 @@ function Trouble() {
     return (
         <For each={trouble.list}>
             {(m) => (
-                <button class="om-h" title={`Go to ${m.name}`} onClick={() => switchMachine(m.name)}>
-                    <span class="truncate">{m.name}</span>
-                    <span class="om-n">{m.note}</span>
+                <button class="server-row" title={`Go to ${m.name}`} onClick={() => switchMachine(m.name)}>
+                    <Server size={14} class="server-row-icon" />
+                    <span class="server-row-name">{m.name}</span>
+                    <span class="server-row-word" data-tone={m.tone}>{m.note}</span>
                 </button>
             )}
         </For>
@@ -196,11 +200,13 @@ function attach(tries = 0) {
     }
     if (!host) {
         host = document.createElement("div");
-        host.className = "others";
+        host.className = "server-rows";
+        host.setAttribute("role", "group");
+        host.setAttribute("aria-label", "Servers");
         render(() => <Trouble />, host);
     }
     const place = () => {
-        const foot = rail.querySelector(".sidebar .side-foot");
+        const foot = rail.querySelector(".sidebar .sidebar-foot");
         if (foot && host!.nextElementSibling !== foot) foot.before(host!);
     };
     place();

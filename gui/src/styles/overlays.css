@@ -1,6 +1,23 @@
 /* Overlays: the command palette, the find bar, the image viewer and the dialogs' own pieces. Menus, popovers,
    dialogs and toasts themselves are the kit's (kit.css). */
 
+/* Opened from a dialog: over it, as one opened from the window is over the window. */
+.popover.over-dialog {
+    z-index: 75;
+}
+
+/* A form in the design's dialogs: fields a column, 12 apart. */
+.form-stack {
+    display: flex;
+    flex-direction: column;
+    gap: calc(12 * var(--sp));
+}
+
+/* The design resets paragraph margins everywhere; in its dialogs and menus here too. */
+:where(.dlg, .menu) p {
+    margin: 0;
+}
+
 /* ---- Command palette (⌘K) ------------------------------------------- */
 
 .dialog.palette {
@@ -15,7 +32,8 @@
     overflow: hidden;
 }
 
-.pal-in {
+.pal-in,
+.pal-input {
     display: flex;
     align-items: center;
     gap: calc(10 * var(--sp));
@@ -26,12 +44,14 @@
     font-size: 1rem;
 }
 
-.pal-in .pal-search {
+.pal-in .pal-search,
+.pal-input-icon {
     color: var(--fg-3);
     flex: none;
 }
 
-.pal-in input {
+.pal-in input,
+.pal-input input {
     flex: 1;
     min-width: 0;
     border: 0;
@@ -41,7 +61,8 @@
     color: var(--fg);
 }
 
-.pal-in input::placeholder {
+.pal-in input::placeholder,
+.pal-input input::placeholder {
     color: var(--fg-3);
 }
 
@@ -67,8 +88,8 @@
     align-items: center;
     gap: calc(12 * var(--sp));
     width: 100%;
-    min-height: calc(38 * var(--sp));
-    padding: calc(5 * var(--sp)) calc(8 * var(--sp)) calc(5 * var(--sp)) calc(10 * var(--sp));
+    min-height: calc(32 * var(--sp));
+    padding: calc(3 * var(--sp)) calc(8 * var(--sp)) calc(3 * var(--sp)) calc(10 * var(--sp));
     border-radius: var(--radius-sm);
     text-align: left;
     color: var(--fg-2);
@@ -119,12 +140,6 @@
     font-size: 0.857rem;
     font-variant-numeric: tabular-nums;
     color: var(--fg-3);
-}
-
-/* What the row does, when that isn't what the list's other rows do (the branch dialog's "New session there"). */
-.pal-act {
-    color: var(--fg-2);
-    font-weight: 500;
 }
 
 .pal-l mark {
@@ -1163,43 +1178,48 @@
     font-size: 0.893rem;
 }
 
+/* A form in a dialog (worktrees, servers, plans, commits): a label over its field, a hint or an error under it. */
 .wt-form {
     display: flex;
     flex-direction: column;
-    gap: calc(14 * var(--sp));
+    gap: calc(12 * var(--sp));
 }
 
 .wt-field {
     display: flex;
     flex-direction: column;
-    gap: calc(6 * var(--sp));
+    gap: calc(5 * var(--sp));
     min-width: 0;
 }
 
 .wt-label {
-    font-size: 0.857rem;
-    font-weight: 600;
+    font-size: calc(12 * var(--sp));
+    font-weight: 500;
     color: var(--fg-2);
 }
 
-.wt-hint {
-    font-size: 0.821rem;
+.wt-hint,
+.wt-error {
+    font-size: calc(12 * var(--sp));
+    line-height: 1.4;
     color: var(--fg-3);
 }
 
 .wt-error {
-    font-size: 0.821rem;
     color: var(--danger);
-    line-height: 1.35;
     overflow-wrap: anywhere;
 }
 
-.dialog .wt-form .input[aria-invalid="true"] {
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 70%, transparent);
+.wt-form .input.mono::placeholder {
+    font-family: var(--font-ui);
 }
 
-.wt-path {
-    font-size: 0.786rem;
+.dialog .wt-form .input[aria-invalid="true"] {
+    box-shadow: inset 0 0 0 1px var(--danger), 0 0 0 3px color-mix(in srgb, var(--danger) 16%, transparent);
+}
+
+.dialog .wt-path {
+    font-size: calc(11.5 * var(--sp));
     color: var(--fg-3);
     overflow-wrap: anywhere;
 }
@@ -1212,60 +1232,9 @@
     margin-top: calc(2 * var(--sp));
 }
 
-.wt-ignored ul {
-    margin: calc(6 * var(--sp)) 0 calc(2 * var(--sp));
-    padding-left: calc(18 * var(--sp));
-    max-height: calc(160 * var(--sp));
-    overflow-y: auto;
-    overflow-wrap: anywhere;
-}
-
 .wt-confirm {
     margin: 0;
     overflow-wrap: anywhere;
-}
-
-.fp-bar {
-    display: flex;
-    gap: calc(6 * var(--sp));
-    align-items: center;
-}
-
-.fp-bar .icon-btn {
-    border-radius: var(--pill);
-}
-
-.fp-bar .input {
-    flex: 1;
-    font-size: 0.857rem;
-}
-
-.fp-list {
-    height: calc(300 * var(--sp));
-    overflow-y: auto;
-    padding: calc(4 * var(--sp));
-    border-radius: calc(12 * var(--sp));
-    background: var(--sheet);
-    box-shadow: inset 0 0 0 0.5px var(--line);
-}
-
-.fp-item {
-    display: flex;
-    align-items: center;
-    gap: calc(9 * var(--sp));
-    width: 100%;
-    padding: calc(7 * var(--sp)) calc(10 * var(--sp));
-    border-radius: calc(10 * var(--sp));
-    min-width: 0;
-}
-
-.fp-item svg {
-    color: var(--fg-2);
-    flex: none;
-}
-
-.fp-item:hover {
-    background: var(--hover);
 }
 
 .trust-dialog {
@@ -1581,26 +1550,6 @@
     margin: 0;
 }
 
-/* ---- Worktree setup preview --------------------------------------- */
-.wt-setup {
-    display: flex;
-    flex-direction: column;
-    gap: calc(6 * var(--sp));
-    padding: calc(10 * var(--sp)) calc(12 * var(--sp));
-    border-radius: calc(12 * var(--sp));
-    background: var(--sheet);
-    box-shadow: inset 0 0 0 0.5px var(--line);
-    font-size: 0.857rem;
-}
-
-.wt-setup-command {
-    margin: 0;
-    font-size: 0.821rem;
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-    color: var(--fg-2);
-}
-
 /* ---- Image viewer -------------------------------------------------- */
 
 /* The picture alone on a darkened window: no card around it. Its
@@ -1826,43 +1775,3 @@
     color: var(--fg-3);
 }
 
-/* The branch dialog's line under its search: the branch, its upstream counts, Fetch and Pull. */
-.br-sync {
-    display: flex;
-    align-items: center;
-    gap: calc(8 * var(--sp));
-    padding: calc(6 * var(--sp)) calc(12 * var(--sp));
-    border-top: 1px solid var(--line);
-    border-bottom: 1px solid var(--line);
-    color: var(--fg-2);
-}
-
-.br-sync-t {
-    flex: 1;
-    min-width: 0;
-}
-
-.br-note {
-    padding: calc(7 * var(--sp)) calc(12 * var(--sp));
-    font-size: 0.893rem;
-    color: var(--fg-2);
-    border-bottom: 1px solid var(--line);
-}
-
-.br-note.warn {
-    color: var(--warn);
-}
-
-.br-note.error {
-    color: var(--danger);
-}
-
-.br-fail {
-    display: flex;
-    align-items: center;
-    gap: calc(10 * var(--sp));
-}
-
-.br-fail > span {
-    flex: 1;
-}

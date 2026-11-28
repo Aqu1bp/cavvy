@@ -4,8 +4,8 @@
 // the terminal, the side panel and the session's menu.
 
 import { createEffect, createMemo, createResource, createSignal, For, lazy, on, Show, Suspense, type JSX } from "solid-js";
-import { Archive, ChevronDown, X, Copy, Ellipsis, FileDiff, FolderGit2, FolderOpen, GitBranch, Hand, History, PanelBottom, PanelLeft, PanelRight, Pencil, Search, Share, ShieldAlert, Shrink, Sparkles, SquareArrowOutUpRight, SquarePen, SquareTerminal, Trash2 } from "lucide-solid";
-import type { SessionState, SessionSummary, WorkingIn } from "@shared/protocol";
+import { Archive, ChevronDown, ClipboardCopy, Code, Copy, Ellipsis, FileDiff, FolderGit2, GitBranch, Hand, History, Minimize2, PanelBottom, PanelLeft, PanelRight, Pencil, Search, ShieldAlert, Sparkles, SquarePen, TerminalSquare, Trash2, X } from "lucide-solid";
+import type { SessionSummary, WorkingIn } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
 import { app, machineFor, reportError, rpc, toast } from "../state/app";
 import { archive, deleteSession, editorName, exportSession, newSession, openInEditor, openReview, openWaiting, openWorktreeReview, refreshEditors, rename, togglePanel, toggleSidebar } from "../state/actions";
@@ -13,7 +13,7 @@ import { sessionReadReady, useGitChanges } from "../state/changes";
 import { prefs, setPrefs } from "../state/prefs";
 import { agentFocus, gitModule, terminalOpen, setTerminalOpen, setRewindOpen, openFind, review, setReview, setSettingsTab, settingsTab, shellLayout } from "../state/ui";
 import { copyText, isDesktop, machine, os } from "../lib/platform";
-import { plural, tildify } from "../lib/format";
+import { basename, plural, tildify } from "../lib/format";
 import { asking, inFront, needsLine, needsPlace, needsYou } from "../lib/rail";
 import { Menu } from "./ui/Menu";
 import { RunSwitcher } from "./RunSwitcher";
@@ -61,7 +61,7 @@ export function NeedsYou(p: { waiting: SessionSummary[] }) {
         <>
             <button
                 ref={btn}
-                class="needs"
+                class="needs-btn"
                 title={needsLine(p.waiting)}
                 aria-label={needsLine(p.waiting)}
                 aria-haspopup={one() ? undefined : "menu"}
@@ -73,8 +73,8 @@ export function NeedsYou(p: { waiting: SessionSummary[] }) {
                 }}
             >
                 <Hand size={14} />
-                <Show when={one()} fallback={<><b>{p.waiting.length}</b><span class="needs-w">sessions need you</span><ChevronDown size={12} class="needs-chev" /></>}>
-                    {(s) => <><b class="needs-one">1</b><span class="needs-t truncate">{s().title}</span><span class="needs-w">needs you</span></>}
+                <Show when={one()} fallback={<><b>{p.waiting.length}</b><span class="needs-btn-title">sessions need you</span><ChevronDown size={12} /></>}>
+                    {(s) => <><b class="needs-one">1</b><span class="needs-btn-title">{s().title}</span><span class="needs-btn-word">needs you</span></>}
                 </Show>
             </button>
             <Menu label="Needs you" open={open()} anchor={() => btn} onClose={() => setOpen(false)} align="end" width={320}>
@@ -101,18 +101,18 @@ export function NeedsYou(p: { waiting: SessionSummary[] }) {
  */
 export function TitleBar(p: { children: JSX.Element; end?: JSX.Element }) {
     return (
-        <header class={`header ${isDesktop && os === "macos" ? "traffic" : ""} ${prefs.sidebar ? "" : "rail-off"}`}>
+        <header class={`main-head header ${isDesktop && os === "macos" ? "traffic" : ""} ${prefs.sidebar ? "" : "rail-off"}`}>
             {/* Opens and closes with the rail's slide (header.css): the inner box keeps the buttons' own width. */}
             <div class="bar-rail">
-                <div class="bar-rail-in">
+                <div class="bar-rail-in main-head-lead">
                     <RailButtons />
                 </div>
             </div>
-            <nav class="crumbs" aria-label="Breadcrumb">
+            <nav class="main-title" aria-label="Breadcrumb">
                 {p.children}
             </nav>
             <span class="grow" />
-            <div class="bar-end">{p.end}</div>
+            {p.end}
         </header>
     );
 }
@@ -123,10 +123,13 @@ export function RailButtons() {
     const waiting = createMemo(() => (needsPlace({ railShown: shellLayout().railShown, settings: Boolean(settingsTab()) }) === "title" ? needsYou([...app.sessions, ...app.archived], inFront({ activeId: app.activeId, settings: false, agentFocus: agentFocus() }), besideInFront(false)) : []));
     return (
         <>
-            <button class={`hb ${waiting().length ? "has-wait" : ""}`} title={withShortcut(waiting().length ? "Show sidebar: a session needs you" : "Show sidebar", "app:toggleSidebar")} aria-label={waiting().length ? "Show sidebar, a session needs you" : "Show sidebar"} onClick={toggleSidebar}>
+            <button class="icon-btn head-rail-btn" title={withShortcut(waiting().length ? "Show sidebar: a session needs you" : "Show sidebar", "app:toggleSidebar")} aria-label={waiting().length ? "Show sidebar, a session needs you" : "Show sidebar"} onClick={toggleSidebar}>
                 <PanelLeft size={16} />
+                <Show when={waiting().length}>
+                    <span class="rail-dot" data-tone="amber" />
+                </Show>
             </button>
-            <button class="hb" title={withShortcut("New session", "app:newSession")} aria-label="New session" onClick={() => (setSettingsTab(undefined), newSession(app.homeCwd))}>
+            <button class="icon-btn" title={withShortcut("New session", "app:newSession")} aria-label="New session" onClick={() => (setSettingsTab(undefined), newSession(app.homeCwd))}>
                 <SquarePen size={16} />
             </button>
         </>
@@ -135,8 +138,8 @@ export function RailButtons() {
 
 export function Crumb(p: { children: JSX.Element; onClick?: () => void; title?: string }) {
     return (
-        <Show when={p.onClick} fallback={<span class="bc static">{p.children}</span>}>
-            <button class="bc" title={p.title} onClick={p.onClick}>
+        <Show when={p.onClick} fallback={<span class="main-project">{p.children}</span>}>
+            <button class="main-project" title={p.title} onClick={p.onClick}>
                 {p.children}
             </button>
         </Show>
@@ -144,7 +147,7 @@ export function Crumb(p: { children: JSX.Element; onClick?: () => void; title?: 
 }
 
 export const CrumbSep = () => (
-    <span class="bc-sep" aria-hidden="true">
+    <span class="main-slash" aria-hidden="true">
         /
     </span>
 );
@@ -162,10 +165,8 @@ function resumeCommand(id: string, cwd: string | undefined): string {
     return `cavvy --server ${quoted} --resume ${id}`;
 }
 
-function workingTitle(w: WorkingIn, s: SessionState): string {
-    const where = tildify(w.path, app.hello?.homeDir);
-    const own = s.branch ? ` The session's folder is on ${s.branch}.` : "";
-    return `Working in the worktree ${where}${w.branch ? `, on ${w.branch}` : ""}.${own}`;
+function workingTitle(w: WorkingIn): string {
+    return `Working in the worktree ${tildify(w.path, app.hello?.homeDir)}`;
 }
 
 /**
@@ -196,10 +197,9 @@ function ChangesChip(p: { handle: SessionHandle }) {
     return (
         <Show when={changes()?.files ? changes() : undefined}>
             {(c) => (
-                <>
                     <button
-                        class={`hb diffchip ${reading() ? "on" : ""}`}
-                        title={`${reading() ? "Close the changes" : "Review changes"}${workingIn() ? " in the worktree the agent works in" : ""}: ${plural(c().files, "changed file")}${c().atLeast ? " or more" : ""}`}
+                        class="head-changes"
+                        title={`${reading() ? "Hide changes" : "Review changes"}${workingIn() ? " in the worktree" : ""}: ${c().files}${c().atLeast ? "+" : ""} changed ${c().files === 1 && !c().atLeast ? "file" : "files"}`}
                         aria-label={`Changes: ${plural(c().files, "file")}, ${c().added} added, ${c().removed} removed`}
                         aria-pressed={reading()}
                         onClick={() => {
@@ -211,11 +211,11 @@ function ChangesChip(p: { handle: SessionHandle }) {
                     >
                         <FileDiff size={15} />
                         {/* Only the sides that changed: "+18", not "+18 −0"; the mark alone when no line did. */}
-                        <span class="a" hidden={!c().added}>+{c().added}</span>
-                        <span class="d" hidden={!c().removed}>−{c().removed}</span>
+                        <span class="stat">
+                            <span class="stat-add" hidden={!c().added}>+{c().added}</span>
+                            <span class="stat-del" hidden={!c().removed}>−{c().removed}</span>
+                        </span>
                     </button>
-                    <span class="sep" />
-                </>
             )}
         </Show>
     );
@@ -227,7 +227,7 @@ export function ClosePane() {
     return (
         <Show when={pane.split() && pane.id}>
             {(id) => (
-                <button class="hb" title="Remove from split" aria-label="Remove from split" onClick={() => closePane(id())}>
+                <button class="icon-btn" title="Remove from split" aria-label="Remove from split" onClick={() => closePane(id())}>
                     <X size={16} />
                 </button>
             )}
@@ -257,47 +257,58 @@ export function Header(p: { handle?: SessionHandle; title?: string }) {
             end={
                 <>
                     <Show when={st()}>{(s) => <RunSwitcher id={s().id} />}</Show>
-                    <div class="cap">
+                    <div class="head-tools">
                         <Show when={p.handle}>{(h) => <ChangesChip handle={h()} />}</Show>
                         <Show when={st()?.cwd}>
                             {(cwd) => (
-                                <>
-                                    <ProjectScripts cwd={cwd()} sessionId={st()?.id} />
-                                    <span class="sep scripts-sep" />
-                                </>
+                                <ProjectScripts cwd={cwd()} sessionId={st()?.id} />
                             )}
                         </Show>
-                        <button class={`hb win ${terminalOpen() ? "on" : ""}`} title={withShortcut("Terminal", "app:toggleTerminal")} aria-label="Toggle terminal" aria-pressed={terminalOpen()} disabled={!st()?.cwd && !app.homeCwd} onClick={() => setTerminalOpen(!terminalOpen())}>
+                        <button class="icon-btn head-win" data-active={terminalOpen() || undefined} title={withShortcut("Terminal", "app:toggleTerminal")} aria-label="Toggle terminal" aria-pressed={terminalOpen()} disabled={!st()?.cwd && !app.homeCwd} onClick={() => setTerminalOpen(!terminalOpen())}>
                             <PanelBottom size={16} />
                         </button>
                         <Show when={st()}>
-                            <button class={`hb win ${panelOn() ? "on" : ""}`} title={withShortcut("Side panel", "app:togglePanel")} aria-label="Toggle panel" aria-pressed={panelOn()} onClick={() => (pane.wasFocused() ? togglePanel() : setPrefs("panel", true))}>
+                            <button class="icon-btn head-win" data-active={panelOn() || undefined} title={withShortcut("Side panel", "app:togglePanel")} aria-label="Toggle panel" aria-pressed={panelOn()} onClick={() => (pane.wasFocused() ? togglePanel() : setPrefs("panel", true))}>
                                 <PanelRight size={16} />
                             </button>
-                            <button ref={moreBtn} class="hb" title="More" aria-label="Session actions" aria-haspopup="menu" aria-expanded={menuOpen()} onClick={() => (setMenuOpen(!menuOpen()), menuOpen() && void refreshEditors())}>
+                            <button ref={moreBtn} class="icon-btn" title="More" aria-label="Session actions" aria-haspopup="menu" aria-expanded={menuOpen()} onClick={() => (setMenuOpen(!menuOpen()), menuOpen() && void refreshEditors())}>
                                 <Ellipsis size={16} />
                             </button>
                         </Show>
-                        <ClosePane />
                     </div>
+                    <ClosePane />
                 </>
             }
         >
-            <Show when={st()} fallback={<h1 class="ttl-h">{p.title ?? "New session"}</h1>}>
+            <Show
+                when={st()}
+                fallback={
+                    <>
+                        {/* Home: the project the new session starts in, before its name. */}
+                        <Show when={!p.title && app.homeCwd}>
+                            {(cwd) => (
+                                <>
+                                    <span class="main-project">{basename(cwd())}</span>
+                                    <CrumbSep />
+                                </>
+                            )}
+                        </Show>
+                        <h1 class={`main-title-btn ${p.title ? "" : "main-title-none"}`}>{p.title ?? "New session"}</h1>
+                    </>
+                }
+            >
                 {(s) => (
                     <>
                         {/* With the rail hidden, the project goes before the title (and starts a session in it). */}
-                        <span class="proj-box">
-                            <button class="proj" title={`New session in ${s().projectName}`} onClick={() => newSession(s().cwd, machineFor(p.handle?.id))}>
-                                <span class="truncate">{s().projectName}</span>
-                                <span class="proj-sep" aria-hidden="true">/</span>
-                            </button>
-                        </span>
+                        <button class="main-project" title={`New session in ${s().projectName}`} onClick={() => newSession(s().cwd, machineFor(p.handle?.id))}>
+                            {s().projectName}
+                        </button>
+                        <CrumbSep />
                         <Show
                             when={!editing()}
                             fallback={
                                 <input
-                                    class="title-input"
+                                    class="main-rename"
                                     value={sessionTitle(p.handle)}
                                     aria-label="Session name"
                                     ref={(el) => requestAnimationFrame(() => (el.focus(), el.select()))}
@@ -315,7 +326,7 @@ export function Header(p: { handle?: SessionHandle; title?: string }) {
                                 />
                             }
                         >
-                            <h1 class="ttl-h" title="Double-click to rename" onDblClick={() => (close(), setEditing(true))}>
+                            <h1 class="main-title-btn" title="Double-click to rename" onDblClick={() => (close(), setEditing(true))}>
                                 {sessionTitle(p.handle)}
                             </h1>
                         </Show>
@@ -325,9 +336,9 @@ export function Header(p: { handle?: SessionHandle; title?: string }) {
                                 <Show when={s().branch}>
                                     {(b) => {
                                         const plain = (
-                                            <span class="br" title="Git branch">
-                                                <GitBranch size={13} />
-                                                <span class="truncate">{b()}</span>
+                                            <span class="main-branch" title="Git branch">
+                                                <GitBranch size={12} />
+                                                <span class="mono">{b()}</span>
                                             </span>
                                         );
                                         return <Suspense fallback={plain}><BranchChip handle={p.handle!} branch={b()} /></Suspense>;
@@ -336,25 +347,25 @@ export function Header(p: { handle?: SessionHandle; title?: string }) {
                             }
                         >
                             {(w) => (
-                                <span class="br" title={workingTitle(w(), s())}>
-                                    <FolderGit2 size={13} />
-                                    <span class="truncate">{workingBranch(w())}</span>
+                                <span class="main-branch" title={workingTitle(w())}>
+                                    <FolderGit2 size={12} />
+                                    <span class="mono">{workingBranch(w())}</span>
                                 </span>
                             )}
                         </Show>
                         <Show when={!s().trusted}>
-                            <span class="pill warn" title="This folder's own configuration (hooks, MCP servers, permission rules) is ignored">
+                            <span class="head-untrusted" title="This folder's own configuration is ignored">
                                 <ShieldAlert size={12} /> Untrusted
                             </span>
                         </Show>
-                        <Menu label="Session actions" open={menuOpen()} anchor={() => moreBtn} onClose={close} align="end" width={244}>
+                        <Menu label="Session actions" class="menu" open={menuOpen()} anchor={() => moreBtn} onClose={close} align="end" width={225}>
                             <For
                                 each={[
                                     { icon: Pencil, label: "Rename", run: () => void (close(), setEditing(true)) },
                                     { icon: Sparkles, label: "Regenerate title", run: () => void (close(), import("./RowExtras").then((m) => m.regenerateTitle(s().id))) },
                                     { icon: History, label: "Rewind…", run: () => void (close(), setRewindOpen(true)) },
                                     {
-                                        icon: Shrink,
+                                        icon: Minimize2,
                                         label: "Compact conversation",
                                         // An idle compaction gives way to the user's own.
                                         disabled: s().busy && !s().activity?.idle,
@@ -364,38 +375,46 @@ export function Header(p: { handle?: SessionHandle; title?: string }) {
                                 ] as MenuEntry[]}
                             >
                                 {(it) => (
-                                    <button role="menuitem" class="menu-item compact" disabled={it.disabled} onClick={it.run}>
-                                        <it.icon size={14} /> <span class="menu-item-name">{it.label}</span>
-                                        <Show when={it.kbd && shortcut(it.kbd)}>{(k) => <kbd class="menu-kbd">{keyText(k())}</kbd>}</Show>
+                                    <button role="menuitem" class="menu-item" disabled={it.disabled} onClick={it.run}>
+                                        <it.icon size={14} />
+                                        <span class="menu-item-name">{it.label}</span>
+                                        <Show when={it.kbd && shortcut(it.kbd)}>{(k) => <span class="kbd-group" aria-hidden="true"><For each={k().split("+")}>{(key) => <kbd class="kbd">{keyText(key)}</kbd>}</For></span>}</Show>
                                     </button>
                                 )}
                             </For>
                             <div class="menu-sep" />
-                            <button role="menuitem" class="menu-item compact" onClick={() => (close(), void exportSession(s().id))}>
-                                <Share size={14} /> Copy as Markdown
+                            <button role="menuitem" class="menu-item" onClick={() => (close(), void exportSession(s().id))}>
+                                <ClipboardCopy size={14} />
+                                <span class="menu-item-name">Copy as Markdown</span>
                             </button>
-                            <button role="menuitem" class="menu-item compact" onClick={() => void copy(resumeCommand(s().id, s().cwd), "Copied a command that resumes this session in the terminal")}>
-                                <SquareTerminal size={14} /> Copy resume command
+                            <button role="menuitem" class="menu-item" onClick={() => void copy(resumeCommand(s().id, s().cwd), "Copied the resume command")}>
+                                <TerminalSquare size={14} />
+                                <span class="menu-item-name">Copy resume command</span>
                             </button>
                             <Show when={s().workingIn ? s().workingIn!.branch : s().branch}>
                                 {(branch) => (
-                                    <button role="menuitem" class="menu-item compact" onClick={() => void copy(branch(), `Copied ${branch()}`)}>
-                                        <Copy size={14} /> Copy branch name
+                                    <button role="menuitem" class="menu-item" onClick={() => void copy(branch(), `Copied ${branch()}`)}>
+                                        <GitBranch size={14} />
+                                        <span class="menu-item-name">Copy branch name</span>
                                     </button>
                                 )}
                             </Show>
-                            <button role="menuitem" class="menu-item compact" title={s().cwd} onClick={() => void copy(s().cwd, `Copied ${tildify(s().cwd, app.hello?.homeDir)}`)}>
-                                <FolderOpen size={14} /> Copy folder path
+                            <button role="menuitem" class="menu-item" title={s().cwd} onClick={() => void copy(s().cwd, `Copied ${tildify(s().cwd, app.hello?.homeDir)}`)}>
+                                <Copy size={14} />
+                                <span class="menu-item-name">Copy folder path</span>
                             </button>
-                            <button role="menuitem" class="menu-item compact" title={s().cwd} onClick={() => (close(), void openInEditor(s().cwd, undefined, { folder: true, sessionId: s().id }))}>
-                                <SquareArrowOutUpRight size={14} /> Open project in {editorName() ?? "editor"}
+                            <button role="menuitem" class="menu-item" title={s().cwd} onClick={() => (close(), void openInEditor(s().cwd, undefined, { folder: true, sessionId: s().id }))}>
+                                <Code size={14} />
+                                <span class="menu-item-name">Open project in {editorName() ?? "editor"}</span>
                             </button>
                             <div class="menu-sep" />
-                            <button role="menuitem" class="menu-item compact" onClick={() => (close(), void archive(s().id, true))}>
-                                <Archive size={14} /> Archive
+                            <button role="menuitem" class="menu-item" onClick={() => (close(), void archive(s().id, true))}>
+                                <Archive size={14} />
+                                <span class="menu-item-name">Archive</span>
                             </button>
-                            <button role="menuitem" class="menu-item compact danger" disabled={!p.handle?.view.turns.length} onClick={() => (close(), deleteOpen(p.handle))}>
-                                <Trash2 size={14} /> Delete
+                            <button role="menuitem" class="menu-item danger" data-danger disabled={!p.handle?.view.turns.length} onClick={() => (close(), deleteOpen(p.handle))}>
+                                <Trash2 size={14} />
+                                <span class="menu-item-name">Delete</span>
                             </button>
                         </Menu>
                     </>

@@ -40,9 +40,9 @@ const moves = (p: unknown[], y = 30) => movesWindow([...p, { nodeType: 9 }, { wi
 
 test("the empty top strip moves the window in every state, whatever is laid over it", () => {
     const stacks: Record<string, Fake[]> = {
-        "title bar": path(...shell, "div.sheet", "main.main", "div.keep", "header.header"),
-        "title bar, around the tool capsule": path(...shell, "div.sheet", "main.main", "div.keep", "header.header", "div.bar-end", "div.cap.glass"),
-        "title bar, the branch": path(...shell, "div.sheet", "main.main", "div.keep", "header.header", "nav.crumbs", "span.br", "span.truncate"),
+        "title bar": path(...shell, "div.sheet", "main.main", "div.keep", "header.main-head.header"),
+        "title bar, around the tool capsule": path(...shell, "div.sheet", "main.main", "div.keep", "header.main-head.header", "div.head-tools"),
+        "title bar, the branch": path(...shell, "div.sheet", "main.main", "div.keep", "header.main-head.header", "nav.main-title", "span.main-branch", "span.mono"),
         "the rail's top row": path(...shell, "div.win-rail", "div.keep", "aside.sidebar", "div.side-top", "span.grow"),
         "side panel open: its pane's title": path(...shell, "div.sheet", "div.insp", "aside.panel", "div.insp-main", "div.insp-t", "h2"),
         "side panel open: its rail, around the icons": path(...shell, "div.sheet", "div.insp", "aside.panel", "div.insp-rail", "div.segmented.seg-md"),
@@ -60,17 +60,17 @@ test("the empty top strip moves the window in every state, whatever is laid over
 });
 
 test("what takes a press keeps it: controls, focusable and draggable things, and anything with a press handler", () => {
-    const header = ["html", "body", "div.app", "div.win", "div.sheet", "main.main", "div.keep", "header.header"];
+    const header = ["html", "body", "div.app", "div.win", "div.sheet", "main.main", "div.keep", "header.main-head.header"];
     const kept: Record<string, Fake[]> = {
-        "a title bar button": path(...header, "div.bar-end", "div.cap", "button.hb"),
-        "its icon": path(...header, "div.bar-end", "div.cap", "button.hb", "svg", "path"),
-        "the rename field": path(...header, "nav.crumbs", "input.title-input"),
+        "a title bar button": path(...header, "div.head-tools", "button.icon-btn"),
+        "its icon": path(...header, "div.head-tools", "button.icon-btn", "svg", "path"),
+        "the rename field": path(...header, "nav.main-title", "input.main-rename"),
         "a link": path(...header, "a"),
         "a tab by role": path(...header, el("div", { attrs: { role: "tab" } })),
         "a focusable resizer": path(...header, el("div.terminal-resize", { attrs: { role: "separator", tabindex: "0" } })),
         "something editable": path(...header, el("div", { attrs: { contenteditable: "true" } })),
         "a draggable row": path(...header, el("div", { attrs: { draggable: "true" } })),
-        "the title (double-click renames)": path(...header, "nav.crumbs", el("h1.ttl-h", { on: ["dblclick"] })),
+        "the title (double-click renames)": path(...header, "nav.main-title", el("h1.main-title-btn", { on: ["dblclick"] })),
         "the rail's resize handle": path("html", "body", "div.app", "div.win", "div.win-rail", "aside.sidebar", el("div.resize-handle", { on: ["pointerdown"] })),
         "the drawer's scrim (a click closes it)": path("html", "body", "div.app", "div.win", el("div.rail-scrim", { on: ["click"] })),
         "inside something listening for clicks": path(...header, el("div.chip", { on: ["mousedown"] }), "span"),

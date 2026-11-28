@@ -6,6 +6,7 @@ import { ArrowUp, Folder, Home as HomeIcon } from "lucide-solid";
 import { app, rpc } from "../state/app";
 import { folderPickerOpen, setFolderPickerOpen } from "../state/ui";
 import { Dialog } from "./ui/Dialog";
+import "../styles/folder-picker.css";
 import { Spinner } from "./ui/bits";
 
 export function FolderPicker() {
@@ -28,37 +29,43 @@ export function FolderPicker() {
     };
     const close = () => choose(undefined);
     return (
-        <Dialog open={Boolean(folderPickerOpen())} onClose={close} title={folderPickerOpen()?.title ?? "Open a project folder"} width={560}>
-            <div class="fp-bar">
-                <button class="icon-btn" title="Home" onClick={() => setPath("~")}>
+        <Dialog
+            open={Boolean(folderPickerOpen())}
+            onClose={close}
+            title={folderPickerOpen()?.title ?? "Open a project folder"}
+            width={500}
+            edge
+            footer={
+                <>
+                    <button type="button" class="btn" onClick={close}>
+                        Cancel
+                    </button>
+                    <button type="button" class="btn btn-primary" disabled={!listing()} onClick={() => choose(listing()!.path)}>
+                        {folderPickerOpen()?.action ?? "Open this folder"}
+                    </button>
+                </>
+            }
+        >
+            <div class="fpick-bar">
+                <button type="button" class="icon-btn" aria-label="Home" title="Home" onClick={() => setPath("~")}>
                     <HomeIcon size={15} />
                 </button>
-                <button class="icon-btn" title="Up" disabled={!listing()?.parent} onClick={() => listing()?.parent && setPath(listing()!.parent!)}>
+                <button type="button" class="icon-btn" aria-label="Up" title="Up" disabled={!listing()?.parent} onClick={() => listing()?.parent && setPath(listing()!.parent!)}>
                     <ArrowUp size={15} />
                 </button>
-                <input aria-label="Folder path" class="input mono" value={typed()} onInput={(e) => setTyped(e.currentTarget.value)} onKeyDown={(e) => e.key === "Enter" && setPath(typed())} spellcheck={false} />
+                <input autofocus aria-label="Folder path" class="input mono fpick-path" value={typed()} onInput={(e) => setTyped(e.currentTarget.value)} onKeyDown={(e) => e.key === "Enter" && setPath(typed())} spellcheck={false} autocapitalize="off" />
             </div>
-            <div class="fp-list">
-                <Show when={!listing.loading} fallback={<Spinner />}>
-                    <For each={listing()?.dirs} fallback={<div class="panel-empty">No folders here.</div>}>
+            <div class="fpick-list" role="listbox" aria-label="Folders">
+                <Show when={!listing.loading} fallback={<p class="fpick-empty"><Spinner /></p>}>
+                    <For each={listing()?.dirs} fallback={<p class="fpick-empty">No folders here.</p>}>
                         {(d) => (
-                            <button class="fp-item" onClick={() => setPath(`${listing()!.path}/${d}`)} onDblClick={() => choose(`${listing()!.path}/${d}`)}>
+                            <button type="button" role="option" aria-selected={false} class="fpick-row" onClick={() => setPath(`${listing()!.path}/${d}`)} onDblClick={() => choose(`${listing()!.path}/${d}`)}>
                                 <Folder size={15} />
                                 <span class="truncate">{d}</span>
                             </button>
                         )}
                     </For>
                 </Show>
-            </div>
-            <div class="dialog-actions">
-                <span class="muted small truncate">{listing()?.path}</span>
-                <span class="grow" />
-                <button class="btn btn-ghost" onClick={close}>
-                    Cancel
-                </button>
-                <button class="btn btn-primary" disabled={!listing()} onClick={() => choose(listing()!.path)}>
-                    {folderPickerOpen()?.action ?? "Open this folder"}
-                </button>
             </div>
         </Dialog>
     );

@@ -67,7 +67,7 @@ let holdCommands = false;
 let holdSend: Promise<void> | undefined;
 const commentStore = createReviewCommentStore(() => undefined);
 const noop = () => undefined;
-const components = Object.fromEntries(["ArrowUp", "CornerDownRight", "QueueTab", "GoalTab", "FileText", "Folder", "ListEnd", "Paperclip", "Pencil", "Plus", "Slash", "Sparkles", "SquareTerminal", "X", "ModelPicker", "EffortPicker", "ModePicker", "ComposerMeter", "AttachmentChips", "InteractionTab", "Popover", "Ring", "ReviewCommentChips", "Maximize2", "Minimize2"].map((key) => [key, noop]));
+const components = Object.fromEntries(["ArrowUp", "CornerDownRight", "QueueTab", "GoalTab", "FileText", "Folder", "ListEnd", "Paperclip", "Pencil", "Plus", "Slash", "Sparkles", "SquareTerminal", "X", "ModelPicker", "EffortPicker", "ModePicker", "ComposerMeter", "AttachmentChips", "InteractionTab", "Popover", "Ring", "ReviewCommentChips", "Maximize2", "Minimize2", "Square", "KeyRound", "Database", "ProviderIcon", "ScheduleTab", "StashTray"].map((key) => [key, noop]));
 /** What the Steps strip was given: the session it's in and that session's view (StepsTray.tsx decides when it shows). */
 const stepsTrays: { sessionId: string; view: any }[] = [];
 const StepsTray = (p: { sessionId: string; view: any }) => void stepsTrays.push(p);
@@ -91,7 +91,7 @@ const [homeCwd, setHomeCwd] = solid.createSignal("/workspace");
 const appState = { conn: "open", get homeCwd() { return homeCwd(); }, settings: {} as { followUpBehavior?: string }, models: [] };
 /** The composer opening or closing its large size told the conversation to glide with it. */
 let dockGlides = 0;
-const deps = { ...solid, ...components, StepsTray, expandedDown, expandedHeight, grow, GROW_MS, motionMs: () => 0, glideDock: () => void dockGlides++, shellLayout: () => ({ column: { h: 800 } }), renderer, createComposerDraft, composerStorage, composingKey, revealMenuOption, matchSkills, skillToken, textPieces, argsHint, firstSendable, FOLLOW_UP_WORDS, followUpFor, followUpLabels, otherFollowUp, restoreWaits, withDraft, canStop, now: () => Date.now(), turnDuration: (ms: number) => `${Math.round(ms / 1000)}s`, keymap, matchKey, withShortcut, shortcut, shortcutHint, eventStrokes,
+const deps = { ...solid, ...components, StepsTray, stepsTrayShown: () => false, expandedDown, expandedHeight, grow, GROW_MS, motionMs: () => 0, glideDock: () => void dockGlides++, shellLayout: () => ({ column: { h: 800 } }), renderer, createComposerDraft, composerStorage, composingKey, revealMenuOption, matchSkills, skillToken, textPieces, argsHint, firstSendable, FOLLOW_UP_WORDS, followUpFor, followUpLabels, otherFollowUp, restoreWaits, withDraft, canStop, now: () => Date.now(), turnDuration: (ms: number) => `${Math.round(ms / 1000)}s`, keymap, matchKey, withShortcut, shortcut, shortcutHint, eventStrokes,
     comparePicks, setComparePicks, startRun: runSheet.startRun,
     splitComments, takesComments, withComments, plural, setReview: noop,
     aroundOf, reviewComments: commentStore, newCommentId: () => crypto.randomUUID(),
@@ -246,23 +246,23 @@ assert.equal(ta.props.value, "");
 {
     // A long draft stops at its modest height and scrolls (composer.css): the expand button shows. It, or Mod+Shift+E,
     // opens it large (here, as far down the page as there's room) and closes it again; sending closes it.
-    const root = nodes.find((n) => typeof n.props.class === "string" && n.props.class.startsWith("composer "));
+    const root = nodes.find((n) => typeof n.props.class === "string" && n.props.class.startsWith("composer-root "));
     const cls = () => String(root.props.class).split(/\s+/);
-    const expandButtons = () => nodes.filter((n) => n.props.class === "cb c-expand").length;
+    const expandButtons = () => nodes.filter((n) => n.props.class === "icon-btn icon-btn-sm composer-expand").length;
     Object.assign(ta, { scrollHeight: 400, clientHeight: 154, offsetHeight: 154 });
     input("a long draft");
     tick();
     assert.ok(cls().includes("expandable"), "past the modest height the expand button shows");
     assert.ok(!cls().includes("expanded"));
     assert.equal(expandButtons(), 1);
-    assert.match(nodes.findLast((n) => n.props.class === "cb c-expand").props.title, /^Expand \(/, "its tooltip names its key");
+    assert.match(nodes.findLast((n) => n.props.class === "icon-btn icon-btn-sm composer-expand").props.title, /^Expand \(/, "its tooltip names its key");
     const glidesBefore = dockGlides;
     assert.equal(key("E", { ...MOD, shiftKey: true, code: "KeyE" }).prevented, true);
     assert.ok(cls().includes("expanded"));
     assert.equal(ta.style.height, "830px", "from 154px down to 24px above the page's foot (800px), less what's under the text");
     assert.equal(dockGlides, glidesBefore + 1, "the conversation glides with the dock");
     assert.equal(focused, ta);
-    nodes.findLast((n) => n.props.class === "cb c-expand").props.onClick();
+    nodes.findLast((n) => n.props.class === "icon-btn icon-btn-sm composer-expand").props.onClick();
     assert.ok(!cls().includes("expanded"), "the button closes it");
     assert.ok(cls().includes("expandable"));
     key("E", { ...MOD, shiftKey: true, code: "KeyE" });
@@ -298,7 +298,7 @@ assert.equal(ta.props.value, "");
     tick();
     assert.equal(ta.props.value, "the next long draft", "the newer draft stays");
     assert.ok(cls().includes("expanded"), "and stays open large");
-    nodes.findLast((n) => n.props.class === "cb c-expand").props.onClick();
+    nodes.findLast((n) => n.props.class === "icon-btn icon-btn-sm composer-expand").props.onClick();
     Object.assign(ta, { scrollHeight: 30, clientHeight: 44 });
     input("");
     tick();
@@ -410,7 +410,7 @@ for (const state of ["checking", "waiting", "active"]) {
     assert.equal(key("Escape").prevented, true);
 }
 assert.equal(interrupts, stopsBefore + 3);
-const stop = nodes.findLast((n) => n.props.class === "send stop");
+const stop = nodes.findLast((n) => n.props.class === "send-btn send-stop");
 assert.equal(stop?.props["aria-label"], "Pause the goal");
 assert.ok(renderedText.includes("Pause the goal"), "its hint says so, with the key");
 for (const g of [{ state: "paused", judge: "model" }, { state: "active", judge: "native" }]) {
@@ -537,7 +537,7 @@ assert.equal(list.scrollTop, 20);
     ta.props.onPaste({ clipboardData: { files: [{ name: "one.png" }, { name: "two.png" }, { name: "three.png" }], getData: () => "" }, preventDefault: () => { pastePrevented = true; } });
     await Bun.sleep(0);
     assert.ok(pastePrevented);
-    const warnings = () => nodes.filter((n) => n.props.class === "cm-desc cm-warn truncate").length;
+    const warnings = () => nodes.filter((n) => n.props.class === "suggest-desc warn").length;
     const warned = warnings();
     input("/");
     assert.equal(ta.props["aria-expanded"], true, "the / menu opens with images attached");

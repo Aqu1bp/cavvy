@@ -21,25 +21,27 @@ export function PlanFooter(p: { recent: () => string[] }) {
         return railFoot({ limits: limitsFor(app.activeId), providers: providersFor(app.activeId), provider, account: provider ? st?.accounts?.[provider] : undefined, recent: p.recent(), now: now() });
     });
     return (
-        <Show when={plans().length} fallback={<span class="grow" />}>
+        <Show when={plans().length}>
             <PlanRow plans={plans()} check={() => void checkLimits(app.activeId, plans().map((plan) => ({ provider: plan.provider, accountId: plan.accountId })))} />
         </Show>
     );
 }
 
+const toneOf = (x: { reached?: boolean; tone?: string }) => (x.reached || x.tone === "danger" ? "red" : x.tone === "warn" ? "amber" : undefined);
+
 /** A plan's mark inside a ring, filled as far as its fullest window: all the way at a limit, not at all before a report. */
 function PlanGauge(p: { plan: RailPlan }) {
     const fill = () => (p.plan.reached ? 100 : Math.max(0, Math.min(100, p.plan.pct ?? 0)));
     return (
-        <span class="pl-g">
-            <svg viewBox="0 0 20 20" aria-hidden="true">
-                <circle class="pl-track" cx="10" cy="10" r="9" />
+        <span class="ring" data-tone={toneOf(p.plan)} style={{ width: "calc(22 * var(--sp))", height: "calc(22 * var(--sp))" }}>
+            <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true">
+                <circle class="ring-track" cx="11" cy="11" r="9.5" fill="none" stroke-width="1.5" />
                 <Show when={fill() > 0}>
                     {/* A sliver at least, so 1% still shows. */}
-                    <circle class="pl-arc" cx="10" cy="10" r="9" pathLength="100" stroke-dasharray={`${Math.max(4, fill())} 100`} transform="rotate(-90 10 10)" />
+                    <circle class="ring-value" cx="11" cy="11" r="9.5" fill="none" stroke-width="1.5" stroke-linecap="round" pathLength="100" stroke-dasharray={`${Math.max(4, fill())} 100`} transform="rotate(-90 11 11)" />
                 </Show>
             </svg>
-            <ProviderIcon id={p.plan.provider} name={p.plan.name} size={11} />
+            <span class="ring-inner"><ProviderIcon id={p.plan.provider} name={p.plan.name} size={11} /></span>
         </span>
     );
 }
@@ -71,7 +73,7 @@ function PlanRow(p: { plans: RailPlan[]; check: () => void }) {
         if (!row) return;
         batch(() => (setFolded(0), setTight(false), setBare(false)));
         if (p.plans.length < 2) return setBare(row.scrollWidth > row.clientWidth + 0.5);
-        const chips = [...row.querySelectorAll<HTMLElement>(".pl:not(.more)")];
+        const chips = [...row.querySelectorAll<HTMLElement>(".plan-chip:not(.more)")];
         const widths = () => chips.map((c) => c.getBoundingClientRect().width);
         const gap = () => parseFloat(getComputedStyle(row!).columnGap) || 0;
         const style = getComputedStyle(row);
@@ -95,25 +97,23 @@ function PlanRow(p: { plans: RailPlan[]; check: () => void }) {
         <>
             <button ref={row} class={`plans ${tight() ? "tight" : ""}`} aria-label={label()} aria-haspopup="dialog" aria-expanded={open()} onClick={() => (!open() && p.check(), setOpen(!open()))}>
                 <For each={p.plans}>{(plan, i) => (
-                    <span class={`pl ${plan.reached ? "danger" : plan.tone} ${plan.stale ? "stale" : ""}`} hidden={hidden(i())} title={plan.detail}>
+                    <span class={`plan-chip ${plan.stale ? "stale" : ""}`} hidden={hidden(i())} title={plan.detail}>
                         <PlanGauge plan={plan} />
                         <Show when={plan.pct !== undefined}>
-                            <span class="pl-v">
+                            <span class="plan-pct num" data-tone={toneOf(plan)}>
                                 {plan.pct}<small>%</small>
-                                <Show when={solo() && !bare() && (plan.reached ? plan.lifts && `· resets ${plan.lifts}` : plan.window?.toLowerCase())}>{(w) => <span class="pl-w"> {w()}</span>}</Show>
                             </span>
                         </Show>
+                        <Show when={solo() && !bare() && (plan.reached ? plan.lifts && `· resets ${plan.lifts}` : plan.window && `· ${plan.window.toLowerCase()}`)}>{(w) => <span class="plan-reset">{w()}</span>}</Show>
                     </span>
                 )}</For>
                 {/* Always there, to be measured: out of the row (and unseen) while nothing is folded. */}
-                <span ref={more} class={`pl more ${folded() ? "" : "measure"}`} aria-hidden={folded() ? undefined : "true"}>+{Math.max(1, folded())}</span>
+                <span ref={more} class={`plan-chip dim more ${folded() ? "" : "measure"}`} aria-hidden={folded() ? undefined : "true"}>+{Math.max(1, folded())}</span>
             </button>
-            {/* Inside the rail, edge to edge with its footer (and the rows above), however wide the rail is. */}
-            <Menu kind="dialog" label="Plan usage" open={open()} anchor={() => row} span={() => row?.closest<HTMLElement>(".side-foot") ?? undefined} onClose={() => setOpen(false)} placement="top" class="plans-card">
-                <div class="menu-label">Plan usage</div>
+            <Menu kind="dialog" label="Plan usage" open={open()} anchor={() => row} onClose={() => setOpen(false)} placement="top" align="start" offset={8} width={300} class="menu plan-card">
+                <div class="plan-card-title">Plan usage</div>
                 <PlanCardPlans plans={p.plans} />
-                <div class="menu-sep" />
-                <button class="menu-item compact" onClick={() => (setOpen(false), setSettingsTab("usage"))}>Usage and accounts…</button>
+                <button class="link-btn plan-link" onClick={() => (setOpen(false), setSettingsTab("usage"))}>Usage and accounts…</button>
             </Menu>
         </>
     );
@@ -124,22 +124,22 @@ export function PlanCardPlans(p: { plans: RailPlan[] }) {
     const held = untrack(() => p.plans.map(planKey));
     return (
         <For each={heldOrder(p.plans, held)}>{(plan) => (
-            <div class="pu-plan">
-                <div class="pu-h" title={plan.detail}>
+            <section class="plan-block">
+                <header class="plan-head" title={plan.detail}>
                     <ProviderIcon id={plan.provider} name={plan.name} size={14} />
-                    <span class="truncate">{plan.name}</span>
-                    <Show when={plan.asOf}>{(at) => <span class="pu-asof">{at()}</span>}</Show>
-                </div>
-                <Show when={plan.note}>{(n) => <div class="pu-note">{n()}</div>}</Show>
-                <For each={plan.windows} fallback={<div class="pu-w none">Usage shows after a turn</div>}>{(w) => (
-                    <div class={`pu-w ${w.tone}`}>
-                        <span class="truncate">{w.label}</span>
-                        <span class="pu-bar" aria-hidden="true"><i style={{ width: `${w.reached ? 100 : w.pct ?? 0}%` }} /></span>
-                        <b>{w.reached ? "Full" : w.pct !== undefined ? `${w.pct}%` : "–"}</b>
-                        <Show when={w.reset ? `Reset ${w.reset}` : w.resets && `Resets ${w.resets}`}>{(r) => <span class="pu-r" title={r()}>{r()}</span>}</Show>
+                    <span class="plan-name">{plan.name}</span>
+                    <Show when={plan.asOf}>{(at) => <span class="plan-asof">{at()}</span>}</Show>
+                </header>
+                <Show when={plan.note}>{(n) => <p class="plan-note">{n()}</p>}</Show>
+                <For each={plan.windows} fallback={<p class="plan-empty">Usage shows after a turn</p>}>{(w) => (
+                    <div class="plan-row">
+                        <span class="plan-label">{w.label}</span>
+                        <span class="bar" data-tone={toneOf(w)} aria-hidden="true"><i style={{ width: `${w.reached ? 100 : w.pct ?? 0}%` }} /></span>
+                        <span class="plan-value num" data-tone={toneOf(w)}>{w.reached ? "Full" : w.pct !== undefined ? `${w.pct}%` : "–"}</span>
+                        <Show when={w.reset ? `Reset ${w.reset}` : w.resets && `Resets ${w.resets}`}>{(r) => <span class="plan-resets" title={r()}>{r()}</span>}</Show>
                     </div>
                 )}</For>
-            </div>
+            </section>
         )}</For>
     );
 }

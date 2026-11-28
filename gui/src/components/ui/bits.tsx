@@ -105,6 +105,17 @@ export function Segmented<T extends string>(p: { value: T; options: { value: T; 
  * its outer edges on pixel lines), so it stays sharp there; design/logo/build.ts
  * draws the same geometry.
  */
+/** The mark alone, without its tile: the splash's. */
+export function Mark(p: { size?: number }) {
+    const s = p.size ?? 20;
+    return (
+        <svg class="cavvy-mark" width={(s * 32.8) / 35.2} height={s} viewBox="16 14.4 32.8 35.2" aria-hidden="true">
+            <path d="M43.2 21.27a14.4 14.4 0 1 0 0 21.46" fill="none" stroke="currentColor" stroke-width="6.4" stroke-linecap="round" />
+            <circle cx="43.2" cy="21.27" r="5.6" fill="var(--logo-dot)" />
+        </svg>
+    );
+}
+
 export function Logo(p: { size?: number; variant?: "brand" }) {
     const s = p.size ?? 22;
     const brand = () => p.variant === "brand";

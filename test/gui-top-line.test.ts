@@ -25,7 +25,7 @@ test("the title bar's content is centred on the line at both densities", () => {
     const padding = decl(css("header.css"), ".header", "padding")!;
     // padding-top: max(0px, 2 * (L - win-pad) - header-h): with align-items: center the content's
     // centre is (h + padding-top) / 2 below the bar's top, which is win-pad below the window's.
-    expect(padding).toBe("max(0px, 2 * (var(--top-line) - var(--win-pad, 8px)) - var(--header-h)) 12px 0 24px");
+    expect(padding).toBe("max(0px, 2 * (var(--top-line) - var(--win-pad, 8px)) - var(--header-h)) 10px 0 20px");
     for (const selector of [":root", '[data-density="compact"]']) {
         const h = px(decl(tokens, selector, "--header-h"));
         const top = Math.max(0, 2 * (line - winPad) - h);

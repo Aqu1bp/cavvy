@@ -1,52 +1,49 @@
 /* ---- The dock: request cards and the composer, at the conversation's end ----
-   Cards on the window's glass (base.css .card-surface). The composer is one:
-   the goal, schedules and queue, attachments, the text, and under it a row of
-   plain words that say how it will run (the model, the effort, the mode) and
-   the one filled button, Send. What waits on you (a permission, a question,
-   a plan, a secret) is its own card above it. */
+   From the new design (its composer.css over its conversation.css): a tight bordered card,
+   the trays standing on it, plain words in the bar and a small square Send. */
 
-.composer {
-    position: relative;
+/* Composer.tsx's own box: the request cards, the stack (trays and the card) and the words under it, a step apart
+   as the column's pieces are. */
+.composer-root {
     display: flex;
     flex-direction: column;
     gap: calc(8 * var(--sp));
     min-height: 0;
 }
 
-/* ---- The card ---------------------------------------------------------- */
+.composer-stack {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+}
 
-.composer-box {
+.composer {
     position: relative;
     z-index: 2;
+    display: flex;
     flex: none;
-    border-radius: calc(18 * var(--sp));
-    padding: calc(14 * var(--sp)) calc(12 * var(--sp)) calc(10 * var(--sp)) calc(18 * var(--sp));
-    transition: box-shadow 200ms, background 200ms;
+    flex-direction: column;
+    border-radius: calc(10 * var(--sp));
+    background: var(--surface);
+    box-shadow: inset 0 0 0 1px var(--line-strong), var(--shadow-composer);
+    transition: box-shadow 0.15s;
 }
 
-/* Typing in it: its edge a step stronger. No ring in the accent: the caret says where you are. */
-.composer-box:has(textarea:focus) {
-    box-shadow: inset 0 0 0 0.5px var(--line-strong), inset 0 0.5px 0 var(--card-hi), var(--card-shadow);
+.composer:focus-within {
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 34%, var(--line-strong)), var(--shadow-composer);
 }
 
-.composer.dragging .composer-box {
-    box-shadow: inset 0 0 0 1.5px var(--accent);
+.composer[data-dropping] {
+    box-shadow: inset 0 0 0 1.5px var(--accent), 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent), var(--shadow-composer);
 }
 
-/* A shell command (!): a plain ring in the text colour. */
-.composer.shell .composer-box {
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 34%, transparent);
-}
-
-@keyframes c-in {
-    from {
-        opacity: 0;
-        transform: translateY(4px);
-    }
+.composer-attached {
+    border-top-left-radius: 0;
+    border-top-right-radius: 0;
 }
 
 /* The send button's keys, over it while it's pointed at or focused: steer or queue (and the other way) while a
-   turn runs, esc to stop. Nothing beside it in the box. A moment's wait, so passing over it doesn't flash it. */
+   turn runs, esc to stop. A moment's wait, so passing over it doesn't flash it. */
 .send-wrap {
     position: relative;
     display: inline-flex;
@@ -60,25 +57,21 @@
     z-index: 12;
     display: grid;
     gap: calc(4 * var(--sp));
-    padding: calc(7 * var(--sp)) calc(9 * var(--sp));
-    border-radius: calc(10 * var(--sp));
-    background: var(--ctl-strong);
-    -webkit-backdrop-filter: blur(30px) saturate(1.6);
-    backdrop-filter: blur(30px) saturate(1.6);
-    box-shadow: var(--pop-shadow);
-    font-size: 0.821rem;
-    color: var(--fg-2);
+    padding: calc(6 * var(--sp)) calc(8 * var(--sp));
+    border-radius: var(--radius-m);
+    background: var(--surface);
+    box-shadow: var(--shadow-pop);
+    font-size: calc(12 * var(--sp));
+    color: var(--text-2);
     white-space: nowrap;
     pointer-events: none;
     opacity: 0;
-    transform: translateY(3px);
-    transition: opacity 120ms var(--ease), transform 120ms var(--ease);
+    transition: opacity 120ms var(--ease);
 }
 
 .send-wrap:hover .send-hint,
-.send-wrap:has(.send:focus-visible) .send-hint {
+.send-wrap:has(.send-btn:focus-visible) .send-hint {
     opacity: 1;
-    transform: none;
     transition-delay: 300ms;
 }
 
@@ -88,13 +81,8 @@
     gap: calc(8 * var(--sp));
 }
 
-.sh-row kbd {
+.sh-row .kbd {
     min-width: calc(34 * var(--sp));
-    height: auto;
-    padding: calc(2 * var(--sp)) calc(5 * var(--sp));
-    font-size: 0.75rem;
-    color: var(--fg-3);
-    text-align: center;
 }
 
 .composer .grow {
@@ -102,1250 +90,218 @@
     min-width: 0;
 }
 
-/* ---- Goal and schedules: rows inside the card ---------------------------- */
+/* ---- The text field, and the layer behind it that colours a /command or $skill ---- */
 
-.queue {
-    display: flex;
-    flex-direction: column;
-    gap: calc(4 * var(--sp));
-    margin-bottom: calc(8 * var(--sp));
-    min-width: 0;
-}
-
-.queue-tab {
-    max-height: min(160 * var(--sp), 20vh);
-    overflow-y: auto;
-    overscroll-behavior: contain;
-}
-
-.queue-row,
-.goal-row {
-    display: flex;
-    align-items: center;
-    gap: calc(8 * var(--sp));
-    min-width: 0;
-    min-height: calc(34 * var(--sp));
-    padding: calc(4 * var(--sp)) calc(6 * var(--sp)) calc(4 * var(--sp)) calc(10 * var(--sp));
-    border-radius: calc(12 * var(--sp));
-    background: var(--hover);
-    color: var(--fg-2);
-    white-space: nowrap;
-    animation: c-in 300ms var(--ease);
-}
-
-.queue .hb.sm {
-    width: calc(22 * var(--sp));
-    height: calc(22 * var(--sp));
-    border-radius: var(--pill);
-}
-
-.queue-icon {
-    display: inline-grid;
-    flex: none;
-    color: var(--fg-2);
-}
-
-.queue-text {
-    flex: 1;
-    font-size: 0.929rem;
-    color: var(--fg);
-}
-
-.queue-attached {
-    display: inline-flex;
-    align-items: center;
-    gap: calc(4 * var(--sp));
-    max-width: 40%;
-    font-size: 0.857rem;
-    color: var(--fg-3);
-}
-
-.queue-hint {
-    flex: none;
-    font-size: 0.857rem;
-    color: var(--fg-3);
-    font-variant-numeric: tabular-nums;
-}
-
-/* ---- Sign-ins put off with Later: a strip of its own above the box, a card's surface at a row's height ---- */
-
-.si-later {
-    display: flex;
-    flex-direction: column;
-    padding: calc(3 * var(--sp));
-    border-radius: calc(14 * var(--sp));
-    animation: ask-rise 460ms var(--spring);
-}
-
-.si-later-row {
-    display: flex;
-    align-items: center;
-    gap: calc(8 * var(--sp));
-    min-width: 0;
-    min-height: calc(32 * var(--sp));
-    padding: 0 calc(3 * var(--sp)) 0 calc(12 * var(--sp));
-}
-
-.si-later-row + .si-later-row {
-    border-top: 1px solid var(--line);
-}
-
-.si-later-icon {
-    flex: none;
-    color: var(--fg-3);
-}
-
-.si-later-what {
-    flex: 1;
-    font-size: 0.929rem;
-    font-weight: 500;
-    color: var(--fg);
-}
-
-/* What's the matter with it, and where: quieter than its name. */
-.si-later-why {
-    margin-left: calc(8 * var(--sp));
-    font-size: 0.857rem;
-    font-weight: 400;
-    color: var(--fg-3);
-}
-
-.si-later .hb.sm {
-    width: calc(26 * var(--sp));
-    height: calc(26 * var(--sp));
-    border-radius: calc(8 * var(--sp));
-}
-
-/* ---- Stashed prompts: a tab on the box's top edge, which opens into their list ----
-   In the card's own fill and standing on its edge, so it reads as part of the box: closed,
-   a small tab at its far end; open, a tray along it, a row for each prompt. */
-
-.stash-tray {
+.composer-field {
     position: relative;
-    z-index: 1;
-    display: flex;
-    flex: none;
-    flex-direction: column;
-    align-self: flex-end;
-    min-width: 0;
-    /* On the box's top edge: the composer's column gap is 8px. */
-    margin: 0 calc(20 * var(--sp)) calc(-8 * var(--sp)) 0;
-    border-radius: calc(11 * var(--sp)) calc(11 * var(--sp)) 0 0;
-    background: var(--card);
-    box-shadow:
-        inset 0 0.5px 0 var(--card-stroke),
-        inset 0.5px 0 0 var(--card-stroke),
-        inset -0.5px 0 0 var(--card-stroke),
-        inset 0 1px 0 var(--card-hi);
-    font-size: 0.857rem;
-    color: var(--fg-2);
 }
 
-.stash-tray.open {
-    align-self: stretch;
-    margin-left: calc(20 * var(--sp));
-    padding: calc(3 * var(--sp)) calc(4 * var(--sp)) calc(5 * var(--sp));
-    border-radius: calc(15 * var(--sp)) calc(15 * var(--sp)) 0 0;
-}
-
-.stash-head {
-    display: flex;
-    align-items: center;
-    gap: calc(7 * var(--sp));
-    height: calc(28 * var(--sp));
-    padding: 0 calc(12 * var(--sp));
-    border-radius: inherit;
-    font: inherit;
-    color: inherit;
-    text-align: left;
-    transition: color 140ms;
-}
-
-.stash-head:hover {
-    color: var(--fg);
-}
-
-.stash-head:focus-visible,
-.stash-pick:focus-visible {
-    outline: none;
-    box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 55%, transparent);
-}
-
-/* Open, the head is the list's first line: its icon and word over the rows', the count and the way to close at the far end. */
-.stash-tray.open .stash-head {
-    gap: calc(10 * var(--sp));
-    height: calc(30 * var(--sp));
-    padding: 0 calc(11 * var(--sp)) 0 calc(9 * var(--sp));
-    border-radius: calc(10 * var(--sp));
-}
-
-.stash-tray.open .stash-head > svg:first-child {
-    width: calc(14 * var(--sp));
-}
-
-.stash-tray.open .stash-word {
-    flex: 1;
-}
-
-.stash-n,
-.stash-head .chev {
-    flex: none;
-    color: var(--fg-3);
-}
-
-.stash-tray.open .stash-n {
-    margin-right: calc(4 * var(--sp));
-}
-
-.stash-list {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-    min-width: 0;
-    /* Past five rows it scrolls, so the conversation keeps its room. */
-    max-height: min(154 * var(--sp), 30vh);
-    overflow-y: auto;
-    overscroll-behavior: contain;
-}
-
-.stash-row {
-    display: flex;
-    flex: none;
-    align-items: center;
-    min-width: 0;
-    height: calc(30 * var(--sp));
-    border-radius: calc(10 * var(--sp));
-    transition: background 140ms;
-}
-
-.stash-row:hover,
-.stash-row:focus-within {
-    background: var(--hover);
-}
-
-.stash-pick {
-    display: flex;
-    flex: 1;
-    align-items: center;
-    gap: calc(10 * var(--sp));
-    min-width: 0;
-    height: 100%;
-    padding: 0 calc(8 * var(--sp)) 0 calc(9 * var(--sp));
-    border-radius: inherit;
-    font: inherit;
-    font-size: 0.929rem;
-    color: var(--fg);
-    text-align: left;
-}
-
-.stash-pick > svg {
-    flex: none;
-    color: var(--fg-3);
-}
-
-.stash-text {
-    flex: 1;
-}
-
-.stash-drop {
-    display: grid;
-    flex: none;
-    place-items: center;
-    width: calc(26 * var(--sp));
-    height: calc(26 * var(--sp));
-    margin-right: calc(5 * var(--sp));
-    border-radius: calc(8 * var(--sp));
-    color: var(--fg-3);
-    transition: background 140ms, color 140ms;
-}
-
-.stash-drop:hover {
-    background: var(--press);
-    color: var(--fg);
-}
-
-/* Home: in the fill of the card's other tabs there (home.css), and it takes no room in the column, so the composer
-   doesn't move when it comes, goes, opens or closes. */
-.composer.v-home .stash-tray {
-    position: absolute;
-    right: 0;
-    bottom: 100%;
-    /* Set in from the card's ends as its other tabs are. */
-    margin: 0 calc(22 * var(--sp)) 0 0;
-    background: color-mix(in srgb, var(--fg) 3.5%, var(--sheet));
-    box-shadow:
-        inset 0 0.5px 0 var(--line),
-        inset 0.5px 0 0 var(--line),
-        inset -0.5px 0 0 var(--line);
-}
-
-.composer.v-home .stash-tray.open {
-    left: 0;
-    margin-left: calc(22 * var(--sp));
-}
-
-/* Over the tab that asks to trust the folder, which stands on the card's top edge too. */
-.home-tab + .composer.v-home .stash-tray {
-    bottom: calc(100% + 38 * var(--sp));
-}
-
-/* ---- Up next: steers and queued messages, in a tray on top of the box -------
-   Its own small glass card, inset from the box's edges, so it reads as "waiting
-   to go into this box". Rows are numbered in the order they go; the number is a
-   grip while you're on the row. The hint and the row's buttons share one spot. */
-
-.uq-tray {
-    position: relative;
-    z-index: 1;
-    flex: none;
-    min-width: 0;
-    /* 6px above the box: the composer's column gap is 8px. */
-    margin: 0 calc(14 * var(--sp)) calc(-2 * var(--sp));
-    padding: calc(4 * var(--sp));
-    border-radius: calc(16 * var(--sp));
-    animation: c-in 260ms var(--ease);
-}
-
-.uq-list {
-    display: flex;
-    flex-direction: column;
-    gap: calc(2 * var(--sp));
-    min-width: 0;
-}
-
-/* Past four rows it scrolls, so the transcript keeps its room. */
-.uq-list:has(> .uq-row:nth-child(5)) {
-    max-height: min(178 * var(--sp), 30vh);
-    overflow-y: auto;
-    overscroll-behavior: contain;
-}
-
-.uq-row {
-    position: relative;
-    display: flex;
-    align-items: center;
-    gap: calc(8 * var(--sp));
-    flex: none;
-    min-width: 0;
-    height: calc(34 * var(--sp));
-    padding: 0 calc(6 * var(--sp)) 0 calc(4 * var(--sp));
-    border-radius: calc(12 * var(--sp));
-    font-size: 0.929rem;
-    color: var(--fg);
-    white-space: nowrap;
-    outline: none;
-    transition: background 140ms;
-}
-
-.uq-row.movable {
-    user-select: none;
-    -webkit-user-select: none;
-    touch-action: none;
-    cursor: grab;
-}
-
-.uq-row:hover,
-.uq-row:focus-visible {
-    background: var(--hover);
-}
-
-.uq-row:focus-visible {
-    box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 55%, transparent);
-}
-
-/* Its place in line; a grip while you're on the row. */
-.uq-n {
-    display: grid;
-    place-items: center;
-    flex: none;
-    width: calc(22 * var(--sp));
-    height: calc(22 * var(--sp));
-    border-radius: calc(7 * var(--sp));
-    color: var(--fg-3);
-}
-
-.uq-n > * {
-    grid-area: 1 / 1;
-    transition: opacity var(--dur-fast);
-}
-
-.uq-n b {
-    font-size: 0.821rem;
-    font-weight: 600;
-    line-height: 1;
-}
-
-.uq-n svg {
-    opacity: 0;
-}
-
-.uq-row.movable:hover .uq-n b,
-.uq-row.movable:focus-visible .uq-n b,
-.uq-row.lifted .uq-n b {
-    opacity: 0;
-}
-
-.uq-row.movable:hover .uq-n svg,
-.uq-row.movable:focus-visible .uq-n svg,
-.uq-row.lifted .uq-n svg {
-    opacity: 1;
-}
-
-.uq-kind {
-    display: grid;
-    flex: none;
-    color: var(--fg-3);
-}
-
-/* Steering: it joins the turn, so it takes the accent; held after a restart: it waits on you. */
-.uq-row.q-steer .uq-kind {
-    color: var(--accent);
-}
-
-.uq-row.q-held .uq-kind,
-.uq-row.q-held .uq-hint {
-    color: var(--warn);
-}
-
-.uq-text {
-    flex: 1;
-    min-width: 0;
-}
-
-.uq-end {
-    display: grid;
-    justify-items: end;
-    align-items: center;
-    flex: none;
-}
-
-.uq-end > * {
-    grid-area: 1 / 1;
-    transition: opacity var(--dur-fast);
-}
-
-/* Never under the pointer: faded out (opacity < 1) it paints, and is hit-tested, above the buttons that share its cell.
-   Its detail is in the kind icon's tooltip and the screen-reader text. */
-.uq-hint {
-    display: inline-flex;
-    align-items: center;
-    gap: calc(6 * var(--sp));
-    padding-right: calc(6 * var(--sp));
-    font-size: 0.857rem;
-    color: var(--fg-3);
-    pointer-events: none;
-}
-
-/* On its way: the first steer, waiting for the turn's next step. */
-.uq-hint.joining::before {
-    content: "";
-    flex: none;
-    width: calc(6 * var(--sp));
-    height: calc(6 * var(--sp));
-    border-radius: 50%;
-    background: var(--accent);
-    animation: uq-joining 1.2s steps(12) infinite;
-    animation-play-state: var(--loops);
-}
-
-@keyframes uq-joining {
-    50% {
-        opacity: 0.3;
-        transform: scale(0.7);
-    }
-}
-
-/* Over the hint, which shares its cell. */
-.uq-acts {
-    position: relative;
-    z-index: 1;
-    display: flex;
-    align-items: center;
-    gap: calc(2 * var(--sp));
-    opacity: 0;
-    pointer-events: none;
-}
-
-/* On the row, or on it (or a button in it) from the keyboard: a row a click or a drag left focused keeps its hint. */
-.uq-row:hover .uq-acts,
-.uq-row:focus-visible .uq-acts,
-.uq-row:has(:focus-visible) .uq-acts {
-    opacity: 1;
-    pointer-events: auto;
-}
-
-.uq-row:hover .uq-hint,
-.uq-row:focus-visible .uq-hint,
-.uq-row:has(:focus-visible) .uq-hint {
-    opacity: 0;
-}
-
-.uq-ib {
-    display: grid;
-    place-items: center;
-    width: calc(26 * var(--sp));
-    height: calc(26 * var(--sp));
-    border-radius: calc(8 * var(--sp));
-    color: var(--fg-3);
-    transition: background 140ms, color 140ms;
-}
-
-.uq-ib:hover {
-    background: var(--press);
-    color: var(--fg);
-}
-
-/* Steer (into the running turn, with its glyph) or Send now. */
-.uq-send {
-    display: inline-flex;
-    align-items: center;
-    gap: calc(4 * var(--sp));
-    height: calc(24 * var(--sp));
-    margin-right: calc(2 * var(--sp));
-    padding: 0 calc(9 * var(--sp));
-    border-radius: var(--pill);
-    font-size: 0.857rem;
-    font-weight: 600;
-    color: var(--accent);
-    background: color-mix(in srgb, var(--accent) 12%, transparent);
-    white-space: nowrap;
-    transition: background 140ms;
-}
-
-.uq-send:has(svg) {
-    padding-left: calc(7 * var(--sp));
-}
-
-.uq-send:hover {
-    background: color-mix(in srgb, var(--accent) 20%, transparent);
-}
-
-.uq-send:focus-visible,
-.uq-ib:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 1px;
-}
-
-/* Sorting: the others slide out of the way; the one you hold is lifted and follows the pointer. */
-.uq-list.sorting .uq-row {
-    transition: transform var(--dur-sort) var(--ease), background 140ms;
-}
-
-.uq-list .uq-row.lifted,
-.uq-list .uq-row.settling {
-    z-index: 2;
-    cursor: grabbing;
-    background: color-mix(in srgb, var(--fg) 7%, var(--sheet));
-}
-
-.uq-list .uq-row.lifted {
-    box-shadow: var(--pop-shadow);
-    transition: box-shadow 160ms, background 140ms;
-}
-
-.uq-list .uq-row.settling {
-    box-shadow: none;
-    transition: transform var(--dur-settle) var(--spring), box-shadow 200ms;
-}
-
-/* The move is in: every row takes its new place and drops its transform at once, so nothing moves. */
-.uq-list.still .uq-row {
-    transition: none !important;
-}
-
-@media (prefers-reduced-motion: reduce) {
-    .uq-tray {
-        animation: none;
-    }
-
-    .uq-row,
-    .uq-list .uq-row.lifted,
-    .uq-list .uq-row.settling,
-    .uq-list.sorting .uq-row {
-        transition: none;
-    }
-
-    .uq-hint.joining::before {
-        animation: none;
-    }
-}
-
-/* Schedules: what runs when, like the queue. */
-.schedule-row.paused .queue-text,
-.schedule-row.paused .schedule-when {
-    color: var(--fg-3);
-}
-
-.schedule-when {
-    flex: none;
-    max-width: 30%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    font-size: 0.857rem;
-    color: var(--fg-2);
-}
-
-.schedule-next.due {
-    color: var(--accent);
-}
-
-.schedule-more {
-    align-self: flex-start;
-    margin: 0 0 0 calc(10 * var(--sp));
-    font-size: 0.857rem;
-}
-
-/* The goal: what it's working toward, where it stands. */
-.goal-tab {
-    max-height: none;
-}
-
-.goal-icon {
-    flex: none;
-    color: var(--accent);
-}
-
-.goal-tab.st-paused .goal-icon {
-    color: var(--fg-3);
-}
-
-.goal-label {
-    flex: none;
-    font-size: 0.857rem;
-    font-weight: 600;
-    color: var(--fg-2);
-}
-
-.goal-by {
-    flex: none;
-    padding: 0 calc(7 * var(--sp));
-    border-radius: var(--pill);
-    box-shadow: inset 0 0 0 0.5px var(--line);
-    font-size: 0.786rem;
-    color: var(--fg-3);
-}
-
-.goal-text {
-    flex: 1;
-    font-size: 0.929rem;
-    color: var(--fg);
-}
-
-.goal-status {
-    flex: none;
-    font-size: 0.857rem;
-    color: var(--fg-3);
-    font-variant-numeric: tabular-nums;
-}
-
-.goal-details {
-    max-height: min(140 * var(--sp), 18vh);
-    overflow-y: auto;
-    overscroll-behavior: contain;
-    padding: 0 calc(10 * var(--sp)) calc(2 * var(--sp));
-    font-size: 0.857rem;
-    color: var(--fg-3);
-}
-
-.goal-details p {
-    margin: calc(2 * var(--sp)) 0;
+.composer-input,
+.composer-mirror {
+    display: block;
+    width: 100%;
+    min-height: calc(44 * var(--sp));
+    padding: calc(12 * var(--sp)) calc(14 * var(--sp)) calc(4 * var(--sp));
+    font-family: var(--font-ui);
+    font-size: var(--chat-size);
+    line-height: 1.5;
+    letter-spacing: 0;
     white-space: pre-wrap;
+    overflow-wrap: break-word;
+    word-break: normal;
 }
 
-/* ---- Attachments: tiles of one height, an image's thumbnail or a file's card ---- */
-
-.attachments-wrap {
-    display: flex;
-    flex-direction: column;
-    margin-bottom: calc(10 * var(--sp));
-    min-width: 0;
-}
-
-.attachments {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: calc(8 * var(--sp));
-    /* Room for each tile's remove button, which sits over its corner. */
-    padding: calc(6 * var(--sp)) calc(6 * var(--sp)) 0 0;
-}
-
-.att {
-    position: relative;
-    flex: none;
-    height: calc(52 * var(--sp));
-    border-radius: calc(12 * var(--sp));
-    background: color-mix(in srgb, var(--fg) 6%, transparent);
-    box-shadow: inset 0 0 0 0.5px var(--line);
-}
-
-/* An image as itself: a square of it, the whole of it a click away. */
-.att-image {
-    width: calc(52 * var(--sp));
-}
-
-.att-open {
-    display: block;
-    width: 100%;
-    height: 100%;
-    padding: 0;
-    border-radius: inherit;
-    overflow: hidden;
-    cursor: zoom-in;
-}
-
-.att-open img {
-    display: block;
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-}
-
-/* An image smaller than the chip: at its own size in the middle, not blown up into a blur. */
-.att-image.small .att-open img {
-    object-fit: scale-down;
-}
-
-/* Its edge over the picture, as the cards have theirs. */
-.att-image::after {
-    content: "";
-    position: absolute;
-    inset: 0;
-    border-radius: inherit;
-    box-shadow: inset 0 0 0 0.5px var(--line);
-    pointer-events: none;
-}
-
-.att-open:focus-visible,
-.att-card:focus-visible,
-.att-act:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: -2px;
-}
-
-.att-file {
-    display: flex;
-    align-items: center;
-    max-width: calc(260 * var(--sp));
-    min-width: 0;
-}
-
-.att-card {
-    display: flex;
-    align-items: center;
-    gap: calc(10 * var(--sp));
-    height: 100%;
-    min-width: 0;
-    padding: 0 calc(14 * var(--sp)) 0 calc(8 * var(--sp));
-    border-radius: inherit;
-    text-align: left;
-    color: inherit;
-}
-
-button.att-card {
-    transition: background 140ms;
-}
-
-button.att-card:hover {
-    background: var(--hover);
-}
-
-.att-file.open {
-    box-shadow: inset 0 0 0 1px var(--accent);
-}
-
-/* Its kind: the extension on a tile tinted by its family (a sheet green, a PDF red), else plain. */
-.att-tile {
-    --tint: var(--fg-2);
-    display: grid;
-    place-items: center;
-    flex: none;
-    width: calc(36 * var(--sp));
-    height: calc(36 * var(--sp));
-    border-radius: calc(9 * var(--sp));
-    background: color-mix(in srgb, var(--tint) 16%, transparent);
-    color: var(--tint);
-}
-
-.att-tile[data-tint="pdf"],
-.att-tile[data-tint="bad"] {
-    --tint: var(--danger);
-}
-
-.att-tile[data-tint="sheet"] {
-    --tint: var(--ok);
-}
-
-.att-tile[data-tint="box"] {
-    --tint: var(--warn);
-}
-
-.att-tile[data-tint="doc"] {
-    --tint: var(--accent-text);
-}
-
-.att-ext {
-    font-size: 0.714rem;
-    font-weight: 700;
-    letter-spacing: 0.02em;
-}
-
-.att-ext.long {
-    font-size: 0.607rem;
-}
-
-.att-body {
-    display: flex;
-    flex-direction: column;
-    gap: calc(2 * var(--sp));
-    min-width: 0;
-}
-
-.att-name {
-    font-size: 0.893rem;
-    font-weight: 500;
-    line-height: 1.25;
-    color: var(--fg);
-}
-
-.att-meta {
-    font-size: 0.786rem;
-    line-height: 1.25;
-    color: var(--fg-3);
-}
-
-.att-file.refused {
-    background: color-mix(in srgb, var(--danger) 8%, transparent);
-    box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--danger) 45%, transparent);
-}
-
-.att-file.refused .att-meta {
-    color: var(--danger);
-}
-
-/* A paste's way back into the box, at the card's end. */
-.att-act {
-    display: grid;
-    place-items: center;
-    flex: none;
-    width: calc(28 * var(--sp));
-    height: calc(28 * var(--sp));
-    margin: 0 calc(10 * var(--sp)) 0 calc(-6 * var(--sp));
-    border-radius: calc(8 * var(--sp));
-    color: var(--fg-3);
-    transition: background 140ms, color 140ms;
-}
-
-.att-act:hover {
-    background: var(--hover);
-    color: var(--fg);
-}
-
-/* Remove: over the tile's corner, while the pointer or the keyboard is on it. */
-.att-x {
-    position: absolute;
-    top: calc(-6 * var(--sp));
-    right: calc(-6 * var(--sp));
-    width: calc(18 * var(--sp));
-    height: calc(18 * var(--sp));
-    border-radius: 50%;
-    display: grid;
-    place-items: center;
-    background: var(--fg);
-    color: var(--sheet);
-    box-shadow: 0 0 0 2px var(--sheet);
-    opacity: 0;
-    transition: opacity 120ms;
-}
-
-.att:hover .att-x,
-.att:focus-within .att-x {
-    opacity: 1;
-}
-
-@media (hover: none) {
-    .att-x {
-        opacity: 1;
-    }
-}
-
-.attachment-preview {
-    margin: calc(6 * var(--sp)) 0 0;
-    padding: calc(9 * var(--sp)) calc(12 * var(--sp));
-    max-height: calc(200 * var(--sp));
-    overflow: auto;
-    border-radius: calc(10 * var(--sp));
-    background: var(--sheet-2);
-    font-family: var(--font-mono);
-    font-size: 0.786rem;
-    line-height: 1.5;
-    white-space: pre;
-}
-
-/* A side chat's answer: drawn as the conversation draws it (markdown.css .md.small), a little taller before it scrolls. */
-.attachment-preview.prose {
-    max-height: calc(240 * var(--sp));
-    padding: calc(10 * var(--sp)) calc(14 * var(--sp));
-    font-family: inherit;
-    font-size: inherit;
-    line-height: inherit;
-    white-space: normal;
-}
-
-.attachments-note {
-    padding: calc(6 * var(--sp)) 0 0;
-    font-size: 0.857rem;
-    color: var(--danger);
-}
-
-/* ---- Review comments going with the next message: chips like the files' -- */
-
-.rc-wrap {
-    display: flex;
-    flex-direction: column;
-    gap: calc(6 * var(--sp));
-    margin-bottom: calc(8 * var(--sp));
-    min-width: 0;
-}
-
-.rc-chips {
-    display: flex;
-    flex-wrap: wrap;
-    gap: calc(6 * var(--sp));
-    max-height: calc(92 * var(--sp));
-    overflow-y: auto;
-    /* Room for the chips' hairline rings at the scroll edges. */
-    padding: 1px;
-    margin: -1px;
-}
-
-.rc-chip {
-    display: inline-flex;
-    align-items: center;
-    height: calc(28 * var(--sp));
-    max-width: calc(320 * var(--sp));
-    min-width: 0;
-    padding: 0 calc(3 * var(--sp)) 0 0;
-    border-radius: var(--pill);
-    background: var(--sheet);
-    box-shadow: 0 0 0 0.5px var(--line);
-    font-size: 0.857rem;
-    color: var(--fg-2);
-    white-space: nowrap;
-    transition: box-shadow 140ms;
-}
-
-.rc-chip:hover {
-    box-shadow: 0 0 0 0.5px color-mix(in srgb, var(--accent) 45%, transparent);
-}
-
-.rc-open {
-    display: inline-flex;
-    align-items: center;
-    gap: calc(6 * var(--sp));
-    height: 100%;
-    min-width: 0;
-    padding: 0 calc(4 * var(--sp)) 0 calc(9 * var(--sp));
-    border-radius: var(--pill);
-    color: inherit;
-    font: inherit;
-}
-
-.rc-open:focus-visible {
-    outline: none;
-    box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
-}
-
-.rc-open:hover .rc-where {
-    color: var(--accent);
-}
-
-.rc-icon {
-    flex: none;
-    color: var(--accent);
-}
-
-.rc-where {
-    flex: none;
-    font-size: 0.786rem;
-    font-weight: 500;
-    color: var(--fg);
-    transition: color 140ms;
-}
-
-.rc-text {
-    min-width: 0;
-    color: var(--fg-3);
-}
-
-.rc-chip .hb.sm {
-    flex: none;
-    width: calc(20 * var(--sp));
-    height: calc(20 * var(--sp));
-    border-radius: 50%;
-}
-
-.rc-foot {
-    display: flex;
-    align-items: center;
-    gap: calc(8 * var(--sp));
-    min-width: 0;
-    padding-left: calc(2 * var(--sp));
-    font-size: 0.786rem;
-    color: var(--fg-3);
-}
-
-.rc-foot .link-btn {
-    font-size: inherit;
-}
-
-/* ---- The text ----------------------------------------------------------- */
-
+/* A modest height, seven lines or less in a short column; past it the text scrolls and the expand button opens it
+   large (Composer.tsx sizes it where the engine can't). */
 .composer-input {
-    display: flex;
-    align-items: flex-start;
-    gap: calc(8 * var(--sp));
-}
-
-/* A modest height, seven lines of the text size or less in a short column; past it the text scrolls, and the expand
-   button (Composer.tsx) opens it large. */
-.composer textarea {
-    display: block;
-    flex: 1;
-    width: 100%;
-    min-height: calc(40 * var(--sp));
-    max-height: min(calc(7lh + 2 * var(--sp)), calc(var(--column-h, 100vh) * 0.3));
-    padding: calc(2 * var(--sp)) 0 0;
-    /* Scrolled, the line above shows a sliver of its descenders in the top padding: faded out. */
-    mask-image: linear-gradient(transparent, #000 4px);
+    position: relative;
+    max-height: min(7lh, calc(var(--column-h, 100vh) * 0.3));
     border: 0;
+    background: none;
+    outline: none;
     resize: none;
+    color: var(--text);
+    caret-color: var(--text);
     overflow-y: auto;
-    background: transparent;
-    font-size: 1.036rem;
-    line-height: 1.5;
-    color: var(--fg);
+    field-sizing: content;
+    /* Scrolled, the line above shows a sliver of its descenders at the top: faded out. */
+    mask-image: linear-gradient(transparent, #000 4px);
 }
 
-/* The message's field has that fade only while it's scrolled (Composer.tsx marks it): unscrolled there's nothing in
-   those 4px to fade, and the mask there all the time kept about 55 MB in the GPU process for as long as a session was
-   shown (the conversation's own mask doesn't, and why this one did isn't known). */
-.composer-field textarea:not([data-scrolled]) {
+/* Only while it's scrolled (Composer.tsx marks it): the mask there all the time kept about 55 MB in the GPU
+   process for as long as a session was shown. */
+.composer-input:not([data-scrolled]) {
     mask-image: none;
 }
 
-.composer.v-home textarea {
-    min-height: calc(58 * var(--sp));
-}
-
-.composer.shell textarea {
-    font-family: var(--font-mono);
-    font-size: 0.929rem;
-}
-
-/* Its text's height, up to the modest one (Composer.tsx sizes it where the engine can't). */
-.composer:not(.expanded) textarea {
-    field-sizing: content;
-}
-
-/* Large: as tall as Composer.tsx makes it. */
-.composer.expanded textarea {
+.composer-root.expanded .composer-input {
     max-height: none;
+    field-sizing: fixed;
 }
 
-.composer textarea::placeholder {
-    color: var(--fg-3);
-}
-
-/* The text, and while it has a /command or a $skill, the same lines drawn behind it with those in color (Composer.tsx):
-   laid out alike, so the textarea's caret and selection fall on them while its own letters are clear. */
-.composer-field {
-    position: relative;
-    flex: 1;
-    min-width: 0;
-}
-
-.composer-field textarea {
-    position: relative;
-}
-
-.composer-field.marked textarea {
+/* The layer is drawn only while there's something to colour (Composer.tsx); then the textarea's letters are clear. */
+.composer-field.marked .composer-input {
     color: transparent;
-    caret-color: var(--fg);
 }
 
-/* See-through, so the letters behind show in it. */
-.composer-field.marked textarea::selection {
+.composer-input::selection {
+    background: color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
+.composer-field.marked .composer-input::selection {
     color: transparent;
-    background: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+.composer-input::placeholder {
+    color: var(--text-3);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .composer-mirror {
     position: absolute;
-    top: 0;
-    left: 0;
+    inset: 0;
+    color: var(--text);
     overflow: hidden;
-    padding: calc(2 * var(--sp)) 0 0;
-    font-size: 1.036rem;
-    line-height: 1.5;
-    white-space: pre-wrap;
-    overflow-wrap: break-word;
-    color: var(--fg);
     pointer-events: none;
     user-select: none;
 }
 
-/* Only the color: a weight or a box would move the letters off the caret. */
-.ctok {
+.composer-input[data-shell],
+.composer-field:has(.composer-input[data-shell]) .composer-mirror {
+    font-family: var(--font-mono);
+    font-size: calc(var(--chat-size) - 1.5 * var(--sp));
+    padding-left: calc(38 * var(--sp));
+}
+
+.hl-cmd,
+.hl-skill {
     color: var(--accent-text);
 }
 
-/* What the command takes, until something's typed there. */
-.ctok-hint {
-    color: var(--fg-3);
+.hl-shell {
+    color: var(--green);
+    font-weight: 600;
 }
 
-/* The card shows focus; the field inside doesn't need its own ring. */
-.composer textarea:focus-visible {
-    outline: none;
-}
-
-/* At the card's top right while the text runs past its modest height (or it's open large). The first row keeps
-   clear of it: the text's own padding when that's the first row, so its scrollbar stays at the edge. */
-.composer-box > .c-expand {
-    position: absolute;
-    top: calc(8 * var(--sp));
-    right: calc(8 * var(--sp));
-    z-index: 1;
-    height: calc(26 * var(--sp));
-    min-width: calc(26 * var(--sp));
-    padding: 0;
-    color: var(--fg-3);
-    animation: fade 160ms var(--ease);
-}
-
-.composer.expandable .composer-box > :first-child:not(.composer-input, .c-expand) {
-    padding-right: calc(30 * var(--sp));
-}
-
-.composer.expandable .composer-input:first-child textarea,
-.composer.expandable .composer-input:first-child .composer-mirror {
-    padding-right: calc(30 * var(--sp));
+.hl-hint {
+    color: var(--text-4);
 }
 
 .shell-badge {
-    margin-top: calc(3 * var(--sp));
-    color: var(--fg-2);
+    position: absolute;
+    top: calc(11 * var(--sp));
+    left: calc(12 * var(--sp));
+    z-index: 2;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: calc(20 * var(--sp));
+    height: calc(22 * var(--sp));
+    border-radius: calc(5 * var(--sp));
+    background: var(--green-soft);
+    color: var(--green);
 }
 
-/* ---- Controls row: attach | model, effort, mode … context, send ----------
-   Words, not chips: each picker is what it's set to and a chevron, quiet
-   until pointed at. Their glyphs (the provider's mark, the effort's bars, the
-   mode's icon) stand in only when the row is too tight for the words. */
+.composer-expand {
+    position: absolute;
+    top: calc(6 * var(--sp));
+    right: calc(6 * var(--sp));
+    z-index: 2;
+    background: var(--surface);
+}
+
+/* The first row keeps clear of the expand button. */
+.composer-root.expandable .composer-input {
+    padding-right: calc(34 * var(--sp));
+}
+
+/* ---- The bar: attach | model, effort, mode … send ---- */
 
 .composer-bar {
     display: flex;
     align-items: center;
     gap: calc(2 * var(--sp));
-    min-width: 0;
-    margin: calc(8 * var(--sp)) 0 0 calc(-8 * var(--sp));
+    padding: calc(6 * var(--sp)) calc(8 * var(--sp)) calc(8 * var(--sp)) calc(6 * var(--sp));
 }
 
-.cb {
+.bar-attach {
+    color: var(--text-3);
+}
+
+.bar-btn {
     display: inline-flex;
     align-items: center;
-    justify-content: center;
-    flex: none;
-    height: calc(28 * var(--sp));
-    min-width: calc(28 * var(--sp));
-    padding: 0 calc(5 * var(--sp));
-    border-radius: calc(8 * var(--sp));
-    color: var(--fg-2);
-    transition: background 140ms, color 140ms, transform 160ms var(--ease);
-}
-
-.cb:hover {
-    background: var(--hover);
-    color: var(--fg);
-}
-
-.cb:active {
-    transform: scale(0.94);
-    background: var(--press);
-}
-
-/* Attach leads the row; the pickers start a little after it. */
-.composer-bar > .cb:first-of-type {
-    margin-right: calc(4 * var(--sp));
-}
-
-.pick {
-    display: inline-flex;
-    align-items: center;
-    flex: none;
-    gap: calc(4 * var(--sp));
-    height: calc(28 * var(--sp));
-    min-width: 0;
-    padding: 0 calc(6 * var(--sp)) 0 calc(8 * var(--sp));
-    border-radius: calc(8 * var(--sp));
-    font-size: 0.964rem;
-    color: var(--fg-2);
-    white-space: nowrap;
-    transition: background 140ms, color 140ms;
-}
-
-.pick:hover,
-.pick.open {
-    background: var(--hover);
-    color: var(--fg);
-}
-
-.pick > svg {
-    flex: none;
-}
-
-.pick .chev {
-    flex: none;
-    color: var(--fg-3);
-}
-
-.pick.model {
+    gap: calc(6 * var(--sp));
     flex: 0 1 auto;
-}
-
-.pick.model .truncate {
     min-width: 0;
+    height: calc(28 * var(--sp));
+    padding: 0 calc(6 * var(--sp)) 0 calc(8 * var(--sp));
+    border-radius: var(--radius-s);
+    color: var(--text-2);
+    font-size: calc(12.5 * var(--sp));
+    font-weight: 500;
+    white-space: nowrap;
+    transition: background 0.12s, color 0.12s;
 }
 
-/* How hard the model thinks, after its name: a step quieter, so the two read as one thing, name first. */
-.pick-eff {
-    color: var(--fg-3);
+.bar-btn:hover,
+.bar-btn[aria-expanded="true"] {
+    background: var(--fill-1);
+    color: var(--text);
 }
 
-.pick:hover .pick-eff,
-.pick.open .pick-eff {
-    color: var(--fg-2);
+.bar-main {
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
-/* The mode's glyph waits until its word gives way (below). The model's provider always shows its mark, before the name. */
-.composer-bar .pick:not(.model) > :is(svg:not(.chev), .provider-mono) {
+.bar-dim {
+    color: var(--text-3);
+    font-weight: 450;
+}
+
+.bar-chev {
+    flex: none;
+    margin-left: calc(-2 * var(--sp));
+    color: var(--text-3);
+}
+
+.bar-fast {
+    flex: none;
+    margin-right: calc(-2 * var(--sp));
+    color: var(--amber-strong);
+}
+
+.bar-warn {
+    color: var(--amber);
+    font-weight: 450;
+}
+
+.bar-btn[data-mode="plan"] .bar-main {
+    color: var(--accent-text);
+}
+
+.bar-btn[data-mode="bypass"] .bar-main {
+    color: var(--red);
+}
+
+.composer-spacer {
+    flex: 1;
+    min-width: calc(4 * var(--sp));
+}
+
+/* Tight, what's on the row gives way a step at a time (lib/composer-fit.ts says the steps). Out of sight, still
+   named for assistive tech; the model's name only while the provider's mark is there. */
+.composer-bar .bar-btn:not(.model) > :is(svg:not(.bar-chev, .bar-fast), .provider-mono) {
     display: none;
 }
 
-.composer-bar .pick.model > :is(svg:not(.chev), .provider-mono) {
-    flex: none;
-    margin-right: calc(2 * var(--sp));
-}
-
-.composer-bar[data-fit~="4"] .pick.model > :is(svg:not(.chev), .provider-mono) {
-    display: inline-flex;
-}
-
-/* Tight, what's on the row gives way a step at a time (lib/composer-fit.ts says the steps). Out of sight,
-   still named for assistive tech; the model's name only while the provider's mark (or Compare's) is there. */
-.composer-bar[data-fit~="1"] .pick .lbl,
+.composer-bar[data-fit~="1"] .bar-dim,
 .composer-bar[data-fit~="4"] .pick-acct,
-.composer-bar[data-fit~="4"] .pick.model:has(> svg:not(.chev), > .provider-mono) > .truncate {
+.composer-bar[data-fit~="4"] .bar-btn.model:has(> svg:not(.bar-chev, .bar-fast), > .provider-icon, > .provider-mono) > .bar-main {
     position: absolute;
     width: 1px;
     height: 1px;
@@ -1354,146 +310,136 @@ button.att-card:hover {
     white-space: nowrap;
 }
 
-.composer-bar[data-fit~="1"] .ctx-limit .lbl,
-.composer-bar[data-fit~="2"] .pick .chev,
-.composer-bar[data-fit~="3"] > .cb:first-of-type,
-.composer-bar[data-fit~="5"] .ctx-btn {
+.composer-bar[data-fit~="2"] .bar-chev,
+.composer-bar[data-fit~="3"] > .bar-attach {
     display: none;
 }
 
-/* Comparing models (Home): the chip says how many. */
-.pick.model.on {
-    color: var(--accent-text);
+.send-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    width: calc(28 * var(--sp));
+    height: calc(28 * var(--sp));
+    border-radius: var(--radius-s);
+    background: var(--accent);
+    color: var(--on-accent);
+    transition: background 0.12s, color 0.12s;
 }
 
-.pick.mode-plan,
-.pick.mode-plan:hover {
-    color: var(--accent-text);
+.send-btn:hover:not(:disabled) {
+    background: var(--accent-hover);
 }
 
-.pick.mode-bypass,
-.pick.mode-bypass:hover {
-    color: var(--danger);
+.send-btn:disabled {
+    background: var(--fill-2);
+    color: var(--text-4);
+    cursor: default;
 }
 
-/* Fast mode: a filled ⚡ before the model's name. */
-.pick .fz {
-    display: inline-grid;
-    margin: 0 calc(1 * var(--sp)) 0 calc(-2 * var(--sp));
-    color: var(--accent-text);
+.send-wide {
+    gap: calc(6 * var(--sp));
+    width: auto;
+    padding: 0 calc(10 * var(--sp));
+    font-size: calc(12.5 * var(--sp));
+    font-weight: 500;
+    white-space: nowrap;
 }
 
-.pick .fz svg {
-    fill: currentColor;
+.send-stop {
+    background: var(--surface);
+    box-shadow: inset 0 0 0 1px var(--line-strong);
+    color: var(--text);
 }
 
-/* Context: a few quiet words under the card, at its far end ("4% context"), amber then red as it fills. */
+.send-stop:hover:not(:disabled) {
+    background: var(--fill-1);
+}
+
+[data-theme="dark"] .send-stop {
+    background: var(--fill-2);
+}
+
+/* ---- Under the card: the context in words, and on Home the composer's prefixes ---- */
+
 .composer-under {
     display: flex;
     align-items: center;
-    justify-content: flex-end;
-    gap: calc(12 * var(--sp));
-    min-width: 0;
+    gap: calc(4 * var(--sp));
     min-height: calc(20 * var(--sp));
     margin-top: calc(-2 * var(--sp));
-    padding: 0 calc(14 * var(--sp));
-    font-size: 0.857rem;
-    color: var(--fg-3);
+    padding: 0 calc(4 * var(--sp));
 }
 
 .composer-under:empty {
     display: none;
 }
 
-.ctx-btn {
-    flex: none;
-    padding: 0;
-    font: inherit;
-    line-height: 1.5;
-    color: var(--fg-3);
-    transition: color 140ms;
-}
-
-.ctx-btn:hover,
-.ctx-btn.open {
-    color: var(--fg);
-}
-
-.ctx-num {
+.meter {
+    height: calc(20 * var(--sp));
+    padding: 0 calc(6 * var(--sp));
+    margin-left: calc(-6 * var(--sp));
+    border-radius: calc(5 * var(--sp));
+    color: var(--text-3);
+    font-size: calc(11.5 * var(--sp));
     font-variant-numeric: tabular-nums;
+    transition: background 0.12s, color 0.12s;
 }
 
-.ctx-btn.tone-warning {
-    color: var(--warn);
+button.meter:hover,
+button.meter[aria-expanded="true"] {
+    background: var(--fill-1);
+    color: var(--text);
 }
 
-.ctx-btn.tone-danger {
-    color: var(--danger);
-}
-
-/* Home: the plan's limit in place of the ring, only once it's close (ComposerMeter nearLimit). Just status: no card. */
-.ctx-limit {
+.meter-static {
     display: inline-flex;
     align-items: center;
-    flex: none;
-    gap: calc(5 * var(--sp));
-    height: calc(26 * var(--sp));
-    margin: 0 calc(6 * var(--sp)) 0 calc(2 * var(--sp));
-    padding: 0 calc(10 * var(--sp)) 0 calc(8 * var(--sp));
-    border-radius: var(--pill);
-    font-size: 0.857rem;
-    font-variant-numeric: tabular-nums;
-    white-space: nowrap;
-    color: var(--warn);
-    background: var(--warn-bg);
-    cursor: default;
 }
 
-.ctx-limit b {
-    font-weight: 650;
+.meter[data-tone="amber"] {
+    color: var(--amber);
 }
 
-.ctx-limit svg {
-    flex: none;
+.meter[data-tone="red"] {
+    color: var(--red);
 }
 
-.send {
-    display: grid;
-    place-items: center;
-    flex: none;
-    width: calc(32 * var(--sp));
-    height: calc(32 * var(--sp));
-    border-radius: 50%;
-    background: var(--ink);
-    color: var(--ink-fg);
-    transition: transform 200ms var(--spring), opacity 160ms, background 200ms;
-}
-
-.send:hover:not(:disabled) {
-    background: var(--ink-hover);
-}
-
-.send:active:not(:disabled) {
-    transform: scale(0.88);
-}
-
-/* Nothing to send: there, and plainly not yet. */
-.send:disabled {
-    background: var(--press);
-    color: var(--fg-3);
-}
-
-/* Home, comparing models: the button says how many get the prompt. */
-.send.wide {
-    display: flex;
+.hint-chip {
+    display: inline-flex;
     align-items: center;
-    gap: calc(6 * var(--sp));
-    width: auto;
-    padding: 0 calc(12 * var(--sp)) 0 calc(14 * var(--sp));
-    border-radius: var(--pill);
-    font-size: 0.857rem;
-    font-weight: 600;
-    white-space: nowrap;
+    gap: calc(5 * var(--sp));
+    height: calc(20 * var(--sp));
+    padding: 0 calc(6 * var(--sp)) 0 calc(3 * var(--sp));
+    border-radius: calc(5 * var(--sp));
+    color: var(--text-3);
+    font-size: calc(11.5 * var(--sp));
+    transition: background 0.12s, color 0.12s;
+}
+
+.hint-chip:hover {
+    background: var(--fill-1);
+    color: var(--text);
+}
+
+.hint-chip .kbd {
+    min-width: calc(16 * var(--sp));
+    height: calc(16 * var(--sp));
+    font-family: var(--font-mono);
+}
+
+/* / and ! with something typed: they start a message, so they rest until it's empty. */
+.hint-chip[aria-disabled="true"] {
+    opacity: 0.45;
+    background: none;
+    color: var(--text-3);
+}
+
+@container (max-width: 420px) {
+    .bar-dim {
+        display: none;
+    }
 }
 
 /* ---- Request cards: what the agent waits on you for ---------------------- */
@@ -1787,7 +733,7 @@ button.att-card:hover {
     margin-top: calc(4 * var(--sp));
 }
 
-.q-attached .attachments-wrap {
+.q-attached .atts {
     margin-bottom: 0;
 }
 
@@ -1867,101 +813,10 @@ button.att-card:hover {
     border-top: 1px solid var(--line);
 }
 
-.pbtn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    flex: none;
-    gap: calc(8 * var(--sp));
-    height: calc(32 * var(--sp));
-    max-width: 100%;
-    min-width: 0;
-    padding: 0 calc(16 * var(--sp));
-    border-radius: var(--pill);
-    font-size: 0.964rem;
-    font-weight: 500;
-    white-space: nowrap;
-    color: var(--fg);
-    background: var(--press);
-    transition: transform 160ms var(--ease), background 140ms, opacity 140ms, color 140ms;
-}
-
-/* A button in a row of its own (a sign-in in a list, one put off above the message box). */
-.pbtn.sm {
-    height: calc(28 * var(--sp));
-    padding: 0 calc(12 * var(--sp));
-    font-size: 0.893rem;
-}
-
-.pbtn:has(> kbd) {
-    padding-right: calc(12 * var(--sp));
-}
-
-.pbtn:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--fg) 15%, transparent);
-}
-
-.pbtn:active:not(:disabled) {
-    transform: scale(0.96);
-}
-
-.pbtn.primary {
-    font-weight: 600;
-    color: var(--ink-fg);
-    background: var(--ink);
-}
-
-.pbtn.primary:hover:not(:disabled) {
-    background: var(--ink-hover);
-}
-
-/* The way out: words, no fill until pointed at. */
-.pbtn.quiet {
-    padding: 0 calc(12 * var(--sp));
-    color: var(--fg-2);
-    background: none;
-}
-
-.pbtn.quiet:hover:not(:disabled) {
-    color: var(--fg);
-    background: var(--hover);
-}
-
-.ask-row.plan-row.quiet-row .pbtn {
-    height: calc(28 * var(--sp));
-    font-size: 0.893rem;
-}
-
-.ask-row.plan-row.quiet-row .pbtn:first-child {
-    margin-left: calc(-12 * var(--sp));
-}
-
-.pbtn:disabled {
-    opacity: 0.45;
-}
-
 /* A permission's answers: one row, never wrapped, Deny at its far end. Short of room, the broader choice gives way
    (an ellipsis, the whole label on hover); Allow once and Deny stay whole. */
 .ask-row.perm-row {
     flex-wrap: nowrap;
-}
-
-.perm-row .pbtn.outlined {
-    flex: 0 1 auto;
-}
-
-.perm-row .pbtn.quiet {
-    margin-left: auto;
-    margin-right: calc(-6 * var(--sp));
-}
-
-.pbtn svg {
-    flex: none;
-    margin-right: calc(-2 * var(--sp));
-}
-
-.pbtn .mono {
-    font-size: 0.857rem;
 }
 
 /* A button's label on one line: its code (a rule list, a path) gives way first, so the words around it stay whole. */
@@ -1997,10 +852,6 @@ button.att-card:hover {
     box-shadow: none;
 }
 
-.pbtn.primary kbd {
-    color: color-mix(in srgb, var(--ink-fg) 62%, transparent);
-}
-
 /* A question's options keep their key in a box: it's what you press, at the row's start. */
 .q-option kbd {
     min-width: calc(18 * var(--sp));
@@ -2015,1216 +866,170 @@ button.att-card:hover {
     color: var(--accent-ink);
 }
 
-/* ---- / commands, @ files and $ skills ------------------------------------- */
+/* ---- Suggestions: / commands, @ files and resources, $ skills ---- */
 
-.composer-menu {
+.suggest {
     position: absolute;
     left: 0;
     right: 0;
-    bottom: calc(100% + 8 * var(--sp));
-    z-index: 10;
-    /* --room: Home's, the window's height under it (Composer.tsx). */
-    max-height: min(calc(320 * var(--sp)), var(--room, calc(320 * var(--sp))));
+    bottom: calc(100% + 6 * var(--sp));
+    z-index: 30;
+    max-height: calc(264 * var(--sp));
     overflow-y: auto;
-    padding: calc(5 * var(--sp));
-    border-radius: calc(16 * var(--sp));
-    background: var(--ctl-strong);
-    -webkit-backdrop-filter: blur(20px) saturate(1.9);
-    backdrop-filter: blur(20px) saturate(1.9);
-    box-shadow: var(--pop-shadow), inset 0 1px 0 var(--ctl-hi);
-    transform-origin: bottom left;
-    animation: c-pop 240ms var(--spring);
-}
-
-/* Home: the box sits in the middle of the page, under its heading. The menu drops below it (and the strip), as
-   the pickers do there, over the list of sessions rather than the heading and the top of the window. */
-.composer.v-home .composer-menu {
-    top: var(--menu-top, calc(100% + 6 * var(--sp)));
-    bottom: auto;
-    transform-origin: top left;
-    /* Over the strip's words: the glass on a solid sheet, so nothing reads through it. */
-    background: linear-gradient(var(--ctl-strong), var(--ctl-strong)), var(--sheet);
-}
-
-/* Files: a compact list by the text, not a slab the composer's width. Each row is the file's name, then its
-   folder, quieter; the / menu keeps the width its descriptions need. */
-.composer-menu.files {
-    right: auto;
-    width: min(calc(420 * var(--sp)), 100%);
-    max-height: min(calc(286 * var(--sp)), var(--room, calc(286 * var(--sp))));
-    padding: calc(4 * var(--sp));
-    border-radius: calc(13 * var(--sp));
-}
-
-.composer-menu.files .cm-item {
-    gap: calc(8 * var(--sp));
-    padding: calc(5 * var(--sp)) calc(8 * var(--sp));
-    border-radius: calc(9 * var(--sp));
-}
-
-.composer-menu.files .cm-icon {
-    width: calc(16 * var(--sp));
-    color: var(--fg-3);
-}
-
-/* The name gives way last: its folder shrinks ten times as fast. */
-.composer-menu.files .cm-name {
-    flex: 0 1 auto;
-    max-width: none;
-    min-width: 0;
-}
-
-.cm-dir {
-    flex: 0 10 auto;
-    min-width: 0;
-    font-size: 0.821rem;
-    color: var(--fg-3);
-}
-
-@keyframes c-pop {
-    from {
-        opacity: 0;
-        transform: scale(0.95);
-    }
-}
-
-.cm-item {
-    display: flex;
-    align-items: center;
-    gap: calc(9 * var(--sp));
-    width: 100%;
-    min-width: 0;
-    padding: calc(7 * var(--sp)) calc(10 * var(--sp));
-    border-radius: calc(10 * var(--sp));
-    color: var(--fg);
-}
-
-.cm-item.sel {
-    background: color-mix(in srgb, var(--accent) 13%, transparent);
-}
-
-.cm-icon {
-    display: grid;
-    place-items: center;
-    flex: none;
-    width: calc(20 * var(--sp));
-    color: var(--fg-2);
-}
-
-.cm-icon.skill {
-    color: var(--accent);
-}
-
-.cm-name {
-    flex: none;
-    max-width: 60%;
-    font-size: 0.893rem;
-    font-weight: 500;
-}
-
-/* Commands: the names take one column (a longer name just runs past it), so what each does starts at the same
-   place down the list and reads as a column beside its name. */
-.composer-menu:not(.files) .cm-name {
-    min-width: calc(176 * var(--sp));
-}
-
-.cm-args {
-    color: var(--fg-3);
-}
-
-.cm-desc {
-    flex: 1;
-    font-size: 0.821rem;
-    color: var(--fg-3);
-}
-
-.cm-desc.cm-warn {
-    color: var(--warn);
-}
-
-.cm-status {
-    padding: calc(9 * var(--sp)) calc(10 * var(--sp));
-    font-size: 0.857rem;
-    color: var(--fg-3);
-}
-
-/* ---- The context card -----------------------------------------------------------
-   Above the words under the composer that open it: what the context holds, the bar,
-   then Compact now. Plan limits are in the rail's footer: only a reached one is said
-   here, since it stops this session. */
-
-.popover.ctx-card {
-    max-width: calc(100vw - 16 * var(--sp));
-    overflow-wrap: anywhere;
-}
-
-.cx {
-    outline: 0;
-}
-
-.cx .menu-sep {
-    margin-block: calc(2 * var(--sp));
-}
-
-.cx .menu-item {
-    min-height: calc(30 * var(--sp));
-    padding-block: calc(5 * var(--sp));
-}
-
-.cx-info {
-    padding: calc(7 * var(--sp)) calc(10 * var(--sp)) calc(8 * var(--sp));
-}
-
-.cx-head {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: calc(12 * var(--sp));
-    font-size: 0.929rem;
-}
-
-.cx-head h3 {
-    margin: 0;
-    font-size: inherit;
-    font-weight: 500;
-    color: var(--fg);
-}
-
-.cx-head span {
-    min-width: 0;
-    font-size: 0.857rem;
-    color: var(--fg-3);
-    text-align: right;
-}
-
-.cx-bar {
-    height: calc(3 * var(--sp));
-    margin-top: calc(8 * var(--sp));
-    overflow: hidden;
-    border-radius: var(--pill);
-    background: var(--press);
-}
-
-.cx-bar i {
-    display: block;
-    height: 100%;
-    min-width: calc(3 * var(--sp));
-    border-radius: inherit;
-    background: var(--fg-2);
-}
-
-.cx-bar.warning i { background: var(--warn); }
-.cx-bar.danger i { background: var(--danger); }
-
-/* A reached limit: red while it blocks, amber while credits carry the turns past it (#426). */
-.cx-limit {
-    display: flex;
-    gap: calc(9 * var(--sp));
-    margin: 0 0 calc(2 * var(--sp));
-    padding: calc(10 * var(--sp)) calc(11 * var(--sp));
-    border-radius: calc(12 * var(--sp));
-    background: var(--danger-soft);
-}
-
-.cx-limit > svg {
-    flex: none;
-    margin-top: calc(1 * var(--sp));
-    color: var(--danger);
-}
-
-.cx-limit.credits { background: var(--warn-bg); }
-.cx-limit.credits > svg { color: var(--warn); }
-
-.cx-limit b {
-    display: block;
-    font-size: 0.893rem;
-    font-weight: 600;
-}
-
-.cx-limit span {
-    display: block;
-    margin-top: calc(2 * var(--sp));
-    font-size: 0.857rem;
-    color: var(--fg-2);
-}
-
-.cx-switches {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: calc(6 * var(--sp));
-    margin-top: calc(8 * var(--sp));
-}
-
-.cx-switches:empty { display: none; }
-
-.cx-switches .cbtn {
-    height: auto;
-    min-height: calc(26 * var(--sp));
-    white-space: normal;
-}
-
-/* Compact now: its icon, as the other menus' items have. */
-.cx .compact {
-    display: flex;
-    align-items: center;
-    gap: calc(9 * var(--sp));
-}
-
-.cx .compact svg {
-    flex: none;
-    color: var(--fg-2);
-}
-
-/* The card's small buttons, like the mockup's ghost pills. */
-.cbtn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    height: calc(26 * var(--sp));
-    max-width: 100%;
-    padding: 0 calc(11 * var(--sp));
-    border-radius: var(--pill);
-    font-size: 0.857rem;
-    font-weight: 500;
-    color: var(--fg);
-    background: var(--press);
-    transition: background 140ms, transform 160ms var(--ease);
-}
-
-.cbtn:hover:not(:disabled):not([aria-disabled="true"]) {
-    background: color-mix(in srgb, var(--fg) 15%, transparent);
-}
-
-.cbtn:active:not(:disabled) {
-    transform: scale(0.96);
-}
-
-.cbtn:disabled {
-    opacity: 0.45;
-}
-
-.plan-asof {
-    font-size: 0.786rem;
-    color: var(--fg-3);
-}
-
-.plan-account-hint {
-    font-size: 0.786rem;
-    color: var(--fg-3);
-}
-
-/* ---- Effort: what the model picker opens on; and the slider (Settings uses it too) ----
-   The model in use and how hard it thinks, over a slider with a stop per level. The name opens the models in the
-   popover's place; fast mode is a bolt beside it. */
-
-.popover.mp:has(> .mpe) {
-    overflow: visible;
-}
-
-.mpe {
-    display: flex;
-    flex-direction: column;
-    gap: calc(10 * var(--sp));
-    padding: calc(10 * var(--sp)) calc(12 * var(--sp)) calc(12 * var(--sp));
-}
-
-.mpe-h {
-    display: flex;
-    align-items: center;
-    gap: calc(4 * var(--sp));
-    min-width: 0;
-    margin: 0 calc(-4 * var(--sp));
-}
-
-/* The model and its effort, as on the button that opened this; the whole row goes to the models. */
-/* Centred, not on the text's baseline: the provider's mark and Fast's bolt beside it line up with the words. */
-.mpe-model {
-    display: flex;
-    align-items: center;
-    flex: 1;
-    gap: calc(8 * var(--sp));
-    min-width: 0;
-    height: calc(32 * var(--sp));
-    padding: 0 calc(6 * var(--sp)) 0 calc(8 * var(--sp));
-    border-radius: calc(8 * var(--sp));
-    font-size: 1rem;
-    text-align: left;
-    transition: background 140ms;
-}
-
-.mpe-model:hover,
-.mpe-model:focus-visible {
-    background: var(--hover);
-    outline: none;
-}
-
-.mpe-model > :is(svg, .provider-mono) {
-    flex: none;
-}
-
-.mpe-name {
-    flex: 0 1 auto;
-    min-width: 0;
-    font-weight: 500;
-    color: var(--fg);
-}
-
-.mpe-eff {
-    flex: none;
-    margin-left: calc(-2 * var(--sp));
-    color: var(--fg-3);
-}
-
-.mpe-model .chev {
-    flex: none;
-    align-self: center;
-    margin-left: auto;
-    color: var(--fg-3);
-}
-
-/* Fast mode: a bolt, filled while it's on. */
-.mpe-fast {
-    display: grid;
-    place-items: center;
-    flex: none;
-    width: calc(32 * var(--sp));
-    height: calc(32 * var(--sp));
-    border-radius: calc(8 * var(--sp));
-    color: var(--fg-3);
-    transition: background 140ms, color 140ms;
-}
-
-.mpe-fast:hover:not(:disabled) {
-    background: var(--hover);
-    color: var(--fg);
-}
-
-.mpe-fast.on {
-    color: var(--accent-text);
-}
-
-.mpe-fast.on svg {
-    fill: currentColor;
-    animation: ep-bolt 260ms var(--ease-out);
-}
-
-.mpe-fast:disabled {
-    opacity: 0.45;
-}
-
-/* Back to the effort, from the models. */
-.mp-search .mp-back {
-    margin-left: calc(-8 * var(--sp));
-}
-
-@keyframes ep-bolt {
-    40% {
-        transform: scale(1.35) rotate(-8deg);
-    }
-}
-
-@media (prefers-reduced-motion: reduce) {
-    .mpe-fast.on svg {
-        animation: none;
-    }
-}
-
-[data-motion="instant"] .mpe-fast.on svg {
     animation: none;
 }
 
-.es {
-    --pad: calc(3 * var(--sp));
-    --t: calc(28 * var(--sp));
-    --move: 150ms var(--ease-out);
-    position: relative;
-    height: calc(34 * var(--sp));
-    border-radius: var(--pill);
-    background: color-mix(in srgb, var(--fg) 6%, transparent);
-    box-shadow: inset 0 0 0 0.5px var(--line);
-    cursor: pointer;
-    touch-action: none;
-    outline: none;
+/* Files: a compact list by the text, not a slab the composer's width. */
+.suggest.files {
+    right: auto;
+    width: min(calc(420 * var(--sp)), 100%);
 }
 
-.es.sm {
-    --t: calc(18 * var(--sp));
-    height: calc(24 * var(--sp));
-}
-
-.es.drag {
-    --move: 60ms linear;
-    cursor: grabbing;
-}
-
-[data-motion="instant"] .es {
-    --move: 0ms;
-}
-
-@media (prefers-reduced-motion: reduce) {
-    .es {
-        --move: 0ms;
-    }
-}
-
-.es-fill {
-    position: absolute;
-    left: 0;
-    top: 0;
-    bottom: 0;
-    width: calc(2 * var(--pad) + var(--t) + (100% - 2 * var(--pad) - var(--t)) * var(--p));
-    border-radius: inherit;
-    background: linear-gradient(90deg, color-mix(in srgb, var(--fg) 14%, transparent), color-mix(in srgb, var(--fg) 34%, transparent));
-    transition: width var(--move);
-}
-
-/* Across the knob's travel, from its middle at the first stop to its middle at the last. */
-.es-stops {
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    left: calc(var(--pad) + var(--t) / 2);
-    right: calc(var(--pad) + var(--t) / 2);
+/* A button in Cavvy (the design's is a div): as wide as the list. */
+.suggest-item {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
-}
-
-.es-stops i {
-    width: calc(4 * var(--sp));
-    height: calc(4 * var(--sp));
-    margin: 0 calc(-2 * var(--sp));
-    border-radius: 50%;
-    background: color-mix(in srgb, var(--fg) 30%, transparent);
-    transition: transform 120ms var(--ease-out), background 120ms;
-}
-
-.es-stops i.on {
-    background: rgba(255, 255, 255, 0.55);
-}
-
-.es-stops i.hov {
-    transform: scale(1.75);
-    background: color-mix(in srgb, var(--fg) 60%, transparent);
-}
-
-.es-thumb {
-    position: absolute;
-    top: var(--pad);
-    left: calc(var(--pad) + (100% - 2 * var(--pad) - var(--t)) * var(--p));
-    width: var(--t);
-    height: var(--t);
-    border-radius: 50%;
-    background: #fff;
-    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
-    pointer-events: none;
-    transition: left var(--move), transform 120ms var(--ease-out);
-}
-
-.es.drag .es-thumb {
-    transform: scale(1.08);
-}
-
-/* No level chosen (the model's default): an empty track, the knob at the start. */
-.es.unset .es-fill {
-    opacity: 0;
-}
-
-
-.es:focus-visible .es-thumb {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
-}
-
-/* ---- Model picker ---------------------------------------------------------
-   From the top: search; whose models are listed, as plain words (the
-   favourites or one provider, with its account at the row's end); the models;
-   and under them the effort of the one in use. No headings, no marks, one
-   fill: the row under the pointer or the keys. */
-
-/* One size while it's open, whatever is filtered or searched: tall enough for everything the providers offer
-   (--mp-fit, ModelPicker.tsx), so a few models don't leave half of it blank, and never taller than a long list
-   needs to scroll. Popover's max-height clamps it on a short window. */
-.popover.mp {
-    display: flex;
-    flex-direction: column;
-    padding: 0;
-    overflow: hidden;
-    border-radius: calc(16 * var(--sp));
-}
-
-.mp-wrap {
-    position: relative;
-    display: flex;
-    flex-direction: column;
-    flex: 0 1 auto;
     width: 100%;
-    height: calc(var(--mp-fit, 380) * var(--sp));
-    min-height: 0;
-}
-
-/* Closing: a still copy of the panel fades and settles back toward its button (Popover's exit). */
-@keyframes mp-out {
-    to {
-        opacity: 0;
-        transform: scale(0.97) translateY(4px);
-    }
-}
-
-.popover.mp.closing {
-    pointer-events: none;
-    animation: mp-out calc(var(--dur-panel) * 0.75) var(--ease-in-out) forwards;
-}
-
-.popover.mp.closing[data-side="bottom"] {
-    animation-name: mp-out-down;
-}
-
-@keyframes mp-out-down {
-    to {
-        opacity: 0;
-        transform: scale(0.97) translateY(-4px);
-    }
-}
-
-.mp-search {
-    display: flex;
-    align-items: center;
-    flex: none;
+    text-align: start;
+    align-items: baseline;
     gap: calc(8 * var(--sp));
-    padding: calc(4 * var(--sp)) calc(8 * var(--sp)) 0 calc(14 * var(--sp));
-    height: calc(42 * var(--sp));
-    color: var(--fg-3);
+    height: calc(28 * var(--sp));
+    padding: 0 calc(9 * var(--sp));
+    border-radius: calc(6 * var(--sp));
+    line-height: calc(28 * var(--sp));
+    cursor: default;
 }
 
-.mp-search input {
-    flex: 1;
-    min-width: 0;
-    height: calc(26 * var(--sp));
-    border: 0;
-    background: none;
-    font-size: 0.929rem;
-    color: var(--fg);
+.suggest-item[data-active] {
+    background: var(--fill-2);
 }
 
-.mp-search input::placeholder {
-    color: var(--fg-3);
-}
-
-.mp-search input:focus-visible {
-    outline: none;
-}
-
-.mp-search .hb.sm {
-    border-radius: calc(7 * var(--sp));
-    color: var(--fg-3);
-}
-
-.mp-search .hb.sm + .hb.sm {
-    margin-left: calc(-6 * var(--sp));
-}
-
-/* Whose models are listed, and the listed provider's account at the row's end. */
-/* The account goes under the tabs when both don't fit: beside them, it took the room the next tab needed. */
-.mp-bar {
-    position: relative;
-    z-index: 2;
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    flex: none;
-    gap: calc(8 * var(--sp));
-    min-width: 0;
-    padding: 0 calc(10 * var(--sp)) 0 calc(6 * var(--sp));
-    border-bottom: 0.5px solid var(--line);
-}
-
-/* The filters and the arrows at their edges. */
-.mp-fwrap {
-    position: relative;
-    display: flex;
-    flex: 1 1 auto;
-    min-width: 0;
-}
-
-/* The filters: one row of words that scrolls sideways, faded at an edge with more past it, where an arrow shows it. */
-.mp-filters {
-    display: flex;
-    flex: 1 1 auto;
-    min-width: 0;
-    gap: calc(2 * var(--sp));
-    padding: calc(2 * var(--sp)) 0 calc(6 * var(--sp));
-    overflow-x: auto;
-    scrollbar-width: none;
-    scroll-padding: 0 calc(28 * var(--sp));
-}
-
-.mp-filters::-webkit-scrollbar {
-    display: none;
-}
-
-/* Clear under the arrow, then fading in. */
-.mp-filters.more-r {
-    mask-image: linear-gradient(90deg, #000 calc(100% - 52px), transparent calc(100% - 22px));
-}
-
-.mp-filters.more-l {
-    mask-image: linear-gradient(90deg, transparent 22px, #000 52px);
-}
-
-.mp-filters.more-l.more-r {
-    mask-image: linear-gradient(90deg, transparent 22px, #000 52px, #000 calc(100% - 52px), transparent calc(100% - 22px));
-}
-
-.mp-more {
-    position: absolute;
-    top: calc(5 * var(--sp));
-    display: grid;
-    place-items: center;
-    width: calc(20 * var(--sp));
-    height: calc(20 * var(--sp));
-    border-radius: 50%;
-    background: var(--sheet-2);
-    color: var(--fg-2);
-    transition: color var(--dur-fast);
-}
-
-.mp-more.l {
-    left: 0;
-}
-
-.mp-more.r {
-    right: 0;
-}
-
-.mp-more:hover {
-    color: var(--fg);
-}
-
-.mp-f {
-    position: relative;
-    display: inline-flex;
-    align-items: center;
-    gap: calc(6 * var(--sp));
-    flex: none;
-    max-width: 100%;
-    height: calc(26 * var(--sp));
-    padding: 0 calc(8 * var(--sp));
-    border-radius: calc(7 * var(--sp));
-    white-space: nowrap;
-    font-size: 0.893rem;
-    color: var(--fg-3);
-    transition: color var(--dur-fast);
-}
-
-.mp-f:hover:not(.on) {
-    color: var(--fg);
-}
-
-.mp-f.on {
-    color: var(--fg);
-    font-weight: 500;
-}
-
-.mp-f:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: -2px;
-}
-
-/* A provider that couldn't list its models: a small dot after its name. */
-.mp-f.err::after {
-    content: "";
-    position: absolute;
-    top: calc(5 * var(--sp));
-    right: calc(1 * var(--sp));
-    width: calc(5 * var(--sp));
-    height: calc(5 * var(--sp));
-    border-radius: 50%;
-    background: var(--danger);
-}
-
-/* Searching, each provider's matches under its name: a quiet label. */
-.mp-f > :is(svg, .provider-mono) {
-    flex: none;
-}
-
-/* Favorites' star, quiet until its tab is the one shown. */
-.mp-f:not(.on) > .lucide-star {
-    color: var(--fg-4);
-}
-
-.mp-h {
-    display: flex;
-    align-items: center;
-    flex: none;
-    gap: calc(8 * var(--sp));
-    min-width: 0;
-    height: calc(26 * var(--sp));
-    padding: 0 calc(10 * var(--sp));
-    font-size: 0.821rem;
-    color: var(--fg-3);
-}
-
-.mp-h-ic {
-    display: grid;
-    place-items: center;
-    flex: none;
-    width: calc(16 * var(--sp));
-}
-
-/* In Favorites, where providers mix: each row's provider mark before its name. */
-.mr-ic {
-    display: grid;
-    place-items: center;
+.suggest-icon {
     flex: none;
     align-self: center;
-    margin-right: calc(-2 * var(--sp));
+    color: var(--text-3);
 }
 
-.mp-group + .mp-group {
-    margin-top: calc(6 * var(--sp));
+.suggest-name {
+    flex: none;
+    font-family: var(--font-mono);
+    font-size: calc(12 * var(--sp));
 }
 
-/* A subscription's account: a quiet button with its name (and a plan near its limit), opening the list of them. */
-.mp-acct {
-    position: relative;
-    display: inline-flex;
+.suggest-args {
+    flex: none;
+    color: var(--text-4);
+    font-family: var(--font-mono);
+    font-size: calc(12 * var(--sp));
+}
+
+.suggest-desc {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-3);
+    font-size: calc(12.5 * var(--sp));
+    text-align: right;
+}
+
+/* A file's folder, after its name and quieter; a command that can't take what's attached says so. */
+.suggest-name.truncate {
     flex: 0 1 auto;
     min-width: 0;
-    margin-left: auto;
-    max-width: 50%;
-    margin-bottom: calc(4 * var(--sp));
 }
 
-.mp-acct-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: calc(5 * var(--sp));
+.suggest-name.file {
+    flex: 0 1 auto;
     min-width: 0;
-    height: calc(24 * var(--sp));
-    padding: 0 calc(6 * var(--sp)) 0 calc(9 * var(--sp));
-    border-radius: calc(7 * var(--sp));
-    font-size: 0.821rem;
+    font-family: inherit;
+    font-size: inherit;
+}
+
+.suggest-desc.warn {
+    color: var(--amber);
+}
+
+.suggest-empty {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    padding: calc(8 * var(--sp)) calc(9 * var(--sp));
+    color: var(--text-3);
+    font-size: calc(12.5 * var(--sp));
+    line-height: 1.5;
+}
+
+.suggest-empty code,
+.suggest-empty .mono {
+    font-size: calc(11.5 * var(--sp));
+}
+
+/* ---- Context and session: what the context holds and what to do about it ---- */
+
+.menu.ctx-card {
+    width: calc(280 * var(--sp));
+    padding: calc(12 * var(--sp)) calc(14 * var(--sp));
+    overflow-wrap: anywhere;
+}
+
+.ctx-title {
+    margin-bottom: calc(10 * var(--sp));
+    font-weight: 600;
+}
+
+.ctx-block {
+    display: flex;
+    flex-direction: column;
+    gap: calc(8 * var(--sp));
+}
+
+.ctx-block + .ctx-block {
+    margin-top: calc(12 * var(--sp));
+    padding-top: calc(12 * var(--sp));
+    border-top: 1px solid var(--line);
+}
+
+.ctx-line {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: calc(10 * var(--sp));
+}
+
+.ctx-name {
     font-weight: 500;
-    white-space: nowrap;
-    color: var(--fg-2);
-    transition: background var(--dur-fast), color var(--dur-fast);
 }
 
-.mp-acct-btn:hover,
-.mp-acct-btn.open {
-    background: var(--hover);
-    color: var(--fg);
+.ctx-dim {
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
 }
 
-.mp-acct-btn .chev {
+.ctx-limit {
+    color: var(--amber);
+    font-size: calc(12.5 * var(--sp));
+    font-weight: 500;
+}
+
+/* Reached and blocking, with no credits to carry the turns past it (#426). */
+.ctx-limit.stop {
+    color: var(--red);
+}
+
+.ctx-account,
+.ctx-compact {
+    align-self: flex-start;
+}
+
+.ctx-block .bar {
     flex: none;
-    color: var(--fg-3);
-    transition: transform var(--dur-fast);
-}
-
-.mp-acct-btn.open .chev {
-    transform: rotate(180deg);
 }
 
 /* On the model button, only once the session's account is gone (ModelPicker). */
 .pick-acct {
     flex: 0 1 auto;
     color: var(--warn);
-}
-
-/* The session's account was removed: the button asks for another. */
-.mp-acct-btn.missing {
-    color: var(--warn);
-}
-
-.mp-acct-lv {
-    flex: none;
-    font-size: 0.75rem;
-    font-weight: 600;
-    font-variant-numeric: tabular-nums;
-    color: var(--warn);
-}
-
-.mp-acct-lv.full {
-    color: var(--danger);
-}
-
-/* On the button, a small badge, so it doesn't read on from the name ("Work limit"). */
-.mp-acct-btn .mp-acct-lv {
-    padding: calc(2 * var(--sp)) calc(5 * var(--sp));
-    border-radius: calc(4 * var(--sp));
-    font-size: 0.714rem;
-    line-height: 1;
-    background: color-mix(in srgb, currentColor 14%, transparent);
-}
-
-.mp-acct-menu {
-    position: absolute;
-    top: calc(100% + 4 * var(--sp));
-    right: 0;
-    display: flex;
-    flex-direction: column;
-    width: max-content;
-    min-width: calc(180 * var(--sp));
-    max-width: calc(260 * var(--sp));
-    /* Inside the picker, which is only as tall as its list of models (--mp-fit): what's under the search and the
-       filters' row, and the account's own row when it goes under the tabs (.mp-bar). */
-    max-height: min(calc(220 * var(--sp)), calc((var(--mp-fit, 380) - 118) * var(--sp)));
-    padding: calc(4 * var(--sp));
-    overflow-y: auto;
-    border-radius: calc(9 * var(--sp));
-    /* The picker's own surface (.popover), frosted over the rows it covers. */
-    background: var(--ctl-strong);
-    -webkit-backdrop-filter: blur(16px) saturate(1.08);
-    backdrop-filter: blur(16px) saturate(1.08);
-    box-shadow: var(--pop-shadow);
-    animation: pop var(--dur-panel) var(--ease-out);
-    transform-origin: top right;
-}
-
-.mp-acct-it {
-    display: flex;
-    align-items: center;
-    flex: none;
-    gap: calc(6 * var(--sp));
-    min-width: 0;
-    height: calc(28 * var(--sp));
-    padding: 0 calc(10 * var(--sp)) 0 calc(6 * var(--sp));
-    border-radius: calc(6 * var(--sp));
-    font-size: 0.857rem;
-    text-align: left;
-    white-space: nowrap;
-    color: var(--fg);
-}
-
-.mp-acct-it:hover,
-.mp-acct-it:focus-visible {
-    background: var(--hover);
-    outline: none;
-}
-
-.mp-acct-it .truncate {
-    flex: 1;
-}
-
-.mp-acct-it .mp-acct-lv {
-    margin-left: calc(10 * var(--sp));
-    font-weight: 500;
-}
-
-.mp-acct-ck {
-    display: inline-flex;
-    justify-content: center;
-    flex: none;
-    width: calc(16 * var(--sp));
-    color: var(--fg-2);
-}
-
-.mp-acct-sep {
-    flex: none;
-    height: 1px;
-    margin: calc(4 * var(--sp)) calc(6 * var(--sp));
-    background: var(--line);
-}
-
-.mp-acct-note {
-    display: flex;
-    align-items: flex-start;
-    flex: none;
-    gap: calc(7 * var(--sp));
-    margin: calc(2 * var(--sp)) calc(8 * var(--sp)) calc(2 * var(--sp));
-    padding: calc(6 * var(--sp)) calc(8 * var(--sp));
-    border-radius: calc(8 * var(--sp));
-    background: color-mix(in srgb, var(--warn) 12%, transparent);
-    font-size: 0.857rem;
-    line-height: 1.35;
-    color: var(--fg);
-}
-
-.mp-acct-note svg {
-    flex: none;
-    margin-top: calc(2 * var(--sp));
-    color: var(--warn);
-}
-
-
-.mp-list {
-    display: flex;
-    flex-direction: column;
-    flex: 1;
-    gap: 1px;
-    min-height: 0;
-    padding: calc(6 * var(--sp)) calc(6 * var(--sp)) calc(14 * var(--sp));
-    overflow-y: auto;
-    overscroll-behavior: contain;
-    scrollbar-width: none;
-    /* More below: the rows fade out, not cut through their words. */
-    mask-image: linear-gradient(#000 calc(100% - 18 * var(--sp)), transparent);
-}
-
-.mp-group {
-    display: flex;
-    flex-direction: column;
-    flex: none;
-    gap: 1px;
-}
-
-.mp-empty {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: calc(8 * var(--sp));
-    padding: calc(34 * var(--sp)) calc(20 * var(--sp));
-    font-size: 0.893rem;
-    line-height: 1.4;
-    text-align: center;
-    color: var(--fg-3);
-    overflow-wrap: anywhere;
-}
-
-.mp-empty > svg {
-    color: var(--fg-4);
-}
-
-.mp-empty.err > svg {
-    color: var(--danger);
-}
-
-.mp-empty .btn {
-    margin-top: calc(2 * var(--sp));
-}
-
-/* A model row. The current model: an accent check and a slightly heavier name, no fill (the composer's
-   button already names it). The row under the keyboard or pointer: the only fill, a neutral one. */
-.mr {
-    display: flex;
-    align-items: center;
-    flex: none;
-    min-width: 0;
-    height: calc(34 * var(--sp));
-    border-radius: calc(10 * var(--sp));
-    /* OpenRouter lists hundreds: rows out of view skip layout and paint. */
-    content-visibility: auto;
-    contain-intrinsic-size: auto calc(34 * var(--sp));
-}
-
-.mr.sel {
-    background: var(--hover);
-}
-
-.mr-pick {
-    display: flex;
-    align-items: center;
-    flex: 1;
-    gap: calc(8 * var(--sp));
-    min-width: 0;
-    height: 100%;
-    padding: 0 calc(4 * var(--sp)) 0 calc(10 * var(--sp));
-    border-radius: calc(10 * var(--sp));
-    font-size: 0.929rem;
-    text-align: left;
-}
-
-.mr-pick:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: -2px;
-}
-
-/* The check's column, kept on every row so names line up; Compare's checkboxes sit in it too. */
-.mr-mark {
-    display: grid;
-    place-items: center;
-    flex: none;
-    width: calc(16 * var(--sp));
-    color: var(--fg);
-}
-
-/* ⌘1–9: on the row under the pointer or keyboard, not down every row. */
-.mr-pick kbd {
-    flex: none;
-    height: auto;
-    margin-left: auto;
-    padding: calc(2 * var(--sp)) calc(5 * var(--sp));
-    font-size: 0.75rem;
-    color: var(--fg-3);
-    background: none;
-    visibility: hidden;
-}
-
-.mr.sel .mr-pick kbd {
-    visibility: visible;
-}
-
-.mr-text {
-    display: flex;
-    align-items: baseline;
-    flex: 1;
-    gap: calc(8 * var(--sp));
-    min-width: 0;
-    line-height: calc(20 * var(--sp));
-}
-
-/* The name keeps its room; the line beside it gives way. */
-.mr-name {
-    flex: 0 0 auto;
-    max-width: 100%;
-    font-weight: 500;
-}
-
-.mr.on .mr-name {
-    font-weight: 600;
-}
-
-/* Beside the name: whose it is (in Favorites), the id an alias stands for, its context window and price. */
-.mr-sub {
-    flex: 0 1 auto;
-    min-width: 0;
-    font-size: 0.821rem;
-    color: var(--fg-3);
-}
-
-.mr-star {
-    display: grid;
-    place-items: center;
-    flex: none;
-    width: calc(26 * var(--sp));
-    height: calc(26 * var(--sp));
-    margin-right: calc(2 * var(--sp));
-    border-radius: calc(8 * var(--sp));
-    color: var(--fg-4);
-    opacity: 0;
-    transition: opacity var(--dur-fast), color var(--dur-fast);
-}
-
-/* Shown for a favorite, and on the row under the pointer or keyboard. */
-.mr.sel .mr-star,
-.mr-star.f,
-.mr-star:focus-visible {
-    opacity: 1;
-}
-
-.mr-star:hover {
-    background: var(--hover);
-    color: var(--fg-2);
-}
-
-.mr-star.f,
-.mr-star.f:hover {
-    color: var(--warn);
-}
-
-.mr-star.f svg {
-    fill: currentColor;
-}
-
-/* Compare's checkboxes. */
-.mr-check {
-    display: grid;
-    place-items: center;
-    flex: none;
-    width: calc(15 * var(--sp));
-    height: calc(15 * var(--sp));
-    border-radius: calc(5 * var(--sp));
-    box-shadow: inset 0 0 0 1.5px var(--fg-4);
-    color: var(--accent-ink);
-}
-
-.mr-check.on {
-    background: var(--accent);
-    box-shadow: none;
-}
-
-/* While comparing: each model gets a worktree of its own. */
-.mp-cmp-note {
-    flex: none;
-    padding: calc(6 * var(--sp)) calc(14 * var(--sp));
-    border-top: 0.5px solid var(--line);
-    font-size: 0.786rem;
-    line-height: 1.35;
-    color: var(--fg-3);
-}
-
-.mp-foot {
-    display: flex;
-    align-items: center;
-    flex: none;
-    padding: calc(6 * var(--sp)) calc(8 * var(--sp));
-    border-top: 0.5px solid var(--line);
-}
-
-.mp-cmp-wrap,
-.mp-cmp {
-    flex: 1;
-}
-
-.mp-cmp .mp-switch {
-    margin-left: auto;
-}
-
-.mp-cmp {
-    display: inline-flex;
-    align-items: center;
-    gap: calc(7 * var(--sp));
-    height: calc(28 * var(--sp));
-    padding: 0 calc(6 * var(--sp));
-    border-radius: calc(8 * var(--sp));
-    font-size: 0.857rem;
-    color: var(--fg-2);
-    transition: background var(--dur-fast), color var(--dur-fast);
-}
-
-.mp-cmp:hover:not(:disabled) {
-    background: var(--hover);
-    color: var(--fg);
-}
-
-.mp-cmp.on {
-    color: var(--fg);
-}
-
-.mp-cmp:disabled {
-    opacity: 0.5;
-}
-
-.mp-cmp-wrap {
-    display: inline-flex;
-}
-
-.mp-cmp-n {
-    color: var(--fg-3);
-}
-
-/* A small switch: on while picking several models. */
-.mp-switch {
-    position: relative;
-    flex: none;
-    width: calc(26 * var(--sp));
-    height: calc(15 * var(--sp));
-    border-radius: var(--pill);
-    background: var(--press);
-    transition: background 140ms;
-}
-
-.mp-switch::after {
-    content: "";
-    position: absolute;
-    top: calc(2 * var(--sp));
-    left: calc(2 * var(--sp));
-    width: calc(11 * var(--sp));
-    height: calc(11 * var(--sp));
-    border-radius: 50%;
-    background: var(--sheet);
-    transition: transform 140ms var(--ease);
-}
-
-.mp-switch.on {
-    background: var(--fg);
-}
-
-.mp-switch.on::after {
-    transform: translateX(calc(11 * var(--sp)));
 }
 
 /* A provider's mark; the two letters when there isn't one (ProviderIcon, used across the app). */
@@ -3244,40 +1049,22 @@ button.att-card:hover {
     color: var(--fg-2);
 }
 
-/* ---- Permission mode menu ----------------------------------------------------- */
+/* ---- A menu's check column, where its items lead with one (Home's recent projects, the machines) ---- */
 
 .menu-ico {
     display: grid;
     place-items: center;
     flex: none;
-    margin-top: 1px;
-    color: var(--fg-2);
+    width: calc(14 * var(--sp));
+    height: 1lh;
 }
 
-.menu-item.danger .menu-ico svg {
-    color: var(--danger);
+.menu-ico .menu-check {
+    margin: 0;
 }
 
 .menu-hint {
     color: var(--fg-2);
-}
-
-/* Words alone: the mode and what it does under it, the check (in a .menu-ico a line tall) on the mode's line. */
-.mode-menu .menu-item {
-    align-items: flex-start;
-    padding: calc(7 * var(--sp)) calc(10 * var(--sp)) calc(7 * var(--sp)) calc(12 * var(--sp));
-    border-radius: calc(10 * var(--sp));
-}
-
-.mode-menu .menu-ico {
-    height: 1lh;
-    margin-top: 0;
-}
-
-.mode-menu .menu-label kbd {
-    height: auto;
-    padding: calc(3 * var(--sp)) calc(5 * var(--sp));
-    font-size: 0.75rem;
 }
 
 /* ---- Used elsewhere, kept here where they started --------------------------------- */
@@ -3306,42 +1093,77 @@ button.att-card:hover {
     vertical-align: 1px;
 }
 
-/* A worktree row with its remove button beside it (WorktreePicker; a button can't hold another). */
+/* ---- The worktree picker (WorktreePicker.tsx), from the design's dialogs.css ---- */
+
+.wt-menu {
+    width: calc(404 * var(--sp));
+}
+
+.wt-list {
+    display: flex;
+    flex-direction: column;
+    max-height: calc(316 * var(--sp));
+    overflow-y: auto;
+}
+
 .wt-row {
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     gap: calc(2 * var(--sp));
 }
 
-.wt-row .menu-item {
+.wt-item {
     flex: 1;
+    min-width: 0;
+    width: auto;
+    text-align: left;
+}
+
+.wt-item:disabled .menu-item-name,
+.wt-item:disabled .wt-path,
+.wt-item:disabled > svg {
+    opacity: 0.5;
+}
+
+.wt-item .menu-item-name.mono {
+    font-size: calc(12.5 * var(--sp));
+}
+
+.wt-menu .wt-path {
+    display: flex;
+    gap: calc(5 * var(--sp));
+    min-width: 0;
+}
+
+.wt-menu .wt-path .mono {
+    font-size: calc(11.5 * var(--sp));
+}
+
+.wt-main {
+    flex: none;
+}
+
+.wt-problem {
+    color: var(--amber);
 }
 
 .wt-remove {
-    margin-top: calc(4 * var(--sp));
-    opacity: 0;
+    flex: none;
+    margin-right: calc(3 * var(--sp));
+    color: var(--text-3);
 }
 
-.wt-row:hover .wt-remove,
-.wt-remove:focus-visible {
-    opacity: 1;
-}
-
-.wt-remove:hover:not(:disabled) {
-    color: var(--danger);
+.wt-note {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    padding: calc(10 * var(--sp)) calc(9 * var(--sp)) calc(12 * var(--sp));
+    color: var(--text-3);
 }
 
 /* ---- A narrow conversation column: labels give way to glyphs, rows stack ----- */
 
 :where(.main[data-narrow~="600"], .stage-pane[data-narrow~="600"]) {
-    .ask .pbtn kbd {
-        display: none;
-    }
-
-    .pbtn:has(> kbd) {
-        padding-right: calc(14 * var(--sp));
-    }
-
     .ask-row,
     .ask-row.plan-row {
         display: grid;
@@ -3353,42 +1175,7 @@ button.att-card:hover {
         display: none;
     }
 
-    /* Full width, and a long answer wraps rather than losing its end. */
-    .ask-row .pbtn {
-        width: 100%;
-        height: auto;
-        min-height: calc(30 * var(--sp));
-        padding-block: calc(5 * var(--sp));
-        line-height: 1.25;
-        white-space: normal;
-        text-align: center;
-    }
-
-    .ask-row .pbtn .plabel {
-        display: block;
-        overflow: visible;
-    }
-
-    .ask-row .pbtn .plabel > span {
-        white-space: normal;
-        overflow: visible;
-        overflow-wrap: anywhere;
-        text-overflow: clip;
-    }
-
-    .ask-row .pbtn.primary {
-        grid-column: 1 / -1;
-        order: -1;
-    }
-
-    /* A button left alone in its row (a question's Skip, with or without Answer above it) takes the row. */
-    .ask-row .pbtn:only-of-type,
-    .ask-row .pbtn.primary + .grow + .pbtn:last-child {
-        grid-column: 1 / -1;
-    }
-
-    .schedule-when,
-    .goal-status {
+    .crow-when {
         display: none;
     }
 }

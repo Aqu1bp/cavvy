@@ -17,6 +17,8 @@ export interface PopoverProps {
     /** Preferred side; flips when there's no room. */
     placement?: "top" | "bottom";
     align?: "start" | "end";
+    /** Its distance from what opened it, in px (default 6, the design's sideOffset). */
+    offset?: number;
     /** Its width (default 320), and the heights below, in px at text size 14: they follow the text (`sp`). */
     width?: number;
     /** Lines up with this element's left and right edges instead (a panel that stays inside its column). */
@@ -77,7 +79,7 @@ export function Popover(p: PopoverProps) {
         const r = span ? { top: at.top, bottom: at.bottom, left: span.left, right: span.right } : at;
         // Its own height once rendered, so a tall menu opens on the side it fits.
         const need = Math.min(el?.scrollHeight || 220, sp(p.maxHeight ?? 560));
-        setPos(placePopover(r, { width: span ? span.width : sp(p.width ?? 320), least: Math.min(need, p.minHeight === undefined ? need : sp(p.minHeight)), placement: p.placement ?? "bottom", align: p.point || span ? "start" : p.align, vw: window.innerWidth, vh: window.innerHeight }));
+        setPos(placePopover(r, { width: span ? span.width : sp(p.width ?? 320), least: Math.min(need, p.minHeight === undefined ? need : sp(p.minHeight)), placement: p.placement ?? "bottom", align: p.point || span ? "start" : p.align, vw: window.innerWidth, vh: window.innerHeight, offset: p.offset }));
     };
 
     // Placed as it opens, and again when it asks for another width (the model picker's two views differ).
@@ -158,7 +160,9 @@ export function Popover(p: PopoverProps) {
                     role={p.role}
                     aria-label={p.label}
                     tabIndex={p.behavior ? -1 : undefined}
-                    class={`popover menu ${p.class ?? ""}`}
+                    class={`popover menu ${p.anchor()?.closest?.(".dlg") ? "over-dialog " : ""}${p.class ?? ""}`}
+                    // As the design's menus mark themselves, so its rules for an open one and its side apply.
+                    data-state="open"
                     style={{
                         left: `${pos()?.left ?? -9999}px`,
                         top: pos()?.top !== undefined ? `${pos()!.top}px` : undefined,

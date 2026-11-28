@@ -42,7 +42,7 @@ test("not checked yet, and checking", () => {
 test("an update: how many changes, Update & restart, and the rail's button", () => {
     const v = updateView({ ...base, available: true, behind: 4, checkedAt: NOW }, 0, NOW)!;
     expect(v).toMatchObject({ title: "4 new changes on main", detail: "This build abc1234 · main def5678 · checked just now", action: "update", busy: false });
-    expect(v.rail).toEqual({ state: "ready", label: "4 new changes on main. Click to update and restart Cavvy." });
+    expect(v.rail).toEqual({ state: "ready", label: "Update: 4 new changes on main" });
     expect(updateView({ ...base, available: true, behind: 1 }, 0)!.title).toBe("1 new change on main");
     // A check in flight doesn't take the update away.
     expect(updateView({ ...base, available: true, behind: 1, checking: true }, 0)).toMatchObject({ action: "update", busy: true });
@@ -71,12 +71,12 @@ test("updating: the build's last line, a spinner, and the rail says so", () => {
 
 test("restarting: installed, and the app is about to go", () => {
     const v = updateView({ ...base, updating: { startedAt: NOW, line: "x", restarting: true } }, 0)!;
-    expect(v).toMatchObject({ title: "Restarting Cavvy…", busy: true, rail: { state: "busy", label: "The update is installed: Cavvy is restarting" } });
+    expect(v).toMatchObject({ title: "Restarting Cavvy…", busy: true, rail: { state: "busy", label: "Restarting Cavvy" } });
 });
 
 test("a failed update: the rail's icon turns red, to try again; the card still offers the update", () => {
     const v = updateView({ ...base, available: true, behind: 2, failed: "The update failed: error: no space left" }, 0)!;
-    expect(v.rail).toEqual({ state: "failed", label: "The update failed: error: no space left. Click to try again." });
+    expect(v.rail).toEqual({ state: "failed", label: "The update failed: error: no space left. Try again." });
     expect(v.action).toBe("update");
     // Nothing left to update (a check since found main installed): no icon, whatever went wrong before.
     expect(updateView({ ...base, checkedAt: NOW, failed: "x" }, 0, NOW)!.rail).toBeUndefined();
@@ -99,7 +99,7 @@ describe("a downloaded app", () => {
     test("a newer release: its version, its notes, Update; the rail's icon", () => {
         const v = updateView({ ...rel, available: true, latest: "1.3.0", notes: "https://github.com/Aqu1bp/cavvy/releases/tag/v1.3.0", checkedAt: NOW }, 0, NOW)!;
         expect(v).toMatchObject({ title: "Cavvy 1.3.0 is available", detail: "This is 1.2.0 · checked just now", action: "update", notes: "https://github.com/Aqu1bp/cavvy/releases/tag/v1.3.0" });
-        expect(v.rail).toEqual({ state: "ready", label: "Cavvy 1.3.0 is available. Click to update and restart Cavvy." });
+        expect(v.rail).toEqual({ state: "ready", label: "Update to Cavvy 1.3.0" });
         expect(updateView({ ...rel, available: true, latest: "1.3.0" }, 2)!.warn).toBe("2 sessions working: restarting stops them.");
     });
     test("needs a newer macOS: said, no Update, nothing in the rail", () => {
@@ -116,11 +116,11 @@ describe("a downloaded app", () => {
     test("downloaded and checked, the restart cancelled: ready, Restart", () => {
         const v = updateView({ ...rel, available: true, latest: "1.3.0", ready: true }, 0)!;
         expect(v).toMatchObject({ title: "Cavvy 1.3.0 is ready", detail: "Restart Cavvy to finish updating.", action: "restart" });
-        expect(v.rail).toEqual({ state: "ready", label: "Cavvy 1.3.0 is ready. Click to restart." });
+        expect(v.rail).toEqual({ state: "ready", label: "Restart for Cavvy 1.3.0" });
     });
     test("failed: the rail says it couldn't, About has the one reason (Settings shows `failed`)", () => {
         const v = updateView({ ...rel, available: true, latest: "1.3.0", failed: "The download isn't signed by Cavvy." }, 0)!;
-        expect(v.rail).toEqual({ state: "failed", label: "Couldn't update. Click to try again." });
+        expect(v.rail).toEqual({ state: "failed", label: "Couldn't update. Try again." });
         expect(v.action).toBe("update");
     });
 });

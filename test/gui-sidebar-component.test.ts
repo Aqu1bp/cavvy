@@ -53,7 +53,7 @@ function fixture(count = 60, o: { actionOf?: (e: KeyboardEvent, contexts: readon
         createElement: (tag: string) => {
             const node: any = { tag, props: {}, dataset: {}, children: [] as any[], focus() {}, select() {},
                 closest: () => ["input", "textarea"].includes(tag) ? node : null,
-                querySelector: () => descendants(node).find((n) => ["card-hit", "slim-hit"].includes(n.props?.class)),
+                querySelector: () => descendants(node).find((n) => /\bsrow-main\b/.test(String(n.props?.class))),
                 getBoundingClientRect: () => ({ top: ids.indexOf(node.dataset.sessionRow) * 100 }),
                 querySelectorAll: () => ids.map((id) => nodes.findLast((n) => n.dataset.sessionRow === id)).filter(Boolean),
                 animate: () => { const a = { paused: false, cancelled: false, finished: false, pause() { this.paused = true; }, play() { this.paused = false; }, cancel() { this.cancelled = true; }, finish() { this.finished = true; } }; animations.push(a); return a; },
@@ -75,10 +75,10 @@ function fixture(count = 60, o: { actionOf?: (e: KeyboardEvent, contexts: readon
         presets: [[solidPreset, { generate: "universal", moduleName: "test-renderer" }]], configFile: false, babelrc: false })!.code!;
     const js = new Bun.Transpiler({ loader: "ts" }).transformSync(compiled)
         .replace(/import \{ ([\w$]+) as ([\w$]+) \} from "test-renderer";/g, "const $2 = renderer.$1;");
-    const icons = Object.fromEntries(["Archive", "ArchiveRestore", "Check", "CheckCheck", "ChevronRight", "ChevronsDownUp", "ChevronsUpDown", "CircleAlert", "Download", "Folder", "FolderOpen", "FolderPlus", "Hand", "Layers", "ListFilter", "MessageSquareText", "MoreHorizontal", "PanelLeft", "Pencil", "Pin", "PinOff", "Plus", "Search", "Settings", "SquarePen", "Trash2", "Undo2", "X", "ProviderIcon", "Logo", "Spinner"].map((name) => [name, () => null]));
+    const icons = Object.fromEntries(["Archive", "ArchiveRestore", "Check", "CheckCheck", "ChevronRight", "ChevronsDownUp", "ChevronsUpDown", "CircleAlert", "Download", "Folder", "FolderOpen", "FolderPlus", "Hand", "Layers", "ListFilter", "MessageSquareText", "MoreHorizontal", "PanelLeft", "PanelLeftClose", "Pencil", "Pin", "PinOff", "Plus", "Search", "Settings", "Square", "SquarePen", "Trash2", "Undo2", "X", "ProviderIcon", "Logo", "Spinner"].map((name) => [name, () => null]));
     const extras: { ids: readonly string[]; plan?: railSelect.BulkPlan; clear?: () => void }[] = [];
     const RowExtras = Object.assign((p: (typeof extras)[number]) => (extras.push(p), null), { preload() {} });
-    const scope = { renderer, RowExtras, ...solid, ...order, ...format, ...rail, ...railSelect, ...icons, sessionStatus, rowMenuKey, updateView, createUpdateAction: () => ({ request() {}, pending: () => false, Confirm: () => null }), app, prefs,
+    const scope = { renderer, RowExtras, ...solid, ...order, ...format, ...rail, ...railSelect, ...icons, sessionStatus, rowMenuKey, updateView, modelName: (ref: string) => ref, createUpdateAction: () => ({ request() {}, pending: () => false, Confirm: () => null }), app, prefs,
         railSelection, setRailSelection, actionOf: o.actionOf ?? (() => undefined),
         settleSessions: bulk.settle, archiveSessions: bulk.archive, deleteSessions: bulk.deleteSessions,
         // Count work against layout keys, rather than timing a machine-dependent render.
@@ -122,10 +122,10 @@ test("actual sidebar holds hover/menu/rename; open and waiting rows appear past 
         f.nav.props.onPointerLeave();
         expect(f.ids[0]).toBe("40");
         // Finished since last looked: "Done" in its time's place, not a glyph at the start.
-        expect(f.nodes.some((n) => n.props.class === "when done")).toBe(true);
+        expect(f.nodes.some((n) => (n.props.class === "srow-meta" && n.props["data-tone"] === "done"))).toBe(true);
         expect(f.nodes.some((n) => /(^| )(unread-dot|spin-ring|err-dot)( |$)/.test(String(n.props.class)))).toBe(false);
         expect(f.nodes.some((n) => String(n.props.class).startsWith("st "))).toBe(false);
-        const card = f.nodes.findLast((n) => String(n.props.class).startsWith("card "));
+        const card = f.nodes.findLast((n) => (n.props.class === "srow" && n.props["data-session-id"] !== undefined));
         f.contextMenu(card);
         const held = f.ids;
         f.update("50", { status: "waiting" });
@@ -136,7 +136,7 @@ test("actual sidebar holds hover/menu/rename; open and waiting rows appear past 
         rename.props.onClick();
         f.update("51", { status: "waiting" });
         expect(f.ids.slice(0, held.length)).toEqual(held);
-        const input = f.nodes.findLast((n) => n.props.class === "sess-rename");
+        const input = f.nodes.findLast((n) => n.props.class === "srow-rename");
         input.props.onKeyDown({ key: "Escape" });
         expect(f.ids.slice(0, 3)).toEqual(["40", "50", "51"]);
     } finally { f.dispose(); }
@@ -148,7 +148,7 @@ test("actual sidebar pages projects and settled, transitions row type, and keeps
         f.setGroupBy("project");
         expect(f.ids).toHaveLength(25);
         f.nav.props.onPointerEnter();
-        f.nodes.findLast((n) => n.props.class === "slim more").props.onClick();
+        f.nodes.findLast((n) => n.props.class === "sgroup-more").props.onClick();
         await Promise.resolve();
         expect(f.ids).toHaveLength(50);
         const held = f.ids;
@@ -157,7 +157,7 @@ test("actual sidebar pages projects and settled, transitions row type, and keeps
         f.nav.props.onPointerLeave();
         f.setSessions(f.sessions().map((s) => ({ ...s, settled: true, status: "idle" })));
         expect(f.ids).toHaveLength(25);
-        expect(f.nodes.some((n) => String(n.props.class).startsWith("slim "))).toBe(true);
+        expect(f.nodes.some((n) => n.props.class === "srow srow-slim")).toBe(true);
         f.setSettledOpen(false);
         expect(f.ids).toEqual([]);
         f.setActiveId("59");
@@ -171,23 +171,23 @@ test("actual sidebar pages projects and settled, transitions row type, and keeps
 
 test("rail rows: needs-you rows get an amber dot and no archive; others archive on hover; open project headings carry no count", () => {
     const f = fixture(6);
-    const rowOf = (title: string) => f.nodes.findLast((n) => String(n.props.class).startsWith("card ") && n.querySelector()?.props.title?.startsWith(`${title}\n`));
+    const rowOf = (title: string) => f.nodes.findLast((n) => (n.props.class === "srow" && n.props["data-session-id"] !== undefined) && n.querySelector()?.props.title?.startsWith(`${title}\n`));
     const buttons = (row: any) => f.descendants(row).filter((n) => n.tag === "button");
     try {
         // Open, so its request is in front of you and it keeps its own row (elsewhere it's under Needs you alone).
         f.update("1", { status: "waiting", waitingKind: "permission" });
         f.setActiveId("1");
         const waiting = rowOf("Session 1");
-        expect(String(waiting.props.class)).toContain("waiting");
+        expect(waiting.props["data-status"]).toBe("needs");
         expect(waiting.querySelector().props["aria-label"]).toBe("Session 1, Needs approval");
-        // Its time, in amber: no dot, and no hand at the start of the row.
-        expect(f.descendants(waiting).some((n) => n.props?.class === "when waiting")).toBe(true);
-        expect(f.descendants(waiting).some((n) => n.props?.class === "wait-dot")).toBe(false);
+        // Its time, in amber; no heading's dot, and no hand at the start of the row.
+        expect(f.descendants(waiting).some((n) => (n.props?.class === "srow-meta" && n.props["data-tone"] === "needs"))).toBe(true);
+        expect(f.descendants(waiting).some((n) => (n.props?.class === "dot" && n.props["data-tone"] === "amber"))).toBe(false);
         // Working and stopped say so where the time was; never both.
         f.update("2", { status: "running", turnStartedAt: Date.now() - 9 * 60_000 });
         f.update("3", { status: "error" });
-        expect(f.descendants(rowOf("Session 2")).some((n) => n.props?.class === "when working")).toBe(true);
-        expect(f.descendants(rowOf("Session 3")).some((n) => n.props?.class === "when stopped")).toBe(true);
+        expect(f.descendants(rowOf("Session 2")).some((n) => (n.props?.class === "srow-meta" && n.props["data-tone"] === "working"))).toBe(true);
+        expect(f.descendants(rowOf("Session 3")).some((n) => (n.props?.class === "srow-meta" && n.props["data-tone"] === "failed"))).toBe(true);
         expect(f.descendants(waiting).some((n) => n.props?.class === "st waiting")).toBe(false);
         expect(buttons(waiting).some((n) => n.props.title === "Archive")).toBe(false);
         expect(buttons(waiting).some((n) => n.props.title === "More")).toBe(true);
@@ -198,14 +198,14 @@ test("rail rows: needs-you rows get an amber dot and no archive; others archive 
         expect(idle.querySelector().props["aria-current"]).toBeUndefined();
         f.setGroupBy("project");
         // Open, a project's heading is its name: its rows show how many.
-        expect(f.nodes.filter((n) => n.props.class === "n" && f.nodes.some((h) => h.props.class === "shelf-toggle" && f.descendants(h).includes(n)))).toEqual([]);
+        expect(f.nodes.filter((n) => n.props.class === "sgroup-count" && f.nodes.some((h) => h.props.class === "sgroup-toggle" && f.descendants(h).includes(n)))).toEqual([]);
     } finally { f.dispose(); }
 });
 
 test("Needs you: waiting sessions but the open one, pinned above the list, their one row; keys act on the pinned row", () => {
     let next: string | undefined;
     const f = fixture(6, { actionOf: () => next });
-    const group = () => f.nodes.findLast((n) => n.props.class === "needs-g");
+    const group = () => f.nodes.findLast((n) => n.props.class === "sgroup sgroup-needs");
     const pinned = () => f.nodes.filter((n) => n.props["data-needs-id"] !== undefined && f.descendants(group() ?? {}).includes(n));
     const text = (n: any) => f.descendants(n).map((c) => c.text ?? (typeof c.content === "string" || typeof c.content === "number" ? c.content : "")).join("");
     try {
@@ -218,7 +218,7 @@ test("Needs you: waiting sessions but the open one, pinned above the list, their
         expect(text(group())).toContain("Needs you");
         expect(text(pinned()[0])).toContain("Plan ready for review");
         // 3 is drawn there alone, not again as a card below; the open one (4) keeps its own row.
-        const cards = () => f.nodes.filter((n) => String(n.props.class).startsWith("card ") && f.descendants(f.nav).includes(n)).map((n) => n.props["data-session-id"]);
+        const cards = () => f.nodes.filter((n) => (n.props.class === "srow" && n.props["data-session-id"] !== undefined) && f.descendants(f.nav).includes(n)).map((n) => n.props["data-session-id"]);
         expect(cards()).not.toContain("3");
         expect(cards()).toContain("4");
         // The order (⌘-cycling) has each once.
@@ -239,7 +239,7 @@ test("Needs you: waiting sessions but the open one, pinned above the list, their
         key(f, "a", { target: { closest: (sel: string) => (sel.includes("data-needs-id") ? { dataset: { needsId: row.props["data-needs-id"] } } : null) } });
         expect(f.bulk.archive).toHaveBeenLastCalledWith(["3"], true);
         // Clicking it opens it.
-        click(f.descendants(row).find((n) => n.props.class === "card-hit needs-hit"));
+        click(f.descendants(row).find((n) => n.props?.class === "srow-main"));
         expect(f.nodes.some((n) => n.props["aria-current"] === "page" && n.props.title?.startsWith("Session 3\n"))).toBe(true);
         // Answered: the group goes.
         f.update("3", { status: "idle" });
@@ -249,7 +249,7 @@ test("Needs you: waiting sessions but the open one, pinned above the list, their
     } finally { f.dispose(); }
 });
 
-const needsGroup = (f: ReturnType<typeof fixture>) => f.nodes.findLast((n) => n.props.class === "needs-g");
+const needsGroup = (f: ReturnType<typeof fixture>) => f.nodes.findLast((n) => n.props.class === "sgroup sgroup-needs");
 const pinnedRows = (f: ReturnType<typeof fixture>) => { const g = needsGroup(f); return g ? [...new Set(f.descendants(g))].filter((n) => n.props?.["data-needs-id"] !== undefined) : []; };
 const pinnedIds = (f: ReturnType<typeof fixture>) => pinnedRows(f).map((n) => n.props["data-needs-id"]);
 
@@ -262,7 +262,7 @@ test("Needs you's rows aren't picked: a ⌘- or Shift-click opens the session, i
         f.setCollapsedProjects(["/p/0"]);
         expect(f.ids).not.toContain("3");
         expect(pinnedIds(f)).toEqual(["3"]);
-        const hit = () => f.descendants(pinnedRows(f)[0]).find((n) => n.props?.class === "card-hit needs-hit");
+        const hit = () => f.descendants(pinnedRows(f)[0]).find((n) => n.props?.class === "srow-main");
         f.setRailSelection({ ids: ["1", "2"], anchor: "1" });
         click(hit(), { metaKey: true });
         // Opened (its project unfolds to show it), the selection gone as a plain click leaves it.
@@ -290,14 +290,14 @@ test("Needs you while the rail holds still: rows say how they're doing now, and 
         f.update("4", { status: "waiting" });
         expect(pinnedIds(f)).toEqual(["3"]);
         const row = pinnedRows(f)[0];
-        expect(classes(row)).not.toContain("waiting");
+        expect(row.props["data-status"]).not.toBe("needs");
         expect(text(row)).toContain("Answered");
         expect(text(row)).not.toContain("Plan ready for review");
         expect(f.descendants(row).some((n) => n.props?.class === "st waiting")).toBe(false);
         // Let go: it reconciles at once.
         f.nav.props.onPointerLeave();
         expect(pinnedIds(f)).toEqual(["4"]);
-        expect(classes(pinnedRows(f)[0])).toContain("waiting");
+        expect(pinnedRows(f)[0].props["data-status"]).toBe("needs");
         // Rows picked hold the list, not the group: it follows who's waiting, and the order next and previous step
         // through stays as it was (each session in its own place, pinned or not).
         f.setRailSelection({ ids: ["0", "1"], anchor: "0" });
@@ -309,30 +309,20 @@ test("Needs you while the rail holds still: rows say how they're doing now, and 
     } finally { f.dispose(); }
 });
 
-test("FLIP respects instant/reduced motion and pauses under hover without snapping", () => {
+test("rows take their new places at once: nothing in the rail slides or fades, whatever the motion setting", () => {
     const f = fixture();
     try {
+        f.setMotion("quick");
         f.flushFrames();
         f.update("20", { updatedAt: 300 }); f.flushFrames();
-        expect(f.animations).toHaveLength(0);
-        f.setMotion("quick"); f.setReduced(true);
-        f.update("21", { updatedAt: 400 }); f.flushFrames();
-        expect(f.animations).toHaveLength(0);
-        f.setReduced(false);
         f.update("22", { updatedAt: 500 }); f.flushFrames();
-        expect(f.animations.length).toBeGreaterThan(0);
-        f.nav.props.onPointerEnter();
-        const moving = [...f.animations];
-        expect(moving.every((a) => a.paused && !a.cancelled)).toBe(true);
-        f.update("59", { status: "waiting" }); f.flushFrames();
-        expect(moving.every((a) => a.paused && !a.cancelled)).toBe(true);
-        f.nav.props.onPointerLeave(); f.flushFrames();
-        expect(moving.every((a) => a.cancelled)).toBe(true);
+        expect(f.ids.slice(0, 2)).toEqual(["22", "20"]);
+        expect(f.animations).toHaveLength(0);
     } finally { f.dispose(); }
 });
 
 
-test("a snoozed session waking leaves Snoozed at once, the one on screen too, with the pointer on the rail; its slide isn't stopped half way", async () => {
+test("a snoozed session waking leaves Snoozed at once, the one on screen too, with the pointer on the rail", async () => {
     const f = fixture(6);
     try {
         f.update("2", { snoozedUntil: 5_000_000 });
@@ -350,13 +340,10 @@ test("a snoozed session waking leaves Snoozed at once, the one on screen too, wi
         expect(f.ids).toEqual(["5", "0", "1", "2", "3", "4"]);
         await Promise.resolve();
         f.flushFrames();
-        const moving = f.animations.filter((a) => !a.cancelled);
-        expect(moving.length).toBeGreaterThan(0);
-        // The pointer moving on the rail holds it again: what was moving gets where it was going, not left with a gap.
+        // Nothing slides to get there.
+        expect(f.animations).toHaveLength(0);
         f.nav.props.onPointerLeave();
         f.nav.props.onPointerEnter();
-        expect(moving.some((a) => a.paused)).toBe(false);
-        expect(moving.every((a) => a.finished)).toBe(true);
         // And it holds still again.
         f.update("4", { updatedAt: 2000 });
         expect(f.ids).toEqual(["5", "0", "1", "2", "3", "4"]);
@@ -366,7 +353,7 @@ test("a snoozed session waking leaves Snoozed at once, the one on screen too, wi
 test("deleting a held row releases its lock without reading a removed summary", () => {
     const f = fixture();
     try {
-        const card = f.nodes.findLast((n) => String(n.props.class).startsWith("card "));
+        const card = f.nodes.findLast((n) => (n.props.class === "srow" && n.props["data-session-id"] !== undefined));
         f.contextMenu(card);
         const removed = f.ids.at(-1)!;
         f.setSessions(f.sessions().filter((s) => s.id !== removed));
@@ -382,10 +369,10 @@ test("archived Done leaves immediately under hover and restores the hold afterwa
     try {
         f.setArchived(f.sessions().slice(0, 2).map((s) => ({ ...s, id: `archive-${s.id}`, archived: true })));
         f.nodes.find((n) => n.props.title === "View options").props.onClick();
-        f.nodes.findLast((n) => n.props.class === "menu-item compact" && n.props.onClick?.toString().includes("setShowArchived")).props.onClick();
+        f.nodes.findLast((n) => n.props.class === "menu-item" && n.props.onClick?.toString().includes("setShowArchived")).props.onClick();
         expect(f.ids).toEqual(["archive-0", "archive-1"]);
         f.nav.props.onPointerEnter();
-        f.nodes.findLast((n) => n.props.class === "shelf-btn" && n.props.onClick?.toString().includes("setShowArchived")).props.onClick();
+        f.nodes.findLast((n) => n.props.class === "btn btn-sm" && n.props.onClick?.toString().includes("setShowArchived")).props.onClick();
         expect(f.ids).toHaveLength(25);
         expect(f.ids[0]).toBe("0");
         expect(f.ids).not.toContain("archive-0");
@@ -404,7 +391,7 @@ test("expanded sidebar summary updates do linear layout-key work", async () => {
         const f = fixture(count);
         try {
             while (f.ids.length < count) {
-                f.nodes.findLast((n) => n.props.class === "slim more").props.onClick();
+                f.nodes.findLast((n) => n.props.class === "sgroup-more").props.onClick();
                 await Promise.resolve();
             }
             expect(f.ids).toHaveLength(count);
@@ -430,10 +417,10 @@ for (const view of ["date", "project"]) {
             });
             expect(f.ids.slice(0, 2)).toEqual(["30", "31"]);
             expect(f.ids).toHaveLength(26); // One group consumes one slot.
-            expect(f.nodes.some((n) => n.props.class === "run-group" && n.props["aria-label"] === "2 models: Fix the login redirect")).toBe(true);
-            expect(f.nodes.some((n) => n.props.class === "run-head" && n.props.title === run.label)).toBe(true);
+            expect(f.nodes.some((n) => n.props.class === "srun" && n.props["aria-label"] === "2 models: Fix the login redirect")).toBe(true);
+            expect(f.nodes.some((n) => n.props.class === "srun-head" && n.props.title === run.label)).toBe(true);
             for (const name of ["Model A", "Model B"]) expect(f.nodes.some((n) => Array.isArray(n.content) ? n.content.includes(name) : n.content === name)).toBe(true);
-            const modelCard = f.nodes.findLast((n) => String(n.props.class).startsWith("card ") && n.querySelector()?.props.title?.startsWith("Session 30\n"));
+            const modelCard = f.nodes.findLast((n) => (n.props.class === "srow" && n.props["data-session-id"] !== undefined) && n.querySelector()?.props.title?.startsWith("Session 30\n"));
             f.contextMenu(modelCard);
             const held = f.ids;
             f.update("50", { status: "waiting", waitingKind: "permission" });
@@ -442,7 +429,7 @@ for (const view of ["date", "project"]) {
             rename.props.onClick();
             f.update("31", { settled: true });
             expect(f.ids.slice(0, held.length)).toEqual(held);
-            f.nodes.findLast((n) => n.props.class === "sess-rename").props.onKeyDown({ key: "Escape" });
+            f.nodes.findLast((n) => n.props.class === "srow-rename").props.onKeyDown({ key: "Escape" });
             expect(f.ids[0]).toBe("50");
             expect(f.ids.at(-1)).toBe("31");
             f.setSessions(f.sessions().filter((s) => s.id !== "30" && s.id !== "31"));
@@ -465,7 +452,7 @@ for (const layout of ["card", "settled", "archived"] as const) {
                     f.nodes.find((n) => n.props.title === "View options").props.onClick();
                     f.nodes.findLast((n) => n.props.onClick?.toString().includes("setShowArchived") && n.props.role === "menuitem").props.onClick();
                 }
-                const row = f.nodes.findLast((n) => String(n.props.class).startsWith(layout === "card" ? "card " : "slim ") && n.querySelector()?.props.title?.startsWith("Session 2\n"));
+                const row = f.nodes.findLast((n) => (layout === "card" ? (n.props.class === "srow" && n.props["data-session-id"] !== undefined) : n.props.class === "srow srow-slim") && n.querySelector()?.props.title?.startsWith("Session 2\n"));
                 expect(row).toBeDefined();
                 const hit = row.querySelector();
                 const more = f.descendants(row).find((n) => n.props?.["aria-haspopup"] === "menu");
@@ -514,7 +501,7 @@ for (const layout of ["card", "settled", "archived"] as const) {
 
 test("sidebar waits for the first list and retains loaded state across reconnects", () => {
     const f = fixture(0);
-    const empty = () => f.nodes.findLast((n) => n.props.class === "side-empty").content;
+    const empty = () => f.nodes.findLast((n) => n.props.class === "sidebar-state").content;
     try {
         f.setSessionsLoaded(false);
         f.setConn("connecting");
@@ -526,7 +513,7 @@ test("sidebar waits for the first list and retains loaded state across reconnect
         expect(empty()).toBe("Loading sessions…");
         f.setSessionsLoaded(true);
         expect(empty()).toBe("Nothing archived");
-        f.nodes.findLast((n) => n.props.class === "shelf-btn" && n.props.onClick?.toString().includes("setShowArchived")).props.onClick();
+        f.nodes.findLast((n) => n.props.class === "btn btn-sm" && n.props.onClick?.toString().includes("setShowArchived")).props.onClick();
         expect(empty()).toBe("No sessions yet");
         for (const conn of ["connecting", "open"]) {
             f.setConn(conn);
@@ -540,8 +527,8 @@ test("every session settled and folded: Settled alone, at the foot, and no word 
     const shown = () => f.descendants(f.nav);
     try {
         solid.batch(() => { f.setActiveId(undefined); f.setSettledOpen(false); f.setSessions(f.sessions().map((s) => ({ ...s, settled: true }))); });
-        expect(shown().some((n) => n.props?.class === "side-empty")).toBe(false);
-        const heads = shown().filter((n) => typeof n.props?.class === "string" && n.props.class.includes("settled-head"));
+        expect(shown().some((n) => n.props?.class === "sidebar-state")).toBe(false);
+        const heads = shown().filter((n) => typeof n.props?.class === "string" && n.props.class.includes("sgroup-settled"));
         expect(new Set(heads).size).toBe(1);
         // A gap that takes the room left goes before it.
         expect(shown().some((n) => n.props?.class === "settled-gap")).toBe(true);
@@ -550,7 +537,7 @@ test("every session settled and folded: Settled alone, at the foot, and no word 
 
 test("every session archived: the list says it has none, not a blank list", () => {
     const f = fixture(2);
-    const empty = () => f.nodes.findLast((n) => n.props.class === "side-empty")?.content;
+    const empty = () => f.nodes.findLast((n) => n.props.class === "sidebar-state")?.content;
     try {
         solid.batch(() => { f.setArchived(f.sessions().map((s) => ({ ...s, archived: true }))); f.setSessions([]); });
         expect(empty()).toBe("No sessions yet");
@@ -560,7 +547,7 @@ test("every session archived: the list says it has none, not a blank list", () =
 for (const archived of [false, true]) {
     test(`sidebar shows a retryable list failure in the ${archived ? "archived" : "active"} view`, async () => {
         const f = fixture(0);
-        const empty = () => f.nodes.findLast((n) => n.props.class === "side-empty");
+        const empty = () => f.nodes.findLast((n) => n.props.class === "sidebar-state");
         const contents = () => f.descendants(empty()).map((n) => n.text ?? n.content);
         const retry = () => f.descendants(empty()).find((n) => n.tag === "button" && f.descendants(n).some((child) => child.text === "Retry"));
         try {
@@ -603,10 +590,10 @@ const key = (f: ReturnType<typeof fixture>, k: string, extra: Record<string, unk
     f.nav.props.onKeyDown(e);
     return e;
 };
-const hitOf = (f: ReturnType<typeof fixture>, id: string) => f.nodes.findLast((n) => ["card-hit", "slim-hit"].includes(n.props.class) && n.props.title?.startsWith(`Session ${id}\n`));
-const rowOf = (f: ReturnType<typeof fixture>, id: string) => f.nodes.findLast((n) => n.props["data-session-id"] === id && /^(card|slim) /.test(String(n.props.class)));
+const hitOf = (f: ReturnType<typeof fixture>, id: string) => f.nodes.findLast((n) => /\bsrow-main\b/.test(String(n.props.class)) && n.props.title?.startsWith(`Session ${id}\n`));
+const rowOf = (f: ReturnType<typeof fixture>, id: string) => f.nodes.findLast((n) => n.props["data-session-id"] === id && /^srow( srow-slim)?$/.test(String(n.props.class)));
 // The last bar made is the one showing (one shows while two or more are selected).
-const bar = (f: ReturnType<typeof fixture>) => f.nodes.findLast((n) => n.props.class === "rail-sel card-surface");
+const bar = (f: ReturnType<typeof fixture>) => f.nodes.findLast((n) => n.props.class === "selbar");
 const barButtons = (f: ReturnType<typeof fixture>) => [...new Set(f.descendants(bar(f)).filter((n) => n.tag === "button"))].map((n) => n.props["aria-label"]).sort();
 
 for (const view of ["date", "project"]) {
@@ -622,12 +609,12 @@ for (const view of ["date", "project"]) {
             expect(f.railSelection().ids).toEqual(order.slice(1, 6));
             if (view === "project") expect(new Set(order.slice(1, 6).map((id) => Number(id) % 3)).size).toBeGreaterThan(1); // Under more than one heading.
             // Selected rows: an accent pill with a check for the glyph, and they say so.
-            expect(String(rowOf(f, order[2]!).props.class)).toContain("picked");
-            expect(String(rowOf(f, order[0]!).props.class)).not.toContain("picked");
-            expect(f.descendants(rowOf(f, order[2]!)).some((n) => n.props?.class === "st pick")).toBe(true);
+            expect(rowOf(f, order[2]!).props["data-picked"]).toBe(true);
+            expect(rowOf(f, order[0]!).props["data-picked"]).toBeUndefined();
+            expect(f.descendants(rowOf(f, order[2]!)).some((n) => n.props?.class === "srow-pick")).toBe(true);
             expect(hitOf(f, order[2]!).props["aria-label"]).toEndWith(", selected");
             // The bar: how many, and what applies.
-            expect(f.descendants(bar(f)).some((n) => n.props?.class === "rail-sel-n")).toBe(true);
+            expect(f.descendants(bar(f)).some((n) => n.props?.class === "selbar-count")).toBe(true);
             expect(barButtons(f)).toEqual(["Archive 5 sessions", "Clear selection", "Delete 5 sessions", "Settle 5 sessions"]);
             click(hitOf(f, order[3]!), { metaKey: true });
             expect(f.railSelection().ids).toEqual([order[1], order[2], order[4], order[5]]);
@@ -694,7 +681,7 @@ test("archived rows offer Restore and Delete; switching lists clears the selecti
         expect(barButtons(f)).toEqual(["Clear selection", "Delete 3 sessions", "Restore 3 sessions"]);
         f.descendants(bar(f)).find((n) => n.props?.["aria-label"] === "Restore 3 sessions").props.onClick();
         expect(f.bulk.archive).toHaveBeenLastCalledWith(["0", "1", "2"], false);
-        f.nodes.findLast((n) => n.props.class === "shelf-btn" && n.props.onClick?.toString().includes("setShowArchived")).props.onClick();
+        f.nodes.findLast((n) => n.props.class === "btn btn-sm" && n.props.onClick?.toString().includes("setShowArchived")).props.onClick();
         expect(f.railSelection().ids).toEqual([]);
     } finally { f.dispose(); }
 });
@@ -737,7 +724,7 @@ test("rail keys: select all, act on the selection (else the open row), Esc clear
 test("listed by date, a day's heading folds and unfolds its sessions, and says how many when folded", () => {
     const f = fixture(9);
     try {
-        const head = () => f.nodes.findLast((n) => n.props.class === "shelf day-head");
+        const head = () => f.nodes.findLast((n) => (n.props.class === "sgroup-toggle" && String(n.props.onClick).includes('toggleFold("", day().label)')));
         expect(head()).toBeDefined();
         const label = f.descendants(head()).find((n) => n.content !== undefined && typeof n.content === "string")?.content;
         const before = f.ids.length;
@@ -746,14 +733,14 @@ test("listed by date, a day's heading folds and unfolds its sessions, and says h
         expect(f.foldedDays()).toEqual([label]);
         expect(head().props["aria-expanded"]).toBe(false);
         expect(f.ids.length).toBeLessThan(before);
-        expect(f.descendants(head()).find((n) => n.props?.class === "n").content).toBe(before - f.ids.length);
+        expect(f.descendants(head()).find((n) => n.props?.class === "sgroup-count").content).toBe(before - f.ids.length);
         head().props.onClick();
         expect(f.foldedDays()).toEqual([]);
         expect(f.ids.length).toBe(before);
         // Every day folded: the headings and their counts, and no word that there are none.
-        for (const h of f.nodes.filter((n) => n.props.class === "shelf day-head" && n.props["aria-expanded"])) h.props.onClick();
+        for (const h of f.nodes.filter((n) => (n.props.class === "sgroup-toggle" && String(n.props.onClick).includes('toggleFold("", day().label)')) && n.props["aria-expanded"])) h.props.onClick();
         expect(f.ids).toEqual([]);
-        expect(f.descendants(f.nav).some((n) => n.props?.class === "side-empty")).toBe(false);
+        expect(f.descendants(f.nav).some((n) => n.props?.class === "sidebar-state")).toBe(false);
     } finally {
         f.dispose();
     }
@@ -761,8 +748,8 @@ test("listed by date, a day's heading folds and unfolds its sessions, and says h
 
 // ---- Folding a project under its heading ----------------------------------
 
-const heading = (f: ReturnType<typeof fixture>, cwd: string) => f.nodes.findLast((n) => n.props.class === "shelf-toggle" && n.props.title === cwd);
-const headRow = (f: ReturnType<typeof fixture>, cwd: string) => f.nodes.findLast((n) => String(n.props.class).startsWith("shelf project-head") && f.descendants(n).includes(heading(f, cwd)));
+const heading = (f: ReturnType<typeof fixture>, cwd: string) => f.nodes.findLast((n) => n.props.class === "sgroup-toggle" && n.props.title === cwd);
+const headRow = (f: ReturnType<typeof fixture>, cwd: string) => f.nodes.findLast((n) => n.props.class === "sgroup-head" && f.descendants(n).includes(heading(f, cwd)));
 
 test("grouped by project, a heading folds and unfolds its sessions; its New session doesn't", () => {
     const f = fixture(9);
@@ -773,12 +760,12 @@ test("grouped by project, a heading folds and unfolds its sessions; its New sess
         heading(f, "/p/0").props.onClick();
         expect(f.collapsedProjects()).toEqual(["/p/0"]);
         expect(heading(f, "/p/0").props["aria-expanded"]).toBe(false);
-        expect(String(headRow(f, "/p/0").props.class)).toContain("folded");
+        expect(heading(f, "/p/0").props["aria-expanded"]).toBe(false);
         for (const id of inP0) expect(f.ids).not.toContain(id);
         // Folded, it still shows how many.
-        expect(f.descendants(heading(f, "/p/0")).find((n) => n.props?.class === "n").content).toBe(3);
+        expect(f.descendants(heading(f, "/p/0")).find((n) => n.props?.class === "sgroup-count").content).toBe(3);
         // The + starts a session there and leaves the fold alone.
-        const add = f.descendants(headRow(f, "/p/0")).find((n) => n.props?.class === "shelf-btn add");
+        const add = f.descendants(headRow(f, "/p/0")).find((n) => n.props?.class === "icon-btn icon-btn-sm sgroup-add");
         add.props.onClick();
         expect(f.collapsedProjects()).toEqual(["/p/0"]);
         heading(f, "/p/0").props.onClick();
@@ -796,7 +783,7 @@ test("a folded project with a session that needs you shows the amber dot on its 
     try {
         f.setGroupBy("project");
         f.setCollapsedProjects(["/p/1"]);
-        const dot = () => f.descendants(heading(f, "/p/1")).some((n) => n.props?.class === "wait-dot");
+        const dot = () => f.descendants(heading(f, "/p/1")).some((n) => (n.props?.class === "dot" && n.props["data-tone"] === "amber"));
         expect(dot()).toBe(false);
         f.update("4", { status: "waiting", waitingKind: "permission" });
         expect(dot()).toBe(true);

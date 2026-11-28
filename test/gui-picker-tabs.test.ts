@@ -1,8 +1,7 @@
-// The model picker's row of provider tabs (components/ModelPicker.tsx, styles/composer.css .mp-bar), laid out by a
-// real browser at the picker's width: with Claude Code's tab shown, its account control at the row's end took the
-// room the tabs needed, and the next provider's was cut to a letter under the row's fade. The account goes under the
-// tabs when both don't fit. With more providers than a row holds (another Claude Code's long name, say), the row
-// scrolls sideways, and each tab is whole once scrolled to.
+// The model picker's row of provider tabs (components/ModelPicker.tsx, styles/model-picker.css .mp-tabs), laid out by a
+// real browser at the picker's width: each provider's mark, its name in its tooltip and for assistive tech, and the
+// account in the caption under them, where it never takes the tabs' room. With more providers than a row holds, the
+// row scrolls sideways, and each tab is whole once scrolled to.
 import { expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -10,15 +9,16 @@ import { join } from "node:path";
 
 const chrome = [process.env.CAVVY_TEST_CHROME, "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "/usr/bin/chromium", "/usr/bin/google-chrome", "/opt/pw-browsers/chromium-1243/chrome-linux64/chrome"].find((p) => p && existsSync(p));
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const css = ["base.css", "composer.css"].map((f) => readFileSync(new URL(`../gui/src/styles/${f}`, import.meta.url), "utf8")).join("\n");
+const css = ["base.css", "kit.css", "model-picker.css"].map((f) => readFileSync(new URL(`../gui/src/styles/${f}`, import.meta.url), "utf8")).join("\n");
 
-const tab = (name: string, on = false) => `<button class="mp-f ${on ? "on" : ""}" role="tab"><svg width="14" height="14"></svg><span class="truncate">${name}</span></button>`;
+const tab = (name: string, on = false) => `<button class="mp-tab" role="tab" aria-selected="${on}" title="${name}"><svg width="14" height="14"></svg><span class="sr-only">${name}</span></button>`;
 const THREE = ["Claude Code", "Codex"];
-const FOUR = ["Claude Code", "Claude Code · OpenRouter", "Mock (demo)"];
+const FOUR = ["Claude Code", "Claude Code · OpenRouter", "Mock (demo)", "Codex", "Anthropic", "OpenAI", "Gemini", "OpenRouter", "DeepSeek", "Grok", "Ollama"];
 const page = (account: boolean, names = THREE) => `<!doctype html><style>:root{--sp:1px}body{margin:0;font:14px system-ui,sans-serif}${css}</style>
-<div class="popover mp" style="width:340px"><div class="mp-bar">
-  <div class="mp-fwrap"><div class="mp-filters" role="tablist">${tab("Favorites")}${names.map((n, i) => tab(n, i === 0)).join("")}</div></div>
-  ${account ? `<span class="mp-acct"><button class="mp-acct-btn"><span class="truncate">Default</span><svg class="chev" width="12" height="12"></svg></button></span>` : ""}
+<div class="popover menu mp" style="width:348px"><div class="mp-tabs">
+  <div class="mp-tablist" role="tablist">${tab("Favorites")}${names.map((n, i) => tab(n, i === 0)).join("")}</div>
+</div><div class="mp-caption"><span class="mp-caption-name">${names[0]}</span>
+  ${account ? `<span class="mp-acct"><button class="mp-account"><span class="truncate">Default</span><svg width="12" height="12"></svg></button></span>` : ""}
 </div></div>`;
 
 test.skipIf(!chrome)("with an account shown beside them, every provider's tab is shown whole", async () => {
@@ -44,9 +44,9 @@ test.skipIf(!chrome)("with an account shown beside them, every provider's tab is
         const { sessionId } = await call("Target.attachToTarget", { targetId, flatten: true });
         const measure = async (account: boolean, names = THREE) => {
             const expression = `(() => { document.open(); document.write(${JSON.stringify(page(account, names))}); document.close();
-                const f = document.querySelector(".mp-filters"), a = document.querySelector(".mp-acct-btn .truncate"), box = f.getBoundingClientRect();
+                const f = document.querySelector(".mp-tablist"), a = document.querySelector(".mp-account .truncate"), box = f.getBoundingClientRect();
                 // A tab whose name is cut short, or that doesn't fit whole in the row once scrolled to.
-                const cut = [...f.querySelectorAll(".mp-f")].filter((t) => { t.scrollIntoView({ block: "nearest", inline: "nearest" }); const r = t.getBoundingClientRect(), n = t.querySelector(".truncate"); return r.left < box.left - 0.5 || r.right > box.right + 0.5 || (n && n.scrollWidth > n.clientWidth); }).length;
+                const cut = [...f.querySelectorAll(".mp-tab")].filter((t) => { t.scrollIntoView({ block: "nearest", inline: "nearest" }); const r = t.getBoundingClientRect(); return r.left < box.left - 0.5 || r.right > box.right + 0.5; }).length;
                 f.scrollLeft = 0;
                 return { hidden: f.scrollWidth - f.clientWidth, cut, account: a ? a.scrollWidth - a.clientWidth : 0, accountWidth: a ? a.getBoundingClientRect().width : 0 }; })()`;
             return (await call("Runtime.evaluate", { expression, returnByValue: true }, sessionId)).result.value as { hidden: number; cut: number; account: number; accountWidth: number };

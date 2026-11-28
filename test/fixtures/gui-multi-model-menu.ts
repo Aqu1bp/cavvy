@@ -123,8 +123,8 @@ function picker(available = true, more: { groups?: any[]; providers?: any[]; mac
     for (const [id, cb] of frames) { frames.delete(id); cb(); }
     return { root, doc, trigger, key, open, comparePicks, chosen, warnings, accountPicks, find,
         tabs: () => all(root).filter((n) => n.props.role === "tab").map(adapt),
-        accountButton: () => find((n) => n.tag === "button" && (n.props.class ?? "").split(" ").includes("mp-acct-btn")),
-        accountButtons: () => all(root).filter((n) => n.tag === "button" && (n.props.class ?? "").split(" ").includes("mp-acct-btn")).length,
+        accountButton: () => find((n) => n.tag === "button" && (n.props.class ?? "").split(" ").includes("mp-account")),
+        accountButtons: () => all(root).filter((n) => n.tag === "button" && (n.props.class ?? "").split(" ").includes("mp-account")).length,
         accountItems: () => all(root).filter((n) => n.tag === "button" && (n.props.class ?? "").split(" ").includes("mp-acct-it")).map(adapt),
         search: () => find((n) => n.props.role === "combobox"),
         toggle: () => find((n) => n.props.role === "switch"),
@@ -208,7 +208,7 @@ test("provider filters show one provider's models, by name alone; search finds e
     expect(f.options()).toHaveLength(5);
     f.tabs()[2].click();
     // Its name only: no id, context window or price under it.
-    expect(f.options().map(text)).toEqual(["BigCtrl+1", "TinyCtrl+2"]);
+    expect(f.options().map(text)).toEqual(["BigCtrl1", "TinyCtrl2"]);
     // ← in the empty search box goes back a filter.
     f.search().focus(); f.key("ArrowLeft");
     expect(f.tabs()[1].props["aria-selected"]).toBe(true);
@@ -283,9 +283,9 @@ test("a model whose model limit is reached (Fable's) is marked as an account at 
         limits: { [planLimitKey("cli", "default")]: { provider: "cli", accountId: "default", reached: false, at: Date.now(), windows: [{ id: "w", label: "Weekly", usedPercent: 40, resetsAt: week }, { id: "f", label: "Weekly Fable", usedPercent: 100, reached: true, resetsAt: week, scope: "fable" }] } },
     });
     f.tabs()[2].click();
-    const rows = all(f.root).filter((n) => n.tag === "button" && (n.props.class ?? "").split(" ").includes("mr-pick"));
-    const marks = rows.map((r) => all(r).filter((n) => (n.props.class ?? "").split(" ").includes("mr-lim")).map(text).join(""));
-    expect(rows.map(text).map((t) => t.replace(/Ctrl\+\d/, ""))).toEqual(["Fablelimit", "Opus"]);
+    const rows = all(f.root).filter((n) => n.tag === "button" && (n.props.class ?? "").split(" ").includes("mp-item-main"));
+    const marks = rows.map((r) => all(r).filter((n) => (n.props.class ?? "").split(" ").includes("tag")).map(text).join(""));
+    expect(rows.map(text).map((t) => t.replace(/Ctrl\d/, ""))).toEqual(["Fablelimit", "Opus"]);
     expect(marks).toEqual(["limit", ""]);
     // The account isn't at a limit: no badge for it.
     expect(text(f.accountButton())).toBe("Default");
@@ -301,7 +301,7 @@ test("an alias row: the session's by the model its CLI served; another not serve
         limits: { [planLimitKey("cli", "default")]: { provider: "cli", accountId: "default", reached: false, at: Date.now(), windows: [{ id: "f", label: "Weekly Fable", usedPercent: 100, reached: true, resetsAt: week, scope: "fable" }] } },
         session: { current: "cli:default", served },
     });
-    const marks = (f: ReturnType<typeof picker>) => all(f.root).filter((n) => n.tag === "button" && (n.props.class ?? "").split(" ").includes("mr-pick")).map((r) => all(r).find((n) => (n.props.class ?? "").split(" ").includes("mr-lim"))?.props.title ?? "");
+    const marks = (f: ReturnType<typeof picker>) => all(f.root).filter((n) => n.tag === "button" && (n.props.class ?? "").split(" ").includes("mp-item-main")).map((r) => all(r).find((n) => (n.props.class ?? "").split(" ").includes("tag"))?.props.title ?? "");
     // Served as Opus: Default isn't under it.
     const opus = picker(true, opts("claude-opus-5"));
     opus.tabs()[2].click();
@@ -320,7 +320,7 @@ test("the plan at its limit: rows say so where the account's badge isn't shown (
         providers: [{ id: "cli", name: "CLI", agentCli: { accounts: [{ id: "default", name: "Default" }, { id: "w", name: "Work" }], defaultAccount: "default" } }],
         limits: { [planLimitKey("cli", "default")]: { provider: "cli", accountId: "default", reached: true, at: Date.now(), windows: [{ id: "seven_day", label: "Weekly", usedPercent: 100, reached: true, resetsAt: week }] } },
     });
-    const mark = () => all(f.root).filter((n) => n.tag === "button" && (n.props.class ?? "").split(" ").includes("mr-pick") && text(n).startsWith("Opus")).map((r) => all(r).find((n) => (n.props.class ?? "").split(" ").includes("mr-lim"))?.props.title ?? "");
+    const mark = () => all(f.root).filter((n) => n.tag === "button" && (n.props.class ?? "").split(" ").includes("mp-item-main") && text(n).startsWith("Opus")).map((r) => all(r).find((n) => (n.props.class ?? "").split(" ").includes("tag"))?.props.title ?? "");
     f.tabs()[2].click();
     // Its provider's list: the account's badge says it.
     expect(text(f.accountButton())).toBe("Defaultlimit");

@@ -1,12 +1,6 @@
-/* Snooze ▸ in a session's row menu (RowExtras.tsx): each time with when it wakes at its end. No icons (a clock on each
-   says nothing), and no empty column for them: the times start at the item's edge, as the View options menu's do. */
-.menu-item.compact.snz-opt {
-    white-space: nowrap;
-}
-
-.snz-opt .menu-hint {
-    margin-left: auto;
-    font-size: 0.857rem;
+/* Snooze ▸ in a session's row menu (RowExtras.tsx): each time, with when it wakes as the item's note. No icons (a
+   clock on each says nothing). */
+.menu-item.snz-opt {
     white-space: nowrap;
 }
 
