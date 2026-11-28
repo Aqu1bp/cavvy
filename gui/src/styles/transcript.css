@@ -526,6 +526,11 @@
     margin-right: calc(6 * var(--sp));
 }
 
+/* A line with no words (its call is a row already): its time alone after the dots, with no dot before it. */
+.layer .lend:first-child::before {
+    content: none;
+}
+
 /* Waiting on the user: the design's amber label, in its own weight. */
 .layer .lbl.live-label {
     font-weight: 400;

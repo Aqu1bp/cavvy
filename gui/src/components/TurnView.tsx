@@ -632,6 +632,8 @@ type TurnViewProps = {
     onToggleWork?: (el: HTMLElement, toggle: () => void) => void;
     /** Ended by a steer whose turn (or one after it) still runs: its work stays open until that chain ends. */
     held?: boolean;
+    /** A turn such a steer ended shows a call still under way as a row (Transcript): the live line doesn't name it again. */
+    rowsLive?: () => boolean;
     /** The turn's element, once (Transcript tracks how far it is from the view, and finds it by id). */
     onElement?: (el: HTMLElement, turnId: string) => void;
     /** The work, faded out, folds away now (`fold`): Transcript keeps what's in sight from jumping as it does. */
@@ -669,7 +671,7 @@ function TurnViewContent(p: TurnViewProps) {
     const live = () => running() && p.last && p.state.busy;
     const writing = () => live() && p.state.activity?.label === "Writing";
     // The turn's one indicator, at its end: what's under way now (nothing while the answer streams).
-    const line = createMemo(() => (live() ? liveLine({ blocks: p.turn.blocks, activity: p.state.activity, interactions: p.state.interactions, showThinking: prefs.showThinking, cwd: p.state.cwd, home: app.hello?.homeDir }) : undefined));
+    const line = createMemo(() => (live() ? liveLine({ blocks: p.turn.blocks, activity: p.state.activity, interactions: p.state.interactions, showThinking: prefs.showThinking, cwd: p.state.cwd, home: app.hello?.homeDir, rowsLive: p.rowsLive?.() }) : undefined));
     const lastBlockId = () => p.turn.blocks[p.turn.blocks.length - 1]?.id;
     /** The thought being written: the live line shows it, not a row. */
     const liveThought = (b: ThinkingBlock) => line()?.kind === "think" && b.durationMs === undefined && b.id === lastBlockId();

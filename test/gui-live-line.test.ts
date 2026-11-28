@@ -35,6 +35,20 @@ test("a file is named from the session's folder, else from ~/, else whole; the h
     expect(line({ interactions: [{ kind: "permission", id: "a", title: "Write", path: "/Users/me/repo/b.ts" } as any], ...where })).toMatchObject({ label: "Waiting for approval", detail: "b.ts" });
 });
 
+test("a call a steer's turn before shows as its row isn't named again: the line has no words, only its time", () => {
+    const activity = { label: "Running bun run typecheck", since: 77 };
+    expect(line({ activity, rowsLive: true })).toMatchObject({ kind: "work", label: "Working", bare: true, since: 77 });
+    expect(line({ activity, rowsLive: true })?.detail).toBeUndefined();
+    // Without such a row, the activity says itself.
+    expect(line({ activity })).toMatchObject({ label: "Running bun run typecheck" });
+    expect(line({ activity })?.bare).toBeUndefined();
+    // What this turn does itself still says itself: its own call, a thought, a request for the user.
+    expect(line({ blocks: [tool({})], activity, rowsLive: true })).toMatchObject({ kind: "tool", label: "Reading" });
+    expect(line({ activity: { label: "Thinking", since: 1 }, rowsLive: true })).toMatchObject({ kind: "think", label: "Thinking" });
+    expect(line({ interactions: [{ kind: "question", id: "q" } as any], rowsLive: true })).toMatchObject({ kind: "wait" });
+    expect(line({ activity: { label: "Writing", since: 1 }, rowsLive: true })).toBeUndefined();
+});
+
 test("special states (a retry, a compaction, a wait on background work) say themselves over the step under way", () => {
     const blocks = [tool({})];
     expect(line({ blocks, activity: { label: "Retrying in 5s · Stop to cancel", since: 9, detail: "529 overloaded (attempt 2)" } })).toMatchObject({ kind: "special", label: "Retrying in 5s", detail: "529 overloaded (attempt 2)", since: 9 });

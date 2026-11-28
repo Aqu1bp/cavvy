@@ -3,6 +3,7 @@
 // (Turn.folded) is filled in where it is when it's asked for whole (session.turn), its sub-agents with it: asked for as
 // the pointer or focus comes to its "Worked for", and a click before it's come shows its rows at once.
 import assert from "node:assert/strict";
+import { tip } from "../../gui/src/lib/tip";
 import { readFileSync } from "node:fs";
 import * as solid from "../../gui/node_modules/solid-js/dist/solid.js";
 import { Socket } from "../helpers/gui-socket";
@@ -64,6 +65,8 @@ const TurnView = component(grouping + read("components/TurnView.tsx"), "TurnView
     RenderBoundary: boundary(undefined, (e) => console.error(e)), splitComments, ...format, ...live, ...notices, ...cards,
     now: () => 10_000, prefs: { showThinking: true, expandActivity: false, motion: "instant" }, findReveal: () => undefined, dwellLeft: () => 0,
     ActivityGroup: rows, Markdown: stub, CopyButton: stub, Spinner: stub, Thinking: stub, Notice: stub, LiveLine: stub, motionMs: () => 0,
+    // The drawn tooltips (lib/tip.ts), and the app with no server hello (no home folder to name files from).
+    tip, app: {},
     WorkRun: (p: any) => p.children, useCardFolds: () => ({ get: () => undefined, set() {} }), loadTurn, handleFor,
     ...Object.fromEntries(["Brain", "ChevronRight", "SquareTerminal", "Info", "AlertCircle", "AlertTriangle", "Square", "GitFork", "Hand", "Clock", "CornerDownRight", "RotateCcw", "BellRing", "MessageSquareText", "FileText"].map((n) => [n, stub])),
 });

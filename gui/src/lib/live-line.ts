@@ -35,6 +35,8 @@ export interface LiveLineState {
     toolId?: string;
     /** The whole of it, on hover. Never a command: a long one made a wall of a tooltip; its row opens to it, with Copy. */
     title?: string;
+    /** Said by a row already (a call a steer's turn before this one shows): the line draws no words, only that it's working and for how long. */
+    bare?: boolean;
 }
 
 /** Labels that say more than "Working": the turn (or the session, between turns) is in a special state. */
@@ -53,6 +55,8 @@ export interface LiveInput {
     /** The session's folder and the home folder: a file is named from the first, else from ~/ (linePath). */
     cwd?: string;
     home?: string;
+    /** A turn a steer ended (heldTurns) shows a call still under way as its row: what the session is doing is that call. */
+    rowsLive?: boolean;
 }
 
 /** Where the line names files from (LiveInput). */
@@ -196,6 +200,8 @@ export function liveLine(o: LiveInput): LiveLineState | undefined {
     // Writing, but the text hasn't arrived yet: the caret will say so in a moment.
     if (a.label === "Writing") return undefined;
     if (a.label === "Thinking") return { key: "think", kind: "think", label: "Thinking", since: a.since };
+    // The call it's on is a row in the turn a steer ended, which says what it is: here only that it works, and how long.
+    if (o.rowsLive) return { key: "work:rows", kind: "work", label: "Working", bare: true, since: a.since };
     return { key: `work:${a.label}`, kind: "work", label: a.label, detail: a.detail, since: a.since, title: a.detail };
 }
 
