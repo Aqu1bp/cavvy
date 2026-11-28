@@ -67,17 +67,14 @@ test("lists are asked for again when the oldest is due, and not while they're fr
     relistTiming.retryMs = 30;
     let calls = 0;
     let fetchedAt = Date.now() - MODEL_LIST_TTL_MS - 1000;
-    const engine = new Engine({ listModels: async () => (calls++, [listing("codex", fetchedAt)]) });
+    const at: number[] = [];
+    const engine = new Engine({ listModels: async () => (calls++, at.push(performance.now()), [listing("codex", fetchedAt)]) });
     try {
         await engine.refreshListings();
         expect(calls).toBe(1);
         // Still old (it couldn't be listed again): tried again after the short wait, then after twice that.
         const until = Date.now() + 2000;
-        const at = [Date.now()];
-        while (calls < 3 && Date.now() < until) {
-            await Bun.sleep(5);
-            if (calls > at.length) at.push(Date.now());
-        }
+        while (calls < 3 && Date.now() < until) await Bun.sleep(5);
         expect(calls).toBeGreaterThanOrEqual(3);
         expect(at[2]! - at[1]!).toBeGreaterThanOrEqual(55);
         // Listed now: nothing more until it's due, half a day on.

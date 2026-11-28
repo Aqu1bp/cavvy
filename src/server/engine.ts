@@ -1097,7 +1097,7 @@ export class Engine {
         for (const x of l) if (x.provider.auth === "cli") this.cliPrograms.set(x.provider.id, cliProgram(x.provider.id));
         if (this.stopping) return;
         const now = Date.now();
-        const timed = l.filter((x) => !x.provider.local && !x.provider.instanceOf && (x.fetchedAt !== undefined || x.status === "error"));
+        const timed = l.filter((x) => !x.provider.local && !x.provider.instanceOf && (x.fetchedAt !== undefined || x.status === "error" || Boolean(x.error)));
         // One that couldn't be listed (it says why, or is still past due) is tried again after the short wait, doubled
         // each time in a row it fails: a provider that never answers isn't asked every half hour for good.
         const failed = (x: ProviderListing) => Boolean(x.error) || x.status === "error" || x.fetchedAt! + MODEL_LIST_TTL_MS <= now;
