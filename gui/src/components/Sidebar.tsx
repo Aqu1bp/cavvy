@@ -222,13 +222,9 @@ function RowMeta(p: { s: SessionSummary; unread: boolean }) {
     );
 }
 
-/** A shortcut as its keys, a box each ("⌘" "N"). */
-function NavKeys(p: { action: string }) {
-    return (
-        <Show when={shortcut(p.action)}>
-            {(k) => <span class="kbd-group" aria-hidden="true"><For each={k().split("+")}>{(key) => <kbd class="kbd">{keyText(key)}</kbd>}</For></span>}
-        </Show>
-    );
+/** A row's shortcut, as words that show while you point at the row ("⌘N"). */
+function NavKey(p: { action: string }) {
+    return <Show when={shortcut(p.action)}>{(k) => <span class="nav-row-key" aria-hidden="true">{keyText(k())}</span>}</Show>;
 }
 
 /** The plans' chips and their card (PlanFooter.tsx): loaded a moment after the window, not with it. */
@@ -796,16 +792,16 @@ export function Sidebar() {
                 </>
             }
         >
-            <div class="sidebar-actions">
-                <button class="new-session nav-row" title={withShortcut("New session", "app:newSession")} onClick={() => (setSettingsTab(undefined), newSession(app.homeCwd))}>
-                    <SquarePen size={15} />
-                    <span>New session</span>
-                    <NavKeys action="app:newSession" />
+            <div class="side-nav">
+                <button class="nav-row" title={withShortcut("New session", "app:newSession")} onClick={() => (setSettingsTab(undefined), newSession(app.homeCwd))}>
+                    <SquarePen size={16} />
+                    <span class="nav-row-label">New session</span>
+                    <NavKey action="app:newSession" />
                 </button>
-                <button class="search" title={withShortcut("Search", "app:commandPalette")} onClick={() => setPaletteOpen(true)}>
-                    <Search size={14} class="search-icon" />
-                    <span class="search-label">Search</span>
-                    <NavKeys action="app:commandPalette" />
+                <button class="nav-row" title={withShortcut("Search", "app:commandPalette")} onClick={() => setPaletteOpen(true)}>
+                    <Search size={16} />
+                    <span class="nav-row-label">Search</span>
+                    <NavKey action="app:commandPalette" />
                 </button>
             </div>
 

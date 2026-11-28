@@ -48,76 +48,81 @@
     box-shadow: var(--shadow-sm);
 }
 
-/* ---- New session, Search ------------------------------------------------ */
+/* ---- New session, Search ------------------------------------------------
+   Plain rows on the rail, as main's were: an icon and a word, a fill only while you point at one. Icons sit in the
+   session rows' glyph column and words line up with their titles (the list's 6px, the row's 9px, a 16px glyph, 9px). */
 
-.sidebar-actions {
+.side-nav {
     display: flex;
     flex-direction: column;
-    gap: calc(6 * var(--sp));
-    padding: 0 calc(10 * var(--sp)) calc(10 * var(--sp));
+    gap: 1px;
+    padding: 0 calc(6 * var(--sp)) calc(10 * var(--sp));
     flex: none;
 }
 
-.new-session {
+.nav-row {
     display: flex;
     align-items: center;
-    gap: calc(8 * var(--sp));
-    height: calc(34 * var(--sp));
-    padding: 0 calc(8 * var(--sp)) 0 calc(10 * var(--sp));
-    border-radius: var(--radius-m);
-    background: var(--surface);
-    box-shadow: var(--shadow-card);
-    font-weight: 500;
-    transition: background 0.12s;
-}
-
-.new-session > span:first-of-type {
-    flex: 1;
-}
-
-.new-session:hover {
-    background: var(--fill-1);
-}
-
-[data-theme="dark"] .new-session {
-    background: var(--fill-2);
-}
-
-[data-theme="dark"] .new-session:hover {
-    background: var(--fill-3);
-}
-
-.search {
-    display: flex;
-    align-items: center;
-    gap: calc(7 * var(--sp));
+    gap: calc(9 * var(--sp));
     width: 100%;
+    min-width: 0;
     height: calc(32 * var(--sp));
-    padding: 0 calc(8 * var(--sp)) 0 calc(10 * var(--sp));
+    padding: 0 calc(10 * var(--sp)) 0 calc(9 * var(--sp));
     border-radius: var(--radius-m);
-    background: color-mix(in srgb, var(--fill-2) 70%, transparent);
-    cursor: pointer;
+    color: var(--text);
+    font-weight: 500;
     text-align: left;
-    transition: box-shadow 0.12s, background 0.12s;
+    transition: background 0.1s;
+    /* Its width decides whether the shortcut shows (below). */
+    container-type: inline-size;
 }
 
-.search:focus-within {
-    background: var(--surface);
-    box-shadow: inset 0 0 0 1px var(--focus), 0 0 0 3px color-mix(in srgb, var(--focus) 18%, transparent);
+.nav-row > svg {
+    flex: none;
+    width: calc(16 * var(--sp));
+    height: calc(16 * var(--sp));
+    color: var(--text-2);
 }
 
-button.search:hover {
+.nav-row-label {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.nav-row:hover {
+    background: color-mix(in srgb, var(--fill-2) 75%, transparent);
+}
+
+.nav-row:active {
     background: var(--fill-2);
 }
 
-.search-icon {
-    flex: none;
-    color: var(--text-3);
+.nav-row:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+    outline-offset: -2px;
 }
 
-.search-label {
-    flex: 1;
+/* Its shortcut, as words: there while you point at the row, so the rail at rest is only words. */
+.nav-row-key {
+    flex: none;
     color: var(--text-3);
+    font-size: calc(12 * var(--sp));
+    white-space: nowrap;
+    opacity: 0;
+}
+
+.nav-row:is(:hover, :focus-visible) .nav-row-key {
+    opacity: 1;
+}
+
+/* A narrow rail at a large text size: the shortcut gives way rather than run into the words (it's in the tooltip). */
+@container (width < 9em) {
+    .nav-row-key {
+        display: none;
+    }
 }
 
 /* ---- The list ------------------------------------------------------------ */
