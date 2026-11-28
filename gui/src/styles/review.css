@@ -337,8 +337,11 @@
     font-size: calc(12 * var(--sp));
 }
 
-.rv .blank {
-    padding-bottom: 12vh;
+/* The kit's .blank, here whatever the side panel's own sheet says of it. */
+.rv .blank,
+.rv-wt-list .blank {
+    gap: calc(10 * var(--sp));
+    padding: calc(24 * var(--sp)) calc(24 * var(--sp)) 12vh;
 }
 
 /* Paragraphs here are lines of a card, not prose: no margins of their own. */
@@ -545,6 +548,7 @@
 }
 
 .rv .sl.sep {
+    grid-template-columns: minmax(0, 1fr);
     margin: calc(4 * var(--sp)) 0;
 }
 
