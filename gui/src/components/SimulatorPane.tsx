@@ -13,9 +13,14 @@ import { settingsTab } from "../state/ui";
 import { AGENT_ACTIVE_MS, cornerRadius, deviceDetail, paneNote, placeScreen, screenFraction, takenNote, WHEEL_JUMP, wheelPaced, WHEEL_SERIES_MS, wheelStart, wheelSwipesAgain, wheelTurn, type Rect, type Size, type WheelSwipe } from "../lib/simulator";
 import { Menu } from "./ui/Menu";
 import { Spinner } from "./ui/bits";
+import "../styles/browser-pane.css";
+import "../styles/simulator.css";
 
 /** A wheel gesture becomes a finger drag; it lifts this long after the last turn, if it hasn't already (wheelTurn). */
 const WHEEL_IDLE_MS = 120;
+/** The bezel drawn around the screen: 11 points on a phone 402 points wide, scaled with the screen as drawn. */
+const BEZEL = 11;
+const POINTS_WIDE = 402;
 
 export function SimulatorPane(p: { handle: SessionHandle }) {
     const id = () => p.handle.id;
@@ -387,50 +392,59 @@ export function SimulatorPane(p: { handle: SessionHandle }) {
     const running = () => state()?.status === "ready";
 
     return (
-        <div class="simulator-pane">
+        <div class="sim">
             <div class="sim-bar">
-                <button ref={menuButton} class="tb sim-device" aria-haspopup="menu" aria-expanded={menu()} disabled={!state()?.devices.length} title="Choose a simulator" onClick={() => setMenu(!menu())}>
+                <button ref={menuButton} class="select" aria-label="Choose a simulator" aria-haspopup="menu" aria-expanded={menu()} data-state={menu() ? "open" : undefined} disabled={!state()?.devices.length} title="Choose a simulator" onClick={() => setMenu(!menu())}>
                     <DeviceIcon kind={device()?.kind} size={14} />
-                    <span class="truncate">{device()?.name ?? "Simulator"}</span>
-                    <Show when={device()}>{(d) => <span class="sim-runtime">{d().runtime}</span>}</Show>
-                    <ChevronDown size={12} class="chev" />
+                    <span class="select-value">{device()?.name ?? "Simulator"}</span>
+                    <ChevronDown size={13} class="select-caret" />
                 </button>
                 <span class="grow" />
-                <Show when={agentActive()}>
-                    <span class="br-who" title="You can use it too: the agent is told when you have">
-                        <span class="br-dot" />
-                        <span class="truncate">Agent is using this</span>
-                    </span>
-                </Show>
-                <button class="hb sm" aria-label="Home" title={buttonsTaken() ? "Another app took the buttons" : "Home"} disabled={!running() || buttonsTaken()} onClick={() => send({ kind: "button", name: "home" })}>
-                    <House size={14} />
+                <button class="icon-btn icon-btn-sm" aria-label="Home" title={buttonsTaken() ? "Another app took the buttons" : "Home"} disabled={!running() || buttonsTaken()} onClick={() => send({ kind: "button", name: "home" })}>
+                    <House size={15} />
                 </button>
-                <button class="hb sm" aria-label={`Shut down ${device()?.name ?? "the simulator"}`} title="Shut down" disabled={!running() || busy()} onClick={() => command("shutdown")}>
-                    <Power size={14} />
+                <button class="icon-btn icon-btn-sm" aria-label={`Shut down ${device()?.name ?? "the simulator"}`} title="Shut down" disabled={!running() || busy()} onClick={() => command("shutdown")}>
+                    <Power size={15} />
                 </button>
             </div>
-            <Menu label="Simulators" open={menu()} anchor={() => menuButton} onClose={() => setMenu(false)} placement="bottom" align="start" width={280} maxHeight={480}>
+            <Menu label="Simulators" class="sim-menu" open={menu()} anchor={() => menuButton} onClose={() => setMenu(false)} placement="bottom" align="start" width={280} maxHeight={480}>
                 <For each={state()?.devices ?? []}>
                     {(d) => (
-                        <button class="menu-item compact sim-pick" role="menuitemradio" aria-checked={d.udid === device()?.udid} onClick={() => pick(d)}>
+                        <button class="menu-item menu-item-two" role="menuitemradio" aria-checked={d.udid === device()?.udid} onClick={() => pick(d)}>
+                            <span class="menu-check">
+                                <Show when={d.udid === device()?.udid}><Check size={14} /></Show>
+                            </span>
                             <DeviceIcon kind={d.kind} size={14} />
                             <span class="menu-item-text">
-                                <span class="menu-item-name truncate">{d.name}</span>
+                                <span class="menu-item-name">{d.name}</span>
                                 <span class="menu-item-sub">{deviceDetail(d)}</span>
                             </span>
-                            <Show when={d.udid === device()?.udid}>
-                                <Check size={14} class="menu-check" />
-                            </Show>
                         </button>
                     )}
                 </For>
             </Menu>
+            <Show when={agentActive()}>
+                <div class="br-who" role="status" title="You can use it too: the agent is told when you have">
+                    <span class="br-live on" />
+                    Agent is using this
+                </div>
+            </Show>
+            <Show when={running() && takenNote(state()?.inputCut, state()?.inputUncertain)}>
+                {(taken) => (
+                    <div class="sim-taken" role="status">
+                        <span>{taken()}</span>
+                        <button class="btn btn-sm" disabled={busy()} title="Restarts its home screen, closing its apps" onClick={() => command("take_control")}>
+                            Take control
+                        </button>
+                    </div>
+                )}
+            </Show>
             <div class="sim-view" ref={box}>
                 <canvas
                     ref={canvas}
                     class="sim-screen"
                     classList={{ shown: hasPicture() && running() }}
-                    style={{ left: `${at().x}px`, top: `${at().y}px`, width: `${at().width}px`, height: `${at().height}px`, "border-radius": `${cornerRadius(device()?.kind, at().width)}px` }}
+                    style={{ left: `${at().x}px`, top: `${at().y}px`, width: `${at().width}px`, height: `${at().height}px`, "border-radius": `${cornerRadius(device()?.kind, at().width)}px`, "--bezel": `${Math.round((at().width * BEZEL) / POINTS_WIDE)}px` }}
                     tabindex="0"
                     aria-label={`${device()?.name ?? "Simulator"} screen. Click to touch, drag to swipe; type to use its keyboard.`}
                     onPointerDown={onPointerDown}
@@ -465,43 +479,33 @@ export function SimulatorPane(p: { handle: SessionHandle }) {
                     }}
                 />
                 <Show when={running() && (!hasPicture() || !connected())}>
-                    <div class="br-connection" role="status">
-                        <Spinner size={14} />
+                    <div class="br-status" role="status">
+                        <Spinner size={13} />
                         {connected() ? "Connecting…" : "Reconnecting…"}
                     </div>
                 </Show>
-                <Show when={running() && takenNote(state()?.inputCut, state()?.inputUncertain)}>
-                    {(taken) => (
-                        <div class="sim-taken" role="status">
-                            <span>{taken()}</span>
-                            <button class="btn btn-sm" disabled={busy()} title="Restarts its home screen, closing its apps" onClick={() => command("take_control")}>
-                                Take control
-                            </button>
-                        </div>
-                    )}
-                </Show>
                 <Show when={note()}>
                     {(n) => (
-                        <div class="br-blank">
-                            <div class="blank">
-                                <Show when={n().busy || busy()} fallback={<DeviceIcon kind={device()?.kind} size={22} class="ic" />}>
-                                    <Spinner size={22} class="ic" />
-                                </Show>
-                                <b>{n().title}</b>
-                                <Show when={n().detail}>
-                                    <span class="selectable">{n().detail}</span>
-                                </Show>
-                                <Show when={n().start}>
-                                    <button class="btn btn-primary btn-sm sim-start" disabled={busy()} onClick={() => command(n().show ? "select" : "boot", n().show ? device()?.udid : undefined)}>
-                                        {n().show ? "Show" : "Start"}
-                                    </button>
-                                </Show>
-                                <Show when={n().retry}>
-                                    <button class="btn btn-sm sim-start" onClick={() => watch()}>
-                                        Try again
-                                    </button>
-                                </Show>
-                            </div>
+                        <div class="blank">
+                            <Show when={n().busy || busy()}>
+                                <Spinner size={14} class="blank-spinner" />
+                            </Show>
+                            <Show when={n().title}>
+                                <p class="blank-title">{n().title}</p>
+                            </Show>
+                            <Show when={n().detail}>
+                                <p class="br-fix selectable">{n().detail}</p>
+                            </Show>
+                            <Show when={n().start}>
+                                <button class="btn btn-sm btn-primary" disabled={busy()} onClick={() => command(n().show ? "select" : "boot", n().show ? device()?.udid : undefined)}>
+                                    {n().show ? "Show" : "Start"}
+                                </button>
+                            </Show>
+                            <Show when={n().retry}>
+                                <button class="btn btn-sm" onClick={() => watch()}>
+                                    Try again
+                                </button>
+                            </Show>
                         </div>
                     )}
                 </Show>
