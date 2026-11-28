@@ -334,13 +334,6 @@
     font-weight: 400;
 }
 
-/* A limit named longer than the design's ("Weekly Fable") keeps one line. */
-.limit-label {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
 /* The readout's note on the period shown ("Busiest day", "So far"), after its figures. */
 .chart-read-note {
     flex: none;
@@ -395,4 +388,12 @@
 .usage-dashboard[data-hl="codex"] [data-src]:not([data-src="codex"]),
 .usage-dashboard[data-hl="api"] [data-src]:not([data-src="api"]) {
     opacity: 0.4;
+}
+
+/* The kit's .blank (kit.css) again over panel.css's older bare .blank, which loads after it. */
+.usage-blank .blank {
+    gap: calc(10 * var(--sp));
+    padding: calc(24 * var(--sp));
+    color: var(--text-3);
+    line-height: inherit;
 }

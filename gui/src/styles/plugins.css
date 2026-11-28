@@ -399,3 +399,11 @@
         width: 100%;
     }
 }
+
+/* The kit's .blank (kit.css) again over panel.css's older bare .blank, which loads after it. */
+.plugins-card .blank {
+    gap: calc(10 * var(--sp));
+    padding: calc(24 * var(--sp));
+    color: var(--text-3);
+    line-height: inherit;
+}
