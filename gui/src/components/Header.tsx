@@ -146,8 +146,9 @@ export function Crumb(p: { children: JSX.Element; onClick?: () => void; title?: 
     );
 }
 
-export const CrumbSep = () => (
-    <span class="main-slash" aria-hidden="true">
+/** `held`: not drawn yet (Home's first paint, Home.tsx), keeping its place. */
+export const CrumbSep = (p: { held?: boolean }) => (
+    <span class="main-slash" aria-hidden="true" style={{ opacity: p.held ? 0 : undefined }}>
         /
     </span>
 );
@@ -290,7 +291,7 @@ export function Header(p: { handle?: SessionHandle; title?: string }) {
                                 <>
                                     {/* Held with Home's first paint (Home.tsx), as the folder's name moves the title. */}
                                     <span class="main-project" style={{ opacity: homeHeld() ? 0 : undefined }}>{basename(cwd())}</span>
-                                    <CrumbSep />
+                                    <CrumbSep held={homeHeld()} />
                                 </>
                             )}
                         </Show>
