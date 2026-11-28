@@ -49,6 +49,7 @@ export function CliSessions(p: { cwd: string; rows?: number }) {
     // Turned on in Settings → Providers: read from the providers, which follow a change made there while Home is up.
     const enabled = (s: CliSessionInfo) => app.providers.find((x) => x.id === s.source)?.configured ?? source(s)?.enabled;
     const more = () => (list()?.sources ?? []).filter((s) => s.more > 0);
+    const older = () => more().reduce((n, s) => n + s.more, 0);
     const shown = () => fresh().slice(0, Math.max(0, Math.min(3, p.rows ?? 3)));
     // Worth opening when it lists something these rows don't.
     const hasMore = () => fresh().length > shown().length || more().length > 0;
@@ -149,8 +150,8 @@ export function CliSessions(p: { cwd: string; rows?: number }) {
                 edge
                 footer={
                     <>
-                        <Show when={more().length}>
-                            <span class="dlg-foot-note">{more().map((m) => `${m.more} more ${m.name} ${m.more === 1 ? "session" : "sessions"}`).join(", ")} not shown</span>
+                        <Show when={older()}>
+                            {(n) => <span class="dlg-foot-note">{n()} older {n() === 1 ? "session" : "sessions"} not shown</span>}
                         </Show>
                         <button type="button" class="btn" onClick={() => setAll(false)}>
                             Done
@@ -159,10 +160,10 @@ export function CliSessions(p: { cwd: string; rows?: number }) {
                 }
             >
                 <Show
-                    when={list.loading || sessions().length}
+                    when={list.loading || fresh().length}
                     fallback={
                         <div class="blank">
-                            <p class="blank-title">Couldn't list terminal sessions.</p>
+                            <p class="blank-title">{list() ? "No terminal sessions in this folder." : "Couldn’t list the sessions from your terminal just now."}</p>
                         </div>
                     }
                 >

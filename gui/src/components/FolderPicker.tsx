@@ -37,9 +37,6 @@ export function FolderPicker() {
             edge
             footer={
                 <>
-                    <span class="dlg-foot-note mono truncate" title={listing()?.path}>
-                        {listing()?.path}
-                    </span>
                     <button type="button" class="btn" onClick={close}>
                         Cancel
                     </button>
@@ -56,7 +53,7 @@ export function FolderPicker() {
                 <button type="button" class="icon-btn" aria-label="Up" title="Up" disabled={!listing()?.parent} onClick={() => listing()?.parent && setPath(listing()!.parent!)}>
                     <ArrowUp size={15} />
                 </button>
-                <input aria-label="Folder path" class="input mono fpick-path" value={typed()} onInput={(e) => setTyped(e.currentTarget.value)} onKeyDown={(e) => e.key === "Enter" && setPath(typed())} spellcheck={false} autocapitalize="off" />
+                <input autofocus aria-label="Folder path" class="input mono fpick-path" value={typed()} onInput={(e) => setTyped(e.currentTarget.value)} onKeyDown={(e) => e.key === "Enter" && setPath(typed())} spellcheck={false} autocapitalize="off" />
             </div>
             <div class="fpick-list" role="listbox" aria-label="Folders">
                 <Show when={!listing.loading} fallback={<p class="fpick-empty"><Spinner /></p>}>

@@ -80,7 +80,7 @@ function DialogInner(p: DialogProps) {
         // Focus the field marked autofocus, else the first, or the dialog itself.
         requestAnimationFrame(() => {
             if (box && userMovedFocus(box)) return;
-            const first = box?.querySelector<HTMLElement>("[autofocus]") ?? box?.querySelector<HTMLElement>("input, textarea, select, button:not(.dialog-close)");
+            const first = box?.querySelector<HTMLElement>("[autofocus]") ?? box?.querySelector<HTMLElement>("input, textarea, select, button:not(.dlg-close)");
             (first ?? box)?.focus();
         });
         onCleanup(() => {
@@ -96,7 +96,7 @@ function DialogInner(p: DialogProps) {
             <div class={`dialog-backdrop ${p.top ? "top" : ""}`} onPointerDown={(e) => e.target === e.currentTarget && p.onClose()}>
                 <div
                     ref={box}
-                    class={`dialog dlg glass ${p.class ?? ""}`}
+                    class={`dialog dlg ${p.class ?? ""}`}
                     style={{ width: `min(calc(${p.width ?? 520} * var(--sp)), calc(100vw - 32px))` }}
                     role="dialog"
                     aria-modal="true"

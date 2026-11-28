@@ -221,8 +221,9 @@
     min-width: calc(66 * var(--sp));
 }
 
-/* Tall enough for the second line, so a row doesn't grow when it starts importing. */
-.cli-row {
+/* Tall enough for the second line, so a row doesn't grow when it starts importing. (In the list: the kit's .row is
+   two classes strong.) */
+.dlg-rows .cli-row {
     min-height: calc(48 * var(--sp));
 }
 

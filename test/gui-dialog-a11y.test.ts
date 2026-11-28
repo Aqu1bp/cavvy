@@ -23,7 +23,7 @@ test("standard dialogs reference their own visible title, including simultaneous
     for (const title of ["Commit", "Delete conversation", "MCP servers", "Rewind"]) {
         const tree = render({ title, onClose() {}, children: "Content" });
         const dialog = elements(tree, "div").find((n) => n.props.role === "dialog")!;
-        const heading = elements(tree, "div").find((n) => n.props.id === dialog.props["aria-labelledby"])!;
+        const heading = elements(tree, "h2").find((n) => n.props.id === dialog.props["aria-labelledby"])!;
         expect(heading.children).toEqual([title]);
         expect(dialog.props["aria-modal"]).toBe("true");
         ids.add(heading.props.id);
