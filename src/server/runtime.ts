@@ -5659,6 +5659,11 @@ export class Runtime {
     }
 
     /** Nothing running, waiting for the user, or still to be delivered to the model: closing it loses nothing. */
+    /** Messages waiting to go after the turn. */
+    get queuedCount(): number {
+        return this.queued.length;
+    }
+
     get idle(): boolean {
         return this.settled(true);
     }

@@ -29,7 +29,7 @@ import { APP_TITLE, APP_VERSION, cavvyHome, paths } from "../config/paths";
 import { LEGACY } from "../config/legacy";
 import { JsonFileError, loadedUnreadable, loadScope, loadScopeChecked, loadSettings, readJson, readJsonCached, updateSettings, writeJson, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
 import { isTrusted, projectConfigSummary, trustedByUser, trustFolder, trustForSession } from "../config/trust";
-import { fireHooks } from "../agent/hooks";
+import { fireHooks, hooksFor } from "../agent/hooks";
 import { findSessionAnywhere, heldSessionFolders, listAllSessions, Session, SessionInUseError, sessionFolder, sessionHolder, sessionLabel, newSessionId, type Line } from "../agent/session";
 import { forkSessionSoon, forkTitle, readForkSource } from "../agent/fork";
 import { isFollowUp } from "../agent/queue-store";
@@ -268,6 +268,10 @@ interface GuiStore {
 
 /** Started suggested tasks remembered (each one's session also says so, in its file). */
 const MAX_SUGGESTED_TASKS = 500;
+/** How long a suggested task's start waits past its longest UserPromptSubmit hook timeout for their verdict (startTaskOnce). */
+const TASK_VERDICT_MARGIN_MS = 3_000;
+/** And at most: a hook with no timeout set has a longer default (60 s for a command). */
+const TASK_VERDICT_MAX_MS = 30_000;
 
 /** Runs remembered; an older run's sessions are listed on their own. */
 const MAX_RUNS = 50;
@@ -767,6 +771,7 @@ export class Engine {
     }
 
     notify(rt: Runtime, kind: "done" | "permission" | "question" | "plan" | "error", body: string) {
+        if (this.decidingTasks.has(rt.id)) return;
         if (rt.guestOf !== undefined) return this.notifyLent(rt, rt.guestOf, kind, body);
         const title = this.notifyTitle(rt);
         this.broadcast({ type: "notify", sessionId: rt.id, kind, title, body });
@@ -779,6 +784,7 @@ export class Engine {
     }
 
     sessionChanged(rt: Runtime) {
+        if (this.decidingTasks.has(rt.id)) return;
         // One that lends to a session on a server is never listed: what it asks shows in that session (lentChanged).
         if (rt.guest) return this.lentChanged(rt);
         // An empty new session isn't listed. A turn can end with nothing in the history (a !command, a prompt a hook blocked): its row has to hear that it ended.
@@ -1117,11 +1123,11 @@ export class Engine {
         const arch = lists.archived;
         const out = new Map<string, SessionSummary>();
         // Only the list asked for is read: the other side of `archived` grows with history.
-        for (const s of listAllSessions(limit, { match: (s) => arch.has(s.id) === archived })) {
+        for (const s of listAllSessions(limit, { match: (s) => arch.has(s.id) === archived && !this.decidingTasks.has(s.id) })) {
             out.set(s.id, { id: s.id, cwd: s.cwd, projectName: basename(s.cwd) || s.cwd, title: s.title, createdAt: s.createdAt, updatedAt: s.updatedAt, messages: s.messages, status: "idle", pinned: pinned.has(s.id), archived: arch.has(s.id), settled: settled.has(s.id), model: s.model, live: false, run: runs.get(s.id) });
         }
         for (const rt of this.runtimes.values()) {
-            if (rt.guest || (!rt.session.messageCount && !rt.busy) || arch.has(rt.id) !== archived) continue;
+            if (rt.guest || this.decidingTasks.has(rt.id) || (!rt.session.messageCount && !rt.busy) || arch.has(rt.id) !== archived) continue;
             // By when it last worked, which its file can't say yet while it works (Session.worked writes a line a minute).
             out.set(rt.id, this.summaryOf(rt, lists));
         }
@@ -1521,8 +1527,9 @@ export class Engine {
         this.summarySent.delete(id);
         if (this.turnsRunning.has(id)) this.idleNow(id);
         // Nothing of it was ever saved (only a ! command ran in it, say): there's no file to open it from again,
-        // so the windows that list it are told it's gone, not left with a row that opens nothing.
-        if (!existsSync(rt.session.path)) this.broadcast({ type: "sessions.remove", id });
+        // so the windows that list it are told it's gone, not left with a row that opens nothing. None was told of
+        // one a suggested start discards.
+        if (!existsSync(rt.session.path) && !this.decidingTasks.has(id)) this.broadcast({ type: "sessions.remove", id });
         const done: Promise<void> = rt
             .close()
             .catch(() => undefined)
@@ -1890,6 +1897,8 @@ export class Engine {
     private startingTasks = new Map<string, Promise<StartTaskResult>>();
     /** Sessions a suggested task made whose first prompt a UserPromptSubmit hook refused: Start again makes another. */
     private refusedTasks = new Set<string>();
+    /** Sessions a suggested task's start hasn't decided on yet (startTaskOnce): not listed, shown or notified of. */
+    private decidingTasks = new Set<string>();
 
     /** The session a suggested task was started as here (loaded, or saved), by its origin key. */
     taskStartedFor(key: string): { sessionId: string; title: string; cwd: string } | undefined {
@@ -2011,10 +2020,13 @@ export class Engine {
             if (!made) throw e;
             return failed(e);
         }
+        // Not listed, shown or notified of until this start has decided on it: it may go (a refused prompt, below).
+        this.decidingTasks.add(next.id);
         // Failed once it's made: it goes (nothing is in it), so Start again makes it afresh; a worktree stays, to resume.
         const abandon = async (e: unknown, code: string): Promise<StartTaskResult> => {
             this.runtimes.get(next.id) === next && (await this.unload(next).catch(() => undefined));
             this.refusedTasks.delete(next.id);
+            this.decidingTasks.delete(next.id);
             const r = failed(e, undefined, code);
             if (!made) throw new RpcError(r.failed!.message, code);
             return r;
@@ -2028,10 +2040,11 @@ export class Engine {
         if (!modelSet) return await abandon(new Error("That model isn't available here. Pick another."), "model_unavailable");
         /** The reason a UserPromptSubmit hook refused the prompt while this start waited for them. */
         let blocked: string | undefined;
+        /** Refused, and its run ended with nothing kept or waiting in the session: it goes. */
+        let discard = false;
         try {
             if (effort) next.setEffort(effort as EffortLevel);
             next.rename(title);
-            this.watch(client, next.id);
             // The user's message as they sent it from the card; the agent is told where it came from, beside it (a
             // reminder: nothing in it is read as the user's, its @mentions included).
             // As this machine names that session: on another one, by that machine's name.
@@ -2041,33 +2054,53 @@ export class Engine {
             const top = made && gitRoot(cwd);
             if (made && top) note.push(`You're working in a new worktree of ${top}, at ${made.path}: paths under ${top} mean the same files in this worktree.`);
             next.agent?.addReminder(note.join("\n\n"));
-            // A UserPromptSubmit hook may refuse it before it's kept. With such hooks this start waits for them, and a
-            // refusal is its failure: the session goes, and the card says why. When the prompt waits instead (for the
-            // account the session needs) and is refused later, it goes back to the session's composer, and the start
-            // doesn't count (Start again makes another). Said as its own run ends, before anything queued after it runs.
+            // A UserPromptSubmit hook may refuse it before it's kept. With such hooks this start waits for them (up to
+            // a bound), and a refusal is its failure: the session goes, and the card says why. Refused after that (a
+            // slow hook), or once something else was sent to the session, it stays, with the prompt back in its
+            // composer, and the start doesn't count (Start again makes another). Held for the account the session
+            // needs, the prompt waits in its queue as a message of the user's does, and the start counts.
             let waiting = false;
+            let runEnded!: (untouched: boolean) => void;
+            const ended = new Promise<boolean>((r) => (runEnded = r));
+            // Said as its own run ends, before anything queued after it runs.
             const ran = (reason: TurnEndReason, kept: boolean) => {
                 if (reason !== "blocked" || kept) return;
                 this.refusedTasks.add(next.id);
                 updateStore((s) => {
                     s.suggestedTasks = (s.suggestedTasks ?? []).filter((t) => t.session !== next.id);
                 });
-                if (!waiting) this.draft(next, prompt);
+                if (waiting) runEnded(next.session.messageCount === 0 && !next.queuedCount);
+                else this.draft(next, prompt);
             };
             let decided!: () => void;
             const decision = new Promise<void>((r) => (decided = r));
-            const hooked = Boolean(next.settings().hooks?.UserPromptSubmit?.length);
-            const turn = next.startTurn(prompt, { ran, ...(hooked ? { admission: (why?: string) => ((blocked = why), decided()) } : {}) });
-            waiting = hooked && next.busy;
+            const hooks = hooksFor(next.settings(), "UserPromptSubmit", { prompt }, there);
+            const turn = next.startTurn(prompt, { ran, ...(hooks.length ? { admission: (why?: string) => (waiting && (blocked = why), decided()) } : {}) });
+            waiting = hooks.length > 0 && next.busy;
             // Not begun (a prompt held for the account the session needs is, its own way): what stopped it is the start's.
             if (!next.busy) await turn;
-            else if (waiting) await Promise.race([decision, turn.catch(() => undefined)]);
+            else if (waiting) {
+                // A hook is stopped at its timeout (one that leaves a process holding its output can run past it), and
+                // before the hooks come the session's SessionStart hooks, MCP servers and the prompt's mentions: so
+                // the longest timeout and TASK_VERDICT_MARGIN_MS, never more than TASK_VERDICT_MAX_MS, since the
+                // window's call has no timeout of its own and the card shows Starting… until it's answered.
+                const longest = Math.max(...hooks.map((h) => (h.timeout === undefined ? Infinity : h.timeout * 1000)));
+                let timer: ReturnType<typeof setTimeout> | undefined;
+                const late = await Promise.race([decision.then(() => false), turn.then(() => false, () => false), new Promise<boolean>((r) => (timer = setTimeout(() => r(true), Math.min(TASK_VERDICT_MAX_MS, longest + TASK_VERDICT_MARGIN_MS))))]);
+                clearTimeout(timer);
+                if (late) waiting = false;
+            }
             void turn.catch((e) => this.o.log?.(`suggested task ${next.id}: ${redact((e as Error).message)}`));
-            if (blocked !== undefined) await turn.catch(() => undefined);
+            // That run's end, not what was queued behind it.
+            if (blocked !== undefined) discard = await ended;
         } catch (e) {
             return await abandon(e, "send_failed");
         }
-        if (blocked !== undefined) return await abandon(new Error(`Prompt blocked by hook: ${blocked.trim().slice(0, 500)}`), "blocked");
+        if (discard) return await abandon(new Error(`Prompt blocked by hook: ${blocked!.trim().slice(0, 500)}`), "blocked");
+        this.watch(client, next.id);
+        this.decidingTasks.delete(next.id);
+        this.sessionChanged(next);
+        if (blocked !== undefined) this.draft(next, prompt);
         if (!this.refusedTasks.has(next.id)) {
             updateStore((s) => {
                 s.suggestedTasks = [{ key: origin.key, session: next.id, at: Date.now() }, ...(s.suggestedTasks ?? []).filter((t) => t.key !== origin.key)].slice(0, MAX_SUGGESTED_TASKS);
