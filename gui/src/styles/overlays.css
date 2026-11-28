@@ -208,65 +208,52 @@
     animation: ov-fade 160ms;
 }
 
-.dialog-backdrop.top {
-    align-items: flex-start;
-    padding-top: 14vh;
+/* The box is the design's .dlg (kit.css): fixed in the window's middle. The palette hangs near the top instead. */
+.dialog-backdrop.top > .dlg {
+    top: 14vh;
+    transform: translateX(-50%);
+    animation-name: dlg-top-in;
 }
 
-.dialog {
-    display: flex;
-    flex-direction: column;
+/* kit.css's .dlg names "settings-in", which Settings uses for something else here: the design's own keyframes. */
+.dialog.dlg {
     max-height: min(82vh, calc(100vh - 32 * var(--sp)));
     overflow: hidden;
-    border-radius: calc(12 * var(--sp));
-    /* Opaque in every theme (src/themes/palette.ts: --sheet), so nothing behind reads through it. */
-    background: var(--sheet);
-    box-shadow: var(--pop-shadow);
     color: var(--fg);
-    animation: ov-pop 180ms var(--ease);
+    animation-name: dlg-in;
 }
 
-.dialog-backdrop.top .dialog {
-    transform-origin: top center;
+@keyframes dlg-in {
+    from {
+        opacity: 0;
+        transform: translate(-50%, calc(-50% + 8px)) scale(0.985);
+    }
 }
 
-.dialog-head {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: calc(10 * var(--sp));
-    padding: calc(16 * var(--sp)) calc(12 * var(--sp)) 0 calc(20 * var(--sp));
+@keyframes dlg-top-in {
+    from {
+        opacity: 0;
+        transform: translate(-50%, 8px);
+    }
 }
 
-.dialog-title {
-    font-size: 1.036rem;
-    font-weight: 600;
-    letter-spacing: -0.01em;
-    line-height: calc(20 * var(--sp));
-    overflow-wrap: anywhere;
-}
-
-.dialog-sub {
-    margin-top: calc(3 * var(--sp));
-    font-size: 0.929rem;
-    line-height: 1.45;
-    color: var(--fg-2);
-    overflow-wrap: anywhere;
-}
-
-.dialog-close {
-    margin-top: calc(-4 * var(--sp));
-    color: var(--fg-3);
+/* A footer whose buttons come in Cavvy's row (.dialog-actions, with its own spacer) takes the whole band. */
+.dlg-foot > .dialog-actions {
+    flex: 1;
 }
 
 .dialog-body {
-    display: flex;
-    flex-direction: column;
-    gap: calc(12 * var(--sp));
-    min-height: 0;
-    padding: calc(14 * var(--sp)) calc(20 * var(--sp)) calc(18 * var(--sp));
-    overflow-y: auto;
     line-height: 1.45;
+}
+
+/* A dialog with no head (it brings its own heading) starts its body clear of the top edge. */
+.dlg > .dlg-body:first-child {
+    padding-top: calc(16 * var(--sp));
+}
+
+/* The design resets paragraph margins everywhere; in its dialogs and menus here too. */
+:where(.dlg, .menu) p {
+    margin: 0;
 }
 
 .dialog-body > p {
@@ -283,7 +270,6 @@
 /* The footer: a band across the dialog's foot, Cancel and the primary action at its trailing edge (choices before
    them, a lone Cancel on the left). The buttons the body ends with take the same band, held at the foot while the
    rest scrolls. */
-.dialog-foot,
 .dialog-body > .dialog-actions:last-child {
     padding: calc(12 * var(--sp)) calc(16 * var(--sp));
     border-top: 1px solid var(--line);
@@ -295,6 +281,13 @@
     z-index: 1;
     bottom: calc(-18 * var(--sp));
     margin: calc(4 * var(--sp)) calc(-20 * var(--sp)) calc(-18 * var(--sp));
+}
+
+/* A form in the design's dialogs: fields a column, 12 apart. */
+.form-stack {
+    display: flex;
+    flex-direction: column;
+    gap: calc(12 * var(--sp));
 }
 
 .dialog-actions {

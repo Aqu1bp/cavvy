@@ -147,13 +147,13 @@ test("Show all lists every one to import, and what isn't listed; none already in
     expect(dialog.props.title).toBe("Continue from your terminal");
     const body = text(dialog.children);
     expect(body).not.toContain("Already here");
-    const items = byClass(dialog, "button", "cl-item");
-    expect(items.map((i) => text(byClass(i, "span", "cl-act")))).toEqual(["Import", "Import"]);
+    const items = byClass(dialog, "li", "cli-row");
+    const acts = items.map((i) => byClass(i, "button", "cli-btn")[0]!);
+    expect(acts.map(text)).toEqual(["Import", "Import"]);
     expect(text(items[0]!)).toContain("Session b");
-    expect(byClass(dialog, "div", "cl-sub")).toEqual([]);
     // What isn't listed is said in the foot, beside Done.
-    expect(byClass(dialog.props.footer, "div", "cl-note").map(text)).toEqual(["1 more Claude Code session not shown", "3 more Codex sessions not shown"]);
-    items[1]!.props.onClick();
+    expect(byClass(dialog.props.footer, "span", "dlg-foot-note").map(text)).toEqual(["4 older sessions not shown"]);
+    acts[1]!.props.onClick();
     await Bun.sleep(0);
     expect(r.continued).toEqual(["a"]);
 });

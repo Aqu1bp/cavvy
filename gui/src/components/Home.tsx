@@ -310,31 +310,33 @@ export function Home() {
                 </div>
             </div>
 
-            <Menu label="Recent projects" open={pickerOpen()} anchor={pickerAnchor} onClose={() => setPickerOpen(false)} width={360} align="end" class="recent-menu">
-                <div class="menu-head">Recent projects</div>
-                <For each={homeProjects()} fallback={<div class="menu-note">No projects yet.</div>}>
+            <Menu label="Recent projects" open={pickerOpen()} anchor={pickerAnchor} onClose={() => setPickerOpen(false)} width={336} align="end" class="menu menu-wide">
+                <div class="menu-label">Recent projects</div>
+                <For each={homeProjects()} fallback={<p class="menu-none">No projects yet.</p>}>
                     {(pr) => (
                         <button
                             role="menuitemradio"
                             aria-checked={pr.path === app.homeCwd}
-                            class="menu-item"
+                            class="menu-item menu-item-two"
                             onClick={() => {
                                 setPickerOpen(false);
                                 void openProject(pr.path, true);
                                 requestComposerFocus();
                             }}
                         >
-                            <span class="menu-ico">
+                            <span class="menu-check">
                                 <Show when={pr.path === app.homeCwd}>
                                     <Check size={14} />
                                 </Show>
                             </span>
-                            <span class="menu-text">
-                                <span class="truncate">{pr.name}</span>
-                                <span class="recent-path mono truncate">{tildify(pr.path, app.hello?.homeDir)}</span>
+                            <span class="menu-item-text">
+                                <span class="menu-item-name">{pr.name}</span>
+                                <span class="menu-item-sub">
+                                    <span class="mono">{tildify(pr.path, app.hello?.homeDir)}</span>
+                                </span>
                             </span>
                             <Show when={pr.openedAt}>
-                                <span class="recent-when">{(now(), ago(pr.openedAt!))}</span>
+                                <span class="menu-item-note">opened {(now(), /^(now|\d+[mh])$/.test(ago(pr.openedAt!)) ? "today" : ago(pr.openedAt!))}</span>
                             </Show>
                         </button>
                     )}
@@ -342,7 +344,7 @@ export function Home() {
                 <div class="menu-sep" />
                 <button role="menuitem" class="menu-item" onClick={() => void pick()}>
                     <FolderOpen size={14} />
-                    <span class="grow">Open folder…</span>
+                    <span class="menu-item-name">Open folder…</span>
                 </button>
             </Menu>
         </div>

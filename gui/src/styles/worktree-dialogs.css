@@ -1,6 +1,13 @@
-/* New worktree and Remove worktree (components/WorktreeDialogs.tsx): loaded with them. */
+/* New worktree and Remove worktree (components/WorktreeDialogs.tsx): loaded with them. Taken as is from the
+   design's dialogs.css; px that sits with text is in --sp. The ignored-files box is scoped off the plan dialog's
+   red note, which shares its name (.rw-confirm.wt-ignored); its list and head drop the browser's margins. */
 
-/* Where a new worktree goes: the folder it's made in, then its own name; under them, the way to put it elsewhere. */
+/* ---------- New worktree, Remove worktree ---------- */
+
+.wt-sub-path {
+    font-size: calc(12 * var(--sp));
+}
+
 .wt-location {
     display: flex;
     align-items: center;
@@ -10,11 +17,17 @@
 
 .wt-dir {
     flex: 0 1 auto;
+    color: var(--text-3);
     font-size: calc(12 * var(--sp));
-    color: var(--fg-3);
 }
 
-.wt-folder.input {
+.field .wt-dir-input {
+    flex: 3 1 0;
+    width: auto;
+    min-width: 0;
+}
+
+.field .wt-folder {
     flex: 1 1 calc(160 * var(--sp));
     width: auto;
     min-width: calc(160 * var(--sp));
@@ -27,16 +40,44 @@
     min-width: 0;
 }
 
-.wt-location-foot .wt-error {
+.wt-location-foot .field-hint {
     flex: 1;
     min-width: 0;
+}
+
+.wt-location-foot .field-hint.mono {
+    font-size: calc(11.5 * var(--sp));
 }
 
 .wt-location-foot .link-btn:disabled {
     opacity: 0.5;
 }
 
-.wt-sub-path {
+.wt-setup {
+    display: flex;
+    flex-direction: column;
+    gap: calc(8 * var(--sp));
+    padding: calc(10 * var(--sp)) calc(12 * var(--sp)) calc(11 * var(--sp));
+    border-radius: var(--radius-m);
+    box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.wt-setup-text {
+    color: var(--text-2);
+    font-size: calc(12.5 * var(--sp));
+}
+
+.wt-setup-text strong,
+.note-body strong {
+    color: var(--text);
+    font-weight: 600;
+}
+
+.wt-setup-cmd {
+    padding: calc(6 * var(--sp)) calc(9 * var(--sp));
+    border-radius: var(--radius-s);
+    background: var(--code-bg);
+    box-shadow: inset 0 0 0 1px var(--line);
     font-size: calc(12 * var(--sp));
 }
 
@@ -45,78 +86,35 @@
     align-items: center;
     gap: calc(7 * var(--sp));
     min-width: 0;
-    font-size: calc(12 * var(--sp));
-    color: var(--fg-3);
 }
 
-/* The ignored files Git would delete with a worktree, listed before they are. */
-.wt-del {
-    overflow: hidden;
-    border-radius: var(--radius-md);
+.wt-ignored:not(.rw-confirm) {
+    border-radius: var(--radius-m);
     box-shadow: inset 0 0 0 1px var(--line);
+    overflow: hidden;
 }
 
-.wt-del-head {
+.wt-ignored-head {
     margin: 0;
     padding: calc(7 * var(--sp)) calc(12 * var(--sp));
     border-bottom: 1px solid var(--line);
-    background: color-mix(in srgb, var(--fg) 3%, var(--well));
+    background: var(--code-head);
+    color: var(--text-2);
     font-size: calc(12 * var(--sp));
     font-weight: 500;
-    color: var(--fg-2);
 }
 
-.wt-del ul {
-    max-height: calc(150 * var(--sp));
+.wt-ignored:not(.rw-confirm) ul {
     margin: 0;
+    list-style: none;
+    max-height: calc(150 * var(--sp));
     padding: calc(6 * var(--sp)) 0;
     overflow-y: auto;
-    list-style: none;
-    background: var(--well);
+    background: var(--code-bg);
 }
 
-.wt-del li {
+.wt-ignored:not(.rw-confirm) li {
     padding: calc(2 * var(--sp)) calc(12 * var(--sp));
     font-size: calc(12 * var(--sp));
     line-height: 1.6;
-    overflow-wrap: anywhere;
-}
-
-/* ---- Worktree setup: the script that runs in a new one ---- */
-.wt-setup {
-    display: flex;
-    flex-direction: column;
-    gap: calc(8 * var(--sp));
-    padding: calc(10 * var(--sp)) calc(12 * var(--sp)) calc(11 * var(--sp));
-    border-radius: var(--radius-md);
-    box-shadow: inset 0 0 0 1px var(--line);
-}
-
-.wt-setup-text {
-    margin: 0;
-    font-size: calc(12.5 * var(--sp));
-    color: var(--fg-2);
-}
-
-.wt-setup-text strong {
-    font-weight: 600;
-    color: var(--fg);
-}
-
-.wt-setup-cmd {
-    margin: 0;
-    padding: calc(6 * var(--sp)) calc(9 * var(--sp));
-    border-radius: var(--radius-sm);
-    background: var(--well);
-    box-shadow: inset 0 0 0 1px var(--line);
-    font-size: calc(12 * var(--sp));
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-}
-
-.wt-confirm code {
-    padding: 1px calc(5 * var(--sp));
-    border-radius: calc(4 * var(--sp));
-    background: color-mix(in srgb, var(--fg) 8%, transparent);
-    font-size: 0.9em;
 }
