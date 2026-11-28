@@ -48,9 +48,9 @@ test("the empty top strip moves the window in every state, whatever is laid over
         "side panel open: its rail, around the icons": path(...shell, "div.sheet", "div.insp", "aside.panel", "div.insp-rail", "div.segmented.seg-md"),
         "diff reader open: its toolbar's gap": path(...shell, "div.sheet", "div.insp", "div.insp-rv", "section.review", "div.rv-h", "span.grow"),
         "diff reader open: around its total": path(...shell, "div.sheet", "div.insp", "div.insp-rv", "section.review", "div.rv-h", "span.stat.rv-total"),
-        "terminal maximized: its toolbar": path(...shell, "div.sheet", "section.terminal-panel.max", "div.terminal-toolbar"),
-        "terminal maximized: the folder in its toolbar": path(...shell, "div.sheet", "section.terminal-panel.max", "div.terminal-toolbar", "span.terminal-cwd.truncate"),
-        "terminal maximized: beside its tabs": path(...shell, "div.sheet", "section.terminal-panel.max", "div.terminal-toolbar", "div.terminal-tabs"),
+        "terminal maximized: its toolbar": path(...shell, "div.sheet", "section.terminal-panel.max", "header.terminal-bar"),
+        "terminal maximized: the folder in its toolbar": path(...shell, "div.sheet", "section.terminal-panel.max", "header.terminal-bar", "span.terminal-cwd.mono"),
+        "terminal maximized: beside its tabs": path(...shell, "div.sheet", "section.terminal-panel.max", "header.terminal-bar", "div.terminal-tabs"),
         "Settings: the page beside its column": path(...shell, "div.sheet", "main.main", "div.settings-host", "div.settings-page"),
         "Settings: its heading": path(...shell, "div.sheet", "main.main", "div.settings-host", "div.settings-page", "div.set-in", "div.set-top", "h2"),
         "Home": path(...shell, "div.sheet", "main.main", "div.keep", "div.home", "div.home-col"),
@@ -67,7 +67,7 @@ test("what takes a press keeps it: controls, focusable and draggable things, and
         "the rename field": path(...header, "nav.main-title", "input.main-rename"),
         "a link": path(...header, "a"),
         "a tab by role": path(...header, el("div", { attrs: { role: "tab" } })),
-        "a focusable resizer": path(...header, el("div.terminal-resize", { attrs: { role: "separator", tabindex: "0" } })),
+        "a focusable resizer": path(...header, el("div.terminal-resizer", { attrs: { role: "separator", tabindex: "0" } })),
         "something editable": path(...header, el("div", { attrs: { contenteditable: "true" } })),
         "a draggable row": path(...header, el("div", { attrs: { draggable: "true" } })),
         "the title (double-click renames)": path(...header, "nav.main-title", el("h1.main-title-btn", { on: ["dblclick"] })),
@@ -124,8 +124,8 @@ function fakeWindow() {
     };
     return { win, fire, listeners: () => Object.values(on).flat().length };
 }
-const toolbar = path(...shell, "div.sheet", "section.terminal-panel.max", "div.terminal-toolbar");
-const button = path(...shell, "div.sheet", "section.terminal-panel.max", "div.terminal-toolbar", "button.hb");
+const toolbar = path(...shell, "div.sheet", "section.terminal-panel.max", "header.terminal-bar");
+const button = path(...shell, "div.sheet", "section.terminal-panel.max", "header.terminal-bar", "button.icon-btn.icon-btn-sm");
 
 function installed(mac: boolean) {
     const w = fakeWindow();

@@ -47,7 +47,7 @@ async function panel() {
             return result;
         },
         React: { Fragment: "Fragment" },
-        For: "For", Show: "Show", Play: "Play", Plus: "Plus", RotateCw: "RotateCw", TerminalIcon: "TerminalIcon", X: "X", ChevronDown: "ChevronDown", Maximize2: "Maximize2", Minimize2: "Minimize2", MessageSquarePlus: "MessageSquarePlus", Copy: "Copy", ClipboardPaste: "ClipboardPaste", TextSelect: "TextSelect", Eraser: "Eraser",
+        For: "For", Show: "Show", Play: "Play", Plus: "Plus", RotateCw: "RotateCw", TerminalIcon: "TerminalIcon", X: "X", ChevronDown: "ChevronDown", PanelBottomClose: "PanelBottomClose", KeyRound: "KeyRound", Maximize2: "Maximize2", Minimize2: "Minimize2", MessageSquarePlus: "MessageSquarePlus", Copy: "Copy", ClipboardPaste: "ClipboardPaste", TextSelect: "TextSelect", Eraser: "Eraser",
         terminalMax: () => false, setTerminalMax() {}, setTerminalShown() {}, shellLayout: () => ({ terminal: { most: 560 } }), panelHold: () => undefined,
         createSignal: (initial: unknown) => {
             let value = initial;
