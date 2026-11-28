@@ -239,7 +239,10 @@ export function RewindDialog() {
                                             {(r) => (
                                                 <div class="rw-file">
                                                     <span class={`rw-action ${r.action === "delete" ? "del" : ""}`}>{r.action === "delete" ? "Delete" : r.action === "create" ? "Recreate" : "Restore"}</span>
-                                                    <span class="mono truncate">{r.path}</span>
+                                                    <span class="mono truncate split-path" title={r.path}>
+                                                        <span class="dir">{r.path.slice(0, r.path.lastIndexOf("/") + 1)}</span>
+                                                        <span class="name">{r.path.slice(r.path.lastIndexOf("/") + 1)}</span>
+                                                    </span>
                                                     <Show when={r.outside}>
                                                         <span class="pill warn">changed outside</span>
                                                     </Show>
