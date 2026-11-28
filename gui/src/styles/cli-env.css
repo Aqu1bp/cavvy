@@ -1,37 +1,92 @@
-/* A CLI's environment variables (CliEnv.tsx): name, value, lock, remove, a row each. */
-.env-form { display: grid; gap: calc(10 * var(--sp)); }
-.env-editor { display: grid; gap: calc(6 * var(--sp)); }
-.env-item { display: grid; gap: calc(4 * var(--sp)); min-width: 0; }
-.env-row { display: flex; align-items: center; gap: calc(6 * var(--sp)); min-width: 0; }
-/* A name that can't be set says why under its row, as the app's other fields do (.wt-error), as soon as it's typed. */
-.env-error { font-size: 0.821rem; line-height: 1.35; color: var(--danger); overflow-wrap: anywhere; }
-.dialog .env-row .input[aria-invalid="true"] { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 70%, transparent); }
-.env-remove { color: var(--fg-3); }
-.env-row .env-name { flex: 0 1 40%; min-width: 0; }
-.env-row .env-value { flex: 1 1 60%; min-width: 0; }
+/* A CLI's environment variables (CliEnv.tsx): name, value, lock, remove, a row each, in the design's dialog form
+   (kit.css .dlg-form, .field, .input-sm, .icon-btn-sm). No design of its own in the mock. */
+.env-editor {
+    display: grid;
+    gap: calc(6 * var(--sp));
+    container-type: inline-size;
+}
+
+.env-item {
+    display: grid;
+    gap: calc(4 * var(--sp));
+    min-width: 0;
+}
+
+.env-row {
+    display: flex;
+    align-items: center;
+    gap: calc(6 * var(--sp));
+    min-width: 0;
+}
+
+.env-row .env-name {
+    flex: 0 1 40%;
+    min-width: 0;
+}
+
+.env-row .env-value {
+    flex: 1 1 60%;
+    min-width: 0;
+}
+
+.env-row .input[aria-invalid="true"] {
+    box-shadow: inset 0 0 0 1px var(--red);
+}
+
+.env-lock[aria-pressed="true"] {
+    color: var(--accent-text);
+}
+
+.env-add {
+    justify-self: start;
+}
+
 /* Narrow (a small window): the name gets a line of its own, so a long one isn't cut to a few letters, and what's
    wrong with it goes right under it, above the value. */
-.env-editor { container-type: inline-size; }
 @container (width < 400px) {
-    .env-item { display: flex; flex-wrap: wrap; align-items: center; gap: calc(6 * var(--sp)); }
-    .env-row { display: contents; }
-    .env-row .env-name { flex: 1 0 100%; }
-    .env-error { flex: 1 0 100%; order: 1; margin-top: calc(-2 * var(--sp)); }
-    .env-row > :not(.env-name) { order: 2; }
-    .env-item + .env-item { margin-top: calc(6 * var(--sp)); }
-}
-.env-lock { color: var(--fg-3); }
-.env-lock.on { color: var(--accent); }
-.env-add { justify-self: start; }
-/* The provider row's count of them, which opens them. */
-.env-tag { cursor: default; border: 0; font-family: inherit; }
-.env-tag:hover { color: var(--fg); }
+    .env-item {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: calc(6 * var(--sp));
+    }
 
-/* Adding a named instance (InstanceDialog): labelled fields, one under another. */
-.instance-form label, .instance-field { display: grid; gap: calc(6 * var(--sp)); }
-.instance-form label > span, .instance-field > span { font-size: 0.857rem; font-weight: 600; color: var(--fg-2); }
-.dialog .instance-form textarea.input { resize: vertical; min-height: calc(56 * var(--sp)); }
-.instance-form details label { margin-top: calc(8 * var(--sp)); }
-/* Its placeholders read as such, in the app's own type: in a code font, "One model id a line" or the program it runs
+    .env-row {
+        display: contents;
+    }
+
+    .env-row .env-name {
+        flex: 1 0 100%;
+    }
+
+    .env-error {
+        flex: 1 0 100%;
+        order: 1;
+    }
+
+    .env-row > :not(.env-name) {
+        order: 2;
+    }
+
+    .env-item + .env-item {
+        margin-top: calc(6 * var(--sp));
+    }
+}
+
+/* The provider row's count of them, which opens them: a tag that's a button. */
+.env-tag {
+    border: 0;
+    font-family: inherit;
+    cursor: pointer;
+}
+
+.instance-form .textarea {
+    resize: vertical;
+    min-height: calc(56 * var(--sp));
+}
+
+/* Its placeholders read as such, in the app's own type: in a code font, "One per line" or the program it runs
    (a path) looked typed in. */
-.env-form .input.mono::placeholder { font-family: var(--font-ui); }
+.env-form :is(.input, .textarea).mono::placeholder {
+    font-family: var(--font-ui);
+}

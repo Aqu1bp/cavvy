@@ -1,106 +1,221 @@
-/* ---- Settings → Appearance → Theme (ThemeGallery.tsx) ---- */
-.tg-grid {
+/* ---- Settings → Appearance → Theme (ThemeGallery.tsx): the design's settings.css tiles, sizes in --sp. ---- */
+
+.set-item-gallery {
+    padding: calc(12 * var(--sp)) calc(12 * var(--sp)) calc(14 * var(--sp));
+}
+
+.tiles {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(calc(136 * var(--sp)), 1fr));
-    gap: calc(14 * var(--sp)) calc(12 * var(--sp));
-    padding: calc(14 * var(--sp));
+    grid-template-columns: repeat(auto-fill, minmax(calc(150 * var(--sp)), 1fr));
+    gap: calc(10 * var(--sp));
 }
 
-.tg-tile {
+.tile {
     position: relative;
-    min-width: 0;
-}
-
-.tg-pick {
     display: flex;
     flex-direction: column;
-    gap: calc(7 * var(--sp));
+    min-width: 0;
+    border-radius: calc(9 * var(--sp));
+    background: var(--surface);
+    box-shadow: inset 0 0 0 1px var(--line-strong);
+    transition: box-shadow 0.12s;
+}
+
+[data-theme="dark"] .tile {
+    background: var(--fill-2);
+}
+
+.tile:hover {
+    box-shadow: inset 0 0 0 1px var(--text-3);
+}
+
+.tile[data-selected] {
+    box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+.tile-main {
+    display: flex;
+    flex-direction: column;
     width: 100%;
-    font-size: 0.929rem;
-    font-weight: 500;
-    color: var(--fg-2);
+    border-radius: calc(9 * var(--sp));
+}
+
+.tile-main[aria-disabled="true"] {
+    cursor: default;
+}
+
+.tile-art {
+    position: relative;
+    display: flex;
+    height: calc(74 * var(--sp));
+    margin: calc(6 * var(--sp)) calc(6 * var(--sp)) 0;
+    border-radius: calc(5 * var(--sp));
+    overflow: hidden;
+    box-shadow: 0 0 0 1px rgba(128, 128, 128, 0.24);
+    --p-bg: #fdfcfa;
+    --p-text: #1d1c1a;
+    --p-accent: var(--accent);
+}
+
+.tile-art[data-kind="dark"] {
+    --p-bg: #181716;
+    --p-text: #edebe7;
+}
+
+.tile-art-side {
+    display: flex;
+    flex-direction: column;
+    gap: calc(4 * var(--sp));
+    flex: none;
+    width: 30%;
+    padding: calc(8 * var(--sp)) calc(5 * var(--sp));
+    background: color-mix(in srgb, var(--p-bg) 94%, var(--p-text));
+}
+
+.tile-art[data-kind="dark"] .tile-art-side {
+    background: color-mix(in srgb, var(--p-bg) 76%, #000);
+}
+
+.tile-art-main {
+    display: flex;
+    flex-direction: column;
+    gap: calc(5 * var(--sp));
+    flex: 1;
+    min-width: 0;
+    padding: calc(8 * var(--sp)) calc(7 * var(--sp)) calc(6 * var(--sp));
+    background: var(--p-bg);
+}
+
+.tile-art i {
+    display: block;
+    height: calc(3 * var(--sp));
+    border-radius: calc(2 * var(--sp));
+    background: color-mix(in srgb, var(--p-bg) 80%, var(--p-text));
+}
+
+.tile-art-side i:first-child {
+    width: 60%;
+    background: var(--p-accent);
+}
+
+.tile-art-main i:nth-child(3) {
+    width: 70%;
+}
+
+.tile-art-main .tile-art-bubble {
+    align-self: flex-end;
+    width: 55%;
+    height: calc(8 * var(--sp));
+    border-radius: calc(4 * var(--sp)) calc(4 * var(--sp)) calc(2 * var(--sp)) calc(4 * var(--sp));
+    background: color-mix(in srgb, var(--p-bg) 86%, var(--p-text));
+}
+
+.tile-art-main .tile-art-input {
+    margin-top: auto;
+    height: calc(11 * var(--sp));
+    border-radius: calc(3 * var(--sp));
+    background: transparent;
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--p-bg) 76%, var(--p-text));
+}
+
+.tile-art-scene {
+    position: absolute;
+    inset: 0;
+    mix-blend-mode: multiply;
+    pointer-events: none;
+}
+
+.tile-art[data-kind="dark"] .tile-art-scene {
+    mix-blend-mode: screen;
+}
+
+.tile-broken .tile-art {
+    opacity: 0.45;
+}
+
+.tile-foot {
+    display: flex;
+    align-items: center;
+    gap: calc(6 * var(--sp));
+    min-height: calc(32 * var(--sp));
+    padding: 0 calc(8 * var(--sp)) 0 calc(9 * var(--sp));
     text-align: left;
 }
 
-.tg-tile.on .tg-pick {
-    color: var(--fg);
+.tile-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: calc(12.5 * var(--sp));
+    font-weight: 500;
 }
 
-.tg-pick[aria-disabled="true"] {
-    cursor: default;
-    opacity: 0.55;
+.tile-check {
+    flex: none;
+    color: var(--accent);
 }
+
+.tile-delete {
+    position: absolute;
+    top: calc(10 * var(--sp));
+    right: calc(10 * var(--sp));
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: calc(18 * var(--sp));
+    height: calc(18 * var(--sp));
+    border-radius: 50%;
+    background: color-mix(in srgb, #000 62%, transparent);
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.28);
+    color: #fff;
+    transition: background 0.12s;
+}
+
+.tile-delete:hover {
+    background: var(--red);
+}
+
+.tile-make {
+    background: transparent;
+    box-shadow: inset 0 0 0 1px var(--line-strong);
+}
+
+[data-theme="dark"] .tile-make {
+    background: transparent;
+}
+
+.tile-make-art {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: calc(74 * var(--sp));
+    margin: calc(6 * var(--sp)) calc(6 * var(--sp)) 0;
+    border-radius: calc(5 * var(--sp));
+    background: var(--fill-1);
+    color: var(--text-3);
+    transition: color 0.12s, background 0.12s;
+}
+
+.tile-make:hover .tile-make-art {
+    background: var(--fill-2);
+    color: var(--text);
+}
+
+/* ---- A look's scene in its tile (ThemeGallery.tsx Picture): held still as one picture, its layers put up while it's
+   pointed at. The design blends its scene over the little window; so does this. ---- */
 
 /* A preview moves while hovered, and like the window's scene only while Cavvy can be seen and has the focus (lib/loops.ts). */
 .tg-scene {
     --scene-play: var(--decor);
-}
-
-.tg-pv {
-    position: relative;
-    display: grid;
-    place-items: center;
-    aspect-ratio: 16 / 10;
-    border-radius: calc(10 * var(--sp));
-    overflow: hidden;
-    color: var(--fg-3);
-    box-shadow: 0 0 0 0.5px var(--line);
-    transition: box-shadow 200ms;
-}
-
-.tg-tile:not(.on) .tg-pick:hover:not([aria-disabled="true"]) .tg-pv {
-    box-shadow: 0 0 0 0.5px var(--fg-4);
-}
-
-.tg-tile.on .tg-pv {
-    box-shadow: 0 0 0 2px var(--accent);
-}
-
-.tg-make .tg-pv {
-    box-shadow: inset 0 0 0 1px var(--line-strong);
-    background: var(--sheet-2);
-}
-
-.tg-err {
-    margin-top: calc(-5 * var(--sp));
-    font-size: 0.786rem;
-    font-weight: 400;
-    color: var(--danger);
-}
-
-.tg-label {
-    display: flex;
-    align-items: center;
-    gap: calc(5 * var(--sp));
-    min-width: 0;
-}
-
-.tg-name {
-    min-width: 0;
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
-}
-
-/* The window in miniature: the scene (or the app's own backdrop), the rail, and a few lines and the composer. */
-.tg-face {
-    position: absolute;
-    inset: 0;
-    background: var(--sheet);
-}
-
-.tg-face[data-theme] {
-    background: var(--backdrop);
-}
-
-.tg-scene {
     position: absolute;
     inset: 0;
     overflow: hidden;
 }
 
-/* Scaled to the tile when it's put up (ThemeGallery.tsx Picture): the tile is the stage's shape (16 / 10), so filling
-   its width covers it, as the window's scene covers the window. */
+/* Scaled to the tile when it's put up (Picture), from its top left; the tile is wider than the stage, so it's cropped
+   below as the still is. */
 .tg-stage {
     position: absolute;
     left: 0;
@@ -110,13 +225,14 @@
     transform-origin: 0 0;
 }
 
-/* The scene at rest as one picture (ThemeGallery.tsx Picture), hidden under its layers once they're up while it moves. */
 .tg-still {
     position: absolute;
     inset: 0;
     display: block;
     width: 100%;
     height: 100%;
+    object-fit: cover;
+    object-position: 0 0;
 }
 
 .tg-scene[data-live] .tg-still,
@@ -127,72 +243,4 @@
 .tg-stage > img {
     position: absolute;
     display: block;
-}
-
-.tg-ui {
-    position: absolute;
-    inset: 0;
-    display: grid;
-    grid-template-columns: 26% 1fr;
-}
-
-.tg-ui i {
-    border-right: 0.5px solid var(--line);
-    background: linear-gradient(var(--rail-sel), var(--rail-sel)) calc(4 * var(--sp)) calc(14 * var(--sp)) / calc(100% - 8 * var(--sp)) calc(6 * var(--sp)) no-repeat;
-}
-
-.tg-ui u {
-    display: flex;
-    flex-direction: column;
-    justify-content: flex-end;
-    gap: calc(4 * var(--sp));
-    padding: calc(8 * var(--sp)) 18%;
-}
-
-.tg-ui b {
-    height: calc(3 * var(--sp));
-    border-radius: calc(2 * var(--sp));
-    background: var(--fg-3);
-    opacity: 0.7;
-}
-
-.tg-ui b + b {
-    width: 70%;
-}
-
-.tg-ui s {
-    height: calc(12 * var(--sp));
-    margin-top: calc(3 * var(--sp));
-    border-radius: calc(5 * var(--sp));
-    background: var(--card);
-    box-shadow: inset 0 0 0 0.5px var(--card-stroke);
-}
-
-/* Whether it has only a dark or only a light look, beside its name. */
-.tg-kind {
-    flex: none;
-    display: inline-grid;
-    place-items: center;
-    color: var(--fg-3);
-}
-
-.tg-del {
-    position: absolute;
-    top: calc(-6 * var(--sp));
-    right: calc(-6 * var(--sp));
-    display: grid;
-    place-items: center;
-    width: calc(20 * var(--sp));
-    height: calc(20 * var(--sp));
-    border-radius: 50%;
-    color: var(--fg-2);
-    background: var(--ctl-strong);
-    box-shadow: var(--ctl-shadow);
-    opacity: 0;
-    transition: opacity var(--dur-fast);
-}
-
-.tg-tile:hover .tg-del,
-.tg-del:focus-visible {
-    opacity: 1;
 }

@@ -8,6 +8,8 @@ export function ConfirmDialog(p: {
     children: JSX.Element;
     confirmLabel: string;
     busy?: boolean;
+    /** What confirming does: removes or stops something (red, the default), or goes ahead (the accent). */
+    tone?: "danger" | "primary";
     onClose: () => void;
     onConfirm: () => void | Promise<void>;
 }) {
@@ -44,7 +46,7 @@ export function ConfirmDialog(p: {
                         {/* Once confirmed it can't be undone from here: closing leaves it running, and its result still shows. */}
                         {isBusy() ? "Close" : "Cancel"}
                     </button>
-                    <button class="btn btn-danger-solid" disabled={isBusy()} aria-busy={isBusy()} onClick={() => void confirm()}>
+                    <button class={p.tone === "primary" ? "btn btn-primary" : "btn btn-danger-solid"} disabled={isBusy()} aria-busy={isBusy()} onClick={() => void confirm()}>
                         {p.confirmLabel}
                     </button>
                 </>

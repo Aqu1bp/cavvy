@@ -4,11 +4,12 @@
 // run (the server reads .mcp.json again, and approves only what the card
 // showed). Statuses follow the session's state live.
 
-import { createEffect, createMemo, createSignal, For, on, Show, type JSX } from "solid-js";
-import { AlertTriangle, ExternalLink, KeyRound, Plug, ShieldAlert } from "lucide-solid";
+import { createEffect, createMemo, createSignal, For, Match, on, Show, Switch, type JSX } from "solid-js";
+import { ChevronRight } from "lucide-solid";
+import { tip } from "../lib/tip";
 import type { McpListInfo, McpServerInfo } from "@shared/protocol";
 import { app, awayMachine, handleFor, reportError, requestTrust, rpc, rpcFor, toast } from "../state/app";
-import { machine as windowMachine } from "../lib/platform";
+import { machine as windowMachine, os } from "../lib/platform";
 import { home } from "../lib/machines";
 import { sessionReadReady } from "../state/changes";
 import { mcpOpen, setMcpOpen } from "../state/ui";
@@ -17,6 +18,7 @@ import { SessionRequestGate } from "../lib/session-request-gate";
 import { mergeMcpStatus, statusLabel } from "../lib/mcp";
 import { Dialog } from "./ui/Dialog";
 import { Spinner } from "./ui/bits";
+import "../styles/mcp.css";
 
 export function McpDialog() {
     /** The session it was opened for; it closes if another one is shown. */
@@ -206,50 +208,89 @@ export function McpDialog() {
     };
 
     return (
-        <Dialog open={Boolean(mcpOpen())} onClose={close} title="MCP servers" subtitle={handle()?.view.state.projectName} width={640}>
-            <Show when={list()} fallback={<Spinner />}>
+        <Dialog
+            open={Boolean(mcpOpen())}
+            onClose={close}
+            title="MCP servers"
+            subtitle={handle()?.view.state.projectName}
+            width={600}
+            edge
+            class="mcp"
+            footer={
+                <button class="btn" onClick={close}>
+                    Close
+                </button>
+            }
+        >
+            <Show when={list()} fallback={<div class="blank mcp-empty"><Spinner size={14} class="blank-spinner" /></div>}>
                 <Show when={!list()!.trusted}>
-                    <div class="mcp-note">
-                        <AlertTriangle size={13} />
-                        <span>This folder isn't trusted, so its .mcp.json servers are off.</span>
+                    <div class="mcp-banner">
+                        <div class="note">
+                            <div class="note-body">
+                                This folder isn't trusted, so its <code>.mcp.json</code> servers are off.
+                            </div>
+                        </div>
                     </div>
                 </Show>
                 <Show
                     when={servers().length}
                     fallback={
-                        <div class="panel-empty">
-                            No MCP servers. Add one with <code>cavvy mcp add</code> or in <code>.mcp.json</code>.
+                        <div class="blank mcp-empty">
+                            <p class="blank-title">
+                                No MCP servers. Add one with <code>cavvy mcp add</code> or in <code>.mcp.json</code>.
+                            </p>
                         </div>
                     }
                 >
-                    <div class="rw-list">
+                    <ul class="mcp-list">
                         <For each={servers()}>
                             {(s) => {
-                                const st = () => statusLabel(s);
+                                const open = () => chosen() === s.name;
                                 return (
-                                    <button class={`rw-item ${chosen() === s.name ? "on" : ""}`} aria-pressed={chosen() === s.name} onClick={() => setChosen(s.name)}>
-                                        <Plug size={14} />
-                                        <span class="truncate">{s.label}</span>
-                                        <span class="muted small">{s.source === "project" ? ".mcp.json" : "settings"}</span>
-                                        <span class={`chip tiny ${st().tone ?? ""}`}>{st().text}</span>
-                                    </button>
+                                    <li class="mcp-item" data-open={open() || undefined}>
+                                        <button class="mcp-row" aria-expanded={open()} onClick={() => setChosen(open() ? undefined : s.name)}>
+                                            <ChevronRight size={13} class="chev" data-open={open() || undefined} />
+                                            <span class="mcp-name">{s.label}</span>
+                                            <span class={`mcp-source ${s.source === "project" ? "mono" : ""}`}>{s.source === "project" ? ".mcp.json" : "settings"}</span>
+                                            <span class="grow" />
+                                            <StatusChip s={s} />
+                                        </button>
+                                        <Show when={open() && selected()}>
+                                            {(sel) => <Detail s={sel()} list={list()!} busy={busy()} approve={approve} reject={reject} revoke={revoke} reconnect={reconnect} trust={trust} signIn={signIn} signOut={signOut} signInLink={signInLink()?.name === sel().name ? signInLink()!.url : undefined} />}
+                                        </Show>
+                                    </li>
                                 );
                             }}
                         </For>
-                    </div>
+                    </ul>
                     <Show when={list()!.omitted}>
-                        <div class="muted small">{list()!.omitted} more servers aren't listed.</div>
+                        <div class="mcp-banner mcp-omitted">{list()!.omitted} more servers aren't listed.</div>
                     </Show>
                 </Show>
-                <Show when={selected()}>{(s) => <Detail s={s()} list={list()!} busy={busy()} approve={approve} reject={reject} revoke={revoke} reconnect={reconnect} trust={trust} signIn={signIn} signOut={signOut} signInLink={signInLink()?.name === s().name ? signInLink()!.url : undefined} />}</Show>
             </Show>
-            <div class="dialog-actions">
-                <span class="grow" />
-                <button class="btn btn-ghost" onClick={close}>
-                    Close
-                </button>
-            </div>
         </Dialog>
+    );
+}
+
+/** A server's state at its row's end: connecting, connected with what it offers, or a tag for what it needs. */
+function StatusChip(p: { s: McpServerInfo }) {
+    const st = () => statusLabel(p.s);
+    return (
+        <Switch fallback={<span class="tag" data-tone={st().tone === "err" ? "red" : st().tone === "warn" ? "amber" : "neutral"}>{st().text}</span>}>
+            <Match when={p.s.status === "connecting" || p.s.status === "pending"}>
+                <span class="mcp-status">
+                    <Spinner size={12} />
+                    Connecting…
+                </span>
+            </Match>
+            <Match when={p.s.status === "connected"}>
+                <span class="mcp-status">
+                    <span class="dot" data-tone="green" />
+                    <span class="mcp-status-word">Connected</span>
+                    <span class="dim">· {st().text.split(" · ").slice(1).join(" · ")}</span>
+                </span>
+            </Match>
+        </Switch>
     );
 }
 
@@ -271,60 +312,54 @@ interface DetailProps {
 function Detail(p: DetailProps) {
     const asks = () => p.s.source === "project" && (p.s.approval?.state === "needs-approval" || p.s.approval?.state === "rejected");
     return (
-        <Show when={!p.s.partial || p.s.command !== undefined || p.s.url !== undefined} fallback={<Spinner />}>
-            <Show when={asks()} fallback={<Info {...p} />}>
-                <div class="mcp-card">
-                    <div class="mcp-card-head">
-                        <ShieldAlert size={18} class="tone-warn" />
-                        <b class="truncate">Allow {p.s.label} to run?</b>
-                    </div>
-                    <div class="small">MCP servers run with your permissions: approve only ones you trust.</div>
-                    <Show when={p.s.approval?.state === "rejected"}>
-                        <div class="muted small">You rejected this server.</div>
+        <div class="mcp-detail">
+            <Show when={!p.s.partial || p.s.command !== undefined || p.s.url !== undefined} fallback={<Spinner size={14} />}>
+                <Show when={asks()} fallback={<Info {...p} />}>
+                    <Show when={p.s.approval?.state === "needs-approval"}>
+                        <div class="note" data-tone="amber">
+                            <div class="note-body">
+                                {p.s.approval?.reason === "changed" ? "What it runs changed since you approved it. " : ""}MCP servers run with your permissions.
+                            </div>
+                        </div>
                     </Show>
                     <Show when={p.s.why}>
-                        <div class="mcp-note warn">
-                            <AlertTriangle size={13} />
-                            <span>{p.s.why}</span>
+                        <div class="note" data-tone="amber">
+                            <div class="note-body">{p.s.why}</div>
                         </div>
                     </Show>
                     <Facts s={p.s} />
                     <Notes s={p.s} />
-                    <div class="muted small">{p.list.meaning}</div>
+                    <p class="mcp-meaning">{p.list.meaning}</p>
                     <Show when={p.s.disabledInFile}>
-                        <div class="mcp-note">
-                            <span>It's turned off in .mcp.json.</span>
-                        </div>
+                        <p class="mcp-meaning">It's turned off in .mcp.json.</p>
                     </Show>
                     <Show when={p.list.trusted && !p.list.userTrusted}>
-                        <div class="mcp-note warn">
-                            <AlertTriangle size={13} />
-                            <span>Trust this folder to approve its servers.</span>
+                        <div class="note" data-tone="amber">
+                            <div class="note-body">Trust this folder to approve its servers.</div>
                         </div>
                     </Show>
-                    <div class="dialog-actions">
+                    <div class="mcp-actions">
                         <Show when={p.s.approval?.state === "needs-approval"}>
-                            <button class="btn" disabled={p.busy} onClick={() => p.reject(p.s)}>
+                            <button class="btn btn-sm" disabled={p.busy} onClick={() => p.reject(p.s)}>
                                 Reject
                             </button>
                         </Show>
-                        <span class="grow" />
                         <Show
                             when={p.list.userTrusted}
                             fallback={
-                                <button class="btn btn-primary" disabled={p.busy || !p.list.trusted} onClick={() => p.trust()}>
+                                <button class="btn btn-sm" disabled={p.busy || !p.list.trusted} onClick={() => p.trust()}>
                                     Trust this folder…
                                 </button>
                             }
                         >
-                            <button class="btn btn-primary" disabled={p.busy || !p.s.fingerprint || p.s.disabledInFile || !p.list.trusted} onClick={() => p.approve(p.s)}>
+                            <button class="btn btn-sm btn-primary" disabled={p.busy || !p.s.fingerprint || p.s.disabledInFile || !p.list.trusted} onClick={() => p.approve(p.s)}>
                                 Approve and connect
                             </button>
                         </Show>
                     </div>
-                </div>
+                </Show>
             </Show>
-        </Show>
+        </div>
     );
 }
 
@@ -335,141 +370,123 @@ function Info(p: DetailProps) {
     const reconnectable = () => p.s.status === "failed" || p.s.status === "connected";
     const needsAuth = () => p.s.status === "needs-auth";
     return (
-        <div class="rw-plan">
-            <Facts s={p.s} />
+        <>
             <Show when={needsAuth()}>
-                <div class="mcp-note warn" role="status">
-                    <KeyRound size={13} />
-                    <span>This server needs you to sign in.</span>
-                </div>
-                <Show when={p.signInLink}>
-                    <div class="muted small">
-                        Didn't open?{" "}
-                        <a href={p.signInLink} target="_blank" rel="noopener noreferrer">
-                            Open the sign-in page <ExternalLink size={11} />
-                        </a>
+                <div class="note" data-tone="amber" role="status">
+                    <div class="note-body">
+                        This server needs you to sign in.
+                        <Show when={p.signInLink}>
+                            {" "}Didn't open?{" "}
+                            <a href={p.signInLink} target="_blank" rel="noopener noreferrer">
+                                Open the sign-in page
+                            </a>
+                        </Show>
                     </div>
-                </Show>
+                </div>
             </Show>
             <Show when={p.s.error && !needsAuth()}>
-                <div class="mcp-error mono small">{p.s.error}</div>
-            </Show>
-            <Show when={p.s.approval?.viaAll}>
-                <div class="muted small">Your settings approve every .mcp.json server, whatever it runs.</div>
-            </Show>
-            <Show when={p.s.disabledInFile}>
-                <div class="muted small">Turned off in .mcp.json.</div>
-            </Show>
-            <Notes s={p.s} />
-            <Show when={approved() || reconnectable() || needsAuth() || p.s.signedIn}>
-                <div class="dialog-actions">
-                    <Show when={p.s.signedIn}>
-                        <button class="btn btn-ghost" disabled={p.busy} onClick={() => p.signOut(p.s)}>
-                            Sign out
-                        </button>
-                    </Show>
-                    <Show when={revocable()}>
-                        <button class="btn btn-ghost" disabled={p.busy} title="It stops, and asks for approval again" onClick={() => p.revoke(p.s)}>
-                            Revoke approval
-                        </button>
-                    </Show>
-                    <Show when={approved()}>
-                        <button class="btn btn-ghost" disabled={p.busy} title="It stops, and stays off until you approve it again" onClick={() => p.reject(p.s)}>
-                            Reject
-                        </button>
-                    </Show>
-                    <span class="grow" />
-                    <Show when={reconnectable()}>
-                        <button class="btn" disabled={p.busy} onClick={() => p.reconnect(p.s)}>
-                            Reconnect
-                        </button>
-                    </Show>
-                    <Show when={needsAuth()}>
-                        <button class="btn btn-primary" disabled={p.busy} onClick={() => p.signIn(p.s)}>
-                            {p.signInLink ? "Sign in again…" : "Sign in…"}
-                        </button>
-                    </Show>
+                <div class="note" data-tone="red">
+                    <div class="note-body mono mcp-error">{p.s.error}</div>
                 </div>
             </Show>
-        </div>
+            <Facts s={p.s} />
+            <Show when={p.s.approval?.viaAll}>
+                <p class="mcp-meaning">Your settings approve every .mcp.json server, whatever it runs.</p>
+            </Show>
+            <Show when={p.s.disabledInFile}>
+                <p class="mcp-meaning">Turned off in .mcp.json.</p>
+            </Show>
+            <Notes s={p.s} />
+            <div class="mcp-actions">
+                <Show when={p.s.signedIn}>
+                    <button class="btn btn-sm" disabled={p.busy} onClick={() => p.signOut(p.s)}>
+                        Sign out
+                    </button>
+                </Show>
+                <Show when={revocable()}>
+                    <button class="btn btn-sm" disabled={p.busy} {...tip("It stops, and asks for approval again")} onClick={() => p.revoke(p.s)}>
+                        Revoke approval
+                    </button>
+                </Show>
+                <Show when={approved()}>
+                    <button class="btn btn-sm" disabled={p.busy} {...tip("It stops, and stays off until you approve it again")} onClick={() => p.reject(p.s)}>
+                        Reject
+                    </button>
+                </Show>
+                <Show when={reconnectable()}>
+                    <button class={`btn btn-sm ${p.s.status === "failed" ? "btn-primary" : ""}`} disabled={p.busy} onClick={() => p.reconnect(p.s)}>
+                        Reconnect
+                    </button>
+                </Show>
+                <Show when={needsAuth()}>
+                    <button class="btn btn-sm btn-primary" disabled={p.busy} onClick={() => p.signIn(p.s)}>
+                        {p.signInLink ? "Sign in again…" : "Sign in…"}
+                    </button>
+                </Show>
+            </div>
+        </>
     );
 }
 
-function Fact(p: { label: string; children: JSX.Element }) {
+function Fact(p: { label: string; mono?: boolean; class?: string; children: JSX.Element }) {
     return (
         <>
-            <div class="mcp-fact-label">{p.label}</div>
-            <div class="mcp-fact">{p.children}</div>
+            <dt>{p.label}</dt>
+            <dd class={`${p.mono ? "mono" : ""} ${p.class ?? ""}`}>{p.children}</dd>
         </>
     );
 }
 
 function Names(p: { names?: string[] }) {
     return (
-        <Show when={p.names?.length} fallback={<span class="muted">none</span>}>
-            <span class="mcp-names">
-                <For each={p.names}>{(n) => <code class="mcp-arg">{n}</code>}</For>
-                <span class="muted small">values not shown</span>
-            </span>
+        <Show when={p.names?.length} fallback={<span class="dim">none</span>}>
+            {p.names!.join(", ")} <span class="dim">· values not shown</span>
         </Show>
     );
 }
 
 function Facts(p: { s: McpServerInfo }) {
     return (
-        <div class="mcp-facts">
+        <dl class="facts">
             <Show
                 when={p.s.transport !== "stdio"}
                 fallback={
                     <>
-                        <Fact label="Command">
-                            <code class="mcp-val">{p.s.command}</code>
-                        </Fact>
-                        <Fact label="Arguments">
-                            <Show when={p.s.args?.length} fallback={<span class="muted">none</span>}>
-                                <ol class="mcp-args">
-                                    <For each={p.s.args}>
-                                        {(a) => (
-                                            <li>
-                                                <code class="mcp-arg">{a}</code>
-                                            </li>
-                                        )}
-                                    </For>
-                                </ol>
-                            </Show>
-                        </Fact>
-                        <Fact label="Runs in">
-                            <code class="mcp-val">{p.s.cwd}</code>
-                        </Fact>
-                        <Fact label="Env">
-                            <Names names={p.s.envNames} />
-                        </Fact>
+                        <Fact label="Command" mono>{p.s.command}</Fact>
+                        <Show when={p.s.args?.length}>
+                            {/* Each argument on a line of its own, so its spaces and quotes show. */}
+                            <Fact label="Arguments" mono class="facts-lines">
+                                <For each={p.s.args}>{(a) => <span class="mcp-arg">{a}</span>}</For>
+                            </Fact>
+                        </Show>
+                        <Fact label="Runs in" mono>{p.s.cwd}</Fact>
+                        <Show when={p.s.envNames?.length}>
+                            <Fact label="Environment" mono>
+                                <Names names={p.s.envNames} />
+                            </Fact>
+                        </Show>
                     </>
                 }
             >
-                <Fact label="URL">
-                    <code class="mcp-val">{p.s.url}</code>
-                    <Show when={p.s.transport === "sse" || p.s.transport === "ws"}>
-                        <span class="muted small"> {p.s.transport === "sse" ? "SSE" : "WebSocket"}</span>
-                    </Show>
-                </Fact>
-                <Fact label="Headers">
-                    <Names names={p.s.headerNames} />
-                </Fact>
+                <Fact label="Address" mono>{p.s.url}</Fact>
+                <Show when={p.s.headerNames?.length}>
+                    <Fact label="Headers" mono>
+                        <Names names={p.s.headerNames} />
+                    </Fact>
+                </Show>
             </Show>
+            <Fact label="Transport">
+                {p.s.transport === "stdio" ? "stdio" : p.s.transport === "sse" ? "SSE" : p.s.transport === "ws" ? "WebSocket" : "Streamable HTTP"} on {awayMachine(app.activeId) ?? windowMachine ?? (os === "macos" ? "This Mac" : "this computer")}
+            </Fact>
             <Show when={p.s.status === "connected"}>
                 <Fact label="Offers">
-                    <span>
-                        {[`${p.s.tools} ${p.s.tools === 1 ? "tool" : "tools"}`, ...(p.s.resources ? [`${p.s.resources} ${p.s.resources === 1 ? "resource" : "resources"} (attach with @)`] : []), ...(p.s.prompts ? [`${p.s.prompts} ${p.s.prompts === 1 ? "prompt" : "prompts"} (run as /mcp__…)`] : [])].join(" · ")}
-                    </span>
+                    {[`${p.s.tools} ${p.s.tools === 1 ? "tool" : "tools"}`, ...(p.s.resources ? [`${p.s.resources} ${p.s.resources === 1 ? "resource" : "resources"} (attach with @)`] : []), ...(p.s.prompts ? [`${p.s.prompts} ${p.s.prompts === 1 ? "prompt" : "prompts"} (run as /mcp__…)`] : [])].join(" · ")}
                 </Fact>
             </Show>
-            <Fact label="From">
-                <Show when={p.s.declaredIn} fallback={<span>Your settings</span>}>
-                    <code class="mcp-val">{tildify(p.s.declaredIn!, app.hello?.homeDir)}</code>
-                </Show>
+            <Fact label="Declared in" mono={Boolean(p.s.declaredIn)}>
+                {p.s.declaredIn ? tildify(p.s.declaredIn, app.hello?.homeDir) : "Your settings"}
             </Fact>
-        </div>
+        </dl>
     );
 }
 
@@ -477,19 +494,17 @@ function Notes(p: { s: McpServerInfo }) {
     return (
         <>
             <Show when={p.s.masked}>
-                <div class="muted small">Values that look like secrets are masked.</div>
+                <p class="mcp-meaning">Values that look like secrets are masked.</p>
             </Show>
             <Show when={p.s.hidden}>
-                <div class="mcp-note warn">
-                    <AlertTriangle size={13} />
-                    <span>It contains invisible or control characters, shown as ⟨U+…⟩.</span>
+                <div class="note" data-tone="amber">
+                    <div class="note-body">It contains invisible or control characters, shown as ⟨U+…⟩.</div>
                 </div>
             </Show>
             <For each={p.s.cut}>
                 {(c) => (
-                    <div class="mcp-note warn">
-                        <AlertTriangle size={13} />
-                        <span>Cut to fit: {c}.</span>
+                    <div class="note" data-tone="amber">
+                        <div class="note-body">Cut to fit: {c}.</div>
                     </div>
                 )}
             </For>

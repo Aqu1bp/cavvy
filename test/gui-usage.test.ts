@@ -37,7 +37,7 @@ function mount(call = async (_method: string, _params: any): Promise<UsageSummar
         app: { limits: limitReports, providers }, windowMachine: undefined, refreshLimits: async () => { limitRefreshes++; }, checkLimits: async () => { limitChecks++; },
         noModel: () => noModel, setSettingsTab: (t: string) => void tabs.push(t),
         rpc: { call: (method: string, params: any) => { requests.push({ method, params }); return call(method, params); } },
-        RotateCcw: () => null, Info: () => null, KeyRound: () => null, Spinner: () => null, ProviderIcon: () => null, Hourglass: () => null,
+        RotateCw: () => null, Info: () => null, KeyRound: () => null, Spinner: () => null, ProviderIcon: () => null, Hourglass: () => null,
         Segmented: (p: any) => ({ tag: "segmented", props: p, children: [] }),
     };
     const component = new Function(...Object.keys(scope), `${js}; return UsageView;`)(...Object.values(scope));
@@ -66,19 +66,19 @@ test("dashboard: the total, its split by source, a stacked chart, token types an
     try {
         expect(f.text()).toContain("Loading usage…");
         await tick();
-        expect(f.text()).toContain("at API prices");
+        expect(f.text()).toContain("At API prices");
         for (const part of ["In the last", "7 days", "across", "1 session"]) expect(f.text()).toContain(part);
         const calls = f.requests.length;
         f.segment("Usage time range").onChange("7");
         expect(f.requests).toHaveLength(calls);
-        expect(f.text()).toContain("Claude Code plan");
+        expect(f.text()).toContain("Claude Code");
         // Sources with nothing in the range stay out of the bar and the legend.
-        expect(f.text()).not.toContain("Codex plan");
+        expect(f.text()).not.toContain("Codex");
         expect(f.text()).toContain("By token type");
         expect(f.text()).toContain("Cache writes");
         expect(f.text()).toContain("Saved by caching");
-        expect(f.cls("uc-col")).toHaveLength(1);
-        expect(f.nodes().find(n => n.props?.class === "uc-plot").props.role).toBe("group");
+        expect(f.cls("chart-col")).toHaveLength(1);
+        expect(f.nodes().find(n => n.props?.class === "chart-bars").props.role).toBe("group");
         expect(f.text()).toContain("Busiest day");
         expect(f.nodes().some(n => n.props?.["aria-label"] === "Usage breakdown table")).toBe(true);
         expect(f.segment("Usage time range").options.map((o: any) => o.label)).toEqual(["24h", "7d", "30d", "90d"]);
@@ -127,12 +127,14 @@ test("limits: a model's limit reached is an amber line of its own, not the plan'
         expect(f.text()).not.toContain("Claude subscription");
         expect(f.text()).toContain("Fable limit reached");
         expect(f.text()).not.toContain("Limit reached");
-        expect(f.cls("plan-reached").map((n) => n.props.class)).toEqual(["plan-reached credits"]);
+        expect(f.cls("plan-reached").map((n) => n.props["data-tone"])).toEqual(["amber"]);
         // 86% is amber, as in the card; Fable's reached limit amber too.
-        expect(f.cls("useb").map((n) => n.props.class.trim())).toEqual(["useb warn", "useb warn"]);
-        // Rejected at 97%: the bar full, as the rail's card draws it; the caption still says 97%.
-        expect(f.cls("useb-bar").map((n) => n.props["aria-valuenow"])).toEqual([86, 100]);
-        expect(f.text()).toContain("97%, resets");
+        expect(f.cls("limit-row").map((n) => n.props["data-tone"])).toEqual(["warn", "warn"]);
+        expect(f.cls("bar").map((n) => n.props["data-tone"])).toEqual(["amber", "amber"]);
+        // Rejected at 97%: the bar full, as the rail's card draws it; the figure still says 97%.
+        expect(f.cls("bar").map((n) => n.props["aria-valuenow"])).toEqual([86, 100]);
+        expect(f.text()).toContain("97%");
+        expect(f.text()).toContain("Resets");
     } finally { f.dispose(); }
 });
 
@@ -147,7 +149,7 @@ test("limits: the plan's own limit reached and Fable's: both banners", async () 
     try {
         await tick();
         f.segment("Usage view").onChange("limits"); await tick();
-        expect(f.cls("plan-reached").map((n) => n.props.class.trim())).toEqual(["plan-reached", "plan-reached credits"]);
+        expect(f.cls("plan-reached").map((n) => n.props["data-tone"])).toEqual(["red", "amber"]);
         expect(f.text()).toContain("Limit reached");
         expect(f.text()).toContain("Fable limit reached");
     } finally { f.dispose(); }
@@ -182,7 +184,7 @@ test("empty state differs from partial/unknown usage; limits displays windows an
         expect(f.requests.at(-1).params.days).toBe(90);
         f.segment("Usage time range").onChange("7"); await tick();
         f.segment("Usage view").onChange("limits"); await tick();
-        expect(f.text()).toContain("5-hour 40%"); expect(f.text()).toContain("resets");
+        expect(f.text()).toContain("5-hour"); expect(f.text()).toContain("40%"); expect(f.text()).toContain("Resets");
         expect(f.limitRefreshes).toBe(1);
         f.button("Refresh limits").onClick(); await tick(); expect(f.limitRefreshes).toBe(2);
         expect(f.nodes().some(n => n.tag === "segmented" && n.props.label === "Usage time range")).toBe(false);
@@ -266,13 +268,13 @@ test("review fixes: shares fill the bars under $1, a cost without tokens counts,
     try {
         await tick();
         // A provider-reported cost with no tokens is still in the split.
-        expect(f.text()).toContain("API providers");
+        expect(f.text()).toContain("API");
         // Weights are shares of 100, so $0.06 + $0.04 fills the bar.
         const grow = (n: any) => Number(n.props.style?.["flex-grow"] ?? 0);
         const hero = f.nodes().filter(n => n.props?.["data-src"] && n.tag === "i" && n.props.style?.["flex-grow"] !== undefined);
         expect(Math.round(hero.slice(0, 2).reduce((a, n) => a + grow(n), 0))).toBe(100);
         // The last day had only unpriced usage: its readout says so.
-        f.nodes().find(n => n.props?.class === "uc-plot").props.onKeyDown({ key: "End", preventDefault() {} });
+        f.nodes().find(n => n.props?.class === "chart-bars").props.onKeyDown({ key: "End", preventDefault() {} });
         expect(f.text()).toContain("No known cost");
         f.segment("Usage breakdown").onChange("time");
         const heads = f.nodes().filter(n => n.tag === "th" && n.props.scope === "col");
@@ -287,8 +289,8 @@ test("a period known to be free reads $0.00, not an unknown cost", async () => {
     const f = mount(async () => s);
     try {
         await tick();
-        f.nodes().find(n => n.props?.class === "uc-plot").props.onKeyDown({ key: "End", preventDefault() {} });
-        const none = f.nodes().find(n => n.props?.class === "none");
+        f.nodes().find(n => n.props?.class === "chart-bars").props.onKeyDown({ key: "End", preventDefault() {} });
+        const none = f.nodes().find(n => n.props?.class === "chart-read-total none");
         expect(none.children.flat(9).map((c: any) => (typeof c === "object" && c && "current" in c ? c.current : c)).join("")).toBe("$0.00");
     } finally { f.dispose(); }
 });

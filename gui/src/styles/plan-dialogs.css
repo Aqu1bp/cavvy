@@ -1,0 +1,100 @@
+/* ---- Plans: read, save, or implement in a worktree (PlanDialogs): the mock's dialogs.css "plans", and the choice
+   list its Implement dialog uses (the mock's panels.css .option-list). Loaded with them. */
+
+.plan-view .dlg-body {
+    padding-top: calc(4 * var(--sp));
+}
+
+/* The plan sits under the dialog title, so its own headings stay below it in size. */
+.plan-view .md h1,
+.plan-view .md h2 {
+    font-size: calc(14 * var(--sp));
+}
+
+.plan-view .md h3,
+.plan-view .md h4 {
+    font-size: calc(13.5 * var(--sp));
+}
+
+.plan-view .md > h1:not(:first-child),
+.plan-view .md > h2:not(:first-child) {
+    margin-top: calc(18 * var(--sp));
+}
+
+.option-list {
+    display: flex;
+    flex-direction: column;
+    border-radius: calc(10 * var(--sp));
+    box-shadow: inset 0 0 0 1px var(--line);
+    overflow: hidden;
+}
+
+.option {
+    display: flex;
+    align-items: center;
+    gap: calc(12 * var(--sp));
+    padding: calc(10 * var(--sp)) calc(14 * var(--sp));
+    transition: background 0.1s;
+}
+
+.option + .option {
+    border-top: 1px solid var(--line);
+}
+
+.option:hover {
+    background: var(--fill-1);
+}
+
+.option[aria-checked="true"] {
+    background: color-mix(in srgb, var(--accent-soft) 55%, transparent);
+}
+
+.option:focus-visible {
+    outline-offset: -2px;
+}
+
+.option-title {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(6 * var(--sp));
+    font-weight: 500;
+}
+
+.option[aria-checked="true"] > .radio-dot {
+    background: var(--accent);
+    box-shadow: none;
+}
+
+.option[aria-checked="true"] > .radio-dot::after {
+    content: "";
+    position: absolute;
+    inset: calc(5 * var(--sp));
+    border-radius: 50%;
+    background: var(--on-accent);
+}
+
+.dlg-foot .copy-btn.btn {
+    color: var(--text);
+}
+
+.plan-quick {
+    display: flex;
+    flex-wrap: wrap;
+    gap: calc(6 * var(--sp));
+    margin-top: calc(-4 * var(--sp));
+}
+
+.plan-option {
+    padding: calc(8 * var(--sp)) calc(12 * var(--sp));
+    width: 100%;
+}
+
+.plan-option:disabled {
+    opacity: 0.5;
+}
+
+.plan-busy {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(7 * var(--sp));
+}

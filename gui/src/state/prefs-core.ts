@@ -14,15 +14,15 @@ export type ContrastId = "standard" | "high";
 export type TintId = "clear" | "ocean" | "accent";
 
 export const ACCENTS: { id: AccentId; name: string; color: string }[] = [
-    { id: "blue", name: "Blue", color: "#2a6bff" },
+    { id: "blue", name: "Blue", color: "#2f55e8" },
     { id: "indigo", name: "Indigo", color: "#4f46e5" },
     { id: "violet", name: "Violet", color: "#7c3aed" },
-    { id: "pink", name: "Pink", color: "#db2777" },
-    { id: "red", name: "Red", color: "#dc2626" },
-    { id: "orange", name: "Orange", color: "#ea580c" },
-    { id: "green", name: "Green", color: "#16a34a" },
-    { id: "teal", name: "Teal", color: "#0d9488" },
-    { id: "graphite", name: "Graphite", color: "#52525b" },
+    { id: "pink", name: "Pink", color: "#d6336c" },
+    { id: "red", name: "Red", color: "#d93a2b" },
+    { id: "orange", name: "Orange", color: "#d9660b" },
+    { id: "green", name: "Green", color: "#1c8651" },
+    { id: "teal", name: "Teal", color: "#0c8a8a" },
+    { id: "graphite", name: "Graphite", color: "#6b675f" },
 ];
 
 export interface Prefs {

@@ -52,10 +52,3 @@
     height: calc(14 * var(--sp));
 }
 
-/* Local usage dashboard: all colors follow the active theme. */
-.usage-view { min-width: 0; }
-.usage-view .usage-bar { flex-wrap: wrap; }
-.usage-view h3 { margin: 0; font: inherit; }
-@media (max-width: 520px) {
-    .usage-view .usage-bar > .spacer { display: none; }
-}

@@ -62,8 +62,9 @@ function archiveDialog(removable: boolean, call: (method: string, params: any) =
         setArchiveRequest: () => { closes++; },
         archivedWithWorktree: (id: string, result: any) => results.push({ id, ...result }),
         errorOf: (e: Error) => ({ field: "general", message: e.message }),
-        Dialog: (p: any) => p.children,
-        AlertTriangle() {}, Info() {}, Spinner() {}, IgnoredFiles() {},
+        // The buttons are the dialog's foot.
+        Dialog: (p: any) => [p.children, p.footer],
+        Spinner() {},
     });
     solid.createRoot((d: () => void) => {
         dispose = d;
@@ -113,7 +114,7 @@ test("Trust and continue preserves the selected base when resuming the created w
         rpc, rpcFor: () => rpc,
         IMPLEMENT_MODES: ["default"], MODE_CHOICES: { default: { label: "Ask for edits", hint: "Ask" } },
         home: (path: string) => path, errorOf: (error: Error) => ({ field: "general", message: error.message }),
-        Dialog: (p: any) => p.children, Spinner() {}, AlertTriangle() {}, toast() {}, activate() {},
+        Dialog: (p: any) => p.children, Spinner() {}, toast() {}, activate() {},
     });
     let dispose!: () => void;
     solid.createRoot((d: () => void) => {
@@ -142,7 +143,7 @@ test("Archive only is focused by default, and an ineligible worktree has no remo
     const calls: any[] = [];
     const d = archiveDialog(false, async (method, params) => { calls.push({ method, params }); return null; });
     try {
-        expect(d.nodes.filter((n) => n.props.class === "btn btn-danger-solid")).toHaveLength(0);
+        expect(d.nodes.filter((n) => n.props.class === "btn btn-danger")).toHaveLength(0);
         const safe = d.nodes.find((n) => n.props.class === "btn btn-primary");
         expect(safe.props.autofocus).toBe(true);
         safe.props.onClick();
@@ -179,12 +180,12 @@ test("archive removal forwards an ignored-files token only after the second expl
             : { archived: true, removed: true, closed: true };
     });
     try {
-        d.nodes.find((n) => n.props.class === "btn btn-danger-solid").props.onClick();
+        d.nodes.find((n) => n.props.class === "btn btn-danger").props.onClick();
         await settle();
         expect(d.results).toHaveLength(0);
         expect(d.closes).toBe(0);
         expect(calls).toEqual([{ id: "session", archived: true, removeWorktree: true, deleteIgnored: undefined }]);
-        d.nodes.filter((n) => n.props.class === "btn btn-danger-solid").at(-1).props.onClick();
+        d.nodes.filter((n) => n.props.class === "btn btn-danger").at(-1).props.onClick();
         await settle();
         expect(calls[1].deleteIgnored).toBe("shown-files");
         expect(d.results).toEqual([{ id: "session", archived: true, removed: true, closed: true }]);

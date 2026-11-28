@@ -1,13 +1,13 @@
-import { createEffect, createMemo, createSignal, For, on, onCleanup, Show, type JSX } from "solid-js";
-import { Archive, Bot, ChartColumn, FileDiff, FolderGit2, FolderOpen, GitBranch, GitFork, GitPullRequest, History, MessageSquare, Moon, MoreHorizontal, PanelLeft, PanelRight, Plus, Search, Settings, SquareTerminal, Share, Shrink, Sparkles, Sun, Trash2, User } from "lucide-solid";
+import { createEffect, createMemo, createSignal, For, on, onCleanup, Show } from "solid-js";
+import { Search } from "lucide-solid";
 import { MODE_LABELS, type SessionSearchHit } from "@shared/protocol";
 import { machine as windowMachine, os } from "../lib/platform";
 import { activate, app, handleFor, reportError, restoredFrom, rpc, sessionPresenceVersion } from "../state/app";
 import { archive, chooseProject, exportSession, fork, newSession, openProject, openReview, setMode, togglePanel, toggleSidebar } from "../state/actions";
-import { setPrefs } from "../state/prefs";
+import { prefs, setPrefs } from "../state/prefs";
 import { openGit, terminalOpen, setTerminalOpen, paletteOpen, setAgentFocus, setJumpTarget, setModelPickerOpen, setPaletteOpen, setRewindOpen, setSettingsTab } from "../state/ui";
 import { ago, tildify } from "../lib/format";
-import { ModeIcon, MODES } from "./ModePicker";
+import { MODES } from "./ModePicker";
 import { Dialog } from "./ui/Dialog";
 import { deleteOpen } from "./Header";
 import { Spinner } from "./ui/bits";
@@ -19,19 +19,18 @@ import { entryScore, groupSections, keepSelection, messagesShown } from "../lib/
 const atMachine = (machine?: string) => (machine ? `${machine} · ` : "");
 /** A message hit's machine, as it's named in a window on a server: its own server's by name, this computer's ("") too. */
 const hitMachine = (machine?: string) => (!windowMachine ? machine : machine === undefined ? windowMachine : machine || (os === "macos" ? "This Mac" : "This computer"));
-import { shortcutHint } from "../state/keybindings";
+import { keyText, shortcut } from "../state/keybindings";
 
 interface Entry {
     id: string;
     section: string;
     label: string;
-    /** A second line under the label. */
-    desc?: string;
-    /** Quiet text at the row's end (a session's project and age). */
-    end?: string;
-    /** Its shortcut, as key caps at the row's end. */
+    /** Quiet text at the row's end (a session's project and age, what an action does, Current). */
+    meta?: string;
+    /** Its shortcut ("⌘+K"), as key caps at the row's end. */
     kbd?: string;
-    icon: JSX.Element;
+    /** Can't be run now (Bypass while it's off): shown dimmed, skipped by the keys. */
+    disabled?: boolean;
     keywords?: string;
     /** A message hit: the words around the match, as plain text, and where the match is in them. */
     snippet?: { text: string; match?: [number, number] };
@@ -137,47 +136,57 @@ export function CommandPalette(p: { files: (mode: "files" | "search") => void })
 
     const entries = createMemo<Entry[]>(() => {
         const out: Entry[] = [
-            { id: "new", section: "Actions", label: "New session", kbd: shortcutHint("app:newSession"), icon: <Plus size={15} />, run: () => newSession(app.homeCwd) },
+            { id: "new", section: "Actions", label: "New session", kbd: shortcut("app:newSession"), run: () => newSession(app.homeCwd) },
             {
                 id: "open",
                 section: "Actions",
                 label: "Open project…",
-                icon: <FolderOpen size={15} />,
                 run: async () => {
                     const p = await chooseProject();
                     if (p) void openProject(p);
                 },
             },
-            { id: "branch", section: "Actions", label: "Switch branch…", keywords: "git checkout pull", kbd: shortcutHint("app:switchBranch"), icon: <GitBranch size={15} />, run: () => openGit("openBranches") },
-            { id: "pr", section: "Actions", label: "Work on a pull request…", keywords: "github pr checkout", icon: <GitPullRequest size={15} />, run: () => openGit("openPullRequests") },
-            { id: "model", section: "Actions", label: "Switch model…", kbd: shortcutHint("chat:modelPicker"), icon: <Sparkles size={15} />, run: () => setModelPickerOpen(true) },
-            { id: "sidebar", section: "Actions", label: "Toggle sidebar", kbd: shortcutHint("app:toggleSidebar"), icon: <PanelLeft size={15} />, run: toggleSidebar },
-            { id: "terminal", section: "Actions", label: "Toggle terminal", kbd: shortcutHint("app:toggleTerminal"), icon: <SquareTerminal size={15} />, run: () => setTerminalOpen(!terminalOpen()) },
-            { id: "panel", section: "Actions", label: "Toggle side panel", kbd: shortcutHint("app:togglePanel"), icon: <PanelRight size={15} />, run: () => togglePanel() },
-            { id: "settings", section: "Actions", label: "Settings", kbd: shortcutHint("app:settings"), icon: <Settings size={15} />, run: () => setSettingsTab("general") },
-            { id: "providers", section: "Actions", label: "Add an API key…", keywords: "providers login keys", icon: <Settings size={15} />, run: () => setSettingsTab("providers") },
-            { id: "usage", section: "Actions", label: "Usage and plan limits", keywords: "cost tokens spend limits plan quota", icon: <ChartColumn size={15} />, run: () => setSettingsTab("usage") },
+            { id: "branch", section: "Actions", label: "Switch branch…", keywords: "git checkout pull", kbd: shortcut("app:switchBranch"), run: () => openGit("openBranches") },
+            { id: "pr", section: "Actions", label: "Work on a pull request…", keywords: "github pr checkout", run: () => openGit("openPullRequests") },
+            { id: "model", section: "Actions", label: "Switch model…", kbd: shortcut("chat:modelPicker"), run: () => setModelPickerOpen(true) },
+            { id: "sidebar", section: "Actions", label: "Toggle sidebar", kbd: shortcut("app:toggleSidebar"), run: toggleSidebar },
+            { id: "terminal", section: "Actions", label: "Toggle terminal", kbd: shortcut("app:toggleTerminal"), run: () => setTerminalOpen(!terminalOpen()) },
+            { id: "panel", section: "Actions", label: "Toggle side panel", kbd: shortcut("app:togglePanel"), run: () => togglePanel() },
+            { id: "settings", section: "Actions", label: "Settings", kbd: shortcut("app:settings"), run: () => setSettingsTab("general") },
+            { id: "providers", section: "Actions", label: "Add an API key…", keywords: "providers login keys", run: () => setSettingsTab("providers") },
+            { id: "usage", section: "Actions", label: "Usage and plan limits", keywords: "cost tokens spend limits plan quota", run: () => setSettingsTab("usage") },
         ];
         if (id()) {
-            for (const [m, label, key] of [["files", "Go to file…", "app:goToFile"], ["search", "Search in project…", "app:searchFiles"]] as const) out.push({ id: m, section: "Session", label, kbd: shortcutHint(key), icon: <Search size={15} />, run: () => p.files(m) });
+            for (const [m, label, key] of [["files", "Go to file…", "app:goToFile"], ["search", "Search in project…", "app:searchFiles"]] as const) out.push({ id: m, section: "Session", label, kbd: shortcut(key), run: () => p.files(m) });
             out.push(
-                { id: "changes", section: "Session", label: "Review changes", kbd: shortcutHint("app:toggleReview"), icon: <FileDiff size={15} />, run: () => openReview() },
-                { id: "rewind", section: "Session", label: "Rewind…", icon: <History size={15} />, run: () => setRewindOpen(true) },
-                { id: "fork", section: "Session", label: "Fork session", desc: "From the latest response", keywords: "branch copy duplicate", icon: <GitFork size={15} />, run: () => void fork(id()!) },
-                { id: "compact", section: "Session", label: "Compact conversation", icon: <Shrink size={15} />, run: () => void rpc.call("session.compact", { id: id()! }).catch(reportError) },
-                { id: "export", section: "Session", label: "Copy conversation as Markdown", icon: <Share size={15} />, run: () => void exportSession(id()!) },
-                { id: "archive", section: "Session", label: "Archive session", icon: <Archive size={15} />, run: () => void archive(id()!, true) },
-                { id: "delete", section: "Session", label: "Delete session", icon: <Trash2 size={15} />, run: () => deleteOpen(handleFor(id())) },
+                { id: "changes", section: "Session", label: "Review changes", kbd: shortcut("app:toggleReview"), run: () => openReview() },
+                { id: "rewind", section: "Session", label: "Rewind…", run: () => setRewindOpen(true) },
+                { id: "fork", section: "Session", label: "Fork session", meta: "From the latest response", keywords: "branch copy duplicate", run: () => void fork(id()!) },
+                { id: "compact", section: "Session", label: "Compact conversation", run: () => void rpc.call("session.compact", { id: id()! }).catch(reportError) },
+                { id: "export", section: "Session", label: "Copy conversation as Markdown", run: () => void exportSession(id()!) },
+                { id: "archive", section: "Session", label: "Archive session", run: () => void archive(id()!, true) },
+                { id: "delete", section: "Session", label: "Delete session", run: () => deleteOpen(handleFor(id())) },
             );
-            for (const m of MODES) out.push({ id: `mode-${m}`, section: "Permission mode", label: `Mode: ${MODE_LABELS[m].label}`, desc: MODE_LABELS[m].description, icon: <ModeIcon mode={m} size={15} />, run: () => void setMode(m) });
+            const st = handleFor(id())?.view.state;
+            const current = st?.mode ?? app.settings.defaultMode ?? "default";
+            const bypassOff = !(st?.bypassAllowed || app.settings.allowBypass);
+            for (const m of MODES) {
+                const off = m === "bypassPermissions" && bypassOff;
+                out.push({ id: `mode-${m}`, section: "Permission mode", label: `Mode: ${MODE_LABELS[m].label}`, meta: off ? "Off in Settings" : m === current ? "Current" : undefined, keywords: MODE_LABELS[m].description, disabled: off, run: () => void setMode(m) });
+            }
         }
         out.push(
-            { id: "theme-light", section: "Theme", label: "Theme: Light", keywords: "appearance color scheme", icon: <Sun size={15} />, run: () => setPrefs("scheme", "light") },
-            { id: "theme-dark", section: "Theme", label: "Theme: Dark", keywords: "appearance color scheme", icon: <Moon size={15} />, run: () => setPrefs("scheme", "dark") },
-            { id: "theme-system", section: "Theme", label: "Theme: Match system", keywords: "appearance color scheme auto", icon: <Sun size={15} />, run: () => setPrefs("scheme", "system") },
+            ...(["light", "dark", "system"] as const).map((v) => ({
+                id: `theme-${v}`,
+                section: "Theme",
+                label: `Theme: ${v === "system" ? "Match system" : v === "light" ? "Light" : "Dark"}`,
+                meta: prefs.scheme === v ? "Current" : undefined,
+                keywords: `appearance color scheme${v === "system" ? " auto" : ""}`,
+                run: () => setPrefs("scheme", v),
+            })),
         );
-        for (const s of app.sessions) out.push({ id: `s-${s.id}`, section: "Sessions", label: s.title, end: `${atMachine(s.machine)}${s.projectName} · ${ago(s.updatedAt)}`, keywords: `${s.projectName} ${s.machine ?? ""}`, icon: <MessageSquare size={15} />, run: () => void activate(s.id) });
-        for (const p of app.projects) out.push({ id: `p-${p.path}`, section: "Projects", label: `New session in ${p.name}`, desc: tildify(p.path, app.hello?.homeDir), keywords: p.path, icon: <FolderGit2 size={15} />, run: () => void openProject(p.path) });
+        for (const s of app.sessions) out.push({ id: `s-${s.id}`, section: "Sessions", label: s.title, meta: `${atMachine(s.machine)}${s.projectName} · ${ago(s.updatedAt)}`, keywords: `${s.projectName} ${s.machine ?? ""}`, run: () => void activate(s.id) });
+        for (const p of app.projects) out.push({ id: `p-${p.path}`, section: "Projects", label: `New session in ${p.name}`, meta: tildify(p.path, app.hello?.homeDir), keywords: p.path, run: () => void openProject(p.path) });
         return out;
     });
 
@@ -190,7 +199,7 @@ export function CommandPalette(p: { files: (mode: "files" | "search") => void })
             return [...recent.map((e) => ({ ...e, section: "Recent sessions" })), ...actions];
         }
         const found = entries()
-            .map((e) => ({ e, s: entryScore(query, e) }))
+            .map((e) => ({ e, s: entryScore(query, { label: e.label, keywords: e.keywords, end: e.meta, kbd: e.kbd && keyText(e.kbd) }) }))
             .filter((x) => x.s > 0)
             .sort((a, b) => b.s - a.s)
             .slice(0, 40)
@@ -212,8 +221,7 @@ export function CommandPalette(p: { files: (mode: "files" | "search") => void })
                 id: `${at}-${nth}`,
                 section: "Messages",
                 label: sn.text,
-                desc: `${h.title} · ${atMachine(hitMachine(h.machine))}${h.projectName}${h.archived ? " · archived" : ""} · ${ago(h.at)}`,
-                icon: h.role === "user" ? <User size={15} /> : <Bot size={15} />,
+                meta: `${h.title} · ${atMachine(hitMachine(h.machine))}${h.projectName}${h.archived ? " · archived" : ""} · ${ago(h.at)}`,
                 snippet: sn,
                 run: () => openHit(h, said.query),
             };
@@ -222,7 +230,7 @@ export function CommandPalette(p: { files: (mode: "files" | "search") => void })
         const shown = messagesShown(messages.length, found.length, allMessages());
         const more: Entry[] =
             shown < messages.length
-                ? [{ id: "messages-more", section: "Messages", label: `Show ${messages.length - shown} more`, icon: <MoreHorizontal size={15} />, stay: true, run: () => setAllMessages(true) }]
+                ? [{ id: "messages-more", section: "Messages", label: `Show ${messages.length - shown} more`, stay: true, run: () => setAllMessages(true) }]
                 : [];
         return groupSections([...found, ...messages.slice(0, shown), ...more], SECTION_ORDER);
     });
@@ -244,9 +252,11 @@ export function CommandPalette(p: { files: (mode: "files" | "search") => void })
         ),
     );
 
+    /** The rows the keys and Enter go through: the ones that can run. */
+    const usable = (i: number) => !results()[i]?.disabled;
     const runAt = (i: number) => {
         const e = results()[i];
-        if (!e) return;
+        if (!e || e.disabled) return;
         if (e.stay) {
             e.run();
             input?.focus();
@@ -260,59 +270,77 @@ export function CommandPalette(p: { files: (mode: "files" | "search") => void })
         if (e.key === "ArrowDown" || e.key === "ArrowUp") {
             e.preventDefault();
             if (!n) return;
-            setSel((s) => (s + (e.key === "ArrowDown" ? 1 : -1) + n) % n);
-            requestAnimationFrame(() => list?.querySelector(".pal-row.sel")?.scrollIntoView({ block: "nearest" }));
+            const step = e.key === "ArrowDown" ? 1 : -1;
+            setSel((s) => {
+                let to = s;
+                for (let k = 0; k < n; k++) {
+                    to = (to + step + n) % n;
+                    if (usable(to)) return to;
+                }
+                return s;
+            });
+            requestAnimationFrame(() => list?.querySelector(".pal-row[data-active]")?.scrollIntoView({ block: "nearest" }));
         } else if (e.key === "Enter") {
             e.preventDefault();
             runAt(sel());
         }
     };
+    /** Message search still reading (this computer, older sessions, the servers), or stopped before all were read. */
+    const status = () => (older() === "servers" ? "Searching your servers…" : older() === "more" ? "Searching older sessions…" : searching() ? "Searching messages…" : undefined);
 
     return (
-        <Dialog open={paletteOpen()} onClose={close} bare top width={620} class="palette">
-            <div class="pal-in">
-                <Search size={17} class="pal-search" />
-                <input ref={input} autofocus value={q()} onInput={(e) => setQ(e.currentTarget.value)} onKeyDown={onKey} placeholder="Search sessions, messages, projects and actions" aria-label="Search sessions, messages, projects and actions" spellcheck={false} />
-                <Show when={searching()}>
-                    <Spinner size={13} class="muted" />
-                </Show>
-                <kbd>Esc</kbd>
+        <Dialog open={paletteOpen()} onClose={close} bare top width={640} class="palette" labelledBy="palette-h">
+            <h2 id="palette-h" class="sr-only">Search</h2>
+            <div class="pal-input">
+                <Search size={15} class="pal-input-icon" />
+                <input ref={input} autofocus value={q()} onInput={(e) => setQ(e.currentTarget.value)} onKeyDown={onKey} placeholder="Search sessions, messages, projects and actions" aria-label="Search sessions, messages, projects and actions" spellcheck={false} autocomplete="off" />
+                <span class="kbd-group" aria-hidden="true"><kbd class="kbd">esc</kbd></span>
             </div>
-            <div class="pal-list" ref={list}>
-                <For each={results()} fallback={<div class="pal-empty">{older() === "servers" ? "Searching your servers…" : older() === "more" ? "Searching older sessions…" : older() === "incomplete" ? "Nothing found. Some older sessions weren't searched." : searching() ? "Searching messages…" : "Nothing matches."}</div>}>
+            <div class="pal-list" ref={list} role="listbox" aria-label="Results">
+                <For each={results()} fallback={<Show when={!status()}><div class="pal-empty">{older() === "incomplete" ? "Nothing found. Some older sessions weren't searched." : "Nothing matches."}</div></Show>}>
                     {(e, i) => (
-                        <>
+                        <div class="pal-group">
                             <Show when={i() === 0 || results()[i() - 1]!.section !== e.section}>
-                                <div class="pal-h">{e.section}</div>
+                                <div class="pal-head">{e.section}</div>
                             </Show>
-                            <button class={`pal-row ${sel() === i() ? "sel" : ""} ${e.desc ? "two" : ""}`} onMouseMove={() => setSel(i())} onClick={() => runAt(i())}>
-                                <span class="pal-ic">{e.icon}</span>
-                                <span class="pal-text">
-                                    {/* A message hit's words are marked .pal-snippet (the palette fixture finds them by it). */}
-                                    <span class={`pal-l ${e.snippet ? "pal-snippet" : ""}`}>
-                                        <Show when={e.snippet} fallback={e.label}>
-                                            {(sn) => <Snippet text={sn().text} match={sn().match} />}
-                                        </Show>
-                                    </span>
-                                    <Show when={e.desc}>
-                                        <span class="pal-d">{e.desc}</span>
+                            <button
+                                class={`pal-row ${e.stay ? "pal-row-more" : ""}`}
+                                role="option"
+                                aria-selected={sel() === i()}
+                                data-active={sel() === i() || undefined}
+                                aria-disabled={e.disabled || undefined}
+                                onMouseMove={() => usable(i()) && setSel(i())}
+                                onClick={() => runAt(i())}
+                            >
+                                {/* A message hit's words are marked .pal-snippet (the palette fixture finds them by it). */}
+                                <span class="pal-label">
+                                    <Show when={e.snippet} fallback={e.label}>
+                                        {(sn) => (
+                                            <span class="pal-snippet">
+                                                <Snippet text={sn().text} match={sn().match} />
+                                            </span>
+                                        )}
                                     </Show>
                                 </span>
-                                <Show when={e.kbd || e.end}>
-                                    <span class="pal-end">
-                                        <Show when={e.kbd} fallback={e.end}>
-                                            <kbd>{e.kbd}</kbd>
-                                        </Show>
-                                    </span>
+                                <Show when={e.meta}>
+                                    <span class="pal-meta">{e.meta}</span>
+                                </Show>
+                                <Show when={e.kbd}>
+                                    {(k) => <span class="kbd-group" aria-hidden="true"><For each={k().split("+")}>{(key) => <kbd class="kbd">{keyText(key)}</kbd>}</For></span>}
                                 </Show>
                             </button>
-                        </>
+                        </div>
                     )}
                 </For>
-                <Show when={results().length && older()}>
-                    <div class="pal-note">{older() === "servers" ? "Searching your servers…" : older() === "more" ? "Searching older sessions…" : "Some older sessions weren't searched."}</div>
-                </Show>
             </div>
+            <Show when={status()} fallback={<Show when={older() === "incomplete" && results().length}><div class="pal-foot">Some older sessions weren't searched.</div></Show>}>
+                {(t) => (
+                    <div class="pal-foot" role="status">
+                        <Spinner size={12} />
+                        {t()}
+                    </div>
+                )}
+            </Show>
         </Dialog>
     );
 }

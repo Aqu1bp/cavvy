@@ -30,7 +30,7 @@ export function createUpdateAction() {
         else void start();
     };
     const Confirm = () => (
-        <ConfirmDialog open={asking() > 0} title="Update Cavvy now?" confirmLabel="Update" onClose={() => setAsking(0)} onConfirm={start}>
+        <ConfirmDialog open={asking() > 0} title="Update Cavvy now?" confirmLabel="Update" tone="primary" onClose={() => setAsking(0)} onConfirm={start}>
             {asking() === 1 ? "A session is" : `${asking()} sessions are`} working, and the restart stops whatever is still running.
         </ConfirmDialog>
     );

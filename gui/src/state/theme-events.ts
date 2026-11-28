@@ -100,7 +100,7 @@ function showThemeTile(id: string) {
     setSettingsTab("appearance");
     let tries = 0;
     const find = () => {
-        const tile = document.querySelector<HTMLElement>(`.tg-tile[data-id="${CSS.escape(id)}"]`);
+        const tile = document.querySelector<HTMLElement>(`.tile[data-id="${CSS.escape(id)}"]`);
         if (tile) tile.scrollIntoView({ block: "center" });
         else if (++tries < 60) requestAnimationFrame(find);
     };
