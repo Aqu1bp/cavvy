@@ -460,8 +460,8 @@ async function update(args: string[]): Promise<number> {
         return 1;
     }
     const e = requireServer(name);
-    const { value: r } = await withTrust(e, (entry) => setUpServer(entry, setupOptions(entry, { force, update: true })), { saved: true });
-    const clis = notUpdatedNote(e.name, await updateAgentClis(e, { progress: progress() }));
+    // Its agent CLIs with it, over the same connection settings (the entry as trusted).
+    const { value: { r, clis } } = await withTrust(e, async (entry) => ({ r: await setUpServer(entry, setupOptions(entry, { force, update: true })), clis: notUpdatedNote(entry.name, await updateAgentClis(entry, { progress: progress() })) }), { saved: true });
     if (r.kept === "newer") out(`${e.name} runs a newer Cavvy than this machine, so it was left as it is. Update Cavvy here, or use --force.`);
     else if (r.kept) out(`${e.name} was left on its own version.`);
     else out(r.replaced ? `${e.name} is updated.` : `${e.name} is up to date.`);

@@ -152,8 +152,6 @@ export class ServerLinks {
             /** Answers what a session on server `name` asks about the user's other machines' sessions (src/server/far-peers.ts). */
             peers?: (name: string, op: string, params: Record<string, unknown>) => Promise<unknown>;
             source?: BuildSource;
-            /** Updates a server's agent CLIs as its Cavvy is (cli-update.ts); the products it couldn't. */
-            updateClis?: typeof updateAgentClis;
             renewAfterMs?: number;
             watchRetryMs?: number[];
         } = {},
@@ -443,7 +441,7 @@ export class ServerLinks {
                 confirmReplace: async (theirs) => force || theirs === "different",
             });
             // Its agent CLIs with it: nothing else there ever asks them to update.
-            const clis = notUpdatedNote(name, await (this.o.updateClis ?? updateAgentClis)(entry, { progress: this.progress(name) }));
+            const clis = notUpdatedNote(name, await updateAgentClis(entry, { progress: this.progress(name) }));
             // Its Cavvy restarted: what signed this one in there is gone, and the next connect signs in again.
             await this.drop(name, false);
             const note = [r.kept === "newer" ? "It runs a newer Cavvy than this machine, so it was left as it is." : undefined, clis].filter(Boolean).join(" ");

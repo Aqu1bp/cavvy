@@ -89,22 +89,23 @@ exec "$bin" host update-clis
 `;
 
 /**
- * Has a server's Cavvy update its agent CLIs. Returns the products it couldn't; none when the server can't be
- * asked (unreachable, or a Cavvy from before it could): never throws.
+ * Has a server's Cavvy update its agent CLIs. Returns the products it couldn't; undefined when it couldn't be asked
+ * or didn't answer (unreachable, a Cavvy from before it could): never throws.
  */
-export async function updateAgentClis(e: ServerEntry, o: { progress?: SetupProgress; signal?: AbortSignal } = {}): Promise<string[]> {
+export async function updateAgentClis(e: ServerEntry, o: { progress?: SetupProgress; signal?: AbortSignal } = {}): Promise<string[] | undefined> {
     o.progress?.step(`Updating agent CLIs on ${e.name}…`);
     try {
         const r = await ssh(e, remoteSh(UPDATE), { timeoutMs: cliUpdateTiming.eachMs + 60_000, signal: o.signal });
         const said = JSON.parse(r.stdout.trim().split("\n").pop() || "null") as { failed?: unknown } | null;
-        return Array.isArray(said?.failed) ? said.failed.filter((p): p is string => typeof p === "string").slice(0, 5).map((p) => p.slice(0, 40)) : [];
+        return Array.isArray(said?.failed) ? said.failed.filter((p): p is string => typeof p === "string").slice(0, 5).map((p) => p.slice(0, 40)) : undefined;
     } catch {
-        return [];
+        return undefined;
     }
 }
 
-/** What's said of CLIs that weren't updated, or undefined. */
-export function notUpdatedNote(name: string, failed: string[]): string | undefined {
+/** What's said of CLIs that weren't updated (`failed` undefined: none could be asked about), or undefined. */
+export function notUpdatedNote(name: string, failed: string[] | undefined): string | undefined {
+    if (!failed) return `Agent CLIs on ${name} weren't updated.`;
     if (!failed.length) return undefined;
     return `${failed.join(" and ")} on ${name} ${failed.length === 1 ? "wasn't" : "weren't"} updated.`;
 }

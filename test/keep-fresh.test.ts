@@ -154,6 +154,7 @@ test("a server's Cavvy updates the Claude Code it runs with its own updater, and
     expect(await hostUpdateClis()).toEqual({ failed: ["Claude Code"] });
 
     expect(notUpdatedNote("box", [])).toBeUndefined();
+    expect(notUpdatedNote("box", undefined)).toBe("Agent CLIs on box weren't updated.");
     expect(notUpdatedNote("box", ["Codex"])).toBe("Codex on box wasn't updated.");
     expect(notUpdatedNote("box", ["Claude Code", "Codex"])).toBe("Claude Code and Codex on box weren't updated.");
 });

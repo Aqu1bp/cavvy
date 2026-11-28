@@ -1063,7 +1063,8 @@ export class Engine {
         if (this.refreshing && !force && !ids) return this.refreshing;
         const p = Promise.resolve(pathSettling).then(() => (this.o.listModels ?? listAllModels)({ refresh: force, ...(ids ? { refreshIds: ids } : {}) }))
             .then((l) => {
-                const key = (x: ProviderListing[]) => JSON.stringify(x.map((y) => [y.provider.id, y.status, y.models.map((m) => [m.id, m.contextWindow, m.pricing?.input])]));
+                // All of each model: a CLI that updated itself may serve the same ids under other names, efforts or speeds.
+                const key = (x: ProviderListing[]) => JSON.stringify(x.map((y) => [y.provider.id, y.status, y.models]));
                 const changed = key(l) !== key(this.listings);
                 this.listings = l;
                 this.listed = true;
@@ -1092,10 +1093,15 @@ export class Engine {
     private listAgainWhenOld(l: ProviderListing[]) {
         clearTimeout(this.relistTimer);
         for (const x of l) if (x.provider.auth === "cli") this.cliPrograms.set(x.provider.id, cliProgram(x.provider.id));
-        const listedAt = l.filter((x) => !x.provider.local && !x.provider.instanceOf && x.fetchedAt !== undefined).map((x) => x.fetchedAt!);
-        if (!listedAt.length || this.stopping) return;
-        const due = Math.min(...listedAt) + MODEL_LIST_TTL_MS - Date.now();
-        this.relistTimer = setTimeout(() => void this.refreshListings(), Math.min(MODEL_LIST_TTL_MS, Math.max(relistTiming.retryMs, due)));
+        if (this.stopping) return;
+        const now = Date.now();
+        // When each list is due: its half day on, or the short wait for one that's past it or has nothing (it couldn't be listed).
+        const due = l.filter((x) => !x.provider.local && !x.provider.instanceOf && (x.fetchedAt !== undefined || x.status === "error")).map((x) => {
+            const left = x.fetchedAt === undefined ? 0 : x.fetchedAt + MODEL_LIST_TTL_MS - now;
+            return left > 0 ? left : relistTiming.retryMs;
+        });
+        if (!due.length) return;
+        this.relistTimer = setTimeout(() => void this.refreshListings(), Math.min(MODEL_LIST_TTL_MS, ...due));
         this.relistTimer.unref?.();
     }
 
