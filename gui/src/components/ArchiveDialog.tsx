@@ -95,7 +95,8 @@ function ArchiveWorktree(p: { id: string; title: string; offer: NonNullable<Retu
         >
             <dl class="facts">
                 <dt>Worktree</dt>
-                <dd class="mono">{tildify(w.path, app.hello?.homeDir)}</dd>
+                {/* From the worktrees' folder on, as the picker names it; the whole path on hover. */}
+                <dd class="mono" title={tildify(w.path, app.hello?.homeDir)}>{tildify(w.path, app.hello?.homeDir).replace(/^.*\/\.claude\/worktrees\//, ".claude/worktrees/")}</dd>
                 <Show when={w.branch}>
                     <dt>Branch</dt>
                     <dd>
