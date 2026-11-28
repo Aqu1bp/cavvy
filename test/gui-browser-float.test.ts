@@ -63,10 +63,8 @@ test("the bar names the page's host after its title, unless the title is the hos
     expect(floatHost("about:blank", "New tab")).toBeUndefined();
 });
 
-test("the page sits inside the card's frame, rounded concentrically, so the card's edge is the only one at its corners", () => {
+test("the page fills the card under its title, its foot rounded as the card's, so the card's edge is the only one at its corners", () => {
     const css = readFileSync(new URL("../gui/src/styles/browser.css", import.meta.url), "utf8");
-    const inner = "border-radius: calc(var(--radius-md) - var(--br-float-inset));";
-    expect(css).toContain(`.br-host-tab.shown.fit {\n    pointer-events: none;\n    ${inner}`);
-    expect(css).toMatch(/\.br-float-page \{[^}]*border-radius: calc\(var\(--radius-md\) - var\(--br-float-inset\)\);/);
-    expect(css).toMatch(/\.br-float-card \{[^}]*padding: 0 var\(--br-float-inset\) var\(--br-float-inset\);/);
+    expect(css).toContain(".br-host-tab.shown.fit {\n    pointer-events: none;\n    border-radius: 0 0 var(--br-float-r) var(--br-float-r);");
+    expect(css).toMatch(/\.br-float-card \{[^}]*border-radius: var\(--br-float-r\);[^}]*overflow: hidden;/);
 });
