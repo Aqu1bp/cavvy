@@ -10,6 +10,7 @@ import { refreshGitChanges } from "../state/changes";
 import { undoRestore } from "../state/actions";
 import { Dialog } from "./ui/Dialog";
 import { Spinner } from "./ui/bits";
+import "../styles/rewind.css";
 import { userMovedFocus } from "../lib/focus-trap";
 
 /** "Claude Code", "Claude Code and Codex". */

@@ -6,6 +6,7 @@ import { replyUrls } from "../state/images";
 import { setViewedImage, viewedImage, type ViewerImage } from "../state/ui";
 import { motionMs } from "./LiveLine";
 import { Dialog, inTopDialog } from "./ui/Dialog";
+import "../styles/image-viewer.css";
 
 /** The opening move, from the thumbnail that was clicked. */
 const OPEN_MS = 220;

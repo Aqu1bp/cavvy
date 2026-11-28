@@ -116,12 +116,6 @@
 /* ---- Find in the conversation (⌘F) ---------------------------------- */
 
 ::highlight(find-match) {
-    background-color: var(--find);
-    color: var(--fg);
-}
-
-::highlight(find-current) {
-    background-color: var(--find-cur);
     color: var(--fg);
 }
 
@@ -178,8 +172,6 @@
 /* ---- Turns ----------------------------------------------------------- */
 
 .turn {
-    display: flex;
-    flex-direction: column;
     padding-bottom: calc(26 * var(--sp));
     /* Skipped (far, below), it keeps the size it was last drawn at. */
     contain-intrinsic-size: auto calc(600 * var(--sp));
@@ -275,10 +267,6 @@
     align-items: center;
     gap: calc(6 * var(--sp));
     max-width: 100%;
-    margin-bottom: calc(2 * var(--sp));
-    font-size: 0.857rem;
-    font-weight: 500;
-    color: var(--fg-3);
 }
 
 .peer-head svg {
@@ -1584,15 +1572,6 @@
     tab-size: 4;
 }
 
-.cmd-text {
-    padding: 0 calc(12 * var(--sp)) calc(9 * var(--sp));
-    font-size: 0.893rem;
-    font-weight: 500;
-    line-height: 1.5;
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-}
-
 .cmd-in .ps {
     color: var(--ok);
     font-weight: 600;
@@ -1630,18 +1609,6 @@
     padding: 0 calc(12 * var(--sp)) calc(10 * var(--sp));
     color: var(--fg-3);
     font-size: 0.893rem;
-}
-
-.cmd-foot {
-    display: flex;
-    align-items: center;
-    gap: calc(12 * var(--sp));
-    min-height: calc(30 * var(--sp));
-    padding: 0 calc(6 * var(--sp)) 0 calc(12 * var(--sp));
-    border-top: 1px solid var(--line);
-    background: var(--well-head);
-    color: var(--fg-3);
-    font-size: 0.821rem;
 }
 
 .cmd-foot .link-btn {

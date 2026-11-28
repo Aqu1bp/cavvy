@@ -202,7 +202,7 @@ export function WorkRun(p: { items: Item[]; /** The turn's live line says what's
         return only && answered(only) ? only.summary : undefined;
     });
     return (
-        <div class={`tools run ${lined() && open() && !pictured() ? "open" : ""}`} data-open={(lined() && open() && !pictured()) || undefined}>
+        <div class="tools run" data-open={(lined() && open() && !pictured()) || undefined}>
             <Show when={lined()}>
                 <div class="tools-line">
                     <button class={`tools-head run-h ${pictured() ? "pictured" : ""}`} data-find-skip aria-expanded={pictured() ? undefined : open()} onClick={(e) => (pictured() ? viewToolImages(folds.sessionId, pictured()!, 0, e.currentTarget) : folds.set(key(), !open()))}>
@@ -626,7 +626,7 @@ export function ToolRow(p: ToolRowProps) {
 }
 
 /** A call's state as the design's rows name it (data-state). */
-const STATE_OF: Record<ToolBlock["status"], string> = { ok: "done", error: "failed", denied: "declined", running: "running", streaming: "running", awaiting: "running", queued: "running" };
+const STATE_OF: Partial<Record<ToolBlock["status"], string>> = { ok: "done", error: "failed", denied: "declined" };
 
 const CODE_TOOLS = new Set(["Bash", "Grep", "Glob", "Skill", "ToolSearch"]);
 /** What follows a row's verb: a file's path (its folder quiet, its name plain), code (a command, a pattern), or words. */
@@ -670,6 +670,8 @@ function ToolRowContent(p: ToolRowProps) {
         });
     });
     const ms = () => (p.also?.length ? all().reduce((n, t) => n + (t.durationMs ?? 0), 0) : p.tool.durationMs);
+    const target = () => `tool-target tool-arg ${p.activity ? "warg" : ""}`;
+    const skip = () => p.tool.status === "streaming" || undefined;
     const meta = () => {
         const t = p.tool;
         // Counted calls each have their own result: they're in its details.
@@ -683,7 +685,7 @@ function ToolRowContent(p: ToolRowProps) {
         return resultOf(t.summary);
     };
     return (
-        <div ref={(el) => enterRow(el, motionMs(STAGGER_MS))} class={`tool ${open() ? "open" : ""} st-${p.tool.status} ${found() ? "found" : ""}`} data-open={open() || undefined} data-state={STATE_OF[p.tool.status]} data-find={p.tool.id}>
+        <div ref={(el) => enterRow(el, motionMs(STAGGER_MS))} class={`tool st-${p.tool.status} ${found() ? "found" : ""}`} data-open={open() || undefined} data-state={STATE_OF[p.tool.status] ?? "running"} data-find={p.tool.id}>
             <div class="tool-head" style={p.detailsOnly ? { display: "none" } : undefined}>
                 <button class={p.activity ? `tool-row tool-line wrow ${isLive(p.tool) ? "live" : ""} ${p.tool.status === "awaiting" || p.tool.status === "queued" ? p.tool.status : ""}` : "tool-row tool-line"} onClick={(e) => (pictured() ? viewToolImages(folds.sessionId, p.tool, 0, e.currentTarget) : setOpen(!open()))} aria-expanded={pictured() ? undefined : open()}>
                     <span class="tool-icon" title={p.tool.sandboxed ? "Ran in the sandbox" : undefined}>
@@ -696,12 +698,12 @@ function ToolRowContent(p: ToolRowProps) {
                     <span class={shines() ? "tool-verb wverb shimmer" : p.activity && isLive(p.tool) ? "tool-verb wverb" : "tool-verb"} data-find-skip={isLive(p.tool) || undefined}>{p.activity && isLive(p.tool) ? runningVerb(p.tool) : label().verb}<Show when={shines()}><Shine text={runningVerb(p.tool)} /></Show></span>{!isLive(p.tool) && " "}
                     <Show when={label().arg}>
                         {(arg) => (
-                            <Switch fallback={<span class={`tool-target tool-target-plain tool-arg ${p.activity ? "warg" : ""}`} data-find-skip={p.tool.status === "streaming" || undefined}>{arg()}</span>}>
+                            <Switch fallback={<span class={`${target()} tool-target-plain`} data-find-skip={skip()}>{arg()}</span>}>
                                 <Match when={targetKind(p.tool) === "path"}>
-                                    <span class={`tool-target tool-arg ${p.activity ? "warg" : ""}`} data-find-skip={p.tool.status === "streaming" || undefined}><Path path={arg()} /></span>
+                                    <span class={target()} data-find-skip={skip()}><Path path={arg()} /></span>
                                 </Match>
                                 <Match when={targetKind(p.tool) === "code"}>
-                                    <code class={`tool-target tool-arg ${p.activity ? "warg" : ""}`} data-find-skip={p.tool.status === "streaming" || undefined}>{arg()}</code>
+                                    <code class={target()} data-find-skip={skip()}>{arg()}</code>
                                 </Match>
                             </Switch>
                         )}
