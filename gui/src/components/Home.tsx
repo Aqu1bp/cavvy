@@ -331,7 +331,7 @@ export function Home() {
                             </span>
                             <span class="menu-item-text">
                                 <span class="menu-item-name">{pr.name}</span>
-                                <span class="menu-item-sub">
+                                <span class="menu-item-sub truncate" title={pr.path}>
                                     <span class="mono">{tildify(pr.path, app.hello?.homeDir)}</span>
                                 </span>
                             </span>
