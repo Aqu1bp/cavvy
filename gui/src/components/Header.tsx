@@ -11,7 +11,7 @@ import { app, machineFor, reportError, rpc, toast } from "../state/app";
 import { archive, deleteSession, editorName, exportSession, newSession, openInEditor, openReview, openWaiting, openWorktreeReview, refreshEditors, rename, togglePanel, toggleSidebar } from "../state/actions";
 import { sessionReadReady, useGitChanges } from "../state/changes";
 import { prefs, setPrefs } from "../state/prefs";
-import { agentFocus, gitModule, terminalOpen, setTerminalOpen, setRewindOpen, openFind, review, setReview, setSettingsTab, settingsTab, shellLayout } from "../state/ui";
+import { agentFocus, gitModule, homeHeld, terminalOpen, setTerminalOpen, setRewindOpen, openFind, review, setReview, setSettingsTab, settingsTab, shellLayout } from "../state/ui";
 import { copyText, isDesktop, machine, os } from "../lib/platform";
 import { basename, plural, tildify } from "../lib/format";
 import { asking, inFront, needsLine, needsPlace, needsYou } from "../lib/rail";
@@ -288,13 +288,14 @@ export function Header(p: { handle?: SessionHandle; title?: string }) {
                         <Show when={!p.title && app.homeCwd}>
                             {(cwd) => (
                                 <>
-                                    <span class="main-project">{basename(cwd())}</span>
+                                    {/* Held with Home's first paint (Home.tsx), as the folder's name moves the title. */}
+                                    <span class="main-project" style={{ opacity: homeHeld() ? 0 : undefined }}>{basename(cwd())}</span>
                                     <CrumbSep />
                                 </>
                             )}
                         </Show>
                         {/* ttl-h: the benches' hook for the title (desktop-electron/bench-ux.ts); no rule styles it. */}
-                        <h1 class={`main-title-btn ttl-h ${p.title ? "" : "main-title-none"}`}>{p.title ?? "New session"}</h1>
+                        <h1 class={`main-title-btn ttl-h ${p.title ? "" : "main-title-none"}`} style={{ opacity: homeHeld() ? 0 : undefined }}>{p.title ?? "New session"}</h1>
                     </>
                 }
             >

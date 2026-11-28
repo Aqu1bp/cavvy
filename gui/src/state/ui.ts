@@ -40,6 +40,11 @@ export const [commitRequest, setCommitRequest] = createSignal<{ id: string; path
 export const [folderPickerOpen, setFolderPickerOpen] = createSignal<{ then: (path: string | undefined) => void; title?: string; action?: string; start?: string; link?: Rpc } | undefined>();
 /** The MCP servers dialog, and the server to show first. */
 export const [mcpOpen, setMcpOpen] = createSignal<{ focus?: string } | undefined>();
+/**
+ * Home's first paint waits, transparent, for what it shows (Home.tsx), so it's drawn once and nothing moves after it.
+ * Once it's shown, never held again in the page's life.
+ */
+export const [homeHeld, setHomeHeld] = createSignal(true);
 /** Recently deleted: the trashed sessions, with Restore. */
 export const [deletedOpen, setDeletedOpen] = createSignal(false);
 /** Opened from the keyboard or a slash command; the composer's pickers watch these. */

@@ -205,7 +205,7 @@ function home(o: { cwd?: string; needsTrust?: string[]; askTrust?: boolean; mode
         openProject: stub,
         trustAndContinue: async (...args: unknown[]) => void trusts.push(args),
         homeJumped: () => false, inspect: stub, inspectedBefore: () => undefined, forgetInspected: stub,
-        requestComposerFocus: stub, setSettingsTab: (t: string) => void tabs.push(t),
+        requestComposerFocus: stub, setSettingsTab: (t: string) => void tabs.push(t), homeHeld: () => false, setHomeHeld: stub,
         columnHeight: () => "800px", shellLayout: () => ({ column: { w: o.width ?? 900, h: o.height ?? 800 } }), sp: (n: number) => n,
         ago: stub, basename: (p: string) => p.split("/").pop(), tildify: (p: string) => p, now: stub, isWindowShown: () => true,
         document: { execCommand: () => false },
