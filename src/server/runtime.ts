@@ -5658,12 +5658,12 @@ export class Runtime {
         return this.queued.length || this.goal.pending() ? "turn" : undefined;
     }
 
-    /** Nothing running, waiting for the user, or still to be delivered to the model: closing it loses nothing. */
     /** Messages waiting to go after the turn. */
     get queuedCount(): number {
         return this.queued.length;
     }
 
+    /** Nothing running, waiting for the user, or still to be delivered to the model: closing it loses nothing. */
     get idle(): boolean {
         return this.settled(true);
     }
