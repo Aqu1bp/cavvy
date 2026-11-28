@@ -35,34 +35,64 @@ export async function imagesKeyOf(images: readonly { mediaType: string; data: st
     }
 }
 
-export class ImageCache<T = string> {
-    private entries = new Map<string, Promise<T[]>>();
+/** What a kept value holds, in characters: a URL's, or an image's base64 and thumbnail. */
+const charsOf = (v: string | { data?: string; thumb?: string }) => (typeof v == "string" ? v.length : (v.data?.length ?? 0) + (v.thumb?.length ?? 0));
 
-    constructor(private max: number) {}
+export class ImageCache<T extends string | { data?: string; thumb?: string } = string> {
+    /** Each request, and its size once it's in (0 until then). */
+    private entries = new Map<string, { p: Promise<T[]>; size: number }>();
+
+    /**
+     * Up to `max` entries and `maxSize` characters in all (the most recent one is kept even when it alone is over),
+     * the least recently used dropped first.
+     */
+    constructor(private max: number, private maxSize = Infinity) {}
 
     get(key: string, load: () => Promise<T[]>): Promise<T[]> {
-        const hit = this.entries.get(key);
+        const all = this.entries;
+        const hit = all.get(key);
         if (hit) {
             // Most recently used last: the first entry is the one to drop.
-            this.entries.delete(key);
-            this.entries.set(key, hit);
-            return hit;
+            all.delete(key);
+            all.set(key, hit);
+            return hit.p;
         }
         const p = load();
-        this.entries.set(key, p);
-        p.catch(() => {
-            if (this.entries.get(key) === p) this.entries.delete(key);
-        });
-        while (this.entries.size > this.max) this.entries.delete(this.entries.keys().next().value!);
+        const entry = { p, size: 0 };
+        all.set(key, entry);
+        p.then(
+            (values) => {
+                if (all.get(key) !== entry) return;
+                for (const v of values) entry.size += charsOf(v);
+                this.trim();
+            },
+            () => all.get(key) === entry && all.delete(key),
+        );
+        this.trim();
         return p;
     }
 
     /** What's kept for `key`, without making it the most recent. */
     peek(key: string): Promise<T[]> | undefined {
-        return this.entries.get(key);
+        return this.entries.get(key)?.p;
     }
 
     get size(): number {
         return this.entries.size;
+    }
+
+    /**
+     * Drops the least recently used past the limits, never the most recently used (an older one whose load ends late
+     * goes before the newer ones, as it would have had it come in time).
+     */
+    private trim() {
+        const all = this.entries;
+        let total = 0;
+        for (const e of all.values()) total += e.size;
+        for (const [key, e] of all) {
+            if (all.size < 2 || (all.size <= this.max && total <= this.maxSize)) return;
+            all.delete(key);
+            total -= e.size;
+        }
     }
 }

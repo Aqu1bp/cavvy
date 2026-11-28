@@ -99,7 +99,7 @@ export async function pack(o: { install?: boolean; serverBuilds?: boolean; relea
         // Native modules can't be loaded from inside the archive.
         asar: { unpack: "**/*.node" },
         extraResource: extra,
-        ignore: [/^\/\./, /^\/src($|\/)/, /^\/stage($|\/)/, /^\/out($|\/)/, /^\/bench[^/]*\.ts$/, /^\/pack\.ts$/, /^\/check-input\.ts$/, /^\/app-info\.ts$/, /^\/tsconfig\.json$/, /^\/[A-Z]+\.md$/, /^\/bun\.lock$/],
+        ignore: [/^\/\./, /^\/src($|\/)/, /^\/stage($|\/)/, /^\/out($|\/)/, /^\/bench[^/]*\.(ts|json)$/, /^\/perf-bench\.ts$/, /^\/pack\.ts$/, /^\/check-input\.ts$/, /^\/app-info\.ts$/, /^\/tsconfig\.json$/, /^\/[A-Z]+\.md$/, /^\/bun\.lock$/],
     });
     const app = join(out!, `${info.productName}.app`);
     const bundled = join(app, "Contents", "MacOS", "cavvy");

@@ -492,9 +492,15 @@ describe("connecting", () => {
             // Wait until the normal close has released ownership, as another process must.
             await (engine as any).closing.get(id);
             expect(engine.runtimes.has(id)).toBe(false);
-            // A late turn-finally callback reads the badge after close; it must not revive the recorder.
+            // Its history is let go of once what it was saving is saved.
+            for (let i = 0; i < 100 && FileHistory.existing(rt.session); i++) await Bun.sleep(10);
+            expect(FileHistory.existing(rt.session)).toBeUndefined();
+            expect(original).toBeDefined();
+            // A late turn-finally callback reads the badge after close; it must neither revive the recorder nor reopen
+            // the history (which would then be kept for good).
             (rt as any).filesChanged();
-            expect(TurnSnapshots.for(rt.session, cwd)).toBe(original);
+            expect(TurnSnapshots.for(rt.session, cwd)).toBeUndefined();
+            expect(FileHistory.existing(rt.session)).toBeUndefined();
             const elsewhere = Session.load(rt.session.path);
             let externalId: number;
             try {

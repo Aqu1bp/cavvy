@@ -9,6 +9,21 @@ import type { ThumbRequest, ThumbResponse } from "./thumbnail-size";
 let worker: Worker | undefined;
 let sequence = 0;
 const pending = new Map<number, (url: string | undefined) => void>();
+/** A worker with nothing to do goes after this long (its own heap stays while it lives), and is started again when needed. */
+const IDLE_MS = 60_000;
+let idle: ReturnType<typeof setTimeout> | undefined;
+
+/** A job done: with none left, the worker goes in a while, unless it has work again then or was replaced. */
+function rest() {
+    clearTimeout(idle);
+    const active = worker;
+    if (!active || pending.size) return;
+    idle = setTimeout(() => {
+        if (worker !== active || pending.size) return;
+        worker = undefined;
+        active.terminate();
+    }, IDLE_MS);
+}
 
 function start(): Worker {
     const active = new Worker(new URL("./thumbnail-worker.ts", import.meta.url), { type: "module" });
@@ -16,6 +31,7 @@ function start(): Worker {
         const done = pending.get(event.data.id);
         pending.delete(event.data.id);
         done?.(event.data.error ? undefined : event.data.url);
+        rest();
     };
     const fail = () => {
         if (worker !== active) return;
@@ -49,11 +65,13 @@ export function thumbnail(image: { blob: Blob; mediaType: string } | { data: str
     if (("blob" in image ? image.blob.size : (image.data.length * 3) / 4) < SMALL_BYTES) return Promise.resolve(undefined);
     return new Promise((resolve) => {
         const id = ++sequence;
+        clearTimeout(idle);
         const late = setTimeout(() => pending.get(id)?.(undefined), ANSWER_MS);
         const done = (url: string | undefined) => {
             clearTimeout(late);
             pending.delete(id);
             resolve(url);
+            rest();
         };
         try {
             worker ??= start();

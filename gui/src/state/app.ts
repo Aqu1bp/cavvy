@@ -26,7 +26,7 @@ import { applyKeybindingsFile, keymap } from "./keybindings";
 import { orderSessions } from "../lib/session-order";
 import { composerStorage } from "../lib/drafts";
 import { pickedPatch, takePicked, type Picked } from "../lib/picked";
-import { composerDrafts } from "../lib/composer-draft";
+import { composerDrafts, composerStashes } from "../lib/composer-draft";
 import { onStep } from "../lib/stream-clock";
 import { waitedOn } from "../lib/waited-on";
 import { keyedTurn, placeBefore, restoredShown, transcriptPositions, type TurnKey } from "../lib/transcript-scroll";
@@ -1759,7 +1759,9 @@ export function forgetSession(id: string) {
     setSessionPresenceVersion((v) => v + 1);
     if (jumpTarget()?.sessionId === id) setJumpTarget(undefined);
     composerDrafts.delete(id);
+    composerStashes.delete(id);
     composerStorage.delete(id);
+    paths.delete(id);
     setApp("sessions", (l) => l.filter((s) => s.id !== id));
     setApp("archived", (l) => l.filter((s) => s.id !== id));
     if (handles.delete(id)) setHandleVersion((v) => v + 1);

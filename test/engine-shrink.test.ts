@@ -1,5 +1,6 @@
 // The server hands memory back once no turn has run for a while (Engine.idleNow): once, after the last turn ends or a
-// session with one running is let go, and not while any turn runs.
+// session with one running is let go, and not while any turn runs. And a while after a session closes with none running
+// (Engine.closedNow).
 
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "fs";
@@ -59,4 +60,30 @@ test("a stopping server doesn't", async () => {
     await engine.stop();
     await wait(IDLE * 3);
     expect(shrinks).toBe(before);
+});
+
+test("a session closing with no turn running hands memory back after a while, once for closes close together", async () => {
+    const before = shrinks;
+    const engine = new Engine({ listModels: async () => [], shrinkIdleMs: IDLE * 10, shrinkClosedMs: IDLE });
+    const closed = () => (engine as unknown as { closedNow(): void }).closedNow();
+    closed();
+    await wait(IDLE / 2);
+    closed();
+    await wait(IDLE * 3);
+    expect(shrinks).toBe(before + 1);
+    await wait(IDLE * 3);
+    expect(shrinks).toBe(before + 1);
+    // Not while a turn runs.
+    engine.turnRunning(rt("a"), true);
+    closed();
+    await wait(IDLE * 3);
+    expect(shrinks).toBe(before + 1);
+    // A turn's wait isn't cut short by a close.
+    engine.turnRunning(rt("a"), false);
+    closed();
+    await wait(IDLE * 3);
+    expect(shrinks).toBe(before + 1);
+    await wait(IDLE * 10);
+    expect(shrinks).toBe(before + 2);
+    await engine.stop();
 });

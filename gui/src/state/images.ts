@@ -38,10 +38,11 @@ export type PromptImage = { mediaType: string; thumb: string };
  * Prompts' images as the transcript shows them. Their thumbnails only: a screenshot is a few MB of base64, and
  * the most recent few dozen prompts' held whole came to 34 MB of the window's 60 MB of script memory after
  * reading back through three real sessions (measured). The viewer asks for them whole (wholePromptImages).
+ * 16 MB in all: a thumbnail is the image itself where none could be made.
  */
-const prompts = new ImageCache<PromptImage>(32);
-/** Prompts' images whole: those of the last few opened in the viewer or sent, to open again at once. */
-const promptWholes = new ImageCache<WholeImage>(4);
+const prompts = new ImageCache<PromptImage>(32, 16_000_000);
+/** Prompts' images whole: those of the last few opened in the viewer or sent, to open again at once. Up to 20 MB each. */
+const promptWholes = new ImageCache<WholeImage>(4, 64_000_000);
 
 async function withThumb(i: WholeImage): Promise<PromptImage & WholeImage> {
     return { mediaType: i.mediaType, data: i.data, thumb: (await thumbnail(i)) ?? toUrl(i) };
@@ -57,12 +58,12 @@ function objectUrl(i: { mediaType: string; data: string }): string {
 }
 
 /** Images calls' results brought (session.toolImage), by their key: what the model looked at. Whole, for the viewer: the last few it opened. */
-const tools = new ImageCache<PromptImage & WholeImage>(4);
+const tools = new ImageCache<PromptImage & WholeImage>(4, 32_000_000);
 /**
  * Their thumbnails, for the rows: a run of 200 screenshots shows 200 of these, and holds none of the images
  * themselves, which only the viewer asks for (again, past `tools`).
  */
-const toolThumbs = new ImageCache<string>(400);
+const toolThumbs = new ImageCache<string>(400, 16_000_000);
 
 /** A call's result image, with its thumbnail. Rejects when it's gone. */
 export function toolImage(sessionId: string, key: string): Promise<PromptImage & WholeImage> {

@@ -369,3 +369,28 @@ describe("a failed request", () => {
         expect(w.asked.length).toBeLessThanOrEqual(first + 4);
     });
 });
+
+describe("a deleted session", () => {
+    test("its answers go, others' stay, and one in flight isn't kept for it", async () => {
+        const w = new World();
+        w.files.set("src/a.ts", "/p/src/a.ts");
+        const a = new Mounted(w, "See src/a.ts.");
+        new Mounted(w, "See src/a.ts.", "s2");
+        await w.settle();
+        expect(w.cache.size("s1")).toBe(1);
+        a.unmount();
+        w.cache.delete("s1");
+        expect(w.cache.size("s1")).toBe(0);
+        expect(w.cache.lookup("s2")("src/a.ts")).toBe("/p/src/a.ts");
+
+        // Asked before the delete, answered after.
+        let open!: () => void;
+        w.gate = new Promise((r) => (open = r));
+        const asking = w.cache.resolve("s1", ["src/a.ts"]);
+        await Promise.resolve();
+        w.cache.delete("s1");
+        open();
+        await asking;
+        expect(w.cache.size("s1")).toBe(0);
+    });
+});

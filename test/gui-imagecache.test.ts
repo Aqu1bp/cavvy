@@ -47,6 +47,45 @@ describe("ImageCache", () => {
         expect(c.peek("a")).toBeUndefined();
         expect(asked).toEqual(["a", "b", "c"]);
     });
+
+    test("bounded by size too: the least recently used goes until the rest fit, the newest stays", async () => {
+        const c = new ImageCache<string>(10, 10);
+        const asked: string[] = [];
+        const load = (v: string) => () => (asked.push(v), Promise.resolve([v]));
+        await c.get("a", load("aaaa"));
+        await c.get("b", load("bbbb"));
+        await c.get("a", load("aaaa")); // a is now the most recent
+        await c.get("c", load("cccc")); // 12 > 10: drops b
+        expect(c.size).toBe(2);
+        expect(c.peek("b")).toBeUndefined();
+        await c.get("d", load("d".repeat(20))); // over on its own: the rest go, it stays
+        expect(c.size).toBe(1);
+        expect(await c.peek("d")).toEqual(["d".repeat(20)]);
+        await c.get("a", load("aaaa")); // asked again; d goes
+        expect(c.peek("d")).toBeUndefined();
+        expect(asked).toEqual(["aaaa", "bbbb", "cccc", "d".repeat(20), "aaaa"]);
+    });
+
+    test("an older load that ends late doesn't push out newer ones", async () => {
+        const cache = new ImageCache<string>(10, 10);
+        let finish!: (v: string[]) => void;
+        const slow = cache.get("old", () => new Promise((r) => (finish = r)));
+        await cache.get("new", async () => ["12345"]);
+        finish(["123456789"]);
+        await slow;
+        await Promise.resolve();
+        expect(cache.peek("new")).toBeDefined();
+        expect(cache.peek("old")).toBeUndefined();
+    });
+
+    test("a failure frees nothing it didn't hold", async () => {
+        const c = new ImageCache<string>(10, 10);
+        await c.get("a", () => Promise.resolve(["aaaaaa"]));
+        await expect(c.get("x", () => Promise.reject(new Error("gone")))).rejects.toThrow("gone");
+        await Bun.sleep(0);
+        await c.get("b", () => Promise.resolve(["bbbb"]));
+        expect(c.size).toBe(2);
+    });
 });
 
 describe("what makes an image the same image", () => {

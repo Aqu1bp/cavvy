@@ -188,6 +188,8 @@ export interface PageOptions {
 const CHECKED_REQUESTS = [{ resourceType: "Document", requestStage: "Request" }, { urlPattern: "file:*", requestStage: "Request" }];
 /** Frames from other sites, attached as they start and held until they're checked like the page (Page.watchFrame). */
 const FRAME_ATTACH = { autoAttach: true, waitForDebuggerOnStart: true, flatten: true, filter: [{ type: "iframe" }, { exclude: true }] };
+/** Only request events are read, never a response's body: Chrome would otherwise keep up to 200 MB of them per page. */
+const NETWORK_EVENTS = { maxTotalBufferSize: 0, maxResourceBufferSize: 0 };
 
 export class Page {
     readonly refs = new RefTable();
@@ -278,7 +280,7 @@ export class Page {
                 page.send("Page.enable"),
                 page.send("Page.setLifecycleEventsEnabled", { enabled: true }),
                 page.send("Runtime.enable"),
-                page.send("Network.enable"),
+                page.send("Network.enable", NETWORK_EVENTS),
                 // What a service worker keeps comes from it without a request to check: it isn't used (watchFrame too).
                 page.send("Network.setBypassServiceWorker", { bypass: true }),
                 page.send("Log.enable"),
@@ -542,7 +544,7 @@ export class Page {
         try {
             await Promise.all([
                 this.cdp.send("Fetch.enable", { patterns: CHECKED_REQUESTS }, sessionId),
-                this.cdp.send("Network.enable", {}, sessionId),
+                this.cdp.send("Network.enable", NETWORK_EVENTS, sessionId),
                 this.cdp.send("Network.setBypassServiceWorker", { bypass: true }, sessionId),
                 this.cdp.send("Target.setAutoAttach", FRAME_ATTACH, sessionId),
             ]);

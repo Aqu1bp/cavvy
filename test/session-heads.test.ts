@@ -59,3 +59,14 @@ test("after a restart the list comes from the heads kept on disk, still checked 
     writeFileSync(cache, "{not json");
     expect(listed()).toEqual([["Kept prompt", 3]]);
 });
+
+test("a long first prompt is kept as its start, the same before a restart as after", () => {
+    const cwd = realpathSync(tempDir());
+    const s = Session.create(cwd);
+    const reminder = `<system-reminder>${"r".repeat(500)}</system-reminder>`;
+    s.push(say(`${reminder}Long pasted log ${"y".repeat(10_000)}`));
+    s.push(answer("One."));
+    // As a restart reads it from the kept heads: the reminder is left out before it's cut.
+    expect(listSessions(cwd, 10).find((x) => x.id === s.meta.id)?.title).toBe(`Long pasted log ${"y".repeat(104)}`);
+    s.release();
+});

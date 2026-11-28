@@ -244,6 +244,10 @@ export class UiLog {
         this.steps.clear();
         this.agents.clear();
         this.evicted.clear();
+        // Of its turns' records, the one that started last (lightState, cutOffPrompt).
+        const last = this.lastStarted === undefined ? undefined : this.turns.get(this.lastStarted);
+        this.turns.clear();
+        if (last) this.turns.set(this.lastStarted!, last);
     }
 
     /** What a light log is (lightState): kept with a turn store, to open from without reading the log again. */
@@ -428,6 +432,8 @@ export class UiLog {
             if (start) {
                 this.steps.delete(k);
                 this.lastStarted = k;
+                // Light, only the turn that started last is read (lighten).
+                if (this.light) this.turns.clear();
             }
             this.turns.set(k, start ? r : { ...this.turns.get(k), ...r });
         } else if (r.t === "step") {

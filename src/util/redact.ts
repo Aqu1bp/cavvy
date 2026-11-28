@@ -15,8 +15,21 @@ export function redactionVersion(): number {
 }
 
 export function registerSecret(value: string | undefined, label = "secret") {
-    if (!value || value.length < MIN_SECRET) return;
-    if (exact.get(value)?.label === label) return;
+    if (add(value, label)) revision++;
+}
+
+/**
+ * A value made here just now (a random token), kept out of what's shown and saved from now on. Nothing redacted
+ * before it was made can hold it, so what was redacted and kept stays good: unlike registerSecret, it doesn't make
+ * every cache of redacted text (the search's included) read everything again. Forgotten with forgetFreshSecret.
+ */
+export function registerFreshSecret(value: string, label: string) {
+    add(value, label);
+}
+
+function add(value: string | undefined, label: string): boolean {
+    if (!value || value.length < MIN_SECRET) return false;
+    if (exact.get(value)?.label === label) return false;
     const prefix = new Uint32Array(value.length);
     for (let i = 1, j = 0; i < value.length; i++) {
         while (j && value[i] !== value[j]) j = prefix[j - 1]!;
@@ -26,11 +39,19 @@ export function registerSecret(value: string | undefined, label = "secret") {
     // A proper prefix equal to a suffix means occurrences can overlap. Keep its
     // failure table so repetitive inputs take linear time even for very long values.
     exact.set(value, { label, prefix: prefix[value.length - 1] ? prefix : undefined });
-    revision++;
+    return true;
 }
 
 export function unregisterSecret(value: string | undefined) {
     if (value && exact.delete(value)) revision++;
+}
+
+/**
+ * Lets go of a value registerFreshSecret took (revoked, it's of no use to anyone). Text redacted while it was known
+ * stays redacted where it's kept, which only hides more, so nothing kept is read again.
+ */
+export function forgetFreshSecret(value: string) {
+    exact.delete(value);
 }
 
 export function knownSecrets(): string[] {

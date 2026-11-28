@@ -257,7 +257,8 @@ export class BrowserHost {
         const now = Date.now();
         this.reportInUse(now);
         // CPU of each page process since the last look (percentCPUUsage is since the previous getAppMetrics).
-        const cpu = new Map(app.getAppMetrics().map((m) => [m.pid, m.cpu.percentCPUUsage]));
+        // Not asked with no tabs: it reads every process of the app, and a new tab isn't frozen before it has been read again.
+        const cpu = new Map(this.tabsById.size ? app.getAppMetrics().map((m) => [m.pid, m.cpu.percentCPUUsage]) : []);
         for (const tab of this.tabsById.values()) {
             const onScreen = this.onScreen.has(tab.key);
             if (onScreen) tab.usedAt = now;

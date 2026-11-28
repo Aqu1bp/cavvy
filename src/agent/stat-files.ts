@@ -6,7 +6,7 @@ import { constants, lstatSync, type Stats } from "fs";
 import { open } from "fs/promises";
 import { loadavg } from "os";
 import { Pace } from "../util/pace";
-import { scanIndex, scanPaths, type IndexScan } from "./index-scan";
+import { INDEX_OPEN, scanIndex, scanPaths, type IndexScan } from "./index-scan";
 
 /** What's at a path. */
 export const KIND = { missing: 0, file: 1, link: 2, dir: 3, other: 4, unreadable: 5 } as const;
@@ -35,7 +35,20 @@ export interface IndexRequest {
     msExact: boolean;
     /** Only the `k`th of `n` runs of its entries (index-scan.ts scanIndex). */
     part?: { k: number; n: number };
+    /** The index as read once for every part (readShared); else each reads it. */
+    shared?: SharedIndexBytes;
 }
+
+/**
+ * Git's index file, read once for all the parts of a scan: how many of the parts after the first are through with it
+ * (an Int32 at 0, which the first waits for: index-scan.ts SharedIndex), then its `length` bytes from SHARED_AT.
+ */
+export interface SharedIndexBytes {
+    sab: SharedArrayBuffer;
+    length: number;
+    mtimeMs: number;
+}
+export const SHARED_AT = 8;
 
 /** Only some paths of a folder against its Git index (index-scan.ts scanPaths). */
 export interface PathsRequest {
@@ -57,18 +70,26 @@ export interface FileStats {
     stamps: Float64Array;
 }
 
-/** undefined: not started yet; null: none to be had. */
+/** undefined: not started yet (or let go of, idle); null: none to be had. */
 let worker: Worker | null | undefined;
+/**
+ * The worker and the lookups worker are let go of after this long with nothing asked of them, and started again when
+ * next needed: the worker is sent its tracked lists again, the lookups worker reads each index whole once more.
+ */
+let idleMs = 60_000;
+/** What's been asked of each worker and not answered yet. */
+const asking = new Map<Worker, number>();
+const idleTimers = new Map<Worker, ReturnType<typeof setTimeout>>();
 /** More workers, for a big index's scan to run side by side (scanIndexFiles); let go when idle (HELPERS_IDLE_MS). */
 let helpers: Worker[] = [];
 let helpersIdle: ReturnType<typeof setTimeout> | undefined;
 const HELPERS_IDLE_MS = 30_000;
 /** Index entries for each worker a scan runs on, at least, and at most this many workers. */
-const ENTRIES_PER_WORKER = 25_000;
+let entriesPerWorker = 25_000;
 const MAX_WORKERS = 4;
 const waiting = new Map<number, (r: StatReply) => void>();
-/** Tracked lists the worker was sent (it can let one go: it then says so, and is sent it again). */
-const sent = new Set<string>();
+/** Each folder's tracked list the worker was last sent, by id (it can let one go: it then says so, and is sent it again). */
+const sent = new Map<string, string>();
 let asked = 0;
 
 /** A stat worker; `gone` when it stops (whatever it was asked is answered here instead). */
@@ -86,6 +107,9 @@ function spawn(gone: (w: Worker) => void): Worker | undefined {
         };
         w.onerror = (e) => {
             gone(w);
+            clearTimeout(idleTimers.get(w));
+            idleTimers.delete(w);
+            asking.delete(w);
             w.terminate();
             for (const [id, answer] of waiting) answer({ id, error: e.message || "The stat worker stopped." });
             waiting.clear();
@@ -113,6 +137,35 @@ function lookupWorker(): Worker | undefined {
     return lookups ?? undefined;
 }
 
+/** `w` was asked something (+1) or answered (-1): the worker or the lookups one, asked nothing for idleMs, is let go of. */
+function asks(w: Worker, by: 1 | -1) {
+    const n = (asking.get(w) ?? 0) + by;
+    clearTimeout(idleTimers.get(w));
+    idleTimers.delete(w);
+    if (n > 0) return void asking.set(w, n);
+    asking.delete(w);
+    if (w !== worker && w !== lookups) return;
+    const timer = setTimeout(() => {
+        idleTimers.delete(w);
+        if (asking.has(w)) return;
+        if (w === worker) {
+            worker = undefined;
+            sent.clear();
+        } else if (w === lookups) lookups = undefined;
+        else return;
+        w.terminate();
+    }, idleMs);
+    timer.unref?.();
+    idleTimers.set(w, timer);
+}
+
+/** For tests: how long a worker is kept idle, a scan's entries for each worker, and which workers are running now. */
+export function statWorkersForTests(set: { idleMs?: number; entriesPerWorker?: number } = {}): { stat: boolean; lookups: boolean } {
+    idleMs = set.idleMs ?? idleMs;
+    entriesPerWorker = set.entriesPerWorker ?? entriesPerWorker;
+    return { stat: !!worker, lookups: !!lookups };
+}
+
 /** Up to `n` workers to run side by side (the first is the one every capture uses), as many as could be started. */
 function pool(n: number): Worker[] {
     const first = started();
@@ -134,13 +187,16 @@ function pool(n: number): Worker[] {
 
 function ask(w: Worker, req: Omit<StatRequest, "id"> | Omit<IndexRequest, "id"> | Omit<PathsRequest, "id">, deadline: number): Promise<StatReply> {
     const id = ++asked;
+    asks(w, 1);
     return new Promise((resolve) => {
         const timer = setTimeout(() => {
             waiting.delete(id);
+            asks(w, -1);
             resolve({ id, error: "late" });
         }, Math.max(0, deadline - Date.now()));
         waiting.set(id, (r) => {
             clearTimeout(timer);
+            asks(w, -1);
             resolve(r);
         });
         w.postMessage({ ...req, id, deadline });
@@ -151,11 +207,14 @@ function ask(w: Worker, req: Omit<StatRequest, "id"> | Omit<IndexRequest, "id"> 
 export async function statFiles(root: string, trackedId: string, tracked: string[], untracked: string[], deadline: number, inTime: () => void): Promise<FileStats> {
     const w = started();
     if (w) {
-        let r = await ask(w, { root, trackedId, tracked: sent.has(trackedId) ? undefined : tracked, untracked }, deadline);
+        let r = await ask(w, { root, trackedId, tracked: tracked.length && sent.get(root) === trackedId ? undefined : tracked, untracked }, deadline);
         if (r.missing) r = await ask(w, { root, trackedId, tracked, untracked }, deadline);
         if (r.kinds && r.stamps) {
-            sent.add(trackedId);
-            if (sent.size > 64) sent.delete(sent.values().next().value!);
+            if (tracked.length) {
+                sent.delete(root);
+                sent.set(root, trackedId);
+                if (sent.size > 64) sent.delete(sent.keys().next().value!);
+            }
             return { kinds: r.kinds, stamps: r.stamps };
         }
         if (r.error === "late") throw new Error("Snapshot exceeded its time budget (2 seconds by default).");
@@ -181,6 +240,34 @@ async function entriesIn(indexFile: string): Promise<number> {
 }
 
 /**
+ * Git's index file read into memory the workers share (laid out as SharedIndexBytes says), and its time as it was
+ * read; undefined when it can't be read, or isn't a file.
+ */
+async function readShared(indexFile: string): Promise<SharedIndexBytes | undefined> {
+    try {
+        const f = await open(indexFile, INDEX_OPEN);
+        try {
+            const st = await f.stat();
+            // Its entries' offsets are kept in 32 bits (index-scan.ts).
+            if (!st.isFile() || st.size >= 2 ** 32 - SHARED_AT) return undefined;
+            const sab = new SharedArrayBuffer(SHARED_AT + st.size);
+            const into = Buffer.from(sab, SHARED_AT, st.size);
+            let length = 0;
+            while (length < st.size) {
+                const { bytesRead } = await f.read(into, length, st.size - length, length);
+                if (!bytesRead) break;
+                length += bytesRead;
+            }
+            return { sab, length, mtimeMs: st.mtimeMs };
+        } finally {
+            await f.close();
+        }
+    } catch {
+        return undefined;
+    }
+}
+
+/**
  * `root`'s differences from its Git index (index-scan.ts), on the worker, or for a big index on several side by side
  * while the machine has cores to spare, each taking a run of its entries (stat calls are most of it, and the system
  * takes them in parallel); here, all at once, where there's none.
@@ -188,11 +275,16 @@ async function entriesIn(indexFile: string): Promise<number> {
 export async function scanIndexFiles(root: string, indexFile: string, hashBytes: number, untracked: string[], msExact: boolean, deadline: number): Promise<IndexScan> {
     // Side by side only with cores to spare: run so, stat calls cost a little more each, which a busy machine pays for.
     const spare = Math.floor(navigator.hardwareConcurrency - (loadavg()[0] ?? 0));
-    const want = Math.min(MAX_WORKERS, Math.max(1, spare), Math.ceil((await entriesIn(indexFile)) / ENTRIES_PER_WORKER));
+    const want = Math.min(MAX_WORKERS, Math.max(1, spare), Math.ceil((await entriesIn(indexFile)) / entriesPerWorker));
+    // Several: the index read once, here, for all of them (a million-file one is over 100 MB), not by each. Read
+    // before the workers are picked: nothing is awaited between picking them and asking them (asks counts them busy
+    // from then), so an idle one isn't let go of on the way.
+    const read = want > 1 ? await readShared(indexFile) : undefined;
     const ws = want > 1 ? pool(want) : [started()].filter((w): w is Worker => !!w);
     if (ws.length) {
         const n = ws.length;
-        const replies = await Promise.all(ws.map((w, k) => ask(w, { root, indexFile, hashBytes, untracked: k === n - 1 ? untracked : [], msExact, part: { k, n } }, deadline)));
+        const shared = n > 1 ? read : undefined;
+        const replies = await Promise.all(ws.map((w, k) => ask(w, { root, indexFile, hashBytes, untracked: k === n - 1 ? untracked : [], msExact, part: { k, n }, ...(shared ? { shared } : {}) }, deadline)));
         if (replies.some((r) => r.error === "late")) throw new Error("Snapshot exceeded its time budget (2 seconds by default).");
         if (replies.every((r) => r.scan)) {
             const scans = replies.map((r) => r.scan!);

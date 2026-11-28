@@ -1686,8 +1686,10 @@ export class Runtime {
             const patch: AgentHead = {};
             for (const [k, v] of Object.entries(head)) {
                 const json = JSON.stringify(v);
-                if (json !== undefined && logged.head.get(k) !== json) {
-                    logged.head.set(k, json);
+                // Kept to compare against: a long value (its prompt, its report) as a hash of it.
+                const seen = json === undefined || json.length <= 256 ? json : `#${json.length}:${Bun.hash(json).toString(36)}`;
+                if (seen !== undefined && logged.head.get(k) !== seen) {
+                    logged.head.set(k, seen);
                     (patch as Record<string, unknown>)[k] = v;
                 }
             }
@@ -5992,6 +5994,9 @@ export class Runtime {
         }
     }
 
+    /** Closed with its turn still stopping: its agent may still save files' history as it does (Engine.unload). */
+    closedMidTurn = false;
+
     /** SessionEnd hooks and background shells, when the server stops or the session is closed. */
     async close() {
         this.schedules.dispose();
@@ -6033,6 +6038,7 @@ export class Runtime {
                 // Still stopping (the server's own exit doesn't wait long enough for a CLI backend's): noted for it,
                 // and the file let go now, so what it writes when it does stop isn't recorded after that.
                 await this.agent?.noteStopped();
+                this.closedMidTurn = true;
                 // Its log too (noting the stop ended the turn there): another process may have the session next.
                 this.ui.close();
                 this.session.release();
@@ -6040,7 +6046,8 @@ export class Runtime {
             await ending;
         } finally {
             // The session's, not the agent's: a session whose agent is gone still has its last turn's end to wait for.
-            await TurnSnapshots.for(this.session, this.ws.cwd)?.stop();
+            // Only one it has: none is made just to be stopped.
+            await TurnSnapshots.existing(this.session)?.stop();
             await commit;
             this.ui.close();
             this.session.release();

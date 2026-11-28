@@ -39,6 +39,11 @@ export const SEARCH_LIMITS = {
     cacheChars: 64 * 1024 * 1024,
     /** Turn times kept across queries, in records (and one for each log). */
     cacheTurnTimes: 200_000,
+    /**
+     * What's kept is let go of this long after the last search or warming ended: the palette opened once warmed up to
+     * 90% of cacheChars (10,000 sessions: 50.9 MB, measured) and held it for as long as the server ran.
+     */
+    idleMs: 3 * 60_000,
 };
 
 /**
@@ -157,12 +162,52 @@ let cachedChars = 0;
 let cachedTimes = 0;
 
 export function clearSearchCache() {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = undefined;
     listing = undefined;
     lastScan = undefined;
+    folders = undefined;
     docs.clear();
     times.clear();
     cachedChars = 0;
     cachedTimes = 0;
+}
+
+/** Searches and warmings under way: what's kept isn't let go of under them. */
+let inUse = 0;
+/** When the last of them ended (performance.now()). */
+let usedAt = 0;
+/** Lets go of what's kept once idle (SEARCH_LIMITS.idleMs); there only while something is kept. */
+let idleTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** `fn`, with what's kept held while it runs and let go of once nothing has used it for a while. */
+async function held<T>(fn: () => Promise<T>): Promise<T> {
+    inUse++;
+    try {
+        return await fn();
+    } finally {
+        inUse--;
+        usedAt = performance.now();
+        if (!idleTimer) releaseWhenIdle(SEARCH_LIMITS.idleMs);
+    }
+}
+
+/** One timer a while, not one a keystroke: when it fires it waits on for what's left if it was used since. */
+function releaseWhenIdle(ms: number) {
+    idleTimer = undefined;
+    if (!docs.size && !times.size && !listing) return;
+    if (ms <= 0) {
+        // A whole listing may still be under way after a search: it's let go of after that.
+        if (inUse || relisting) ms = SEARCH_LIMITS.idleMs;
+        else {
+            const left = SEARCH_LIMITS.idleMs - (performance.now() - usedAt);
+            if (left <= 0) return clearSearchCache();
+            ms = left;
+        }
+    }
+    idleTimer = setTimeout(() => releaseWhenIdle(0), ms);
+    // Nothing to wait for at quitting.
+    idleTimer.unref?.();
 }
 
 /** What the cache holds now (for tests). */
@@ -737,7 +782,11 @@ async function listSessionFiles(ctl: Control): Promise<Listed[] | undefined> {
  * search would read anyway, before it's asked): it yields as a search does. The number read; it stops when the
  * secrets used to redact change, or `stale` says so.
  */
-export async function warmSearch(o: { stale?: () => boolean } = {}): Promise<number> {
+export function warmSearch(o: { stale?: () => boolean } = {}): Promise<number> {
+    return held(() => warmNow(o));
+}
+
+async function warmNow(o: { stale?: () => boolean }): Promise<number> {
     const redaction = redactionVersion();
     const ctl = new Control(() => redaction !== redactionVersion() || Boolean(o.stale?.()), Number.POSITIVE_INFINITY, SEARCH_LIMITS.budgetBytes);
     let read = 0;
@@ -773,7 +822,7 @@ let lastScan: { fq: string; files: Listed[]; redaction: number; found: Set<strin
 export async function searchSessions(query: string, o: SearchOptions = {}): Promise<{ hits: SearchHit[]; partial: boolean; stale: boolean }> {
     searching++;
     try {
-        return await searchNow(query, o);
+        return await held(() => searchNow(query, o));
     } finally {
         if (--searching === 0 && relistWanted) relistSoon();
     }

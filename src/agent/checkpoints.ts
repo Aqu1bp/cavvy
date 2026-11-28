@@ -92,6 +92,12 @@ const NOFOLLOW = constants.O_NOFOLLOW ?? 0;
 
 const open = new Map<string, FileHistory>();
 
+/** Where a saved session's history is kept; none for one that isn't saved. */
+function historyDir(session: Session): string | undefined {
+    if (!session.persisted || !/^[A-Za-z0-9_-]+$/.test(session.meta.id)) return undefined;
+    return join(dirname(session.path), "file-history", session.meta.id);
+}
+
 export class FileHistory {
     private recs: FileRec[] = [];
     private lastWrite = new Map<string, Content>();
@@ -110,8 +116,11 @@ export class FileHistory {
 
     /** The history of a saved session (one instance per session in this process). */
     static for(session: Session): FileHistory | undefined {
-        if (!session.persisted || !/^[A-Za-z0-9_-]+$/.test(session.meta.id)) return undefined;
-        const dir = join(dirname(session.path), "file-history", session.meta.id);
+        // One let go of (its Runtime closed) opens nothing again: a late read (a badge's count) finds what's still open,
+        // else nothing, rather than reopening a history that would then be kept for as long as the server runs.
+        if (session.isReleased) return FileHistory.existing(session);
+        const dir = historyDir(session);
+        if (!dir) return undefined;
         let h = open.get(dir);
         if (!h) open.set(dir, (h = new FileHistory(dir)));
         // Checkpoints without file changes are only on the messages; keep ids increasing past them.
@@ -119,6 +128,29 @@ export class FileHistory {
         // A fork's own checkpoints come after the ones it was forked with (src/agent/fork.ts beforeFork).
         if (session.meta.forkOf) h.last = Math.max(h.last, session.meta.forkOf.at - 1);
         return h;
+    }
+
+    /** The history of a saved session if this process has it open, without opening it. */
+    static existing(session: Session): FileHistory | undefined {
+        const dir = historyDir(session);
+        return dir ? open.get(dir) : undefined;
+    }
+
+    /**
+     * Let go of a closed session's history once what it was saving is saved, if `unused` still says so then: opened
+     * again, it's read from disk, as another process would read it. One that couldn't be saved is kept: what this
+     * process holds of it is all there is.
+     */
+    static async release(session: Session, unused: () => boolean): Promise<void> {
+        const h = FileHistory.existing(session);
+        if (!h) return;
+        for (;;) {
+            const pending = [...h.writing.values(), ...h.snapped.values()];
+            await Promise.all(pending.map((p) => p.catch(() => undefined)));
+            if (h.writing.size + h.snapped.size === pending.length && [...h.writing.values(), ...h.snapped.values()].every((p, i) => p === pending[i])) break;
+        }
+        if (h.failed || open.get(h.dir) !== h || !unused()) return;
+        open.delete(h.dir);
     }
 
     private get index() {

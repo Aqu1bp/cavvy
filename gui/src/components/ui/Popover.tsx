@@ -1,4 +1,4 @@
-import { createEffect, createMemo, createSignal, onCleanup, onMount, Show, type JSX } from "solid-js";
+import { createEffect, createMemo, createSignal, onCleanup, Show, type JSX } from "solid-js";
 import { Portal } from "solid-js/web";
 import { menuOf, mountMenu, type MenuBehavior } from "../../lib/menu";
 import { outOfSight, placePopover, type PopoverPlace } from "../../lib/popover";
@@ -87,6 +87,38 @@ export function Popover(p: PopoverProps) {
         requestAnimationFrame(place);
     });
 
+    // The page's pointer, keys and size, heard while it's open (a closed one, a menu for each sidebar row, listens to nothing).
+    createEffect(() => {
+        if (!open()) return;
+        const onDown = (e: PointerEvent) => {
+            const t = e.target as Node;
+            // A submenu of it is in it too.
+            if ((el && menuOf(el, t)) || p.anchor()?.contains(t)) return;
+            p.onClose();
+        };
+        const onKey = (e: KeyboardEvent) => {
+            if (!p.behavior && e.key === "Escape") {
+                e.stopPropagation();
+                p.onClose();
+            }
+        };
+        // The window resized: it moves with its anchor, or closes when that's gone out of sight (a row the shorter
+        // window hides), rather than hang off the window's edge.
+        const onResize = () => {
+            const a = p.anchor();
+            if (a && outOfSight(a)) p.onClose();
+            else place();
+        };
+        document.addEventListener("pointerdown", onDown, true);
+        document.addEventListener("keydown", onKey, true);
+        window.addEventListener("resize", onResize);
+        onCleanup(() => {
+            document.removeEventListener("pointerdown", onDown, true);
+            document.removeEventListener("keydown", onKey, true);
+            window.removeEventListener("resize", onResize);
+        });
+    });
+
     createEffect(() => {
         if (open() && el && p.behavior) onCleanup(mountMenu(el, p.behavior));
     });
@@ -101,38 +133,6 @@ export function Popover(p: PopoverProps) {
     const pane = usePane();
     createEffect(() => {
         if (pane.parked() && open()) p.onClose();
-    });
-
-    onMount(() => {
-        const onDown = (e: PointerEvent) => {
-            if (!open()) return;
-            const t = e.target as Node;
-            // A submenu of it is in it too.
-            if ((el && menuOf(el, t)) || p.anchor()?.contains(t)) return;
-            p.onClose();
-        };
-        const onKey = (e: KeyboardEvent) => {
-            if (open() && !p.behavior && e.key === "Escape") {
-                e.stopPropagation();
-                p.onClose();
-            }
-        };
-        // The window resized: it moves with its anchor, or closes when that's gone out of sight (a row the shorter
-        // window hides), rather than hang off the window's edge.
-        const onResize = () => {
-            if (!open()) return;
-            const a = p.anchor();
-            if (a && outOfSight(a)) p.onClose();
-            else place();
-        };
-        document.addEventListener("pointerdown", onDown, true);
-        document.addEventListener("keydown", onKey, true);
-        window.addEventListener("resize", onResize);
-        onCleanup(() => {
-            document.removeEventListener("pointerdown", onDown, true);
-            document.removeEventListener("keydown", onKey, true);
-            window.removeEventListener("resize", onResize);
-        });
     });
 
     // Tracked while open, for fadeOut.

@@ -75,6 +75,21 @@ describe("wire format", () => {
         r.push(encodeMessage({ jsonrpc: "2.0", id: 1, result: 7 }));
         expect(got).toEqual([{ jsonrpc: "2.0", id: 1, result: 7 }]);
     });
+
+    test("a buffer grown for a large message isn't kept once it's read", () => {
+        const got: unknown[] = [];
+        const r = new MessageReader((m) => got.push(m));
+        const size = () => (r as unknown as { buf: Uint8Array }).buf.length;
+        const big = encodeMessage({ jsonrpc: "2.0", method: "x", params: { s: "a".repeat(3 * 1024 * 1024) } });
+        // Half of it: the buffer grows and is kept while the rest is on its way.
+        r.push(big.subarray(0, big.length >> 1));
+        expect(size()).toBeGreaterThan(1024 * 1024);
+        r.push(big.subarray(big.length >> 1));
+        expect(got).toHaveLength(1);
+        expect(size()).toBe(64 * 1024);
+        r.push(encodeMessage({ jsonrpc: "2.0", id: 1, result: 7 }));
+        expect(got).toHaveLength(2);
+    });
 });
 
 describe("what gets reported", () => {
@@ -564,6 +579,16 @@ describe("diagnostics after an edit", () => {
         expect(m.status()).toEqual([]);
         expect(alive(pid)).toBe(false);
         expect((await m.afterEdit(join(root, "a.ts"), "ERROR: y"))?.files[0]?.items[0]?.message).toBe("y");
+    });
+
+    test("what a stopped server says while it shuts down isn't kept", async () => {
+        const root = project();
+        const m = manager(root, { fake: fakeServer({ FAKE_LSP_SHUTDOWN_SAYS: "z.ts" }) }, { timing: { idleMs: 200 } });
+        await m.afterEdit(join(root, "a.ts"), "clean");
+        await Bun.sleep(1200);
+        expect(m.status()).toEqual([]);
+        const published = (m as unknown as { pool: { published: Map<string, unknown> } }).pool.published;
+        expect([...published.keys()].filter((uri) => uri.endsWith("/z.ts"))).toEqual([]);
     });
 
     test("the idle time counts from when an edit's check ends, so a slow start isn't cut off", async () => {
