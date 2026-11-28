@@ -367,7 +367,7 @@ function picker(cwd: string, listed: { path: string; on?: string; worktrees: unk
     const WorktreePicker = componentCode("WorktreePicker", {
         node, Show, For, createSignal, React: { Fragment: "Fragment" },
         createResource: () => [Object.assign(() => listed, { loading }), { refetch: stub }],
-        Check: "Check", ChevronDown: "ChevronDown", FolderGit2: "FolderGit2", GitBranch: "GitBranch", GitPullRequest: "GitPullRequest", Plus: "Plus", Trash2: "Trash2",
+        Check: "Check", ChevronDown: "ChevronDown", FolderGit2: "FolderGit2", GitBranch: "GitBranch", GitPullRequest: "GitPullRequest", Plus: "Plus", Trash2: "Trash2", Spinner: "Spinner",
         app: { conn: "open" }, homeOn: () => on, rpcFor: () => ({}), openGit: stub,
         openProject: async (path: string) => void opened.push(path),
         requestComposerFocus: stub, tildify: (p: string) => p,
@@ -387,7 +387,7 @@ test("the worktree picker never offers another project's worktrees while this on
     // This folder's own, kept while it lists them again: still there.
     const same = picker("/work/a", a, true);
     const items = byClass(elements(same.tree, "Popover"), "button", "menu-item");
-    expect(items.map(text)).toEqual(["main/work/a · main checkout", "fix/work/a-wt", "New worktree…", "Work on a pull request…"]);
+    expect(items.map(text)).toEqual(["main/work/a· main checkout", "fix/work/a-wt", "New worktree…", "Work on a pull request…"]);
     // Home moved to the same path on another machine, its listing not back yet: nothing of this computer's folder.
     expect(elements(elements(picker("/work/a", a, true, "box").tree, "Popover")[0]!, "button")).toHaveLength(0);
     expect(byClass(elements(picker("/work/a", { ...a, on: "box" }, true, "box").tree, "Popover"), "button", "menu-item")).toHaveLength(4);

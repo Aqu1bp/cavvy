@@ -62,7 +62,7 @@ test("Home drawn before the window is shown is marked to skip its entrance; one 
     const Home = componentCode("Home", {
         node, createSignal: (v: unknown) => [() => v, stub], createResource: () => [() => ({ needsTrust: [], git: false }), { refetch: stub }], For: stub, Show: stub, onCleanup: stub, onMount: stub,
         React: { Fragment: "Fragment" },
-        ChevronDown: stub, FolderGit2: stub, motionMs: () => 0, FolderOpen: stub, KeyRound: stub, Plug: stub, ShieldAlert: stub, Shield: stub,
+        ChevronDown: stub, FolderGit2: stub, motionMs: () => 0, FolderOpen: stub, KeyRound: stub, Plug: stub, ShieldAlert: stub, Shield: stub, ShieldQuestion: stub,
         app: { conn: "open", homeCwd: "/project", providers: [], projects: [], models: [] }, refreshProjects: stub, reportError: stub, rpc: {}, rpcFor: () => ({}), homeOn: () => undefined, chooseProject: stub, homeProjects: () => [], noModel: () => false, createEffect: (fn: () => void) => fn(), machine: undefined, isElectron: false, serversUi: stub, connectCli: stub, openProject: stub, trustAndContinue: stub, homeJumped: () => false, inspect: stub, inspectedBefore: () => undefined, forgetInspected: stub,
         requestComposerFocus: stub, setSettingsTab: stub, columnHeight: () => "800px", shellLayout: () => ({ column: { h: 800 } }), sp: (n: number) => n,
         ago: stub, basename: (p: string) => p, tildify: (p: string) => p, now: stub, isWindowShown: () => shown,

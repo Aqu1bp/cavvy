@@ -6,6 +6,7 @@ import { openProject } from "../state/actions";
 import { openGit, requestComposerFocus } from "../state/ui";
 import { tildify } from "../lib/format";
 import { Popover } from "./ui/Popover";
+import { Spinner } from "./ui/bits";
 import type { NewWorktreeRequest, RemoveWorktreeRequest } from "./WorktreeDialogs";
 
 /** Not in the startup bundle: fetched as the picker opens, before either is asked for. */
@@ -52,53 +53,61 @@ export function WorktreePicker(p: { cwd: string; branch?: string }) {
             <span class="select-value mono">{p.branch || "Detached HEAD"}</span>
             <ChevronDown size={13} class="select-caret" />
         </button>
-        <Popover open={open()} anchor={() => anchor} onClose={() => setOpen(false)} placement="bottom" align="end" width={400}>
-            <div class="menu-head">Worktrees</div>
+        <Popover open={open()} anchor={() => anchor} onClose={() => setOpen(false)} placement="bottom" align="end" offset={6} width={404} class="menu wt-menu" label="Worktrees">
+            <div class="menu-label">Worktrees</div>
             {/* What it listed for this folder before stays while it lists them again. */}
-            <Show when={here() || !listing.loading} fallback={<div class="menu-note">Loading worktrees…</div>}>
-                <Show when={!here()?.error} fallback={<div class="menu-note">{here()?.error}</div>}>
-                    <For each={here()?.worktrees} fallback={<div class="menu-note">No working trees found.</div>}>
-                        {(w) => <div class="wt-row">
-                            <button class={`menu-item ${w.current ? "current" : ""}`} disabled={!w.exists || w.prunable !== undefined} title={w.path} onClick={async () => {
-                                setOpen(false);
-                                await openProject(w.path, true);
-                                requestComposerFocus();
-                            }}>
-                                <Show when={w.main} fallback={<FolderGit2 size={15} />}>
-                                    <GitBranch size={15} />
-                                </Show>
-                                <span class="menu-text">
-                                    <span class="menu-label">{label(w)}</span>
-                                    <span class="menu-desc mono truncate">{tildify(w.path, app.hello?.homeDir)}{w.main ? " · main checkout" : ""}</span>
-                                    <Show when={!w.exists || w.prunable !== undefined || w.locked !== undefined}>
-                                        <span class="menu-desc">{!w.exists ? "Folder missing" : w.prunable !== undefined ? `Unavailable${w.prunable ? `: ${w.prunable}` : ""}` : `Locked${w.locked ? `: ${w.locked}` : ""}`}</span>
+            <Show when={here() || !listing.loading} fallback={<p class="wt-note"><Spinner size={13} />Loading worktrees…</p>}>
+                <Show when={!here()?.error} fallback={<p class="wt-note">{here()?.error}</p>}>
+                    <Show when={here()?.worktrees.length} fallback={<p class="wt-note">No working trees found.</p>}>
+                        <div class="wt-list" role="listbox" aria-label="Worktrees">
+                            <For each={here()?.worktrees}>
+                                {(w) => <div class="wt-row">
+                                    <button type="button" role="option" aria-selected={w.current} class="menu-item menu-item-two wt-item" disabled={!w.exists || w.prunable !== undefined} title={w.path} onClick={async () => {
+                                        setOpen(false);
+                                        await openProject(w.path, true);
+                                        requestComposerFocus();
+                                    }}>
+                                        <span class="menu-check">{w.current && <Check size={14} />}</span>
+                                        <Show when={w.main} fallback={<FolderGit2 size={14} />}>
+                                            <GitBranch size={14} />
+                                        </Show>
+                                        <span class="menu-item-text">
+                                            <span class={`menu-item-name ${w.branch ? "mono" : ""}`}>{label(w)}</span>
+                                            <span class="menu-item-sub wt-path">
+                                                <span class="mono truncate">{main() && w.path.startsWith(main()!.path + "/") ? w.path.slice(main()!.path.length + 1) : tildify(w.path, app.hello?.homeDir)}</span>
+                                                <Show when={w.main}><span class="wt-main">· main checkout</span></Show>
+                                            </span>
+                                            <Show when={!w.exists || w.prunable !== undefined || w.locked !== undefined}>
+                                                <span class="menu-item-sub wt-problem">{!w.exists ? "Folder missing" : w.prunable !== undefined ? `Unavailable${w.prunable ? `: ${w.prunable}` : ""}` : `Locked${w.locked ? `: ${w.locked}` : ""}`}</span>
+                                            </Show>
+                                        </span>
+                                    </button>
+                                    <Show when={w.managed && main()}>
+                                        <button type="button" class="icon-btn icon-btn-sm wt-remove" title="Remove this worktree…" aria-label={`Remove worktree ${label(w)}`} onClick={() => {
+                                            setOpen(false);
+                                            setRemoving({ cwd: p.cwd, main: main()!.path, worktree: w });
+                                        }}>
+                                            <Trash2 size={14} />
+                                        </button>
                                     </Show>
-                                </span>
-                                <Show when={w.current}><Check size={14} aria-label="Current worktree" /></Show>
-                            </button>
-                            <Show when={w.managed && main()}>
-                                <button class="icon-btn wt-remove" title="Remove this worktree…" aria-label={`Remove worktree ${label(w)}`} onClick={() => {
-                                    setOpen(false);
-                                    setRemoving({ cwd: p.cwd, main: main()!.path, worktree: w });
-                                }}>
-                                    <Trash2 size={14} />
-                                </button>
-                            </Show>
-                        </div>}
-                    </For>
+                                </div>}
+                            </For>
+                        </div>
+                    </Show>
                     <Show when={main()}>
                         <div class="menu-sep" />
-                        <button class="menu-item compact" onClick={startCreating}>
-                            <Plus size={15} />
-                            <span class="menu-label">New worktree…</span>
+                        <button type="button" class="menu-item" onClick={startCreating}>
+                            <Plus size={14} />
+                            <span class="menu-item-name">New worktree…</span>
                         </button>
-                        <button class="menu-item compact" onClick={() => (setOpen(false), openGit("openPullRequests"))}>
-                            <GitPullRequest size={15} />
-                            <span class="menu-label">Work on a pull request…</span>
+                        <button type="button" class="menu-item" onClick={() => (setOpen(false), openGit("openPullRequests"))}>
+                            <GitPullRequest size={14} />
+                            <span class="menu-item-name">Work on a pull request…</span>
                         </button>
                     </Show>
                 </Show>
             </Show>
+            <p class="menu-foot">New sessions run in the selected folder.</p>
         </Popover>
         <Show when={creating()}>{(r) => <NewWorktreeDialog request={r()} onClose={() => setCreating(undefined)} />}</Show>
         <Show when={removing()}>{(r) => <RemoveWorktreeDialog request={r()} onClose={() => setRemoving(undefined)} />}</Show>

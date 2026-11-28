@@ -1949,29 +1949,72 @@ button.meter[aria-expanded="true"] {
     vertical-align: 1px;
 }
 
-/* A worktree row with its remove button beside it (WorktreePicker; a button can't hold another). */
+/* ---- The worktree picker (WorktreePicker.tsx), from the design's dialogs.css ---- */
+
+.wt-menu {
+    width: calc(404 * var(--sp));
+}
+
+.wt-list {
+    display: flex;
+    flex-direction: column;
+    max-height: calc(316 * var(--sp));
+    overflow-y: auto;
+}
+
 .wt-row {
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     gap: calc(2 * var(--sp));
 }
 
-.wt-row .menu-item {
+.wt-item {
     flex: 1;
+    min-width: 0;
+    width: auto;
+    text-align: left;
+}
+
+.wt-item:disabled .menu-item-name,
+.wt-item:disabled .wt-path,
+.wt-item:disabled > svg {
+    opacity: 0.5;
+}
+
+.wt-item .menu-item-name.mono {
+    font-size: calc(12.5 * var(--sp));
+}
+
+.wt-menu .wt-path {
+    display: flex;
+    gap: calc(5 * var(--sp));
+    min-width: 0;
+}
+
+.wt-menu .wt-path .mono {
+    font-size: calc(11.5 * var(--sp));
+}
+
+.wt-main {
+    flex: none;
+}
+
+.wt-problem {
+    color: var(--amber);
 }
 
 .wt-remove {
-    margin-top: calc(4 * var(--sp));
-    opacity: 0;
+    flex: none;
+    margin-right: calc(3 * var(--sp));
+    color: var(--text-3);
 }
 
-.wt-row:hover .wt-remove,
-.wt-remove:focus-visible {
-    opacity: 1;
-}
-
-.wt-remove:hover:not(:disabled) {
-    color: var(--danger);
+.wt-note {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    padding: calc(10 * var(--sp)) calc(9 * var(--sp)) calc(12 * var(--sp));
+    color: var(--text-3);
 }
 
 /* ---- A narrow conversation column: labels give way to glyphs, rows stack ----- */
