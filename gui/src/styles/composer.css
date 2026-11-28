@@ -1986,9 +1986,6 @@ button.meter[aria-expanded="true"] {
 }
 
 .wt-menu .wt-path {
-    /* Not the plan dialog's path (overlays.css): this one is the row's second line. */
-    font-size: inherit;
-    overflow-wrap: normal;
     display: flex;
     gap: calc(5 * var(--sp));
     min-width: 0;
