@@ -3,7 +3,7 @@
 // it. A person using the page takes the tab from the agent (until they hand it back). The page is sized to the pane.
 
 import { batch, createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
-import { ArrowLeft, ArrowRight, Globe, Plus, RotateCw, X } from "lucide-solid";
+import { ArrowLeft, ArrowRight, Check, Plus, RotateCw, X } from "lucide-solid";
 import type { BrowserCommand, BrowserInput } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
 import { app, awayMachine, connOn, reportError, rpcFor } from "../state/app";
@@ -13,10 +13,11 @@ import { electron, machine } from "../lib/platform";
 import type { Follow } from "../lib/follow-box";
 import { addressOf, currentTab, isPasteKey, isReleaseKey, keyInput, mouseInput, pagePoint, paneSize, paneStatus, placeFrame, resized, tabLabel, wheelInput, wheelPixels, type Point, type Size } from "../lib/browser";
 import type { BrowserImageFrame } from "@shared/browser-wire";
-import { Spinner } from "./ui/bits";
+import { Kbd, Spinner } from "./ui/bits";
 import { pageTarget, type PageView } from "../lib/browser-view";
 import { paneTools, savedView } from "./BrowserTools";
 import { hostedTargets } from "../state/browser-host";
+import "../styles/browser-pane.css";
 
 /**
  * In the Electron desktop app the page isn't pictures: the tab is a real Chromium view in the window, which the app
@@ -413,21 +414,53 @@ export function BrowserPane(p: { handle: SessionHandle }) {
         void stream.call("browser.dialog", { id: id(), accept, ...(tab()?.dialog?.type === "prompt" ? { text } : {}), tab: tab()?.id }).catch(reportError);
     };
 
+    /** The page has the keyboard (its input field has the focus): said on its edge, with the key that gives it back. */
+    const [driving, setDriving] = createSignal(false);
+    const host = () => {
+        try {
+            return new URL(tab()?.url ?? "").host || addressOf(tab()?.url ?? "");
+        } catch {
+            return addressOf(tab()?.url ?? "");
+        }
+    };
+    /** What the page asks shows over its foot, with the first answer ready for the keyboard. */
+    const ready = (el: HTMLElement) => requestAnimationFrame(() => el.isConnected && el.focus({ preventScroll: true }));
+
     return (
-        <div class="browser-pane" ref={root}>
+        <div class="br" ref={root}>
+            <div class="br-tabs" role="tablist" aria-label="Browser tabs">
+                <For each={state()?.tabs}>
+                    {(t) => (
+                        <div class="br-tab" data-on={t.id === state()?.active || undefined}>
+                            <button role="tab" aria-selected={t.id === state()?.active} class="br-tab-main" title={t.url || undefined} onClick={() => t.id !== state()?.active && command("switch_tab", { tab: t.id })}>
+                                <Show when={agentUsing() && t.id === state()?.active}>
+                                    <span class="br-live on" role="img" aria-label="Agent is using this tab" />
+                                </Show>
+                                <span class="br-tab-title">{tabLabel(t)}</span>
+                            </button>
+                            <button class="br-tab-x" aria-label={`Close ${tabLabel(t)}`} title="Close tab" onClick={() => command("close_tab", { tab: t.id })}>
+                                <X size={12} />
+                            </button>
+                        </div>
+                    )}
+                </For>
+                <button class="icon-btn icon-btn-sm" aria-label="New tab" title="New tab" disabled={status() === "unavailable"} onClick={newTab}>
+                    <Plus size={14} />
+                </button>
+            </div>
             <div class="br-bar">
-                <button class="hb sm" aria-label="Back" title="Back" disabled={!tab()?.canGoBack} onClick={() => command("back", { tab: tab()?.id })}>
-                    <ArrowLeft size={14} />
+                <button class="icon-btn icon-btn-sm" aria-label="Back" title="Back" disabled={!tab()?.canGoBack} onClick={() => command("back", { tab: tab()?.id })}>
+                    <ArrowLeft size={15} />
                 </button>
-                <button class="hb sm" aria-label="Forward" title="Forward" disabled={!tab()?.canGoForward} onClick={() => command("forward", { tab: tab()?.id })}>
-                    <ArrowRight size={14} />
+                <button class="icon-btn icon-btn-sm" aria-label="Forward" title="Forward" disabled={!tab()?.canGoForward} onClick={() => command("forward", { tab: tab()?.id })}>
+                    <ArrowRight size={15} />
                 </button>
-                <button class="hb sm" aria-label="Reload" title="Reload" disabled={!tab()} onClick={() => command("reload", { tab: tab()?.id })}>
+                <button class="icon-btn icon-btn-sm" aria-label="Reload" title="Reload" disabled={!tab()} onClick={() => command("reload", { tab: tab()?.id })}>
                     <Show when={tab()?.loading} fallback={<RotateCw size={14} />}>
                         <Spinner size={14} />
                     </Show>
                 </button>
-                <form class="br-address" onSubmit={go}>
+                <form class="br-addr" onSubmit={go}>
                     <input
                         ref={address}
                         type="text"
@@ -450,35 +483,20 @@ export function BrowserPane(p: { handle: SessionHandle }) {
                             e.currentTarget.blur();
                         }}
                     />
+                    <Show when={driving()}>
+                        <Kbd keys="⇧+Esc" />
+                    </Show>
                 </form>
                 {tools.menu()}
             </div>
-            <div class="br-tabs" role="tablist" aria-label="Browser tabs">
-                <For each={state()?.tabs}>
-                    {(t) => (
-                        <div class="br-tab" classList={{ on: t.id === state()?.active }}>
-                            <button role="tab" aria-selected={t.id === state()?.active} class="br-tab-main" title={t.url || undefined} onClick={() => t.id !== state()?.active && command("switch_tab", { tab: t.id })}>
-                                <span class="truncate">{tabLabel(t)}</span>
-                            </button>
-                            <button class="br-tab-x" aria-label={`Close ${tabLabel(t)}`} title="Close tab" onClick={() => command("close_tab", { tab: t.id })}>
-                                <X size={12} />
-                            </button>
-                        </div>
-                    )}
-                </For>
-                <button class="hb sm" aria-label="New tab" title="New tab" disabled={status() === "unavailable"} onClick={newTab}>
-                    <Plus size={14} />
-                </button>
-                <span class="grow" />
-                <Show when={agentUsing()}>
-                    <span class="br-who" title="The agent is using this tab. You can too.">
-                        <span class="br-dot" />
-                        <span class="truncate">Agent is using this tab</span>
-                    </span>
-                </Show>
-            </div>
+            <Show when={agentUsing()}>
+                <div class="br-who" role="status" title="The agent is using this tab. You can too.">
+                    <span class="br-live on" />
+                    Agent is using this tab
+                </div>
+            </Show>
             {tools.bars()}
-            <div class="br-view" ref={box}>
+            <div class="br-view" ref={box} data-device={view()?.device ? "" : undefined} data-wait={!native && tab() ? (!hasPicture() ? "load" : !connected() ? "reconnect" : undefined) : undefined}>
                 <Show when={!native}>
                     <canvas
                         ref={canvas}
@@ -501,7 +519,8 @@ export function BrowserPane(p: { handle: SessionHandle }) {
                         onKeyDown={onKey("down")}
                         onKeyUp={onKey("up")}
                         onPaste={onPaste}
-                        onBlur={cancelInput}
+                        onFocus={() => setDriving(true)}
+                        onBlur={() => (setDriving(false), cancelInput())}
                         onCompositionStart={() => { composing = true; compositionTab = tab()?.id; }}
                         onCompositionEnd={(e) => {
                             const commit = composing && compositionTab === tab()?.id;
@@ -518,56 +537,84 @@ export function BrowserPane(p: { handle: SessionHandle }) {
                     />
                 </Show>
                 <Show when={!native && tab() && (!connected() || !hasPicture())}>
-                    <div class="br-connection" role="status"><Spinner size={14} />{connected() ? "Loading page…" : "Reconnecting browser…"}</div>
+                    <div class="br-status" role="status"><Spinner size={13} />{connected() ? "Loading page…" : "Reconnecting browser…"}</div>
                 </Show>
                 <Show when={!tab()}>
-                    <div class="br-blank">
-                        <Show
-                            when={status() !== "unavailable"}
-                            fallback={
-                                <div class="blank">
-                                    <Globe size={22} class="ic" />
-                                    <b>No browser to run</b>
-                                    <span class="selectable">{state()?.error}</span>
-                                </div>
-                            }
-                        >
-                            <div class="blank">
-                                <Show when={status() === "starting"} fallback={<Globe size={22} class="ic" />}>
-                                    <Spinner size={22} class="ic" />
-                                </Show>
-                                <b>{status() === "starting" ? "Starting the browser…" : status() === "crashed" ? "The browser stopped" : "No page open"}</b>
-                                <Show when={status() === "crashed"}>{state()?.error}</Show>
-                            </div>
+                    <div class="blank">
+                        <Show when={status() === "starting"}>
+                            <Spinner size={14} class="blank-spinner" />
+                        </Show>
+                        <p class="blank-title">{status() === "unavailable" ? "No browser to run" : status() === "starting" ? "Starting the browser…" : status() === "crashed" ? "The browser stopped" : "No page open"}</p>
+                        <Show when={(status() === "unavailable" || status() === "crashed") && state()?.error}>
+                            {(error) => <p class="br-fix selectable">{error()}</p>}
                         </Show>
                     </div>
                 </Show>
-                {/* A dropdown's options: the list the page would open takes no click from here (src/browser/interact.ts). */}
+                {/* A dropdown's options: the list the page would open takes no click from here (src/browser/interact.ts).
+                    Over the page's foot, which the desktop app's page stops short of (lib/page-follow.ts, .br-dialog). */}
                 <Show when={tab()?.choice}>
                     {(c) => (
-                        <div class="br-note br-dialog" role="listbox" aria-label={c().label || "Options"} style="max-height:60%;overflow:auto;flex-direction:column;align-items:stretch;flex-wrap:nowrap">
-                            <For each={c().options}>{(o, i) => <button class={`btn ${i() === c().selected ? "btn-primary" : "btn-ghost"} btn-sm`} role="option" aria-selected={i() === c().selected} disabled={o.disabled} onClick={() => choose(c().id, i())}>{o.label}</button>}</For>
-                            <button class="btn btn-ghost btn-sm" onClick={() => choose(c().id)}>
-                                Cancel
-                            </button>
+                        <div
+                            class="br-sheet br-dialog"
+                            role="listbox"
+                            aria-label={c().label || "Options"}
+                            onKeyDown={(e) => {
+                                if (e.key !== "Escape") return;
+                                e.stopPropagation();
+                                choose(c().id);
+                            }}
+                        >
+                            <Show when={c().label}><p class="br-sheet-label">{c().label}</p></Show>
+                            <div class="br-options">
+                                <For each={c().options}>
+                                    {(o, i) => (
+                                        <button ref={(el) => i() === c().selected && ready(el)} class="menu-item" role="option" aria-selected={i() === c().selected} disabled={o.disabled} onClick={() => choose(c().id, i())}>
+                                            <span class="menu-check">
+                                                <Show when={i() === c().selected}><Check size={14} /></Show>
+                                            </span>
+                                            <span class="menu-item-name">{o.label}</span>
+                                        </button>
+                                    )}
+                                </For>
+                            </div>
+                            <div class="br-sheet-foot">
+                                <button class="btn btn-sm" onClick={() => choose(c().id)}>
+                                    Cancel
+                                </button>
+                            </div>
                         </div>
                     )}
                 </Show>
                 {/* Over the page, which it blocks anyway: the page keeps its size. */}
                 <Show when={tab()?.dialog}>
                     {(d) => (
-                        <div class="br-note br-dialog" role="alertdialog" aria-label={`The page asks: ${d().message}`}>
-                            <span class="br-note-text selectable">{d().message}</span>
+                        <form
+                            class="br-sheet br-ask br-dialog"
+                            role="alertdialog"
+                            aria-label={`The page asks: ${d().message}`}
+                            onSubmit={(e) => (e.preventDefault(), answer(true))}
+                            onKeyDown={(e) => {
+                                if (e.key !== "Escape") return;
+                                e.stopPropagation();
+                                answer(false);
+                            }}
+                        >
+                            <p class="br-sheet-label">{host() ? `${host()} says` : "The page says"}</p>
+                            <p class="br-ask-text selectable">{d().message}</p>
                             <Show when={d().type === "prompt"}>
-                                <input aria-label="Answer" value={dialogText()} placeholder={d().defaultPrompt} onInput={(e) => setDialogText(e.currentTarget.value)} />
+                                <input ref={ready} class="input input-sm" aria-label="Answer" value={dialogText()} placeholder={d().defaultPrompt} onInput={(e) => setDialogText(e.currentTarget.value)} />
                             </Show>
-                            <button class="btn btn-primary btn-sm" onClick={() => answer(true)}>
-                                OK
-                            </button>
-                            <button class="btn btn-ghost btn-sm" onClick={() => answer(false)}>
-                                Cancel
-                            </button>
-                        </div>
+                            <div class="br-sheet-foot">
+                                <Show when={d().type !== "alert"}>
+                                    <button type="button" class="btn btn-sm" onClick={() => answer(false)}>
+                                        Cancel
+                                    </button>
+                                </Show>
+                                <button ref={(el) => d().type !== "prompt" && ready(el)} type="submit" class="btn btn-sm btn-primary">
+                                    OK
+                                </button>
+                            </div>
+                        </form>
                     )}
                 </Show>
             </div>

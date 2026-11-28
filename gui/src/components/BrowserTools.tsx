@@ -17,6 +17,7 @@ import { DEVICES, deviceOf, fitScale, side, viewLabel, zoomStep, MAX_SIDE, MIN_S
 import type { PaneStatus, Size } from "../lib/browser";
 import { addressMark, backToAddress, keepsDraft, type AddressMark } from "../lib/find-return";
 import { Menu } from "./ui/Menu";
+import { Kbd } from "./ui/bits";
 
 /** Each session's size and zoom while the window is open: the pane shows it again when it comes back. */
 const views = new Map<string, PageView>();
@@ -310,23 +311,25 @@ export function paneTools(o: PaneToolsOptions): { menu: () => JSX.Element; bars:
         if (key) electron?.browserDevTools?.(key, r && { x: r.x, y: r.y, width: r.width, height: r.height });
     };
 
-    /** A row of the menu; `extra` is read as things change (zooming keeps the menu open). */
+    /** A row of the menu; `extra` is read as things change (zooming keeps the menu open). Each has the check's room, so the icons line up down the menu. */
     const item = (Icon: typeof Search, label: () => string, run: () => void, extra: () => { disabled?: boolean; kbd?: string; checked?: boolean } = () => ({})) => (
-        <button role={extra().checked === undefined ? "menuitem" : "menuitemradio"} aria-checked={extra().checked} class="menu-item compact" disabled={extra().disabled} onClick={run}>
+        <button role={extra().checked === undefined ? "menuitem" : "menuitemradio"} aria-checked={extra().checked} class="menu-item" disabled={extra().disabled} onClick={run}>
+            <span class="menu-check">
+                <Show when={extra().checked}><Check size={14} /></Show>
+            </span>
             <Icon size={14} />
-            <span class="menu-item-name grow">{label()}</span>
-            <Show when={extra().kbd}><kbd class="menu-kbd">{extra().kbd}</kbd></Show>
-            <Show when={extra().checked}><Check size={14} /></Show>
+            <span class="menu-item-name">{label()}</span>
+            <Show when={extra().kbd}>{(k) => <Kbd keys={k()} />}</Show>
         </button>
     );
 
     const menu = () => (
         <>
-            <button ref={menuButton} class="hb sm" aria-label="Page tools" title="Find, size, zoom" aria-haspopup="menu" aria-expanded={menuOpen()} onClick={() => setMenuOpen(!menuOpen())}>
-                <Ellipsis size={14} />
+            <button ref={menuButton} class="icon-btn icon-btn-sm" aria-label="Page tools" title="Find, size, zoom" aria-haspopup="menu" aria-expanded={menuOpen()} data-state={menuOpen() ? "open" : undefined} onClick={() => setMenuOpen(!menuOpen())}>
+                <Ellipsis size={15} />
             </button>
             <Menu label="Page tools" open={menuOpen()} anchor={() => menuButton} onClose={() => setMenuOpen(false)} align="end" width={244}>
-                {item(Search, () => "Find in page", openFind, () => ({ disabled: !o.tab(), kbd: mod === "⌘" ? "⌘F" : "Ctrl+F" }))}
+                {item(Search, () => "Find in page", openFind, () => ({ disabled: !o.tab(), kbd: mod === "⌘" ? "⌘+F" : "Ctrl+F" }))}
                 <Show when={o.native && electron?.browserDevTools}>{item(SquareTerminal, () => "Open DevTools", devTools, () => ({ disabled: !o.tab() }))}</Show>
                 <div class="menu-sep" />
                 {item(Maximize, () => "Fill pane", () => pick(undefined), () => ({ checked: !o.view()?.device }))}
@@ -362,6 +365,7 @@ export function paneTools(o: PaneToolsOptions): { menu: () => JSX.Element; bars:
                         });
                     }}
                 >
+                    <label class="br-field">
                     <Search size={13} class="br-strip-ic" />
                     <input
                         ref={findInput}
@@ -391,9 +395,10 @@ export function paneTools(o: PaneToolsOptions): { menu: () => JSX.Element; bars:
                         }}
                     />
                     <span class="br-strip-count" aria-live="polite">{found() ? (found()!.matches ? `${found()!.active} of ${found()!.matches}` : "No matches") : ""}</span>
-                    <button class="hb sm" aria-label="Previous match" title="Previous (Shift+Enter)" disabled={!found()?.matches} onClick={() => void search(-1)}><ChevronUp size={14} /></button>
-                    <button class="hb sm" aria-label="Next match" title="Next (Enter)" disabled={!found()?.matches} onClick={() => void search(1)}><ChevronDown size={14} /></button>
-                    <button class="hb sm" aria-label="Close find" title="Close (Esc)" onClick={closeFind}><X size={14} /></button>
+                    </label>
+                    <button class="icon-btn icon-btn-sm" aria-label="Previous match" title="Previous (Shift+Enter)" disabled={!found()?.matches} onClick={() => void search(-1)}><ChevronUp size={14} /></button>
+                    <button class="icon-btn icon-btn-sm" aria-label="Next match" title="Next (Enter)" disabled={!found()?.matches} onClick={() => void search(1)}><ChevronDown size={14} /></button>
+                    <button class="icon-btn icon-btn-sm" aria-label="Close find" title="Close (Esc)" onClick={closeFind}><X size={14} /></button>
                 </div>
             </Show>
             <Show when={o.view()}>
@@ -405,7 +410,7 @@ export function paneTools(o: PaneToolsOptions): { menu: () => JSX.Element; bars:
                                     {sideField("width", d, (el) => (widthInput = el))}
                                     <span class="br-strip-x">×</span>
                                     {sideField("height", d)}
-                                    <button class="hb sm" aria-label="Rotate" title="Rotate" onClick={rotate}><RotateCwSquare size={14} /></button>
+                                    <button class="icon-btn icon-btn-sm" aria-label="Rotate" title="Rotate" onClick={rotate}><RotateCwSquare size={14} /></button>
                                     <Show
                                         when={refused()}
                                         fallback={<Show when={shownAt()}>{(pct) => <><span class="br-strip-note" title="Drawn smaller to fit the pane">Shown at</span><span class="br-strip-count" title="Drawn smaller to fit the pane">{pct()}%</span></>}</Show>}
@@ -416,10 +421,10 @@ export function paneTools(o: PaneToolsOptions): { menu: () => JSX.Element; bars:
                             )}
                         </Show>
                         <span class="br-strip-end">
-                            <button class="hb sm" aria-label="Zoom out" title="Zoom out" disabled={zoom() <= 0.5} onClick={() => zoomBy(-1)}><ZoomOut size={14} /></button>
+                            <button class="icon-btn icon-btn-sm" aria-label="Zoom out" title="Zoom out" disabled={zoom() <= 0.5} onClick={() => zoomBy(-1)}><ZoomOut size={14} /></button>
                             <button class="br-strip-zoom" title="Actual size" aria-label={`Zoom ${Math.round(zoom() * 100)}%: actual size`} onClick={() => zoomBy(0)}>{Math.round(zoom() * 100)}%</button>
-                            <button class="hb sm" aria-label="Zoom in" title="Zoom in" disabled={zoom() >= 2} onClick={() => zoomBy(1)}><ZoomIn size={14} /></button>
-                            <button class="hb sm" aria-label="Fill pane" title="Fill pane" onClick={() => setView(undefined)}><X size={14} /></button>
+                            <button class="icon-btn icon-btn-sm" aria-label="Zoom in" title="Zoom in" disabled={zoom() >= 2} onClick={() => zoomBy(1)}><ZoomIn size={14} /></button>
+                            <button class="icon-btn icon-btn-sm" aria-label="Fill pane" title="Fill pane" onClick={() => setView(undefined)}><X size={14} /></button>
                         </span>
                     </div>
                 )}
