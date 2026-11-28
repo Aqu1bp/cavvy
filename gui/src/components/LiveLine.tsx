@@ -155,9 +155,12 @@ export function LiveLine(p: { state: LiveLineState | undefined; hint?: string; s
                     {/* What the line says, for a screen reader: only the current state, not the one rolling away. A command's
                         line is a button, named by it: what it's for and the command. */}
                     <span class="sr-only">{command() ? [showing()?.label, showing()?.detail].filter(Boolean).join(": ") : (stepOf(showing()?.steps) ?? showing()?.label)}</span>
-                    {/* Three dots while it works, the light sweeping the label too; an amber dot when it waits on the user. */}
+                    {/* Three dots while it works, the light sweeping the label too; an amber dot when it waits on the user. The
+                        dots are made again with each state, in the frame its label's light starts: their steps then land
+                        on the light's (remix-conversation.css .working-dots), so the two moving together draw no more windows than
+                        the light alone. */}
                     <span class="lic" aria-hidden="true">
-                        <Show when={showing()?.kind === "wait"} fallback={<span class="working-dots"><i /><i /><i /></span>}>
+                        <Show when={showing()?.kind === "wait"} fallback={<Show when={current()} keyed>{(_layer: Layer) => <span class="working-dots"><i /><i /><i /></span>}</Show>}>
                             <span class="live-wait" />
                         </Show>
                     </span>

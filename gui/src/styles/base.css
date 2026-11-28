@@ -304,27 +304,28 @@ h3 {
     height: calc(var(--spin) / 4);
     border-radius: 50%;
     background: currentColor;
-    /* The live dots' rise and fade (bounce), stepped on the stream clock's grid, paused with the window's loops. */
-    animation: dot-rise 1.2s steps(6) infinite;
+    /* The live line's wave and rest (remix-conversation.css live-dot), stepped on the stream clock's grid, paused with
+       the window's loops: its steps in 0.9 s of each 2.4, where the spinner it replaced turned every 50 ms. */
+    animation: dot-rise 2.4s steps(6) infinite;
     animation-play-state: var(--loops);
 }
 
 .spinner i:nth-child(2) {
-    animation-delay: 0.15s;
+    animation-delay: calc(150ms - 2400ms);
 }
 
 .spinner i:nth-child(3) {
-    animation-delay: 0.3s;
+    animation-delay: calc(300ms - 2400ms);
 }
 
 @keyframes dot-rise {
     0%,
-    50%,
+    25%,
     100% {
         opacity: 0.3;
         transform: translateY(0);
     }
-    25% {
+    12.5% {
         opacity: 1;
         transform: translateY(calc(var(--spin) / -6));
     }
