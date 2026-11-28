@@ -63,7 +63,7 @@ export interface ComposerAside {
     open?: (text: string, attachments: Attachment[]) => Promise<boolean>;
 }
 
-export function Composer(p: { sessionId?: string; placeholder?: string; autofocus?: boolean; variant?: "home" | "session"; aside?: ComposerAside; /** Under the card, at its far end (Home: the composer's prefixes). */ under?: JSX.Element; /** Home: sending to several models at once. */ compare?: CompareOption; /** Home: told what's in the box each time it changes. */ onText?: (text: string) => void }) {
+export function Composer(p: { sessionId?: string; placeholder?: string; autofocus?: boolean; variant?: "home" | "session"; aside?: ComposerAside; /** A row at the top of the card (Home: trusting the folder). */ lead?: JSX.Element; /** Under the card, at its far end (Home: the composer's prefixes). */ under?: JSX.Element; /** Home: sending to several models at once. */ compare?: CompareOption; /** Home: told what's in the box each time it changes. */ onText?: (text: string) => void }) {
     /** The last @ search asked MCP servers too, so its empty state says so. */
     const [searchedResources, setSearchedResources] = createSignal(false);
     const whileMounted = createLifetimeGuard();
@@ -948,6 +948,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                 )}
             </Show>
             <div class="composer-box card-surface" classList={{ composer: true }} data-dropping={dragging() || undefined} ref={box}>
+                {p.lead}
                 <Show when={p.sessionId ? st()?.goal : undefined}>
                     {(goal) => <GoalTab sessionId={p.sessionId!} goal={goal()} />}
                 </Show>

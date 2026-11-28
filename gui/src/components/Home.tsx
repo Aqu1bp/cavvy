@@ -4,7 +4,7 @@
 // centred in the column; the composer is at its foot, where a session has it.
 
 import { createEffect, createResource, createSignal, For, onCleanup, onMount, Show } from "solid-js";
-import { Check, ChevronDown, FolderOpen, KeyRound } from "lucide-solid";
+import { Check, ChevronDown, FolderOpen, KeyRound, ShieldQuestion } from "lucide-solid";
 import type { ProviderInfo } from "@shared/protocol";
 import { app, homeOn, homeProjects, noModel, refreshProjects, reportError, rpcFor, serversUi } from "../state/app";
 import { chooseProject, connectCli, homeJumped, openProject, trustAndContinue } from "../state/actions";
@@ -94,11 +94,11 @@ export function Home() {
     const [connecting, setConnecting] = createSignal<string>();
     const needsTrust = () => info()?.needsTrust ?? [];
     const askTrust = () => Boolean(info()?.askTrust);
-    // Only the edits' checks wait on it: a smaller card, and only once there's a model to make edits (the ways to
-    // connect one take that place first).
+    // Only the edits' checks wait on it, so it's asked in a row at the top of the message box, not a card; and only once
+    // there's a model to make edits (the ways to connect one take that place first).
     const askHere = () => Boolean(app.homeCwd && !needsTrust().length && askTrust() && !modelMissing());
     // The card for a folder whose settings run commands; the row of ways to connect a model is a third of one.
-    const cards = () => (needsTrust().length ? 1 : askHere() ? 2 / 3 : 0) + (modelMissing() ? 1 / 3 : 0);
+    const cards = () => (needsTrust().length ? 1 : 0) + (modelMissing() ? 1 / 3 : 0);
     const trust = async (yes: boolean) => {
         await trustAndContinue(app.homeCwd!, yes);
         void refetch();
@@ -190,6 +190,22 @@ export function Home() {
         </Show>
     );
 
+    /** Trusting the folder, when only the edits' checks wait on it: a row at the top of the message box. */
+    const trustRow = (
+        <div class="crow crow-trust" role="group" aria-label="Trust this folder">
+            <div class="crow-line">
+                <ShieldQuestion size={14} class="crow-icon" />
+                <span class="crow-text">Trust {basename(app.homeCwd ?? "")}? Edits get checked for errors only in folders you trust.</span>
+                <button type="button" class="btn btn-sm btn-ghost" onClick={() => void trust(false)}>
+                    Not now
+                </button>
+                <button type="button" class="btn btn-sm" onClick={() => void trust(true)}>
+                    Trust
+                </button>
+            </div>
+        </div>
+    );
+
     return (
         <div class="home" classList={{ instant, "home-jumped": homeJumped() }}>
             <div class="home-scroll" ref={scroller}>
@@ -273,21 +289,6 @@ export function Home() {
                         </section>
                     </Show>
 
-                    {/* Only the edits' checks wait on it: asked once there's a model to make edits. */}
-                    <Show when={askHere()}>
-                        <section class="home-card card-surface card home-trust" role="group" aria-label="Trust this folder">
-                            <h2 class="home-cli-title">Trust this folder to check edits?</h2>
-                            <div class="home-trust-actions">
-                                <button class="btn btn-primary" onClick={() => void trust(true)}>
-                                    Trust this folder
-                                </button>
-                                <button class="btn" onClick={() => void trust(false)}>
-                                    Not now
-                                </button>
-                            </div>
-                        </section>
-                    </Show>
-
                     <Show when={app.homeCwd && homeOn() === undefined ? app.homeCwd : undefined} keyed>
                         {(cwd) => <CliSessions cwd={cwd} rows={rowsFitting(shellLayout().column, cards())} />}
                     </Show>
@@ -300,6 +301,7 @@ export function Home() {
                     <Composer
                         variant="home"
                         autofocus
+                        lead={askHere() ? trustRow : undefined}
                         under={hints}
                         onText={(t) => setTyped(Boolean(t))}
                         compare={homeOn() !== undefined ? { available: false, why: "Not on another machine yet." } : info()?.git ? { available: true } : { available: false, why: app.homeCwd ? "Needs a Git repository." : "Choose a project folder first." }}
