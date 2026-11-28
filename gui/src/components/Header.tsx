@@ -5,7 +5,7 @@
 
 import { createEffect, createMemo, createResource, createSignal, For, lazy, on, Show, Suspense, type JSX } from "solid-js";
 import { Archive, ChevronDown, X, Copy, Ellipsis, FileDiff, FolderGit2, FolderOpen, GitBranch, Hand, History, PanelBottom, PanelLeft, PanelRight, Pencil, Search, Share, ShieldAlert, Shrink, Sparkles, SquareArrowOutUpRight, SquarePen, SquareTerminal, Trash2 } from "lucide-solid";
-import type { SessionState, SessionSummary, WorkingIn } from "@shared/protocol";
+import type { SessionSummary, WorkingIn } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
 import { app, machineFor, reportError, rpc, toast } from "../state/app";
 import { archive, deleteSession, editorName, exportSession, newSession, openInEditor, openReview, openWaiting, openWorktreeReview, refreshEditors, rename, togglePanel, toggleSidebar } from "../state/actions";
@@ -13,7 +13,7 @@ import { sessionReadReady, useGitChanges } from "../state/changes";
 import { prefs, setPrefs } from "../state/prefs";
 import { agentFocus, gitModule, terminalOpen, setTerminalOpen, setRewindOpen, openFind, review, setReview, setSettingsTab, settingsTab, shellLayout } from "../state/ui";
 import { copyText, isDesktop, machine, os } from "../lib/platform";
-import { plural, tildify } from "../lib/format";
+import { basename, plural, tildify } from "../lib/format";
 import { asking, inFront, needsLine, needsPlace, needsYou } from "../lib/rail";
 import { Menu } from "./ui/Menu";
 import { RunSwitcher } from "./RunSwitcher";
@@ -162,10 +162,8 @@ function resumeCommand(id: string, cwd: string | undefined): string {
     return `cavvy --server ${quoted} --resume ${id}`;
 }
 
-function workingTitle(w: WorkingIn, s: SessionState): string {
-    const where = tildify(w.path, app.hello?.homeDir);
-    const own = s.branch ? ` The session's folder is on ${s.branch}.` : "";
-    return `Working in the worktree ${where}${w.branch ? `, on ${w.branch}` : ""}.${own}`;
+function workingTitle(w: WorkingIn): string {
+    return `Working in the worktree ${tildify(w.path, app.hello?.homeDir)}`;
 }
 
 /**
@@ -196,10 +194,9 @@ function ChangesChip(p: { handle: SessionHandle }) {
     return (
         <Show when={changes()?.files ? changes() : undefined}>
             {(c) => (
-                <>
                     <button
                         class={`hb diffchip ${reading() ? "on" : ""}`}
-                        title={`${reading() ? "Close the changes" : "Review changes"}${workingIn() ? " in the worktree the agent works in" : ""}: ${plural(c().files, "changed file")}${c().atLeast ? " or more" : ""}`}
+                        title={`${reading() ? "Hide changes" : "Review changes"}${workingIn() ? " in the worktree" : ""}: ${c().files}${c().atLeast ? "+" : ""} changed ${c().files === 1 && !c().atLeast ? "file" : "files"}`}
                         aria-label={`Changes: ${plural(c().files, "file")}, ${c().added} added, ${c().removed} removed`}
                         aria-pressed={reading()}
                         onClick={() => {
@@ -214,8 +211,6 @@ function ChangesChip(p: { handle: SessionHandle }) {
                         <span class="a" hidden={!c().added}>+{c().added}</span>
                         <span class="d" hidden={!c().removed}>−{c().removed}</span>
                     </button>
-                    <span class="sep" />
-                </>
             )}
         </Show>
     );
@@ -261,10 +256,7 @@ export function Header(p: { handle?: SessionHandle; title?: string }) {
                         <Show when={p.handle}>{(h) => <ChangesChip handle={h()} />}</Show>
                         <Show when={st()?.cwd}>
                             {(cwd) => (
-                                <>
-                                    <ProjectScripts cwd={cwd()} sessionId={st()?.id} />
-                                    <span class="sep scripts-sep" />
-                                </>
+                                <ProjectScripts cwd={cwd()} sessionId={st()?.id} />
                             )}
                         </Show>
                         <button class={`hb win ${terminalOpen() ? "on" : ""}`} title={withShortcut("Terminal", "app:toggleTerminal")} aria-label="Toggle terminal" aria-pressed={terminalOpen()} disabled={!st()?.cwd && !app.homeCwd} onClick={() => setTerminalOpen(!terminalOpen())}>
@@ -278,20 +270,36 @@ export function Header(p: { handle?: SessionHandle; title?: string }) {
                                 <Ellipsis size={16} />
                             </button>
                         </Show>
-                        <ClosePane />
                     </div>
+                    <ClosePane />
                 </>
             }
         >
-            <Show when={st()} fallback={<h1 class="ttl-h">{p.title ?? "New session"}</h1>}>
+            <Show
+                when={st()}
+                fallback={
+                    <>
+                        {/* Home: the project the new session starts in, before its name. */}
+                        <Show when={!p.title && app.homeCwd}>
+                            {(cwd) => (
+                                <span class="proj-box">
+                                    <span class="proj truncate">{basename(cwd())}</span>
+                                    <CrumbSep />
+                                </span>
+                            )}
+                        </Show>
+                        <h1 class={`ttl-h ${p.title ? "" : "none"}`}>{p.title ?? "New session"}</h1>
+                    </>
+                }
+            >
                 {(s) => (
                     <>
                         {/* With the rail hidden, the project goes before the title (and starts a session in it). */}
                         <span class="proj-box">
-                            <button class="proj" title={`New session in ${s().projectName}`} onClick={() => newSession(s().cwd, machineFor(p.handle?.id))}>
-                                <span class="truncate">{s().projectName}</span>
-                                <span class="proj-sep" aria-hidden="true">/</span>
+                            <button class="proj truncate" title={`New session in ${s().projectName}`} onClick={() => newSession(s().cwd, machineFor(p.handle?.id))}>
+                                {s().projectName}
                             </button>
+                            <CrumbSep />
                         </span>
                         <Show
                             when={!editing()}
@@ -336,14 +344,14 @@ export function Header(p: { handle?: SessionHandle; title?: string }) {
                             }
                         >
                             {(w) => (
-                                <span class="br" title={workingTitle(w(), s())}>
+                                <span class="br" title={workingTitle(w())}>
                                     <FolderGit2 size={13} />
                                     <span class="truncate">{workingBranch(w())}</span>
                                 </span>
                             )}
                         </Show>
                         <Show when={!s().trusted}>
-                            <span class="pill warn" title="This folder's own configuration (hooks, MCP servers, permission rules) is ignored">
+                            <span class="pill warn" title="This folder's own configuration is ignored">
                                 <ShieldAlert size={12} /> Untrusted
                             </span>
                         </Show>
@@ -374,7 +382,7 @@ export function Header(p: { handle?: SessionHandle; title?: string }) {
                             <button role="menuitem" class="menu-item compact" onClick={() => (close(), void exportSession(s().id))}>
                                 <Share size={14} /> Copy as Markdown
                             </button>
-                            <button role="menuitem" class="menu-item compact" onClick={() => void copy(resumeCommand(s().id, s().cwd), "Copied a command that resumes this session in the terminal")}>
+                            <button role="menuitem" class="menu-item compact" onClick={() => void copy(resumeCommand(s().id, s().cwd), "Copied the resume command")}>
                                 <SquareTerminal size={14} /> Copy resume command
                             </button>
                             <Show when={s().workingIn ? s().workingIn!.branch : s().branch}>

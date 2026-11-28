@@ -1,8 +1,7 @@
 /* ---- Title bar ----------------------------------------------------------
-   A plain title on the glass and plain tools at the far end: nothing behind
-   them, no capsule. The conversation fades out before it reaches the bar
-   (transcript.css), so the bar needs no ground of its own. (Where the bar
-   sits in the window is the shell's.) */
+   The project, the title and its branch on the left; one bordered capsule of
+   tools at the far end; a hairline under it all. (Where the bar sits in the
+   window is the shell's.) */
 
 /* Its content sits on the window's top line (--top-line, tokens.css), level
    with the traffic lights and the rail's buttons. The bar starts --win-pad
@@ -15,13 +14,14 @@
     align-items: center;
     gap: 12px;
     height: var(--header-h);
-    padding: max(0px, 2 * (var(--top-line) - var(--win-pad, 8px)) - var(--header-h)) 12px 0 24px;
+    padding: max(0px, 2 * (var(--top-line) - var(--win-pad, 8px)) - var(--header-h)) 10px 0 20px;
     flex: none;
     min-width: 0;
+    border-bottom: 1px solid var(--line);
     user-select: none;
     -webkit-user-select: none;
     /* With the window's tracks (shell.css): the bar's top padding grows as the sheet's inset closes, so what's on the
-       top line stays on it all the way, and its start moves with what opens before the title (.bar-rail, .proj-box). */
+       top line stays on it all the way, and its start moves with what opens before the title (.bar-rail). */
     transition: padding var(--dur-panel) var(--ease);
 }
 
@@ -99,6 +99,7 @@
     height: 7px;
     border-radius: 50%;
     background: var(--warn);
+    box-shadow: 0 0 0 1.5px var(--sheet);
 }
 
 .header .hb,
@@ -109,143 +110,112 @@
     gap: 6px;
     width: auto;
     min-width: 30px;
-    height: 30px;
+    height: 28px;
     padding: 0 7px;
-    border-radius: 8px;
+    border-radius: 6px;
     color: var(--fg-2);
-    transition: background 140ms, transform 160ms var(--ease), color 140ms;
 }
 
 .header .hb:hover:not(:disabled),
 .insp-lead .hb:hover:not(:disabled),
-.header .hb[aria-expanded="true"] {
-    background: var(--hover);
-    color: var(--fg);
-}
-
-.header .hb:active:not(:disabled),
-.insp-lead .hb:active:not(:disabled) {
-    transform: scale(0.94);
-    background: var(--press);
-}
-
-/* On: the pane it opens is showing. Said by weight, not by colour. */
+.header .hb[aria-expanded="true"],
 .header .hb.on,
 .header .hb[aria-pressed="true"] {
+    background: var(--hover);
     color: var(--fg);
-    background: var(--press);
 }
 
 .header .hb:disabled {
     opacity: 0.4;
 }
 
-/* ---- Title: project (rail hidden), name, branch ------------------------ */
+/* ---- Title: project, name, branch -------------------------------------- */
 
 .crumbs {
     display: flex;
-    align-items: baseline;
-    gap: calc(10 * var(--sp));
+    align-items: center;
+    gap: calc(6 * var(--sp));
     min-width: 0;
     flex: 0 1 auto;
 }
 
-/* The project, before the title while the rail is hidden: a box that opens and closes as .bar-rail does, taking
-   back the crumbs' gap while it's closed. */
+/* The project and the stroke after it. In a window too narrow for the bar it gives way last, after the branch and
+   the title (below), rather than run under what follows. */
 .proj-box {
-    display: grid;
-    grid-template-columns: 0fr;
-    /* Its own width while there's room. In a window too narrow for the bar it gives way last, after the branch and
-       the title (below), rather than run under what follows. */
+    display: flex;
+    align-items: center;
+    gap: calc(6 * var(--sp));
     flex: 0 1 auto;
     min-width: 0;
-    margin-right: calc(-10 * var(--sp));
-    visibility: hidden;
-    transition: grid-template-columns var(--dur-panel) var(--ease), margin-right var(--dur-panel) var(--ease), visibility 0s linear var(--dur-panel);
 }
 
 .proj {
-    display: inline-flex;
-    align-items: baseline;
     min-width: 0;
-    max-width: calc(200 * var(--sp));
-    overflow: hidden;
+    max-width: calc(220 * var(--sp));
+    padding: calc(3 * var(--sp)) calc(5 * var(--sp));
+    margin-left: calc(-5 * var(--sp));
+    border-radius: calc(6 * var(--sp));
     color: var(--fg-3);
-    font-weight: 500;
     white-space: nowrap;
 }
 
-.proj:hover {
+button.proj:hover {
+    background: var(--hover);
     color: var(--fg);
 }
 
-/* Its name and the stroke keep their own widths (a long name is cut at its own limit), so the box cuts them as it
-   opens and closes, rather than the name squeezing to an ellipsis on the way. */
-.proj .truncate {
-    flex: none;
-    max-width: calc(180 * var(--sp));
-}
-
-.proj .proj-sep {
-    flex: none;
-    margin: 0 calc(6 * var(--sp));
-    color: var(--fg-4);
-}
-
-.header.rail-off .proj-box,
-[data-rail="overlay"] .header .proj-box {
-    grid-template-columns: 1fr;
-    margin-right: calc(-6 * var(--sp));
-    visibility: inherit;
-    transition-delay: 0s;
-}
-
 .ttl-h {
-    margin: 0 0 0 calc(-4 * var(--sp));
+    margin: 0 0 0 calc(-2 * var(--sp));
     /* Short of room, the branch goes first (.br), then this, then the project before it. */
     flex: 0 40 auto;
-    min-width: 0;
-    padding: calc(2 * var(--sp)) calc(4 * var(--sp));
-    border-radius: calc(6 * var(--sp));
-    font-size: 1.036rem;
+    min-width: calc(72 * var(--sp));
+    padding: calc(3 * var(--sp)) calc(4 * var(--sp));
+    font-size: 1rem;
     font-weight: 600;
-    letter-spacing: -0.012em;
+    letter-spacing: -0.01em;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
 }
 
+/* Home: no session yet. */
+.ttl-h.none {
+    color: var(--fg-3);
+    font-weight: 500;
+}
+
 .title-input {
-    min-width: calc(200 * var(--sp));
-    max-width: calc(460 * var(--sp));
-    height: calc(26 * var(--sp));
-    margin-left: calc(-4 * var(--sp));
+    width: calc(380 * var(--sp));
+    max-width: 40vw;
+    height: calc(28 * var(--sp));
+    margin-left: calc(-2 * var(--sp));
     padding: 0 calc(4 * var(--sp));
     border: 0;
     border-radius: calc(6 * var(--sp));
-    background: var(--hover);
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
+    background: var(--card);
+    box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
     color: var(--fg);
-    font-size: 1.036rem;
+    font-size: 1rem;
     font-weight: 600;
-    letter-spacing: -0.012em;
+    letter-spacing: -0.01em;
 }
 
 .title-input:focus {
     outline: none;
 }
 
+/* The branch (or the worktree the agent works in): quiet, in the code font. */
 .br {
     display: inline-flex;
     align-items: center;
     gap: calc(5 * var(--sp));
     min-width: 0;
-    max-width: calc(240 * var(--sp));
-    flex: 0 1600 auto;
+    max-width: calc(260 * var(--sp));
+    margin-left: calc(6 * var(--sp));
+    flex: 0 100 auto;
     color: var(--fg-3);
-    font-size: 0.929rem;
+    font: 0.821rem var(--font-mono);
     white-space: nowrap;
-    align-self: center;
 }
 
 .br svg {
@@ -254,14 +224,14 @@
 
 /* The branch as a button (GitBranches.tsx): it opens the branch dialog. */
 .br-btn {
-    padding: calc(2 * var(--sp)) calc(5 * var(--sp));
-    margin: 0 calc(-5 * var(--sp));
+    padding: calc(3 * var(--sp)) calc(5 * var(--sp));
+    margin-left: calc(1 * var(--sp));
     border-radius: calc(6 * var(--sp));
 }
 
 .br-btn:hover {
     background: var(--hover);
-    color: var(--fg-2);
+    color: var(--fg);
 }
 
 /* Ahead of and behind its upstream. */
@@ -277,8 +247,13 @@
     display: none;
 }
 
+/* Untrusted: a word on amber. */
 .crumbs .pill {
-    align-self: center;
+    height: calc(20 * var(--sp));
+    margin-left: calc(4 * var(--sp));
+    padding: 0 calc(7 * var(--sp)) 0 calc(6 * var(--sp));
+    border-radius: calc(5 * var(--sp));
+    font-size: 0.821rem;
 }
 
 /* Settings and a sub-agent's view: crumbs in the same voice. */
@@ -288,14 +263,14 @@
     gap: calc(6 * var(--sp));
     min-width: 0;
     max-width: calc(260 * var(--sp));
+    padding: calc(3 * var(--sp)) calc(5 * var(--sp));
+    border-radius: calc(6 * var(--sp));
     color: var(--fg-3);
-    font-weight: 500;
     white-space: nowrap;
-    align-self: center;
-    transition: color var(--dur-fast);
 }
 
 button.bc:hover {
+    background: var(--hover);
     color: var(--fg);
 }
 
@@ -305,18 +280,17 @@ button.bc:hover {
 
 .bc.current {
     color: var(--fg);
+    font-size: 1rem;
     font-weight: 600;
-    letter-spacing: -0.012em;
+    letter-spacing: -0.01em;
 }
 
 .bc-sep {
-    margin: 0 calc(-4 * var(--sp));
-    color: var(--fg-4);
     flex: none;
-    align-self: center;
+    color: var(--fg-4);
 }
 
-/* ---- Tools: plain buttons at the far end -------------------------------- */
+/* ---- Tools: one bordered capsule at the far end -------------------------- */
 
 .bar-end {
     display: flex;
@@ -326,43 +300,59 @@ button.bc:hover {
     flex: none;
 }
 
+.cap {
+    display: inline-flex;
+    align-items: center;
+    gap: 1px;
+    flex: none;
+    padding: 2px;
+    border-radius: 8px;
+    box-shadow: inset 0 0 0 1px var(--line-strong);
+}
+
+.diffchip :is(.a, .d) {
+    font: 500 0.821rem var(--font-mono);
+    font-variant-numeric: tabular-nums;
+}
+
+.diffchip .a {
+    color: var(--add-fg);
+}
+
+.diffchip .d {
+    color: var(--del-fg);
+}
+
+.header .hb.diffchip {
+    padding: 0 8px;
+}
+
 /* ---- Needs you, in Settings' top line -----------------------------------
-   An amber pill beside Close (Settings covers the rail, where they're
-   listed): one session by name, or how many. Narrow, the words go. */
+   Amber, beside Close (Settings covers the rail, where they're listed): one
+   session by name, or how many. Narrow, the words go. */
 
 .needs {
     display: inline-flex;
     align-items: center;
-    align-self: stretch;
     gap: calc(7 * var(--sp));
     min-width: 0;
-    max-width: calc(340 * var(--sp));
-    /* The capsule's height beside it (stretched); on its own (a sub-agent's view), a button's. */
-    min-height: calc(28 * var(--sp));
-    padding: 0 calc(14 * var(--sp)) 0 calc(12 * var(--sp));
+    max-width: calc(420 * var(--sp));
+    height: calc(28 * var(--sp));
+    padding: 0 calc(10 * var(--sp)) 0 calc(8 * var(--sp));
     margin-right: calc(4 * var(--sp));
-    border-radius: var(--pill);
+    border-radius: calc(6 * var(--sp));
     flex: 0 1 auto;
+    background: var(--warn-soft);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warn) 30%, transparent);
     color: var(--warn);
+    font-size: 0.893rem;
     font-weight: 500;
     white-space: nowrap;
-    animation: needs-pill-in 520ms var(--spring);
-    transition: filter 140ms;
-}
-
-.needs {
-    background: color-mix(in srgb, var(--warn) 12%, transparent);
-    box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--warn) 34%, transparent);
 }
 
 .needs:hover,
 .needs[aria-expanded="true"] {
-    filter: brightness(1.04);
-}
-
-.needs:focus-visible {
-    outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
-    outline-offset: 2px;
+    background: color-mix(in srgb, var(--warn) 20%, transparent);
 }
 
 .needs > svg {
@@ -379,17 +369,8 @@ button.bc:hover {
 }
 
 .needs b {
-    font-weight: 650;
+    font-weight: 600;
     font-variant-numeric: tabular-nums;
-}
-
-.needs-chev {
-    margin-left: calc(-2 * var(--sp));
-}
-
-/* In Settings' top line (it covers the rail and the title bar): a button's height, beside Close. */
-.set-top .needs {
-    align-self: center;
 }
 
 /* Getting narrow: the title gives up room first, so the session's own title keeps some. */
@@ -402,10 +383,6 @@ button.bc:hover {
     display: none;
 }
 
-:where(.main[data-narrow~="600"], .stage-pane[data-narrow~="600"]) .needs {
-    padding: 0 calc(11 * var(--sp));
-}
-
 /* One session: its count shows only when its name doesn't. */
 .needs-one {
     display: none;
@@ -413,51 +390,6 @@ button.bc:hover {
 
 :where(.main[data-narrow~="600"], .stage-pane[data-narrow~="600"]) .needs .needs-one {
     display: inline;
-}
-
-@keyframes needs-pill-in {
-    from {
-        opacity: 0;
-        transform: translateY(-6px) scale(0.96);
-    }
-}
-
-[data-motion="instant"] .needs {
-    animation: none;
-}
-
-.cap {
-    display: inline-flex;
-    align-items: center;
-    gap: 2px;
-    flex: none;
-}
-
-/* Between the changes and the tools: room, not a rule. */
-.cap .sep {
-    width: 6px;
-    flex: none;
-}
-
-.diffchip .a {
-    color: var(--add-fg);
-    font-weight: 600;
-    font-variant-numeric: tabular-nums;
-}
-
-.diffchip .d {
-    color: var(--del-fg);
-    font-weight: 600;
-    font-variant-numeric: tabular-nums;
-}
-
-.header .hb.diffchip {
-    gap: 5px;
-    color: var(--fg-2);
-}
-
-.header .hb.diffchip.on {
-    color: var(--fg);
 }
 
 /* A shortcut at the end of a menu row (the session menu's Find). */
@@ -472,7 +404,7 @@ button.bc:hover {
 .stage-pane[data-bar~="640"] .header :is(.proj-box, .br),
 .stage-pane[data-bar~="440"] .header .hb.win,
 .stage-pane[data-bar~="440"] .header .diffchip :is(.a, .d),
-.stage-pane[data-bar~="360"] .header :is(.script-split, .scripts-sep),
-.stage-pane[data-bar~="240"] .header :is(.diffchip, .diffchip + .sep) {
+.stage-pane[data-bar~="360"] .header .script-split,
+.stage-pane[data-bar~="240"] .header .diffchip {
     display: none;
 }

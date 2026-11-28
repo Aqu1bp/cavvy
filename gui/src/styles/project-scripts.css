@@ -1,12 +1,11 @@
 /* ---- Project scripts (title line) ----------------------------------- */
 
-/* Run the main script | open the menu: one pill in the title bar's capsule, split by a hairline. */
+/* Run the main script | open the menu: one control in the title bar's capsule. */
 .script-split {
     display: inline-flex;
     align-items: center;
     flex: none;
-    border-radius: var(--pill);
-    transition: background 140ms;
+    border-radius: calc(6 * var(--sp));
 }
 
 .script-split:has(.script-split-main):hover,
@@ -15,28 +14,14 @@
 }
 
 .script-split .script-split-main {
-    max-width: calc(160 * var(--sp));
-    padding: 0 calc(6 * var(--sp)) 0 calc(9 * var(--sp));
-    border-radius: var(--pill) 0 0 var(--pill);
-    font-size: 0.893rem;
-    font-weight: 500;
+    border-radius: calc(6 * var(--sp)) 0 0 calc(6 * var(--sp));
 }
 
-.script-split .script-split-more {
-    position: relative;
-    min-width: calc(22 * var(--sp));
-    padding: 0 calc(6 * var(--sp)) 0 calc(4 * var(--sp));
-    border-radius: 0 var(--pill) var(--pill) 0;
-}
-
-.script-split .script-split-more::before {
-    content: "";
-    position: absolute;
-    left: 0;
-    top: calc(8 * var(--sp));
-    bottom: calc(8 * var(--sp));
-    width: 1px;
-    background: var(--line);
+.header .script-split .script-split-more {
+    min-width: calc(16 * var(--sp));
+    padding: 0;
+    border-radius: 0 calc(6 * var(--sp)) calc(6 * var(--sp)) 0;
+    color: var(--fg-3);
 }
 
 .script-split .script-split-main:hover:not(:disabled),
@@ -46,8 +31,10 @@
     color: var(--fg);
 }
 
-.script-split-label {
-    min-width: 0;
+/* A project with none: the way to add one, in words. */
+.header .hb.script-add {
+    padding: 0 calc(9 * var(--sp)) 0 calc(7 * var(--sp));
+    font-weight: 500;
 }
 
 .scripts-note {

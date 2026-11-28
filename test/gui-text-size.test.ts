@@ -87,7 +87,7 @@ const FRAME: [file: string, selector: string, property: string, value: string][]
     ["tokens.css", ":root", "--r-sheet", "12px"],
     ["tokens.css", ":root", "--gutter", "8px"],
     ["shell.css", ".app", "--win-pad", "0px"],
-    ["header.css", ".header .hb", "height", "30px"],
+    ["header.css", ".header .hb", "height", "28px"],
     ["sidebar.css", ".side-top .hb", "width", "28px"],
     ["sidebar.css", ".side-top .hb", "height", "28px"],
     ["sidebar.css", ".resize-handle", "width", "6px"],

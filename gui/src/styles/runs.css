@@ -30,16 +30,17 @@
     font-variant-numeric: tabular-nums;
 }
 
-/* In the title bar: the run's models as a capsule of their own, beside the tools. */
+/* In the title bar: the run's models in a bordered capsule of their own, beside the tools. */
 .run-switch {
     display: flex;
     align-items: center;
     gap: 1px;
     min-width: 0;
     max-width: calc(420 * var(--sp));
-    height: calc(34 * var(--sp));
-    padding: 0 calc(3 * var(--sp));
-    border-radius: var(--pill);
+    height: calc(32 * var(--sp));
+    padding: 0 calc(2 * var(--sp));
+    border-radius: calc(8 * var(--sp));
+    box-shadow: inset 0 0 0 1px var(--line-strong);
     overflow: hidden;
 }
 
@@ -50,36 +51,32 @@
     height: calc(28 * var(--sp));
     min-width: 0;
     max-width: calc(180 * var(--sp));
-    padding: 0 calc(10 * var(--sp));
-    border-radius: var(--pill);
-    font-size: 0.857rem;
+    padding: 0 calc(9 * var(--sp)) 0 calc(8 * var(--sp));
+    border-radius: calc(6 * var(--sp));
+    font-size: 0.893rem;
     font-weight: 500;
     color: var(--fg-2);
-    transition: background 140ms, color 140ms;
 }
 
 .run-switch .rs svg {
     flex: none;
 }
 
-.run-switch .rs:hover {
-    background: var(--hover);
-    color: var(--fg);
-}
-
+.run-switch .rs:hover,
 .run-switch .rs.on {
-    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    background: var(--hover);
     color: var(--fg);
 }
 
 .rs-st {
     flex: none;
+    font-size: 0.857rem;
     font-weight: 400;
     color: var(--fg-3);
 }
 
 .rs-st.st-running {
-    color: var(--accent);
+    color: var(--working);
 }
 
 .rs-st.st-waiting {
