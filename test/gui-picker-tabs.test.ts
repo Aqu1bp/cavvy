@@ -2,7 +2,7 @@
 // real browser at the picker's width: with Claude Code's tab shown, its account control at the row's end took the
 // room the tabs needed, and the next provider's was cut to a letter under the row's fade. The account goes under the
 // tabs when both don't fit. With more providers than a row holds (another Claude Code's long name, say), the row
-// scrolled and cut the tabs at both edges: they wrap to another row instead.
+// scrolls sideways, and each tab is whole once scrolled to.
 import { expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -45,8 +45,9 @@ test.skipIf(!chrome)("with an account shown beside them, every provider's tab is
         const measure = async (account: boolean, names = THREE) => {
             const expression = `(() => { document.open(); document.write(${JSON.stringify(page(account, names))}); document.close();
                 const f = document.querySelector(".mp-filters"), a = document.querySelector(".mp-acct-btn .truncate"), box = f.getBoundingClientRect();
-                // A tab past the row's edges, or its name cut short.
-                const cut = [...f.querySelectorAll(".mp-f")].filter((t) => { const r = t.getBoundingClientRect(), n = t.querySelector(".truncate"); return r.left < box.left - 0.5 || r.right > box.right + 0.5 || (n && n.scrollWidth > n.clientWidth); }).length;
+                // A tab whose name is cut short, or that doesn't fit whole in the row once scrolled to.
+                const cut = [...f.querySelectorAll(".mp-f")].filter((t) => { t.scrollIntoView({ block: "nearest", inline: "nearest" }); const r = t.getBoundingClientRect(), n = t.querySelector(".truncate"); return r.left < box.left - 0.5 || r.right > box.right + 0.5 || (n && n.scrollWidth > n.clientWidth); }).length;
+                f.scrollLeft = 0;
                 return { hidden: f.scrollWidth - f.clientWidth, cut, account: a ? a.scrollWidth - a.clientWidth : 0, accountWidth: a ? a.getBoundingClientRect().width : 0 }; })()`;
             return (await call("Runtime.evaluate", { expression, returnByValue: true }, sessionId)).result.value as { hidden: number; cut: number; account: number; accountWidth: number };
         };
@@ -56,10 +57,10 @@ test.skipIf(!chrome)("with an account shown beside them, every provider's tab is
         // And the account's name whole.
         expect(shown.accountWidth).toBeGreaterThan(0);
         expect(shown.account).toBeLessThanOrEqual(0);
-        // More than a row holds: each tab whole, the account's name too.
+        // More than a row holds: the row scrolls, each tab whole once scrolled to, the account's name too.
         for (const account of [false, true]) {
             const more = await measure(account, FOUR);
-            expect(more.hidden).toBeLessThanOrEqual(0);
+            expect(more.hidden).toBeGreaterThan(0);
             expect(more.cut).toBe(0);
             expect(more.account).toBeLessThanOrEqual(0);
         }
