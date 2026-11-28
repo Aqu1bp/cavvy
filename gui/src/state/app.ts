@@ -7,7 +7,7 @@ import { createStore, produce, reconcile, unwrap, type SetStoreFunction } from "
 import { planLimitKey, RELAYED_SESSION_METHODS, type PlanLimits } from "@shared/protocol";
 import type { AgentRun, AgentsMore, AppUpdateInfo, GuiSettings, HelloResult, PermissionModeId, ProjectInfo, ProviderInfo, ProviderModels, ServerEvent, SessionOp, SessionResumed, SessionSnapshot, SessionSummary, WireFile } from "@shared/protocol";
 import { applyOp, fromWireLimits, fromWireState, type SessionView } from "@shared/timeline";
-import { planCheckDue, servedKey } from "../lib/limits";
+import { servedKey } from "../lib/limits";
 import { Rpc, RpcError, type ConnectionState } from "../lib/rpc";
 import { allLinks, dropLink, LinkError, linkProblem, linkTo, opened, type LinkProblem } from "../lib/machine-links";
 import { canReveal, credentials, focused, machine, notify, isDesktop, showWindow, windowKey } from "../lib/platform";
@@ -1666,25 +1666,6 @@ export async function refreshUpdate() {
     setApp("update", reconcile(await rpc.call("app.update.get", {})));
 }
 
-const planAsked = new Map<string, number>();
-
-/** Coming back to the window: the plan of the session in view is asked about when its figures are old (planCheckDue). */
-function recheckPlan() {
-    const id = app.activeId;
-    const state = id ? handleFor(id)?.view.state : undefined;
-    const provider = state?.model?.provider;
-    if (document.visibilityState !== "visible" || app.conn !== "open" || !id || !provider) return;
-    const cli = providersFor(id).find((p) => p.id === provider)?.agentCli;
-    if (!cli) return;
-    const accountId = state.accounts?.[provider] ?? cli.defaultAccount ?? "default";
-    const key = planLimitKey(provider, accountId);
-    const asked = `${awayMachine(id) ?? ""}\0${key}`;
-    const now = Date.now();
-    if (!planCheckDue(limitsFor(id)[key], now, planAsked.get(asked))) return;
-    planAsked.set(asked, now);
-    void checkLimits(id, [{ provider, accountId }]);
-}
-
 /** How old the last check may be when the window comes to the front before main is looked at again. */
 const UPDATE_STALE_MS = 10 * 60_000;
 
@@ -2001,10 +1982,8 @@ export function start() {
     document.addEventListener("visibilitychange", () => {
         for (const t of toasts) pauseToast(t.id, "hidden", document.hidden);
         recheckUpdate();
-        recheckPlan();
     });
     window.addEventListener("focus", recheckUpdate);
-    window.addEventListener("focus", recheckPlan);
     rpc.onSlow((slow) => setApp("slowRequest", slow));
     rpc.onEvent(onEvent);
     // The server's told what's on screen, so it can wake this window less for what isn't.

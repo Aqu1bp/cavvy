@@ -461,11 +461,11 @@ async function update(args: string[]): Promise<number> {
     }
     const e = requireServer(name);
     const { value: r } = await withTrust(e, (entry) => setUpServer(entry, setupOptions(entry, { force, update: true })), { saved: true });
+    const clis = notUpdatedNote(e.name, await updateAgentClis(e, { progress: progress() }));
     if (r.kept === "newer") out(`${e.name} runs a newer Cavvy than this machine, so it was left as it is. Update Cavvy here, or use --force.`);
     else if (r.kept) out(`${e.name} was left on its own version.`);
     else out(r.replaced ? `${e.name} is updated.` : `${e.name} is up to date.`);
     for (const line of serviceLines(e.name, r.service)) out(line);
-    const clis = notUpdatedNote(e.name, await updateAgentClis(e, { progress: progress() }));
     if (clis) out(clis);
     return 0;
 }
