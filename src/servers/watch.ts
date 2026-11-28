@@ -402,6 +402,8 @@ export class MachineWatch {
 
     /** Tells one change, unless there are more in a second than a server's sessions ever change: then the list is told anew, which is only so often (manager.ts). */
     private say(change: SessionChange) {
+        // Removed from this Cavvy (and only kept open a moment to sign out there): its sessions aren't listed any more.
+        if (this.forgotten) return;
         const now = Date.now();
         if (now - this.burst.from >= 1000) this.burst = { from: now, told: 0 };
         if (++this.burst.told > CHANGES_PER_SECOND) return this.o.changed();
