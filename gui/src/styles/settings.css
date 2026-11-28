@@ -599,7 +599,7 @@
     max-width: 55%;
 }
 
-.tag {
+.settings-page .tag {
     padding: calc(2 * var(--sp)) calc(6 * var(--sp));
     border-radius: var(--pill);
     background: var(--hover);
@@ -609,7 +609,7 @@
     white-space: nowrap;
 }
 
-.tag.ok {
+.settings-page .tag.ok {
     color: var(--ok);
     background: color-mix(in srgb, var(--ok) 12%, transparent);
 }
