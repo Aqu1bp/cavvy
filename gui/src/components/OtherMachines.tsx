@@ -89,6 +89,7 @@ function relist() {
 /** One session of another machine changed. */
 function put(s: SessionSummary) {
     if (!app.sessionsLoaded || !mayTake(listed(s.id), machine, s.machine)) return;
+    hidden.delete(s.id);
     far.set(s.id, s.machine);
     seen([s]);
     upsertSession(s);
@@ -110,8 +111,30 @@ function unlist(id: string, at: string | undefined) {
     seen([], [id]);
 }
 
+/**
+ * Deleted here while its machine was away (src/servers/watch.ts): its row goes, and Undo still reaches that machine,
+ * but what's kept of it here (a draft) stays until the machine has deleted it too, or refused to (the row comes back).
+ */
+const hidden = new Map<string, string | undefined>();
+function hide(id: string, at: string | undefined) {
+    if (!far.has(id) || far.get(id) !== at) return;
+    far.delete(id);
+    left(id, at);
+    hidden.set(id, at);
+    batch(() => {
+        setApp("sessions", (l) => l.filter((s) => s.id !== id));
+        setApp("archived", (l) => l.filter((s) => s.id !== id));
+    });
+}
+
 /** One session of another machine is gone from it. */
 function drop(id: string, at: string | undefined) {
+    // Hidden before: gone for good now.
+    if (hidden.has(id) && hidden.get(id) === at && !far.has(id)) {
+        hidden.delete(id);
+        if (listed(id)?.machine === machine) return;
+        return forgetSession(id);
+    }
     if (!far.has(id) || far.get(id) !== at) return;
     far.delete(id);
     left(id, at);
@@ -246,6 +269,9 @@ export function watchOthers(hereName: string) {
             } else if (e.unlisted) {
                 m.sessions = m.sessions.filter((x) => x.id !== e.unlisted);
                 unlist(e.unlisted, e.name);
+            } else if (e.hidden) {
+                m.sessions = m.sessions.filter((x) => x.id !== e.hidden);
+                hide(e.hidden, e.name);
             }
         } else if (e.type === "servers.notify") tell(e);
         else if (home && e.type === "sessions.upsert") {

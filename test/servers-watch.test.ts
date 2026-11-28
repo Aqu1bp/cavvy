@@ -403,7 +403,7 @@ test("what a row offers is done here while the server can't be reached, kept thr
     expect(await away.call("session.delete", { id: "s2" })).toBeNull();
     expect(await away.call("session.delete", { id: "s3" })).toBeNull();
     expect(away.overview().sessions.map((s) => [s.id, s.settled])).toEqual([["s1", true]]);
-    expect(each).toEqual([{ session: expect.objectContaining({ id: "s1", settled: true }) }, { remove: "s2" }, { remove: "s3" }]);
+    expect(each).toEqual([{ session: expect.objectContaining({ id: "s1", settled: true }) }, { hidden: "s2" }, { hidden: "s3" }]);
     // Undo before it was sent: never deleted there, back in the list.
     expect(await away.call("session.restore", { id: "s3" })).toBeNull();
     expect(away.overview().sessions.map((s) => s.id)).toEqual(["s1", "s3"]);
@@ -435,7 +435,8 @@ test("what a row offers is done here while the server can't be reached, kept thr
         },
     });
     const seen: string[][] = [];
-    const back = new MachineWatch("box", { reach: async () => ({ status: "connected", url: `ws://127.0.0.1:${srv.port}/ws`, token: "t" }), changed: () => seen.push(back.overview().sessions.map((s) => s.id)), notice: () => {}, kept, pending: store });
+    const told: SessionChange[] = [];
+    const back = new MachineWatch("box", { reach: async () => ({ status: "connected", url: `ws://127.0.0.1:${srv.port}/ws`, token: "t" }), changed: () => seen.push(back.overview().sessions.map((s) => s.id)), session: (c) => told.push(c), notice: () => {}, kept, pending: store });
     stops.push(() => (back.stop(), void srv.stop(true)));
     back.start();
     await until("the changes to be sent", () => asked.length === 5 && (pending as unknown[]).length === 0);
@@ -447,6 +448,8 @@ test("what a row offers is done here while the server can't be reached, kept thr
         { method: "session.rename", params: { id: "s1", title: "  re\n named " } },
     ]);
     expect(seen.every((ids) => !ids.includes("s2"))).toBe(true);
+    // Deleted there now: gone for good (a window forgets what it kept of it, its draft, only now).
+    expect(told).toContainEqual({ remove: "s2" });
     expect(back.overview().sessions.map((s) => [s.id, s.settled, s.title])).toEqual([
         ["s1", true, "re named"],
         ["s3", false, "s3"],
@@ -456,11 +459,15 @@ test("what a row offers is done here while the server can't be reached, kept thr
     back.stop();
     pending = [{ method: "session.delete", params: { id: "s3" } }];
     refuse = true;
-    const refused = new MachineWatch("box", { reach: async () => ({ status: "connected", url: `ws://127.0.0.1:${srv.port}/ws`, token: "t" }), changed: () => {}, notice: () => {}, kept, pending: store });
+    const shownAgain: SessionChange[] = [];
+    const refused = new MachineWatch("box", { reach: async () => ({ status: "connected", url: `ws://127.0.0.1:${srv.port}/ws`, token: "t" }), changed: () => {}, session: (c) => shownAgain.push(c), notice: () => {}, kept, pending: store });
     stops.push(() => refused.stop());
     refused.start();
     await until("the refusal", () => (pending as unknown[]).length === 0);
     expect(refused.overview().sessions.map((s) => s.id)).toContain("s3");
+    // Its row comes back, and nothing said it was gone.
+    expect(shownAgain).toContainEqual({ session: expect.objectContaining({ id: "s3" }) });
+    expect(shownAgain.some((c) => "remove" in c)).toBe(false);
 });
 
 test("a delete sent without an answer, then undone, is brought back there too: the server may have done it", async () => {

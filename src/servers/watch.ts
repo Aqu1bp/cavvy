@@ -156,9 +156,10 @@ export function heardSession(v: unknown): SessionSummary | undefined {
 
 /**
  * One change to a server's sessions: a session as it is now, the id of one that's gone from the server (`remove`),
- * or of one that's still there and no longer among those kept here (`unlisted`: the list is only so long).
+ * of one that's still there and no longer among those kept here (`unlisted`: the list is only so long), or of one
+ * deleted here while the server was away (`hidden`: not gone there yet, so what's kept of it, a draft, stays).
  */
-export type SessionChange = { session: SessionSummary } | { remove: string } | { unlisted: string };
+export type SessionChange = { session: SessionSummary } | { remove: string } | { unlisted: string } | { hidden: string };
 
 
 /** While a server installs a CLI (sync-install.ts), how often it's synced again to see it done. */
@@ -314,11 +315,11 @@ export class MachineWatch {
         this.keepTimer = undefined;
     }
 
-    /** A session's row as it is now said again: gone while it's being deleted. */
+    /** A session's row as it is now said again: hidden while it's being deleted. */
     private reshow(id: string) {
         const s = this.sessions.get(id);
         if (!s) return;
-        this.say(this.deleting(id) ? { remove: id } : { session: this.shown(s) });
+        this.say(this.deleting(id) ? { hidden: id } : { session: this.shown(s) });
     }
 
     /** Done here at once, and sent to the server once it's back (or now, after those before it), in the order they were made. */
@@ -364,8 +365,11 @@ export class MachineWatch {
             if (took) {
                 // What it is there now, without waiting to hear it: the row doesn't go back and forth. Written down
                 // before the change is let go, so a restart in between can't bring back what was.
-                if (s && c.method === "session.delete") this.sessions.delete(id);
-                else if (s) this.sessions.set(id, changed(s, c));
+                // Deleted there now: gone (unless the server said so first).
+                if (s && c.method === "session.delete") {
+                    this.sessions.delete(id);
+                    this.say({ remove: id });
+                } else if (s) this.sessions.set(id, changed(s, c));
                 if (!this.forgotten) this.o.kept?.write([...this.sessions.values()].map((x) => this.resting(x)));
             }
             this.pending = this.pending.filter((x) => x !== c);

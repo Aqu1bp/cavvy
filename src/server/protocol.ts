@@ -2228,10 +2228,11 @@ export type ServerEvent =
     /** How a server is reached changed, or its sessions were listed anew (servers.overview), to the windows that asked for them. */
     | { type: "servers.overview"; machine: MachineOverview }
     /**
-     * One session on a server changed (`session`), went (`remove`: its id), or is still there and no longer among
-     * those listed here (`unlisted`), to the same windows.
+     * One session on a server changed (`session`), went (`remove`: its id), is still there and no longer among
+     * those listed here (`unlisted`), or was deleted here while the server was away and not there yet (`hidden`),
+     * to the same windows.
      */
-    | { type: "servers.session"; name: string; session?: SessionSummary; remove?: string; unlisted?: string }
+    | { type: "servers.session"; name: string; session?: SessionSummary; remove?: string; unlisted?: string; hidden?: string }
     /**
      * What a session on another machine has to tell its user, for one window to show: `name` is the server's, and
      * left out when it's this computer's own session, told to a window that's on a server. No `sessionId` ("") when
