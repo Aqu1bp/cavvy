@@ -7,9 +7,9 @@
 //   3. the attach button, so the model's name keeps its room (files still go in by a drop or a paste): the side
 //      chat's composer at its narrowest, where it would otherwise be the provider's mark alone
 //   4. the model's name, once only a few letters of it would show (the provider's mark stays)
-//   5. the context ring
+// (How full the context is, and Home's plan limit, are under the card, not on the row.)
 
-export const FIT_STEPS = 5;
+export const FIT_STEPS = 4;
 /** Cut shorter than this many of its letters' height, the model's name gives way to the provider's mark. */
 const NAME_LEAST_EM = 4;
 

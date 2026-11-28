@@ -3,19 +3,19 @@
 // in Cavvy; "Show all" lists every one of those. Importing opens a Cavvy session on
 // the same backend.
 
-import { createEffect, createResource, createSignal, For, Show } from "solid-js";
+import { createResource, createSignal, For, Show } from "solid-js";
 import type { CliSessionInfo } from "@shared/protocol";
 import { app, rpc } from "../state/app";
 import { continueCliSession } from "../state/actions";
 import { cliListedBefore, listCli } from "../state/home-ahead";
 import { setSettingsTab } from "../state/ui";
-import { ago, basename } from "../lib/format";
+import { ago } from "../lib/format";
 import { now } from "../lib/clock";
 import { Dialog } from "./ui/Dialog";
 import { ProviderIcon } from "./ui/ProviderIcon";
 
 /** Using it here and in the terminal at once mixes the two: said wherever one still open shows. */
-const STILL_OPEN = "Using it here and in the terminal at once mixes the two.";
+const STILL_OPEN = "Using both at once mixes them.";
 
 /** "6m ago", "just now"; an older one by its date. */
 const agoText = (at: number) => {
@@ -24,10 +24,10 @@ const agoText = (at: number) => {
 };
 
 /**
- * `rows`: how many Home has room for (3 at most); `onShown`: how many it shows, and whether the section shows at all
- * (with no room for a row it's still there, its heading and Show all, so what's to import stays reachable).
+ * `rows`: how many Home has room for (3 at most). With no room for a row the card is still there, its heading and
+ * Show all, so what's to import stays reachable.
  */
-export function CliSessions(p: { cwd: string; rows?: number; onShown?: (rows: number, section: boolean) => void }) {
+export function CliSessions(p: { cwd: string; rows?: number }) {
     const [all, setAll] = createSignal(false);
     const [busy, setBusy] = createSignal<string>();
     const [list, { refetch, mutate }] = createResource(
@@ -49,10 +49,10 @@ export function CliSessions(p: { cwd: string; rows?: number; onShown?: (rows: nu
     // Turned on in Settings → Providers: read from the providers, which follow a change made there while Home is up.
     const enabled = (s: CliSessionInfo) => app.providers.find((x) => x.id === s.source)?.configured ?? source(s)?.enabled;
     const more = () => (list()?.sources ?? []).filter((s) => s.more > 0);
+    const older = () => more().reduce((n, s) => n + s.more, 0);
     const shown = () => fresh().slice(0, Math.max(0, Math.min(3, p.rows ?? 3)));
     // Worth opening when it lists something these rows don't.
     const hasMore = () => fresh().length > shown().length || more().length > 0;
-    createEffect(() => p.onShown?.(shown().length, fresh().length > 0));
 
     const go = async (s: CliSessionInfo) => {
         if (busy()) return;
@@ -77,74 +77,100 @@ export function CliSessions(p: { cwd: string; rows?: number; onShown?: (rows: nu
 
     const row = (s: CliSessionInfo) => (
         <div
-            class={`cli-row ${busy() === s.id ? "busy" : ""}`}
+            class={`row home-cli-row ${busy() === s.id ? "busy" : ""}`}
             role="button"
             tabIndex={0}
             aria-label={enabled(s) ? `Import “${s.title}” from ${name(s)}` : `${turnOn(s)} to import “${s.title}”`}
             aria-busy={busy() === s.id}
+            title={`${name(s)} · ${(now(), agoText(s.updatedAt))} · ${count(s)}`}
             onClick={() => act(s)}
             onKeyDown={keys(s)}
         >
-            <span class="cli-pv"><ProviderIcon id={s.source} name={name(s)} size={16} /></span>
-            <span class="cli-main">
-                <span class="cli-title truncate">{s.title}</span>
-                <span class="cli-meta">
-                    {name(s)} · {(now(), agoText(s.updatedAt))} · {count(s)}
-                    <Show when={s.recent}> · <span class="cli-live" title={STILL_OPEN}>Still open in a terminal</span></Show>
-                </span>
+            <ProviderIcon id={s.source} name={name(s)} size={14} />
+            <span class="row-text">
+                <span class="row-title">{s.title}</span>
+                <Show when={s.recent}>
+                    <span class="row-sub" title={STILL_OPEN}>Still open in a terminal</span>
+                </Show>
             </span>
-            <Show when={enabled(s)} fallback={<span class="cli-off">Turn on in Settings</span>}>
-                <span class="cli-go">{busy() === s.id ? "Importing…" : "Import"}</span>
+            <Show when={enabled(s)} fallback={<span class="link-btn">Turn on in Settings</span>}>
+                <span class="btn btn-sm">{busy() === s.id ? "Importing…" : "Import"}</span>
             </Show>
         </div>
     );
 
-    /** A row of "Show all". */
+    /** A row of "Show all": the design's dialog row, its button the action. */
     const item = (s: CliSessionInfo) => (
-        <button class="cl-item" disabled={busy() === s.id} title={s.recent ? STILL_OPEN : undefined} onClick={() => act(s)}>
-            <span class="cli-pv"><ProviderIcon id={s.source} name={name(s)} size={16} /></span>
-            <span class="cl-main">
-                <span class="truncate">{s.title}</span>
-                <span class="cli-meta">
-                    {name(s)} · {(now(), agoText(s.updatedAt))} · {count(s)}
-                    <Show when={s.recent}> · <span class="cli-live">Still open in a terminal</span></Show>
-                </span>
+        <li class="row cli-row" title={`${name(s)} · ${(now(), agoText(s.updatedAt))} · ${count(s)}`}>
+            <ProviderIcon id={s.source} name={name(s)} size={15} />
+            <span class="row-text">
+                <span class="row-title cli-title">{s.title}</span>
+                <Show when={busy() === s.id} fallback={<Show when={s.recent}><span class="row-sub" title={STILL_OPEN}>Still open in a terminal</span></Show>}>
+                    <span class="row-sub">Importing…</span>
+                </Show>
             </span>
-            <span class="cl-act">{enabled(s) ? "Import" : "Turn on in Settings"}</span>
-        </button>
+            <Show
+                when={enabled(s)}
+                fallback={
+                    <button type="button" class="link-btn" onClick={() => act(s)}>
+                        Turn on in Settings
+                    </button>
+                }
+            >
+                <button type="button" class="btn btn-sm cli-btn" disabled={busy() === s.id} onClick={() => act(s)}>
+                    Import
+                </button>
+            </Show>
+        </li>
     );
-    const sourceNames = () => [...new Set((list()?.sources ?? []).map((s) => s.name))].join(" and ") || "Claude Code and Codex";
+    /** Whose sessions they are, as the design says it: "Claude Code and Codex". */
+    const names = () => [...new Set(fresh().map(name))].sort().join(" and ") || "Terminal";
+    const project = () => p.cwd.replace(/\/+$/, "").split("/").pop() || p.cwd;
 
     return (
         <>
             <Show when={fresh().length}>
-            <section class="cli-sessions" aria-label="Continue from your terminal">
-                <div class="cli-h">
-                    <span>Continue from your terminal</span>
-                    <span class="grow" />
-                    <Show when={hasMore()}>
-                        <button class="cli-all" onClick={() => { setAll(true); void refetch(); }}>Show all {fresh().length}</button>
-                    </Show>
-                </div>
-                <Show when={shown().length}>
-                    <div class="cli-rows">
-                        <For each={shown()}>{row}</For>
-                    </div>
-                </Show>
-            </section>
+                <section class="home-card card-surface card home-cli" aria-label="Continue from your terminal">
+                    <header class="home-cli-head">
+                        <h2 class="home-cli-title">Continue from your terminal</h2>
+                        <Show when={hasMore()}>
+                            <button class="link-btn" onClick={() => { setAll(true); void refetch(); }}>Show all {fresh().length}</button>
+                        </Show>
+                    </header>
+                    <For each={shown()}>{row}</For>
+                </section>
             </Show>
             {/* Outside the section: open, it stays while the list reloads (or fails to). */}
-            <Dialog open={all()} onClose={() => setAll(false)} title="Continue from your terminal" width={520} class="cli-dialog" footer={<button class="btn" onClick={() => setAll(false)}>Done</button>}>
-                <p>{sourceNames()} sessions started in {basename(p.cwd)}.</p>
-                <div class="cl-list">
-                    <Show when={list.loading || sessions().length}>
+            <Dialog
+                open={all()}
+                onClose={() => setAll(false)}
+                title="Continue from your terminal"
+                subtitle={`${names()} sessions started in ${project()}.`}
+                width={540}
+                edge
+                footer={
+                    <>
+                        <Show when={older()}>
+                            {(n) => <span class="dlg-foot-note">{n()} older {n() === 1 ? "session" : "sessions"} not shown</span>}
+                        </Show>
+                        <button type="button" class="btn" onClick={() => setAll(false)}>
+                            Done
+                        </button>
+                    </>
+                }
+            >
+                <Show
+                    when={list.loading || fresh().length}
+                    fallback={
+                        <div class="blank">
+                            <p class="blank-title">{list() ? "No terminal sessions in this folder." : "Couldn’t list the sessions from your terminal just now."}</p>
+                        </div>
+                    }
+                >
+                    <ul class="dlg-rows">
                         <For each={fresh()}>{item}</For>
-                    </Show>
-                    <Show when={!list.loading && !sessions().length}>
-                        <div class="cl-note">Couldn't list the sessions from your terminal just now.</div>
-                    </Show>
-                    <For each={more()}>{(m) => <div class="cl-note">{m.more} more {m.name} {m.more === 1 ? "session" : "sessions"} not shown</div>}</For>
-                </div>
+                    </ul>
+                </Show>
             </Dialog>
         </>
     );

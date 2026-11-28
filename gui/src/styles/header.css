@@ -1,8 +1,16 @@
 /* ---- Title bar ----------------------------------------------------------
-   A plain title on the glass and plain tools at the far end: nothing behind
-   them, no capsule. The conversation fades out before it reaches the bar
-   (transcript.css), so the bar needs no ground of its own. (Where the bar
-   sits in the window is the shell's.) */
+   The design's own rules (the mock's sidebar.css "main header" and head.css,
+   cascaded into one rule per selector), on Cavvy's frame: the bar's height,
+   its top line and the rail's slide are the window's (below). Sizes that sit
+   with text are calc(N * var(--sp)); the bar and its tools are the frame. */
+
+.main-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: none;
+    border-bottom: 1px solid var(--line);
+}
 
 /* Its content sits on the window's top line (--top-line, tokens.css), level
    with the traffic lights and the rail's buttons. The bar starts --win-pad
@@ -11,22 +19,17 @@
 .header {
     position: relative;
     z-index: 5;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    height: var(--header-h);
-    padding: max(0px, 2 * (var(--top-line) - var(--win-pad, 8px)) - var(--header-h)) 12px 0 24px;
-    flex: none;
     min-width: 0;
+    height: var(--header-h);
+    padding: max(0px, 2 * (var(--top-line) - var(--win-pad, 8px)) - var(--header-h)) 10px 0 20px;
     user-select: none;
     -webkit-user-select: none;
     /* With the window's tracks (shell.css): the bar's top padding grows as the sheet's inset closes, so what's on the
-       top line stays on it all the way, and its start moves with what opens before the title (.bar-rail, .proj-box). */
+       top line stays on it all the way, and its start moves with what opens before the title (.bar-rail). */
     transition: padding var(--dur-panel) var(--ease);
 }
 
-/* The rail's two buttons, here while it's hidden or floating: on the lights'
-   line, a fixed gap after them (macOS), then a hairline before the title.
+/* The rail's two buttons (the design's .main-head-lead), here while it's hidden or floating.
    While the rail shows, a box of no width (its one column 0fr) that takes back the bar's gap after it. It opens and
    closes with the rail's slide (shell.css), so the title moves to its place in step with the sheet: shown and hidden
    at once, the title jumped by their width one way and then slid the other. Not seen or focused while closed. */
@@ -34,7 +37,7 @@
     display: grid;
     grid-template-columns: 0fr;
     flex: none;
-    margin-right: -12px;
+    margin-right: -10px;
     visibility: hidden;
     transition: grid-template-columns var(--dur-panel) var(--ease), margin-right var(--dur-panel) var(--ease), visibility 0s linear var(--dur-panel);
 }
@@ -52,18 +55,10 @@
     overflow: hidden;
 }
 
-.bar-rail-in::after {
-    content: "";
-    width: 1px;
-    height: 16px;
-    margin: 0 6px;
-    background: var(--line-strong);
-    flex: none;
-}
-
+/* With the rail hidden the window's traffic lights sit over the header: leave them room. */
 .header.rail-off,
 [data-rail="overlay"] .header {
-    padding-left: 12px;
+    padding-left: 18px;
 }
 
 /* The lights end 78px from the window's left (x 18, three 14px buttons 23px apart, measured in
@@ -76,403 +71,343 @@
 .header.rail-off .bar-rail,
 [data-rail="overlay"] .header .bar-rail {
     grid-template-columns: 1fr;
-    margin-right: 0;
+    margin-right: calc(2 * var(--sp));
     /* As the bar is: behind the maximized terminal it's hidden with the rest (shell.css), and `visible` here would
        show these through it, pressable, and reachable by Tab. */
     visibility: inherit;
     transition-delay: 0s;
 }
 
-/* A session needs you while the rail that lists it is hidden: an amber dot on Show sidebar. */
-.bar-rail .has-wait,
-.insp-lead .has-wait {
+/* The design's .icon-btn, at the frame's fixed size (the side panel's lead has the rail's two when it's full screen). */
+.header .icon-btn,
+.insp-lead .icon-btn {
+    width: 28px;
+    height: 28px;
+}
+
+.head-rail-btn {
     position: relative;
 }
 
-.bar-rail .has-wait::after,
-.insp-lead .has-wait::after {
-    content: "";
+.rail-dot {
     position: absolute;
-    top: 4px;
-    right: 4px;
-    width: 7px;
-    height: 7px;
+    top: 5px;
+    right: 5px;
+    width: 6px;
+    height: 6px;
     border-radius: 50%;
-    background: var(--warn);
+    background: var(--accent);
+    box-shadow: 0 0 0 1.5px var(--bg-side);
 }
 
-.header .hb,
-.insp-lead .hb {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
-    width: auto;
-    min-width: 30px;
-    height: 30px;
-    padding: 0 7px;
-    border-radius: 8px;
-    color: var(--fg-2);
-    transition: background 140ms, transform 160ms var(--ease), color 140ms;
+.rail-dot[data-tone="amber"] {
+    background: var(--amber-strong);
 }
 
-.header .hb:hover:not(:disabled),
-.insp-lead .hb:hover:not(:disabled),
-.header .hb[aria-expanded="true"] {
-    background: var(--hover);
-    color: var(--fg);
+.head-rail-btn .rail-dot {
+    box-shadow: 0 0 0 1.5px var(--bg);
 }
 
-.header .hb:active:not(:disabled),
-.insp-lead .hb:active:not(:disabled) {
-    transform: scale(0.94);
-    background: var(--press);
-}
-
-/* On: the pane it opens is showing. Said by weight, not by colour. */
-.header .hb.on,
-.header .hb[aria-pressed="true"] {
-    color: var(--fg);
-    background: var(--press);
-}
-
-.header .hb:disabled {
-    opacity: 0.4;
-}
-
-/* ---- Title: project (rail hidden), name, branch ------------------------ */
-
-.crumbs {
+.main-title {
     display: flex;
-    align-items: baseline;
-    gap: calc(10 * var(--sp));
+    align-items: center;
+    gap: calc(6 * var(--sp));
     min-width: 0;
-    flex: 0 1 auto;
 }
 
-/* The project, before the title while the rail is hidden: a box that opens and closes as .bar-rail does, taking
-   back the crumbs' gap while it's closed. */
-.proj-box {
-    display: grid;
-    grid-template-columns: 0fr;
-    /* Its own width while there's room. In a window too narrow for the bar it gives way last, after the branch and
-       the title (below), rather than run under what follows. */
-    flex: 0 1 auto;
-    min-width: 0;
-    margin-right: calc(-10 * var(--sp));
-    visibility: hidden;
-    transition: grid-template-columns var(--dur-panel) var(--ease), margin-right var(--dur-panel) var(--ease), visibility 0s linear var(--dur-panel);
-}
-
-.proj {
-    display: inline-flex;
-    align-items: baseline;
-    min-width: 0;
-    max-width: calc(200 * var(--sp));
-    overflow: hidden;
-    color: var(--fg-3);
-    font-weight: 500;
-    white-space: nowrap;
-}
-
-.proj:hover {
-    color: var(--fg);
-}
-
-/* Its name and the stroke keep their own widths (a long name is cut at its own limit), so the box cuts them as it
-   opens and closes, rather than the name squeezing to an ellipsis on the way. */
-.proj .truncate {
+.main-project {
     flex: none;
-    max-width: calc(180 * var(--sp));
-}
-
-.proj .proj-sep {
-    flex: none;
-    margin: 0 calc(6 * var(--sp));
-    color: var(--fg-4);
-}
-
-.header.rail-off .proj-box,
-[data-rail="overlay"] .header .proj-box {
-    grid-template-columns: 1fr;
-    margin-right: calc(-6 * var(--sp));
-    visibility: inherit;
-    transition-delay: 0s;
-}
-
-.ttl-h {
-    margin: 0 0 0 calc(-4 * var(--sp));
-    /* Short of room, the branch goes first (.br), then this, then the project before it. */
-    flex: 0 40 auto;
-    min-width: 0;
-    padding: calc(2 * var(--sp)) calc(4 * var(--sp));
-    border-radius: calc(6 * var(--sp));
-    font-size: 1.036rem;
-    font-weight: 600;
-    letter-spacing: -0.012em;
+    max-width: calc(220 * var(--sp));
+    padding: calc(3 * var(--sp)) calc(5 * var(--sp));
+    margin-left: calc(-5 * var(--sp));
+    border-radius: var(--radius-s);
+    color: var(--text-3);
+    font-size: 0.929rem;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
 }
 
-.title-input {
-    min-width: calc(200 * var(--sp));
-    max-width: calc(460 * var(--sp));
-    height: calc(26 * var(--sp));
-    margin-left: calc(-4 * var(--sp));
-    padding: 0 calc(4 * var(--sp));
-    border: 0;
-    border-radius: calc(6 * var(--sp));
-    background: var(--hover);
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
-    color: var(--fg);
-    font-size: 1.036rem;
+button.main-project:hover {
+    background: var(--fill-1);
+    color: var(--text);
+}
+
+.main-slash {
+    flex: none;
+    color: var(--text-4);
+}
+
+.main-title-btn {
+    min-width: 0;
+    margin-left: calc(-6 * var(--sp));
+    padding: calc(3 * var(--sp)) calc(6 * var(--sp));
+    border-radius: var(--radius-s);
+    font-size: 1rem;
     font-weight: 600;
-    letter-spacing: -0.012em;
-}
-
-.title-input:focus {
-    outline: none;
-}
-
-.br {
-    display: inline-flex;
-    align-items: center;
-    gap: calc(5 * var(--sp));
-    min-width: 0;
-    max-width: calc(240 * var(--sp));
-    flex: 0 1600 auto;
-    color: var(--fg-3);
-    font-size: 0.929rem;
+    letter-spacing: -0.01em;
+    overflow: hidden;
+    text-overflow: ellipsis;
     white-space: nowrap;
-    align-self: center;
 }
 
-.br svg {
-    flex: none;
+button.main-title-btn:hover {
+    background: var(--fill-1);
 }
 
-/* The branch as a button (GitBranches.tsx): it opens the branch dialog. */
-.br-btn {
-    padding: calc(2 * var(--sp)) calc(5 * var(--sp));
-    margin: 0 calc(-5 * var(--sp));
-    border-radius: calc(6 * var(--sp));
-}
-
-.br-btn:hover {
-    background: var(--hover);
-    color: var(--fg-2);
-}
-
-/* Ahead of and behind its upstream. */
-.br-n {
-    display: inline-flex;
-    align-items: center;
-    flex: none;
-    font-variant-numeric: tabular-nums;
-}
-
-/* A narrow column: the title has the room, not a stub of the branch. */
-:where(.main[data-narrow~="640"], .stage-pane[data-narrow~="640"]) .br {
-    display: none;
-}
-
-.crumbs .pill {
-    align-self: center;
-}
-
-/* Settings and a sub-agent's view: crumbs in the same voice. */
-.bc {
-    display: flex;
-    align-items: center;
-    gap: calc(6 * var(--sp));
-    min-width: 0;
-    max-width: calc(260 * var(--sp));
-    color: var(--fg-3);
+.main-title-none {
+    color: var(--text-3);
     font-weight: 500;
-    white-space: nowrap;
-    align-self: center;
-    transition: color var(--dur-fast);
 }
 
-button.bc:hover {
-    color: var(--fg);
-}
-
-.bc.static {
+h1.main-title-btn {
+    flex: 0 1 auto;
+    min-width: calc(72 * var(--sp));
+    margin: 0;
+    padding: calc(3 * var(--sp)) calc(4 * var(--sp));
+    margin-left: calc(-2 * var(--sp));
     cursor: default;
 }
 
-.bc.current {
-    color: var(--fg);
+.main-rename {
+    width: calc(380 * var(--sp));
+    max-width: 40vw;
+    height: calc(28 * var(--sp));
+    margin-left: calc(-6 * var(--sp));
+    padding: 0 calc(6 * var(--sp));
+    border: 0;
+    border-radius: var(--radius-s);
+    background: var(--surface);
+    box-shadow: inset 0 0 0 1px var(--focus), 0 0 0 3px color-mix(in srgb, var(--focus) 18%, transparent);
+    outline: none;
+    font-size: 1rem;
     font-weight: 600;
-    letter-spacing: -0.012em;
+    letter-spacing: -0.01em;
 }
 
-.bc-sep {
-    margin: 0 calc(-4 * var(--sp));
-    color: var(--fg-4);
-    flex: none;
-    align-self: center;
-}
-
-/* ---- Tools: plain buttons at the far end -------------------------------- */
-
-.bar-end {
-    display: flex;
-    align-items: center;
-    gap: calc(8 * var(--sp));
-    min-width: 0;
-    flex: none;
-}
-
-/* ---- Needs you, in Settings' top line -----------------------------------
-   An amber pill beside Close (Settings covers the rail, where they're
-   listed): one session by name, or how many. Narrow, the words go. */
-
-.needs {
+.main-branch {
     display: inline-flex;
     align-items: center;
-    align-self: stretch;
-    gap: calc(7 * var(--sp));
+    gap: calc(5 * var(--sp));
+    flex: 0 100 auto;
     min-width: 0;
-    max-width: calc(340 * var(--sp));
-    /* The capsule's height beside it (stretched); on its own (a sub-agent's view), a button's. */
-    min-height: calc(28 * var(--sp));
-    padding: 0 calc(14 * var(--sp)) 0 calc(12 * var(--sp));
-    margin-right: calc(4 * var(--sp));
-    border-radius: var(--pill);
-    flex: 0 1 auto;
-    color: var(--warn);
-    font-weight: 500;
+    margin-left: calc(6 * var(--sp));
+    overflow: hidden;
+    color: var(--text-3);
+    font-size: 0.821rem;
     white-space: nowrap;
-    animation: needs-pill-in 520ms var(--spring);
-    transition: filter 140ms;
 }
 
-.needs {
-    background: color-mix(in srgb, var(--warn) 12%, transparent);
-    box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--warn) 34%, transparent);
+.main-branch .mono {
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
-.needs:hover,
-.needs[aria-expanded="true"] {
-    filter: brightness(1.04);
-}
-
-.needs:focus-visible {
-    outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
-    outline-offset: 2px;
-}
-
-.needs > svg {
+.main-branch svg {
     flex: none;
 }
 
-.needs-t {
-    min-width: 0;
-    color: var(--fg);
+/* Cavvy's branch opens the branch dialog: the project's hover, and its counts ahead of and behind its upstream. */
+button.main-branch:hover {
+    background: var(--fill-1);
+    color: var(--text);
 }
 
-.needs-w {
-    flex: none;
+button.main-branch {
+    margin-left: calc(1 * var(--sp));
+    padding: calc(3 * var(--sp)) calc(5 * var(--sp));
+    border-radius: var(--radius-s);
 }
 
-.needs b {
-    font-weight: 650;
-    font-variant-numeric: tabular-nums;
-}
-
-.needs-chev {
-    margin-left: calc(-2 * var(--sp));
-}
-
-/* In Settings' top line (it covers the rail and the title bar): a button's height, beside Close. */
-.set-top .needs {
-    align-self: center;
-}
-
-/* Getting narrow: the title gives up room first, so the session's own title keeps some. */
-:where(.main[data-narrow~="700"], .stage-pane[data-narrow~="700"]) .needs {
-    max-width: calc(220 * var(--sp));
-}
-
-/* Under 600px: just the hand and how many. */
-:where(.main[data-narrow~="600"], .stage-pane[data-narrow~="600"]) .needs :is(.needs-t, .needs-w) {
+/* A narrow column: the title has the room, not a stub of the branch. */
+:where(.main[data-narrow~="640"], .stage-pane[data-narrow~="640"]) .main-branch {
     display: none;
 }
 
-:where(.main[data-narrow~="600"], .stage-pane[data-narrow~="600"]) .needs {
-    padding: 0 calc(11 * var(--sp));
+.head-untrusted {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(4 * var(--sp));
+    flex: none;
+    height: calc(20 * var(--sp));
+    margin-left: calc(4 * var(--sp));
+    padding: 0 calc(7 * var(--sp)) 0 calc(6 * var(--sp));
+    border-radius: calc(5 * var(--sp));
+    background: var(--amber-soft);
+    color: var(--amber);
+    font-size: 0.821rem;
+    font-weight: 500;
 }
 
-/* One session: its count shows only when its name doesn't. */
+/* One capsule of tools. */
+.head-tools {
+    display: flex;
+    align-items: center;
+    gap: 1px;
+    flex: none;
+    height: 32px;
+    padding: 0 2px;
+    border-radius: var(--radius-m);
+    box-shadow: inset 0 0 0 1px var(--line-strong);
+}
+
+.head-tools .icon-btn {
+    width: 30px;
+    height: 28px;
+}
+
+/* The design's open trigger ([data-state="open"] there, its menu's button here). */
+.head-tools .icon-btn[aria-expanded="true"] {
+    background: var(--fill-2);
+    color: var(--text);
+}
+
+.head-changes {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    height: 28px;
+    padding: 0 8px;
+    border-radius: var(--radius-s);
+    color: var(--text-2);
+    transition: background 0.12s, color 0.12s;
+}
+
+.head-changes:hover,
+.head-changes[aria-pressed="true"] {
+    background: var(--fill-2);
+    color: var(--text);
+}
+
+/* ---- Needs you, in Settings' top line (the design's settings.css .needs-btn) ---- */
+
+.needs-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(7 * var(--sp));
+    flex: none;
+    max-width: calc(420 * var(--sp));
+    height: calc(28 * var(--sp));
+    margin-right: calc(4 * var(--sp));
+    padding: 0 calc(10 * var(--sp)) 0 calc(8 * var(--sp));
+    border-radius: var(--radius-s);
+    background: var(--amber-soft);
+    box-shadow: inset 0 0 0 1px var(--amber-line);
+    color: var(--amber);
+    font-size: 0.893rem;
+    font-weight: 500;
+    transition: background 0.12s;
+}
+
+.needs-btn:hover,
+.needs-btn[aria-expanded="true"] {
+    background: color-mix(in srgb, var(--amber-soft) 80%, var(--amber-strong));
+}
+
+.needs-btn > svg {
+    flex: none;
+}
+
+.needs-btn-title {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text);
+}
+
+.needs-btn-word {
+    flex: none;
+}
+
+/* Narrow: one session's count shows in place of its name and the words. */
 .needs-one {
     display: none;
 }
 
-:where(.main[data-narrow~="600"], .stage-pane[data-narrow~="600"]) .needs .needs-one {
+:where(.main[data-narrow~="700"], .stage-pane[data-narrow~="700"]) .needs-btn {
+    max-width: calc(220 * var(--sp));
+}
+
+:where(.main[data-narrow~="600"], .stage-pane[data-narrow~="600"]) .needs-btn :is(.needs-btn-title, .needs-btn-word) {
+    display: none;
+}
+
+:where(.main[data-narrow~="600"], .stage-pane[data-narrow~="600"]) .needs-btn .needs-one {
     display: inline;
-}
-
-@keyframes needs-pill-in {
-    from {
-        opacity: 0;
-        transform: translateY(-6px) scale(0.96);
-    }
-}
-
-[data-motion="instant"] .needs {
-    animation: none;
-}
-
-.cap {
-    display: inline-flex;
-    align-items: center;
-    gap: 2px;
-    flex: none;
-}
-
-/* Between the changes and the tools: room, not a rule. */
-.cap .sep {
-    width: 6px;
-    flex: none;
-}
-
-.diffchip .a {
-    color: var(--add-fg);
-    font-weight: 600;
-    font-variant-numeric: tabular-nums;
-}
-
-.diffchip .d {
-    color: var(--del-fg);
-    font-weight: 600;
-    font-variant-numeric: tabular-nums;
-}
-
-.header .hb.diffchip {
-    gap: 5px;
-    color: var(--fg-2);
-}
-
-.header .hb.diffchip.on {
-    color: var(--fg);
-}
-
-/* A shortcut at the end of a menu row (the session menu's Find). */
-.menu-kbd {
-    margin-left: auto;
 }
 
 /* A session of two side by side, narrow (the room its title bar has: Panes.tsx data-bar): the title keeps the room.
    The project before it and the branch after it go first; then the window's own toggles (the terminal, the side panel), as they have
    shortcuts and are in the command palette; then the count of changed lines, the project's scripts, and the changes
    button (Review changes is in the conversation). */
-.stage-pane[data-bar~="640"] .header :is(.proj-box, .br),
-.stage-pane[data-bar~="440"] .header .hb.win,
-.stage-pane[data-bar~="440"] .header .diffchip :is(.a, .d),
-.stage-pane[data-bar~="360"] .header :is(.script-split, .scripts-sep),
-.stage-pane[data-bar~="240"] .header :is(.diffchip, .diffchip + .sep) {
+.stage-pane[data-bar~="640"] .header :is(.main-project, .main-slash, .main-branch),
+.stage-pane[data-bar~="440"] .header .head-win,
+.stage-pane[data-bar~="440"] .header .head-changes .stat,
+.stage-pane[data-bar~="360"] .header .scripts,
+.stage-pane[data-bar~="240"] .header .head-changes {
     display: none;
+}
+
+/* ---- Project scripts (the mock's terminal.css "project scripts") ---------- */
+
+.scripts {
+    display: inline-flex;
+    flex: none;
+    height: 28px;
+    border-radius: var(--radius-s);
+}
+
+.scripts-run,
+.scripts-more {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 28px;
+    color: var(--text-2);
+    transition: background 0.12s, color 0.12s;
+}
+
+.scripts-run {
+    width: 28px;
+    border-radius: var(--radius-s) 0 0 var(--radius-s);
+}
+
+.scripts-more {
+    width: 16px;
+    border-radius: 0 var(--radius-s) var(--radius-s) 0;
+    color: var(--text-3);
+}
+
+.scripts:hover .scripts-run,
+.scripts:hover .scripts-more,
+.scripts[data-open] .scripts-run,
+.scripts[data-open] .scripts-more {
+    background: var(--fill-1);
+}
+
+.scripts .scripts-run:hover,
+.scripts .scripts-more:hover,
+.scripts .scripts-more[aria-expanded="true"] {
+    background: var(--fill-2);
+    color: var(--text);
+}
+
+.scripts-add {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex: none;
+    height: 28px;
+    padding: 0 9px 0 7px;
+    border-radius: var(--radius-s);
+    color: var(--text-2);
+    font-weight: 500;
+    white-space: nowrap;
+    transition: background 0.12s, color 0.12s;
+}
+
+.scripts-add:hover {
+    background: var(--fill-2);
+    color: var(--text);
 }

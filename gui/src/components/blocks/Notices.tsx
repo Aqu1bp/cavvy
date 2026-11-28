@@ -98,7 +98,7 @@ function InfoLine(p: { block: NoticeBlock; leaving?: boolean; row?: boolean }) {
             </div>
             <Show when={open() && p.block.details?.length}>
                 <p class="notice-detail">
-                    <For each={p.block.details}>{(d) => <span class="nt-detail"><span class="sr-only">{"\n"}</span>{d}</span>}</For>
+                    <For each={p.block.details}>{(d) => <span><span class="sr-only">{"\n"}</span>{d}</span>}</For>
                 </p>
             </Show>
         </div>

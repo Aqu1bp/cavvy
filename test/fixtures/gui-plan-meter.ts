@@ -60,7 +60,7 @@ function mount(options: { plan?: number; reached?: boolean; unknown?: boolean; h
     /** How the words under the composer are toned: normal, warning or danger. */
     const tone = () => /\btone-(\w+)/.exec(trigger().props.class)?.[1];
     /** How far the card's bar is filled. */
-    const filled = () => all(root).find(n => n.tag === "i" && n.parent?.props.class?.startsWith("cx-bar"))?.props.style.width;
+    const filled = () => all(root).find(n => n.tag === "i" && n.parent?.props.class?.startsWith("bar "))?.props.style.width;
     return { setActiveId, root, calls, errors, notices, pending, setCatalog, setState, state, setLimits, trigger, button, show, open, setOpen, escape, tone, filled, wire, doc, dispose, settingsTab: () => settingsTab };
 }
 
@@ -112,7 +112,7 @@ test("the words are the context; their tone follows the context alone", () => {
         expect(all(m.root).filter(n => n.tag === "button")).toHaveLength(1);
         expect(m.tone()).toBe("normal");
         m.show();
-        expect(all(m.root).filter(n => n.tag === "h3").map(text)).toEqual(["Context"]);
+        expect(all(m.root).filter(n => n.props?.class === "ctx-name").map(text)).toEqual(["Context"]);
         m.setState({ ...m.state(), contextTokens: 150000 });
         expect(m.tone()).toBe("warning");
         m.setState({ ...m.state(), contextTokens: 180000 });
@@ -128,7 +128,7 @@ for (const reached of [false, true]) test(`unknown size stays empty${reached ? "
         expect(m.tone()).toBe(reached ? "danger" : "normal");
         // No share to say yet: the word alone.
         expect(text(m.trigger())).toBe("Context");
-        expect(m.trigger().props["aria-label"]).toContain("size not known yet");
+        expect(m.trigger().props["aria-label"]).toContain("size unknown");
         // The limit that stops it, named, with when it resets.
         if (reached) expect(m.trigger().props["aria-label"]).toContain("CLI · Default: ");
         m.show();
@@ -175,7 +175,7 @@ test("reached on credits (#434): says so, and switching away doesn't claim the t
         // Another account is still offered: it stops the spending.
         m.button("Use Work account").props.onClick();
         await Bun.sleep(0);
-        expect(m.notices).toEqual(["Account switched. Your next message uses it."]);
+        expect(m.notices).toEqual(["Account switched"]);
     } finally { m.dispose(); }
     const hard = mount({ reached: true, credits: false });
     try {
@@ -212,7 +212,7 @@ test("Home uses default account; session uses its own account", () => {
             expect(m.trigger().props["aria-label"]).toContain(home ? "CLI · Work: Weekly limit reached" : "CLI · Default: 5-hour limit reached");
             m.show();
             // Named by the limit that stops it, then whose plan it is.
-            expect(text(m.root)).toContain(home ? "Weekly limit reachedCLI · Work." : "5-hour limit reachedCLI · Default.");
+            expect(text(m.root)).toContain(home ? "Weekly limit reachedCLI · Work" : "5-hour limit reachedCLI · Default");
             expect(m.button("Compact now").props["aria-disabled"]).toBe(home ? true : undefined);
         } finally { m.dispose(); }
     }
@@ -274,11 +274,11 @@ test("context is measured to where it compacts, and the numbers say where that c
     try {
         m.show();
         const numbers = () => all(m.root).find(n => n.tag === "span" && n.props.title !== undefined && text(n).includes(" / "))!;
-        expect(numbers().props.title).toBe("CLI decides when to compact. The model holds up to 200k.");
+        expect(numbers().props.title).toBe("CLI decides when to compact. The model holds 200k.");
         m.setState({ ...m.state(), compactAt: 100_000 });
         expect(text(m.root)).toContain("Context50k / 100k");
         expect(m.trigger().props["aria-label"]).toBe("Context: 50% used");
-        expect(numbers().props.title).toBe("CLI compacts at 100k, your auto-compact setting. The model holds up to 200k.");
+        expect(numbers().props.title).toBe("CLI compacts at 100k, your setting. The model holds 200k.");
         // A setting past the model's window: the window wins.
         m.setState({ ...m.state(), compactAt: 500_000 });
         expect(text(m.root)).toContain("50k / 200k");

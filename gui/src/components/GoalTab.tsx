@@ -2,7 +2,7 @@
 // where it stands, and buttons to pause, resume or clear it.
 
 import { createSignal, Show } from "solid-js";
-import { ChevronDown, ChevronRight, Goal, LoaderCircle, Pause, Play, X } from "lucide-solid";
+import { ChevronRight, LoaderCircle, Pause, Play, Target, X } from "lucide-solid";
 import type { GoalState } from "@shared/protocol";
 import { reportError, rpc } from "../state/app";
 import { now } from "../lib/clock";
@@ -39,52 +39,53 @@ export function GoalTab(p: { sessionId: string; goal: GoalState }) {
     };
     const g = () => p.goal;
     const native = () => g().judge === "native";
-    const details = () => [g().note, g().lastReason ? `Last check: ${g().lastReason}` : undefined, g().judge === "self" ? "The working model checks its own work. For an independent check, set a small model from another provider in Settings." : native() ? `${g().by} keeps and checks this goal itself.` : undefined].filter(Boolean) as string[];
+    const details = () => [g().note, g().lastReason ? `Last check: ${g().lastReason}` : undefined, g().judge === "self" ? "Checked by the working model itself." : native() ? `${g().by} keeps and checks this goal itself.` : undefined].filter(Boolean) as string[];
     // Claude Code's goals don't pause (Stop interrupts the turn, and it carries on with the next message).
     const pausable = () => !native() || g().canPause;
     return (
-        <div class={`queue goal-tab st-${g().state}`} role="status" aria-label="Goal">
-            <div class="goal-row">
-                <Show when={g().state === "checking" || g().state === "waiting"} fallback={<Goal size={14} class="goal-icon" aria-hidden="true" />}>
-                    <span class="goal-icon spinner" aria-hidden="true"><LoaderCircle size={14} /></span>
+        <div class={`crow crow-goal st-${g().state}`} data-open={open() ? "" : undefined} role="status" aria-label="Goal">
+            <div class="crow-line">
+                <Show when={g().state === "checking" || g().state === "waiting"} fallback={<Target size={14} class="crow-icon" aria-hidden="true" />}>
+                    <span class="crow-icon spinner" aria-hidden="true"><LoaderCircle size={14} /></span>
                 </Show>
-                <span class="goal-label">Goal</span>
+                <span class="crow-label">Goal</span>
+                {/* A CLI's own goal: whose it is. */}
                 <Show when={native()}>
-                    <span class="goal-by">{g().by}</span>
+                    <span class="tag">{g().by}</span>
                 </Show>
-                <span class="goal-text truncate" title={g().condition}>
+                <span class="crow-text" title={g().condition}>
                     {g().condition}
                 </span>
-                <span class="goal-status">{goalStatus(g(), now())}</span>
+                <span class="crow-when">{goalStatus(g(), now())}</span>
                 <Show when={details().length}>
-                    <button class="hb sm" title={open() ? "Hide details" : "Show details"} aria-label={open() ? "Hide goal details" : "Show goal details"} aria-expanded={open()} onClick={() => setOpen(!open())}>
-                        {open() ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                    <button class="icon-btn icon-btn-sm" title={open() ? "Hide details" : "Show details"} aria-label={open() ? "Hide goal details" : "Show goal details"} aria-expanded={open()} onClick={() => setOpen(!open())}>
+                        <ChevronRight size={13} class="chev" data-open={open() ? "" : undefined} />
                     </button>
                 </Show>
                 <Show when={pausable()}>
                     <Show
                         when={g().state === "paused"}
                         fallback={
-                            <button class="hb sm" title="Pause the goal (it stops after this step)" aria-label="Pause goal" disabled={sending()} onClick={() => void run("pause")}>
+                            <button class="icon-btn icon-btn-sm" title="Pause after this step" aria-label="Pause goal" disabled={sending()} onClick={() => void run("pause")}>
                                 <Pause size={13} />
                             </button>
                         }
                     >
-                        <button class="hb sm" title="Resume the goal" aria-label="Resume goal" disabled={sending()} onClick={() => void run("resume")}>
+                        <button class="icon-btn icon-btn-sm" title="Resume the goal" aria-label="Resume goal" disabled={sending()} onClick={() => void run("resume")}>
                             <Play size={13} />
                         </button>
                     </Show>
                 </Show>
-                <button class="hb sm" title="Clear the goal" aria-label="Clear goal" disabled={sending()} onClick={() => void run("clear")}>
-                    <X size={14} />
+                <button class="icon-btn icon-btn-sm" title="Clear the goal" aria-label="Clear goal" disabled={sending()} onClick={() => void run("clear")}>
+                    <X size={13} />
                 </button>
             </div>
             <Show when={open() && details().length}>
-                <div class="goal-details selectable">
+                <ul class="goal-checks selectable">
                     {details().map((d) => (
-                        <p>{d}</p>
+                        <li>{d}</li>
                     ))}
-                </div>
+                </ul>
             </Show>
         </div>
     );

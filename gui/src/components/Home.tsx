@@ -1,14 +1,14 @@
-// Home (a new session): one question; the composer, with where the session will run
-// (project, branch or worktree) and the composer's prefixes in a drawer under it; and
-// sessions from this project's terminal to carry on here. The whole group sits a
-// little above the middle of the column (home.css).
+// Home (a new session): a card asking what to work on, with where the session will run (the
+// machine, the project, its folder and branch or worktree); a card to trust the folder when its
+// settings run commands; sessions from this project's terminal to carry on here. The cards are
+// centred in the column; the composer is at its foot, where a session has it.
 
 import { createEffect, createResource, createSignal, For, onCleanup, onMount, Show } from "solid-js";
-import { ChevronDown, Folder, FolderGit2, FolderOpen, KeyRound, Shield } from "lucide-solid";
+import { Check, ChevronDown, FolderOpen, KeyRound, ShieldQuestion } from "lucide-solid";
 import type { ProviderInfo } from "@shared/protocol";
 import { app, homeOn, homeProjects, noModel, refreshProjects, reportError, rpcFor, serversUi } from "../state/app";
 import { chooseProject, connectCli, homeJumped, openProject, trustAndContinue } from "../state/actions";
-import { columnHeight, requestComposerFocus, setSettingsTab, shellLayout } from "../state/ui";
+import { requestComposerFocus, setSettingsTab, shellLayout } from "../state/ui";
 import { sp } from "../state/prefs";
 import { ago, basename, tildify } from "../lib/format";
 import { isElectron, isWindowShown, machine } from "../lib/platform";
@@ -20,8 +20,9 @@ import { Menu } from "./ui/Menu";
 import { ProviderIcon } from "./ui/ProviderIcon";
 import { WorktreePicker } from "./WorktreePicker";
 import { ErrorCards } from "./ErrorCards";
+import { motionMs } from "./LiveLine";
 
-/** The composer's prefixes, at the strip's end: a click types one where the caret is. */
+/** The composer's prefixes, under it at its far end: a click types one where the caret is. */
 const HINTS = [
     { key: "/", word: "commands", title: "Commands", starts: true },
     { key: "@", word: "files", title: "Mention a file", starts: false },
@@ -46,10 +47,9 @@ function typeInComposer(root: HTMLElement | undefined, text: string) {
     }
 }
 
-// Heights (px at text size 14) that decide how many terminal rows fit under the composer, as home.css
-// places the group: the title bar's row and the foot, the question and the composer with its strip, a
-// card above it (taller in a narrow column, its buttons stacked), the list's heading, and a row.
-const FRAME_H = 80, GROUP_H = 200, CARD_H = 150, NARROW_CARD_H = 220, LIST_H = 64, ROW_H = 55;
+// Heights (px at text size 14) that decide how many terminal rows fit above the composer: the title bar and the
+// composer at the foot, the card of rows, a card under it (taller in a narrow column), the list's heading, and a row.
+const FRAME_H = 220, GROUP_H = 240, CARD_H = 130, NARROW_CARD_H = 170, LIST_H = 52, ROW_H = 46;
 
 /** How many terminal rows fit in the column with `cards` cards above the composer: 3 at most, down to none. */
 function rowsFitting(column: { w: number; h: number }, cards: number): number {
@@ -94,11 +94,10 @@ export function Home() {
     const [connecting, setConnecting] = createSignal<string>();
     const needsTrust = () => info()?.needsTrust ?? [];
     const askTrust = () => Boolean(info()?.askTrust);
-    // Only the edits' checks wait on it, so it's asked in a bar on the composer's top edge, not a card; and only once
+    // Only the edits' checks wait on it, so it's asked in a row at the top of the message box, not a card; and only once
     // there's a model to make edits (the ways to connect one take that place first).
     const askHere = () => Boolean(app.homeCwd && !needsTrust().length && askTrust() && !modelMissing());
-    // The card for a folder whose settings run commands; the row of ways to connect a model is a third of one. The bar
-    // takes the question's room, not the column's (home.css), so the composer stays put when it goes.
+    // The card for a folder whose settings run commands; the row of ways to connect a model is a third of one.
     const cards = () => (needsTrust().length ? 1 : 0) + (modelMissing() ? 1 / 3 : 0);
     const trust = async (yes: boolean) => {
         await trustAndContinue(app.homeCwd!, yes);
@@ -106,22 +105,27 @@ export function Home() {
         if (yes) void refreshProjects();
     };
 
-    // The terminal rows shown under the composer: home.css places the group by them. When they arrive
-    // (or go) after Home is up, the group glides to its new place rather than jumping.
-    const [cliRows, setCliRows] = createSignal(0);
-    const [glide, setGlide] = createSignal(false);
-    let glideTimer: ReturnType<typeof setTimeout> | undefined;
-    const [cliOn, setCliOn] = createSignal(false);
-    const shown = (n: number, section: boolean) => {
-        if (n === cliRows() && section === cliOn()) return;
-        clearTimeout(glideTimer);
-        setGlide(isWindowShown());
-        setCliRows(n);
-        setCliOn(section);
-        glideTimer = setTimeout(() => setGlide(false), 600);
-    };
-    onCleanup(() => clearTimeout(glideTimer));
-
+    // The cards are centred in the column above the composer. When what's in them changes after Home is up (the
+    // terminal sessions arrive, a card comes or goes), they glide to their new place rather than jump.
+    let stack: HTMLDivElement | undefined;
+    let scroller: HTMLDivElement | undefined;
+    onMount(() => {
+        if (!stack || !scroller || typeof ResizeObserver === "undefined") return;
+        const el = stack;
+        let last: number | undefined;
+        const ro = new ResizeObserver((entries) => {
+            const top = el.getBoundingClientRect().top;
+            const moved = entries.some((e) => e.target === el) && last !== undefined && Math.abs(top - last) > 1;
+            if (moved && isWindowShown() && !homeJumped()) {
+                const ms = motionMs(260);
+                if (ms) el.animate([{ transform: `translateY(${last! - top}px)` }, { transform: "none" }], { duration: ms, easing: "cubic-bezier(0.2, 0.7, 0.2, 1)" });
+            }
+            last = top;
+        });
+        ro.observe(el);
+        ro.observe(scroller);
+        onCleanup(() => ro.disconnect());
+    });
 
     const togglePicker = (e: MouseEvent) => {
         setPickerAnchor(e.currentTarget as HTMLElement);
@@ -142,15 +146,16 @@ export function Home() {
 
     // Which machine it runs on, and the way to add a server: in the desktop app, and wherever there's more than this
     // one machine, once the window knows.
-    let where: HTMLSpanElement | undefined;
+    const showWhere = () => Boolean(isElectron || machine || app.hello?.servers);
+    const [where, setWhere] = createSignal<HTMLSpanElement>();
     /** Takes it away again: undefined until it's shown; called at once if this screen went first. */
     let unmountWhere: (() => void) | undefined;
     let whereShown = false;
     let left = false;
     createEffect(() => {
-        if (whereShown || !where || !(isElectron || machine || app.hello?.servers)) return;
+        const el = where();
+        if (whereShown || !el || !showWhere()) return;
         whereShown = true;
-        const el = where;
         void serversUi().then((m) => {
             const off = m.mountWhere(el);
             if (left) off();
@@ -162,166 +167,186 @@ export function Home() {
         unmountWhere?.();
     });
 
-    /** Under the composer, like a drawer: where the session runs, then the composer's prefixes. */
-    const strip = (
-        <>
-            {/* Where it runs, and the servers to add or pick (components/Servers.tsx puts it here). */}
-            <span class="strip-at" ref={where} />
-            <button
-                class="strip-ctl"
-                title={app.homeCwd ? `${tildify(app.homeCwd, app.hello?.homeDir)}: choose another folder` : "Choose a project folder"}
-                aria-haspopup="menu"
-                aria-expanded={pickerOpen()}
-                onClick={togglePicker}
-            >
-                <Folder size={14} class="ic" />
-                <span class="truncate">{app.homeCwd ? basename(app.homeCwd) : "Choose a project"}</span>
-                <ChevronDown size={12} stroke-width={2} class="chv" />
-            </button>
-            {/* Worktrees are made on the window's own machine. */}
-            <Show when={app.homeCwd && info()?.git}>
-                <WorktreePicker cwd={app.homeCwd!} branch={info()?.branch} />
-            </Show>
+    /** Under the composer, at its far end: the composer's prefixes. */
+    const hints = (
+        <Show when={app.homeCwd}>
             <span class="grow" />
-            <Show when={app.homeCwd}>
-                <span class="strip-hints">
-                    <For each={HINTS}>
-                        {(h) => (
-                            // Pressed, it leaves the caret in the composer, where the prefix goes.
-                            <button
-                                title={h.starts && typed() ? `${h.title}: start a message with ${h.key}` : h.title}
-                                aria-disabled={h.starts && typed() ? "true" : undefined}
-                                onMouseDown={(e) => e.preventDefault()}
-                                onClick={() => (h.starts && filled() ? composer?.querySelector("textarea")?.focus() : typeInComposer(composer, h.key))}
-                            >
-                                <kbd class="k">{h.key}</kbd>
-                                {h.word}
-                            </button>
-                        )}
-                    </For>
-                </span>
-            </Show>
-        </>
+            <For each={HINTS}>
+                {(h) => (
+                    // Pressed, it leaves the caret in the composer, where the prefix goes.
+                    <button
+                        type="button"
+                        class="hint-chip"
+                        title={h.starts && typed() ? `${h.title}: start a message with ${h.key}` : h.title}
+                        aria-disabled={h.starts && typed() ? "true" : undefined}
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => (h.starts && filled() ? composer?.querySelector("textarea")?.focus() : typeInComposer(composer, h.key))}
+                    >
+                        <kbd class="kbd">{h.key}</kbd>
+                        {h.word}
+                    </button>
+                )}
+            </For>
+        </Show>
+    );
+
+    /** Trusting the folder, when only the edits' checks wait on it: a row at the top of the message box. */
+    const trustRow = (
+        <div class="crow crow-trust" role="group" aria-label="Trust this folder">
+            <div class="crow-line">
+                <ShieldQuestion size={14} class="crow-icon" />
+                <span class="crow-text">Trust {basename(app.homeCwd ?? "")}? Edits get checked for errors only in folders you trust.</span>
+                <button type="button" class="btn btn-sm btn-ghost" onClick={() => void trust(false)}>
+                    Not now
+                </button>
+                <button type="button" class="btn btn-sm" onClick={() => void trust(true)}>
+                    Trust
+                </button>
+            </div>
+        </div>
     );
 
     return (
-        <div class="home" classList={{ instant, glide: glide() && !homeJumped(), "home-jumped": homeJumped() }}>
-            <div
-                class="home-col"
-                classList={{ asking: askHere() }}
-                style={{ "--column-h": columnHeight(), "--cli-rows": app.homeCwd && homeOn() === undefined ? cliRows() : 0, "--cli-on": app.homeCwd && homeOn() === undefined && cliOn() ? 1 : 0, "--home-cards": cards() }}
-            >
-                <h1 class="home-q">{!app.homeCwd ? "Choose a project to start" : modelMissing() ? "Connect a model to start" : "What should we work on?"}</h1>
-                <Menu label="Recent projects" open={pickerOpen()} anchor={pickerAnchor} onClose={() => setPickerOpen(false)} width={420}>
-                    <div class="menu-label">Recent projects</div>
-                    <For each={homeProjects()} fallback={<div class="menu-note">No projects yet.</div>}>
-                        {(pr) => (
-                            <button
-                                role="menuitem"
-                                class={`menu-item ${pr.path === app.homeCwd ? "current" : ""}`}
-                                onClick={() => {
-                                    setPickerOpen(false);
-                                    void openProject(pr.path, true);
-                                    requestComposerFocus();
-                                }}
-                            >
-                                <FolderGit2 size={15} />
-                                <span class="menu-item-text">
-                                    <span class="menu-item-name">{pr.name}</span>
-                                    <span class="menu-item-sub mono truncate">{tildify(pr.path, app.hello?.homeDir)}</span>
-                                </span>
-                                <Show when={pr.openedAt}>
-                                    <span class="muted small">{(now(), ago(pr.openedAt!))}</span>
-                                </Show>
-                            </button>
-                        )}
-                    </For>
-                    <div class="menu-sep" />
-                    <button role="menuitem" class="menu-item" onClick={() => void pick()}>
-                        <FolderOpen size={15} />
-                        <span class="menu-item-name">Open folder…</span>
-                    </button>
-                </Menu>
-
-                <div class="home-composer" ref={(el) => (composer = el)}>
-                    <ErrorCards place="home" />
-
-                    {/* What comes before the first message, shaped like the request cards: trusting the folder, connecting a model. */}
-                    <Show when={needsTrust().length}>
-                        <div class="hcard card-surface trust" role="group" aria-label="Trust this folder">
-                            <div class="ask-h">
-                                <span class="ask-title">Do you trust this folder?</span>
+        <div class="home" classList={{ instant, "home-jumped": homeJumped() }}>
+            <div class="home-scroll" ref={scroller}>
+                <div class="home-stack" ref={stack}>
+                    <section class="home-card card-surface card" aria-label="New session">
+                        <h1 class="home-title">{!app.homeCwd ? "Choose a project to start" : modelMissing() ? "Connect a model to start" : "What should we work on?"}</h1>
+                        {/* No model yet: the ways to connect one. A plan the user already has (Claude Code, Codex…) is one
+                            click; a key is in Settings. */}
+                        <Show when={modelMissing()}>
+                            <div class="home-connect" role="group" aria-label="Connect a model">
+                                <For each={clis()}>
+                                    {(pr) => (
+                                        <button class="btn btn-sm" title={`Use your ${pr.agentCli!.plan}`} disabled={connecting() === pr.id} onClick={async () => {
+                                            setConnecting(pr.id);
+                                            await connectCli(pr);
+                                            setConnecting(undefined);
+                                        }}>
+                                            <ProviderIcon id={pr.id} name={pr.name} size={14} />
+                                            {planName(pr)}
+                                        </button>
+                                    )}
+                                </For>
+                                <button class="btn btn-sm" title="Anthropic, OpenAI, Gemini and more" onClick={() => setSettingsTab("providers")}>
+                                    <KeyRound size={14} />
+                                    API key
+                                </button>
                             </div>
-                            <p>
-                                <b>{basename(app.homeCwd ?? "")}</b> has settings (
+                        </Show>
+                        {/* Where it runs, and the servers to add or pick (components/Servers.tsx puts it here). */}
+                        <Show when={showWhere()}>
+                            <div class="home-row">
+                                <span class="home-label">Runs on</span>
+                                <span class="home-at" ref={setWhere} />
+                            </div>
+                        </Show>
+                        <div class="home-row">
+                            <span class="home-label">Project</span>
+                            <button class="select home-select" title={app.homeCwd ? "Choose another folder" : undefined} aria-haspopup="menu" aria-expanded={pickerOpen()} onClick={togglePicker}>
+                                <span class="select-value">{app.homeCwd ? basename(app.homeCwd) : "Choose a project"}</span>
+                                <ChevronDown size={13} class="select-caret" />
+                            </button>
+                        </div>
+                        <Show when={app.homeCwd}>
+                            {(cwd) => (
+                                <div class="home-row">
+                                    <span class="home-label">Folder</span>
+                                    {/* Cut in the middle, so the folder's own name stays. */}
+                                    <span class="home-value home-path mono" title={cwd()}>
+                                        <span class="home-path-dir">{tildify(cwd(), app.hello?.homeDir).slice(0, tildify(cwd(), app.hello?.homeDir).length - basename(cwd()).length)}</span>
+                                        <span class="home-path-name">{basename(cwd())}</span>
+                                    </span>
+                                </div>
+                            )}
+                        </Show>
+                        {/* Worktrees are made on the window's own machine. */}
+                        <Show when={app.homeCwd && info()?.git}>
+                            <div class="home-row">
+                                <span class="home-label">Branch</span>
+                                <WorktreePicker cwd={app.homeCwd!} branch={info()?.branch} />
+                            </div>
+                        </Show>
+                    </section>
+
+                    {/* A folder whose settings run commands: asked before the first message. */}
+                    <Show when={needsTrust().length}>
+                        <section class="home-card card-surface card home-trust" role="group" aria-label="Trust this folder">
+                            <h2 class="home-cli-title">Do you trust this folder?</h2>
+                            <p class="home-trust-text">
+                                {basename(app.homeCwd ?? "")} has settings (
                                 <For each={needsTrust()}>{(f, i) => <>{i() ? ", " : ""}<code>{f}</code></>}</For>
                                 ) that can run commands on {(homeOn() ?? machine) || "this computer"}.
                             </p>
-                            <div class="ask-row">
-                                <button class="pbtn primary" onClick={async () => { await trustAndContinue(app.homeCwd!, true); void refetch(); void refreshProjects(); }}>
+                            <div class="home-trust-actions">
+                                <button class="btn btn-primary" onClick={async () => { await trustAndContinue(app.homeCwd!, true); void refetch(); void refreshProjects(); }}>
                                     Trust this folder
                                 </button>
-                                <span class="grow" />
-                                <button class="pbtn quiet" onClick={async () => { await trustAndContinue(app.homeCwd!, false); void refetch(); }}>
+                                <button class="btn" onClick={async () => { await trustAndContinue(app.homeCwd!, false); void refetch(); }}>
                                     Open without them
                                 </button>
                             </div>
-                        </div>
+                        </section>
                     </Show>
 
-                    {/* No model yet: the ways to connect one, under the question that asks for it. A plan the user already
-                        has (Claude Code, Codex…) is one click; a key is in Settings. */}
-                    <Show when={modelMissing()}>
-                        <div class="home-connect" role="group" aria-label="Connect a model">
-                            <For each={clis()}>
-                                {(pr) => (
-                                    <button class="strip-ctl" title={`Use your ${pr.agentCli!.plan}`} disabled={connecting() === pr.id} onClick={async () => {
-                                        setConnecting(pr.id);
-                                        await connectCli(pr);
-                                        setConnecting(undefined);
-                                    }}>
-                                        <ProviderIcon id={pr.id} name={pr.name} size={16} />
-                                        {planName(pr)}
-                                    </button>
-                                )}
-                            </For>
-                            <button class="strip-ctl" title="Anthropic, OpenAI, Gemini and more, in Settings" onClick={() => setSettingsTab("providers")}>
-                                <KeyRound size={15} class="ic" />
-                                API key
-                            </button>
-                        </div>
+                    <Show when={app.homeCwd && homeOn() === undefined ? app.homeCwd : undefined} keyed>
+                        {(cwd) => <CliSessions cwd={cwd} rows={rowsFitting(shellLayout().column, cards())} />}
                     </Show>
+                </div>
+            </div>
 
-                    <Show when={askHere()}>
-                        <div class="composer-strip home-tab" role="group" aria-label="Trust this folder">
-                            <Shield size={14} class="ic" />
-                            <span class="truncate">
-                                Trust {basename(app.homeCwd ?? "")}? <span class="note">Edits get checked for errors only in folders you trust.</span>
-                            </span>
-                            <span class="grow" />
-                            <button class="strip-ctl" onClick={() => void trust(false)}>
-                                Not now
-                            </button>
-                            <button class="strip-ctl yes" onClick={() => void trust(true)}>
-                                Trust
-                            </button>
-                        </div>
-                    </Show>
-
+            <div class="composer-wrap composer-wrap-home">
+                <div class="composer-col" ref={(el) => (composer = el)}>
+                    <ErrorCards place="home" />
                     <Composer
                         variant="home"
                         autofocus
-                        strip={strip}
+                        lead={askHere() ? trustRow : undefined}
+                        under={hints}
                         onText={(t) => setTyped(Boolean(t))}
-                        compare={homeOn() !== undefined ? { available: false, why: "Compare isn't available on another machine yet." } : info()?.git ? { available: true } : { available: false, why: app.homeCwd ? "Comparing models needs a Git repository." : "Choose a project folder first." }}
+                        compare={homeOn() !== undefined ? { available: false, why: "Not on another machine yet." } : info()?.git ? { available: true } : { available: false, why: app.homeCwd ? "Needs a Git repository." : "Choose a project folder first." }}
                         placeholder={!app.homeCwd ? "Choose a project folder to start" : "Describe a task or ask a question"}
                     />
                 </div>
-
-                <Show when={app.homeCwd && homeOn() === undefined ? app.homeCwd : undefined} keyed>
-                    {(cwd) => <CliSessions cwd={cwd} rows={rowsFitting(shellLayout().column, cards())} onShown={shown} />}
-                </Show>
             </div>
+
+            <Menu label="Recent projects" open={pickerOpen()} anchor={pickerAnchor} onClose={() => setPickerOpen(false)} width={336} align="end" class="menu menu-wide">
+                <div class="menu-label">Recent projects</div>
+                <For each={homeProjects()} fallback={<p class="menu-none">No projects yet.</p>}>
+                    {(pr) => (
+                        <button
+                            role="menuitemradio"
+                            aria-checked={pr.path === app.homeCwd}
+                            class="menu-item menu-item-two"
+                            onClick={() => {
+                                setPickerOpen(false);
+                                void openProject(pr.path, true);
+                                requestComposerFocus();
+                            }}
+                        >
+                            <span class="menu-check">
+                                <Show when={pr.path === app.homeCwd}>
+                                    <Check size={14} />
+                                </Show>
+                            </span>
+                            <span class="menu-item-text">
+                                <span class="menu-item-name">{pr.name}</span>
+                                <span class="menu-item-sub truncate" title={pr.path}>
+                                    <span class="mono">{tildify(pr.path, app.hello?.homeDir)}</span>
+                                </span>
+                            </span>
+                            <Show when={pr.openedAt}>
+                                <span class="menu-item-note">opened {(now(), /^(now|\d+[mh])$/.test(ago(pr.openedAt!)) ? "today" : ago(pr.openedAt!))}</span>
+                            </Show>
+                        </button>
+                    )}
+                </For>
+                <div class="menu-sep" />
+                <button role="menuitem" class="menu-item" onClick={() => void pick()}>
+                    <FolderOpen size={14} />
+                    <span class="menu-item-name">Open folder…</span>
+                </button>
+            </Menu>
         </div>
     );
 }

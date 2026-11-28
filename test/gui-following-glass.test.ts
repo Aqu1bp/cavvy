@@ -10,23 +10,25 @@ test("the dock's pieces are cards, not floating glass: none of them blurs what's
     for (const [file, piece] of [
         ["components/Composer.tsx", 'class="composer-box card-surface"'],
         ["components/InteractionDock.tsx", "class={`ask card-surface itab"],
-        ["components/QueueTab.tsx", 'class="uq-tray card-surface"'],
-        ["components/Home.tsx", 'class="hcard card-surface'],
+        ["components/QueueTab.tsx", 'class="tray tray-queue"'],
+        ["components/Home.tsx", 'class="home-card card-surface'],
     ] as const) expect(await read(file)).toContain(piece);
     const base = parseRules(await read("styles/base.css"));
     const card = base.filter((r) => r.selectors.includes(".card-surface"));
     expect(card.length).toBe(1);
     expect([...card[0]!.decls.keys()].some((k) => k.includes("backdrop-filter"))).toBe(false);
     // And nothing gives a card one elsewhere.
-    for (const file of ["composer.css", "home.css", "stage.css", "header.css", "plan.css"]) {
-        const blurred = parseRules(await read(`styles/${file}`)).filter((r) => [...r.decls.keys()].some((k) => k.includes("backdrop-filter")) && r.selectors.some((s) => /\.(composer-box|ask|uq-tray|hcard|cap|needs)\b/.test(s)));
+    for (const file of ["composer.css", "composer-trays.css", "home.css", "stage.css", "header.css"]) {
+        const blurred = parseRules(await read(`styles/${file}`)).filter((r) => [...r.decls.keys()].some((k) => k.includes("backdrop-filter")) && r.selectors.some((s) => /\.(composer-box|ask|tray|hcard|cap|needs)\b/.test(s)));
         expect(blurred.map((r) => r.selectors.join(", "))).toEqual([]);
     }
 });
 
-test("the steps, open, lie over the conversation: only then are they floating glass", async () => {
-    // StepsTray.tsx: the dock keeps room for their one line only, so the open list has the conversation behind it.
-    expect(await read("components/StepsTray.tsx")).toContain('classList={{ open: open(), glass: open(), "card-surface": !open() }}');
+test("the steps, open, lie over the conversation: only then do they float", async () => {
+    // StepsTray.tsx: the dock keeps room for their one line only; the whole list opens in a menu over the conversation.
+    const steps = await read("components/StepsTray.tsx");
+    expect(steps).toContain('<div class="tray tray-steps">');
+    expect(steps).toMatch(/<Popover open=\{open\(\)\}.*class="menu steps-list"/);
 });
 
 test("the conversation fades out under the title bar and before the dock, so nothing passes behind either", async () => {

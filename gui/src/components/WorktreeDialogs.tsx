@@ -5,7 +5,7 @@
 // and only in a repository the user trusted (the server holds the gate).
 
 import { createSignal, For, onCleanup, Show } from "solid-js";
-import { AlertTriangle } from "lucide-solid";
+import { Check, ShieldAlert } from "lucide-solid";
 import type { CreateWorktreeResult, SetupInfo, WorktreeInfo } from "@shared/protocol";
 import { RpcError } from "../lib/rpc";
 import { tildify } from "../lib/format";
@@ -17,6 +17,7 @@ import { chooseFolder, openProject } from "../state/actions";
 import { requestComposerFocus, setFolderPickerOpen, setupObscured, terminalActions } from "../state/ui";
 import { Dialog } from "./ui/Dialog";
 import { Spinner } from "./ui/bits";
+import "../styles/worktree-dialogs.css";
 
 export type Field = "branch" | "base" | "location" | "general";
 
@@ -57,6 +58,8 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
     const [branch, setBranch] = createSignal("");
     const [base, setBase] = createSignal(r.base);
     /** Follows the branch name until edited. */
+    // One New worktree dialog at a time: its form, for the Create button in the foot.
+    const formId = "new-worktree-form";
     const [folder, setFolder] = createSignal<string>();
     /** A folder elsewhere the user chose to create it in. */
     const [parent, setParent] = createSignal<string>();
@@ -185,40 +188,73 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
     };
 
     return (
-        <Dialog open onClose={close} title="New worktree" width={540}>
+        <Dialog
+            open
+            onClose={close}
+            title="New worktree"
+            subtitle="A new branch, checked out in a folder of its own."
+            width={520}
+            footer={
+                <>
+                    <Show when={busy()}>
+                        <span class="dlg-foot-note wt-busy">
+                            <Spinner size={13} />
+                            Checking out files…
+                        </span>
+                    </Show>
+                    <button type="button" class="btn" disabled={busy()} onClick={close}>
+                        Cancel
+                    </button>
+                    <Show
+                        when={error()?.code === "needs_trust"}
+                        fallback={
+                            <button type="submit" form={formId} class="btn btn-primary" disabled={busy() || trusting() || note().kind === "loading" || !branch().trim() || !name()}>
+                                Create
+                            </button>
+                        }
+                    >
+                        <button type="button" class="btn btn-primary" disabled={busy()} onClick={() => void create(error()?.folder ?? r.cwd)}>
+                            Trust and create
+                        </button>
+                    </Show>
+                </>
+            }
+        >
             <form
-                class="wt-form"
+                id={formId}
+                class="form-stack"
                 onSubmit={(e) => {
                     e.preventDefault();
                     void create();
                 }}
             >
-                <label class="wt-field">
-                    <span class="wt-label">Branch name</span>
+                <label class="field">
+                    <span class="field-label">Branch name</span>
                     <input class="input mono" autofocus aria-label="Branch name" spellcheck={false} autocomplete="off" placeholder="feature/my-change" maxLength={200} disabled={busy() || suggesting()} value={branch()} onInput={(e) => { dropSuggestError(); setBranch(e.currentTarget.value); }} aria-invalid={Boolean(errorFor("branch"))} />
-                    <span class="wt-hint">
+                    <Show when={errorFor("branch") ?? suggested()?.error}>{(m) => <span class="field-hint field-error">{m()}</span>}</Show>
+                    <span class="field-hint">
                         <button type="button" class="link-btn" disabled={busy() || suggesting() || !about()} title={about() ? (suggested()?.model ? `Suggested by ${draftedBy(suggested()!.model!)}` : undefined) : "Describe the task first"} onClick={() => void suggest()}>
                             {suggesting() ? "Suggesting…" : "Suggest a name"}
                         </button>
                     </span>
-                    <Show when={suggested()?.error}>{(m) => <span class="wt-error">{m()}</span>}</Show>
-                    <Show when={errorFor("branch")}>{(m) => <span class="wt-error">{m()}</span>}</Show>
                 </label>
-                <label class="wt-field">
-                    <span class="wt-label">Base</span>
+                <label class="field">
+                    <span class="field-label">Base</span>
                     <input class="input mono" spellcheck={false} autocomplete="off" placeholder="HEAD" maxLength={200} disabled={busy()} value={base()} onInput={(e) => setBase(e.currentTarget.value)} aria-invalid={Boolean(errorFor("base"))} />
-                    <Show when={errorFor("base")}>{(m) => <span class="wt-error">{m()}</span>}</Show>
+                    <Show when={errorFor("base")} fallback={<span class="field-hint">The branch or commit the new branch starts from.</span>}>
+                        {(m) => <span class="field-hint field-error">{m()}</span>}
+                    </Show>
                 </label>
-                <div class="wt-field">
-                    <label class="wt-label" for="wt-folder">
+                <div class="field">
+                    <span class="field-label" id="wt-location">
                         Location
-                    </label>
-                    {/* The folder's name, in full; the whole path it makes is said once, below. */}
-                    <input id="wt-folder" class="input mono" spellcheck={false} autocomplete="off" maxLength={255} disabled={busy()} value={name()} onInput={(e) => setFolder(e.currentTarget.value)} aria-invalid={Boolean(errorFor("location"))} />
-                    <span class="wt-path mono" title={target()}>
-                        {target()}
                     </span>
-                    <span class="wt-hint">
+                    <div class="wt-location" role="group" aria-labelledby="wt-location" title={target()}>
+                        <span class="wt-dir mono truncate">{tildify(dir().replace(/\/+$/, ""), app.hello?.homeDir)}/</span>
+                        <input id="wt-folder" class="input mono wt-folder" placeholder="folder" aria-label="Folder name" spellcheck={false} autocomplete="off" maxLength={255} disabled={busy()} value={name()} onInput={(e) => setFolder(e.currentTarget.value)} aria-invalid={Boolean(errorFor("location"))} />
+                    </div>
+                    <span class="wt-location-foot">
+                        <Show when={errorFor("location")}>{(m) => <span class="field-hint field-error">{m()}</span>}</Show>
                         <Show
                             when={parent()}
                             fallback={
@@ -232,73 +268,56 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
                             </button>
                         </Show>
                     </span>
-                    <Show when={errorFor("location")}>{(m) => <span class="wt-error">{m()}</span>}</Show>
                 </div>
-                <Show when={errorFor("general")}>
-                    {(m) => (
-                        <div class="rw-confirm">
-                            <AlertTriangle size={14} />
-                            <span>{m()}</span>
-                            <Show when={error()?.code === "needs_trust"}>
-                                <button type="button" class="btn btn-sm" disabled={busy()} onClick={() => void create(error()?.folder ?? r.cwd)}>
-                                    Trust and create
-                                </button>
-                            </Show>
-                        </div>
-                    )}
-                </Show>
                 <Show when={note().kind === "loading"}>
-                    <span class="wt-hint">Checking the project's setup script…</span>
+                    <span class="field-hint">Checking the project's setup script…</span>
                 </Show>
                 <Show when={runs()}>
                     {(n) => (
                         <div class="wt-setup">
-                            <span>
+                            <p class="wt-setup-text">
                                 The setup script <strong>{n().script.name}</strong> runs once it's created:
-                            </span>
-                            <pre class="wt-setup-command mono">{n().script.command}</pre>
-                            <label class="check-row">
+                            </p>
+                            <code class="wt-setup-cmd mono">{n().script.command}</code>
+                            <label class="check" data-disabled={busy() || undefined}>
                                 <input type="checkbox" checked={skipSetup()} disabled={busy()} onChange={(e) => setSkipSetup(e.currentTarget.checked)} />
-                                <span>Don't run it this time</span>
+                                <span class="check-box" aria-hidden="true">
+                                    <Check size={11} stroke-width={3} />
+                                </span>
+                                <span class="check-label">Don't run it this time</span>
                             </label>
                         </div>
                     )}
                 </Show>
                 <Show when={untrusted()}>
                     {(n) => (
-                        <div class="wt-setup">
-                            <span>
-                                The setup script <strong>{n().script.name}</strong> won't run: you haven't trusted this repository.
+                        <div class="note" data-tone="amber">
+                            <ShieldAlert size={14} />
+                            <span class="note-body">
+                                Not trusted, so <strong>{n().script.name}</strong> won't run.
                             </span>
-                            <pre class="wt-setup-command mono">{n().script.command}</pre>
-                            <span class="wt-hint">Trusting it also turns on its .cavvy settings, hooks and MCP servers.</span>
-                            <div>
-                                <button type="button" class="btn btn-sm" disabled={busy() || trusting()} onClick={() => void trustRepository(n().main)}>
-                                    {trusting() ? <Spinner size={12} /> : "Trust this repository"}
-                                </button>
-                            </div>
+                            <button type="button" class="btn btn-sm" title="Also turns on its settings, hooks and MCP servers" disabled={busy() || trusting()} onClick={() => void trustRepository(n().main)}>
+                                {trusting() ? <Spinner size={12} /> : "Trust this repository"}
+                            </button>
                         </div>
                     )}
                 </Show>
                 <Show when={unreadable()}>
                     {(n) => (
-                        <div class="wt-setup">
-                            <span>The project scripts couldn't be read, so no setup script will run. {n().message}</span>
+                        <div class="note" data-tone="amber">
+                            <ShieldAlert size={14} />
+                            <span class="note-body">Couldn't read the project scripts: no setup script runs. {n().message}</span>
                         </div>
                     )}
                 </Show>
-                <div class="dialog-actions">
-                    <Show when={busy()}>
-                        <span class="muted small">Checking out files…</span>
-                    </Show>
-                    <span class="grow" />
-                    <button type="button" class="btn btn-ghost" disabled={busy()} onClick={close}>
-                        Cancel
-                    </button>
-                    <button type="submit" class="btn btn-primary" disabled={busy() || trusting() || note().kind === "loading" || !branch().trim() || !name()}>
-                        {busy() ? <Spinner size={12} /> : "Create"}
-                    </button>
-                </div>
+                <Show when={errorFor("general")}>
+                    {(m) => (
+                        <div class="note" data-tone="red" role="alert">
+                            <ShieldAlert size={14} />
+                            <span class="note-body">{m()}</span>
+                        </div>
+                    )}
+                </Show>
             </form>
         </Dialog>
     );
@@ -307,17 +326,14 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
 /** The ignored files and folders Git would delete with a worktree: removal waits for the user to agree to exactly these. */
 export function IgnoredFiles(p: { names: string[]; total: number }) {
     return (
-        <div class="rw-confirm wt-ignored">
-            <AlertTriangle size={14} />
-            <div>
-                <div>These ignored {p.total === 1 ? "file would" : "files and folders would"} be deleted with it:</div>
-                <ul class="mono">
-                    <For each={p.names}>{(n) => <li>{n}</li>}</For>
-                </ul>
+        <div class="wt-ignored">
+            <p class="wt-ignored-head">Ignored {p.total === 1 ? "file" : "files"} Git would delete</p>
+            <ul>
+                <For each={p.names}>{(n) => <li class="mono">{n}</li>}</For>
                 <Show when={p.total > p.names.length}>
-                    <div>and {p.total - p.names.length} more.</div>
+                    <li>and {p.total - p.names.length} more</li>
                 </Show>
-            </div>
+            </ul>
         </div>
     );
 }
@@ -370,51 +386,56 @@ export function RemoveWorktreeDialog(p: { request: RemoveWorktreeRequest; onClos
         }
     };
     return (
-        <Dialog open onClose={close} title="Remove this worktree?" subtitle={<span class="mono">{tildify(w.path, app.hello?.homeDir)}</span>} width={500}>
-            <p class="wt-confirm">
+        <Dialog
+            open
+            onClose={close}
+            title="Remove this worktree?"
+            subtitle={<span class="mono wt-sub-path">{tildify(w.path, app.hello?.homeDir)}</span>}
+            width={480}
+            footer={
+                <>
+                    <button type="button" class="btn" disabled={busy()} onClick={close}>
+                        Cancel
+                    </button>
+                    <Show
+                        when={error()?.code === "needs_trust"}
+                        fallback={
+                            <button type="button" class="btn btn-danger-solid" disabled={busy()} onClick={() => void remove(ignored()?.confirm)}>
+                                <Show when={busy()}>
+                                    <Spinner size={13} />
+                                </Show>
+                                {ignored() ? "Delete them and remove" : "Remove"}
+                            </button>
+                        }
+                    >
+                        <button type="button" class="btn btn-danger-solid" disabled={busy()} onClick={() => void remove(ignored()?.confirm, error()?.folder ?? cwd)}>
+                            Trust and remove
+                        </button>
+                    </Show>
+                </>
+            }
+        >
+            <p class="dlg-text">
                 <Show when={w.branch} fallback="Its commit stays in the repository.">
-                    Branch <span class="mono">{w.branch}</span> is kept.
+                    Branch <code>{w.branch}</code> is kept.
                 </Show>
+                <Show when={!w.exists}> Its folder is already gone.</Show>
             </p>
-            <p class="muted small">
-                <Show when={w.exists} fallback="Its folder is already gone.">
-                    Uncommitted changes stop the removal. Ignored files, like .env, are listed before they're deleted.
-                </Show>
-            </p>
+            <Show when={w.exists && !ignored()}>
+                <div class="note">
+                    <ShieldAlert size={14} />
+                    <span class="note-body">Uncommitted changes stop the removal.</span>
+                </div>
+            </Show>
             <Show when={ignored()}>{(i) => <IgnoredFiles names={i().names} total={i().total} />}</Show>
             <Show when={error()}>
                 {(m) => (
-                    <div class="rw-confirm">
-                        <AlertTriangle size={14} />
-                        <span>{m().message}</span>
-                        <Show when={m().code === "needs_trust"}>
-                            <button class="btn btn-sm" disabled={busy()} onClick={() => void remove(ignored()?.confirm, m().folder ?? cwd)}>
-                                Trust and remove
-                            </button>
-                        </Show>
+                    <div class="note" data-tone="red" role="alert">
+                        <ShieldAlert size={14} />
+                        <span class="note-body">{m().message}</span>
                     </div>
                 )}
             </Show>
-            <div class="dialog-actions">
-                <span class="grow" />
-                <button class="btn btn-ghost" disabled={busy()} onClick={close}>
-                    Cancel
-                </button>
-                <Show
-                    when={ignored()}
-                    fallback={
-                        <button class="btn btn-danger-solid" disabled={busy()} onClick={() => void remove()}>
-                            {busy() ? <Spinner size={12} /> : "Remove"}
-                        </button>
-                    }
-                >
-                    {(i) => (
-                        <button class="btn btn-danger-solid" disabled={busy()} onClick={() => void remove(i().confirm)}>
-                            {busy() ? <Spinner size={12} /> : "Delete them and remove"}
-                        </button>
-                    )}
-                </Show>
-            </div>
         </Dialog>
     );
 }

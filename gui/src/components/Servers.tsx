@@ -2,9 +2,9 @@
 // window shows while it reaches a server. The work is this computer's own Cavvy's (src/servers/manager.ts); here are
 // the questions and the words. Loaded when first needed (state/servers.ts), not with the window.
 
-import { createEffect, createResource, createSignal, createUniqueId, For, Match, Show, Switch } from "solid-js";
+import { children, createEffect, createResource, createSignal, createUniqueId, For, Match, Show, Switch, type JSX } from "solid-js";
 import { render } from "solid-js/web";
-import { Check, ChevronDown, CircleArrowUp, Plus, RefreshCw, Server, Trash2 } from "lucide-solid";
+import { ArrowLeft, Check, ChevronDown, CircleArrowUp, Laptop, Plus, RefreshCw, Server, Trash2 } from "lucide-solid";
 import type { AddResult, ServerCheck, ServerProblem, UnknownHost } from "@shared/protocol";
 import { homeRpc, machineIssue, setMachineIssue, switchMachine, trustMachine, userAsked } from "../lib/machines";
 import { machine, os } from "../lib/platform";
@@ -14,7 +14,7 @@ import { goHomeOn, goingTo } from "../state/go-home";
 import { HERE, refreshServerList, serverList, serverTouched, setServerSync } from "../state/servers";
 import { Dialog } from "./ui/Dialog";
 import { Menu } from "./ui/Menu";
-import { Logo, Spinner } from "./ui/bits";
+import { Spinner } from "./ui/bits";
 import { machineState, watchOthers } from "./OtherMachines";
 import "../lib/lent";
 import "../styles/servers.css";
@@ -87,11 +87,13 @@ export function connected() {
 export function mountWhere(el: HTMLElement): () => void {
     return render(
         () => (
-            <button class="strip-ctl" title="Where the session runs" aria-haspopup="menu" aria-busy={goingTo() ? "true" : undefined} onClick={(e) => openMachines(e.currentTarget, "start")}>
-                <Server size={14} class="ic" />
+            <button class="select home-select" title="Where it runs" aria-haspopup="menu" aria-busy={goingTo() ? "true" : undefined} onClick={(e) => openMachines(e.currentTarget, "end")}>
+                <Show when={runsOn()} fallback={<Laptop size={14} />}>
+                    <Server size={14} />
+                </Show>
                 {/* Where a session sent now runs: Home is still there until it has moved (dimmed meanwhile). */}
-                <span class="truncate">{runsOn() ?? HERE}</span>
-                <ChevronDown size={12} stroke-width={2} class="chv" />
+                <span class="select-value">{runsOn() ?? HERE}</span>
+                <ChevronDown size={13} class="select-caret" />
             </button>
         ),
         el,
@@ -134,21 +136,33 @@ export { HERE, refreshServerList, serverList, serverTouched, setServerSync };
 
 const servers = () => homeRpc(rpc);
 
+/** Why it didn't work: in words, then what ssh said, then what to run. */
 function Problem(p: { problem: ServerProblem }) {
     return (
-        <div class="server-problem">
-            <p>{p.problem.message}</p>
-            <Show when={p.problem.detail}>{(d) => <p class="muted small">{d()}</p>}</Show>
-            <Show when={p.problem.fix}>{(f) => <p class="mono small">{f()}</p>}</Show>
-        </div>
+        <>
+            <p class="cover-text">{p.problem.message}</p>
+            <Show when={p.problem.detail}>{(d) => <p class="problem-line mono">{d()}</p>}</Show>
+            <Show when={p.problem.fix}>{(f) => <p class="cover-text mono">{f()}</p>}</Show>
+        </>
     );
 }
 
+/** A host's key, a row per kind: "SHA256:… (ED25519)" from src/servers/ssh.ts. */
 function HostKey(p: { unknown: UnknownHost }) {
     return (
-        <div class="server-key">
-            <For each={p.unknown.fingerprints}>{(f) => <div class="mono small">{f}</div>}</For>
-        </div>
+        <dl class="fp">
+            <For each={p.unknown.fingerprints}>
+                {(f) => {
+                    const m = /^(\S+) \((\S+)\)$/.exec(f);
+                    return (
+                        <div class="fp-row">
+                            <dt>{m?.[2] ?? "Key"}</dt>
+                            <dd class="mono">{m?.[1] ?? f}</dd>
+                        </div>
+                    );
+                }}
+            </For>
+        </dl>
     );
 }
 
@@ -157,10 +171,10 @@ export function checkLines(name: string, c: ServerCheck): string[] {
     const lines: string[] = [];
     const have = c.clis.filter((x) => x.installed);
     for (const cli of have) {
-        if (cli.signedIn === false) lines.push(`${cli.product} isn't signed in there. Sign it in from Settings → Providers.`);
-        else if (cli.signedIn === true && cli.on === false) lines.push(`${cli.product} is off there. Turn it on from Settings → Providers.`);
+        if (cli.signedIn === false) lines.push(`${cli.product} isn't signed in there: Settings → Providers.`);
+        else if (cli.signedIn === true && cli.on === false) lines.push(`${cli.product} is off there: Settings → Providers.`);
     }
-    if (!have.length) lines.push("No agent CLI there (Claude Code, Codex). API keys work without one.");
+    if (!have.length) lines.push("No agent CLI there. API keys work without one.");
     if (!c.git) lines.push("No git there.");
     if (!c.gh.installed) lines.push("No GitHub CLI there: pull requests need it.");
     else if (c.gh.signedIn === false) lines.push("The GitHub CLI isn't signed in there.");
@@ -195,52 +209,61 @@ function ServerMenu(p: { anchor: () => HTMLElement | undefined }) {
         }
     };
     return (
-        <Menu label="Machines" open={serverMenu()} anchor={p.anchor} onClose={close} align={menuAlign()} width={270}>
-            <button role="menuitemradio" aria-checked={!runsOn()} class="menu-item compact" onClick={() => (close(), goTo(undefined))}>
-                <span class="grow">{HERE}</span>
-                <Show when={!runsOn()}>
-                    <Check size={14} />
-                </Show>
+        <Menu label="Machines" open={serverMenu()} anchor={p.anchor} onClose={close} align={menuAlign()} width={272} class="menu machine-menu">
+            <button role="menuitemradio" aria-checked={!runsOn()} class="menu-item" onClick={() => (close(), goTo(undefined))}>
+                <span class="menu-check">
+                    <Show when={!runsOn()}>
+                        <Check size={14} />
+                    </Show>
+                </span>
+                <span class="menu-item-name">{HERE}</span>
             </button>
             <For each={list() ?? []}>
                 {(s) => (
-                    <div class="server-row">
-                        <button role="menuitemradio" aria-checked={runsOn() === s.name} class="menu-item compact grow" title={s.destination} onPointerEnter={() => runsOn() !== s.name && warmLink(s.name)} onClick={() => (close(), goTo(s.name))}>
-                            <span class="grow">{s.name}</span>
+                    <div class="machine-row">
+                        <button role="menuitemradio" aria-checked={runsOn() === s.name} class="menu-item" title={s.destination} onPointerEnter={() => runsOn() !== s.name && warmLink(s.name)} onClick={() => (close(), goTo(s.name))}>
+                            <span class="menu-check">
+                                <Show when={runsOn() === s.name}>
+                                    <Check size={14} />
+                                </Show>
+                            </span>
+                            <span class="machine-name">
+                                <span class="truncate">{s.name}</span>
+                            </span>
                             <Show when={s.cost}>
-                                <span class="server-cost">{s.cost}</span>
-                            </Show>
-                            <Show when={runsOn() === s.name}>
-                                <Check size={14} />
+                                <span class="menu-item-note num">{s.cost}</span>
                             </Show>
                         </button>
-                        <button
-                            role="menuitem"
-                            class={`hb${s.syncOn ? " server-sync-on" : ""}${s.sync?.state === "error" ? " tone-warn" : ""}`}
-                            title={s.sync?.state === "error" ? `Sync failed: ${s.sync.error}` : s.syncOn ? `Stop syncing ${s.name}` : `Sync ${s.name} with ${HERE === "This Mac" ? "this Mac" : "this computer"}`}
-                            aria-label={s.syncOn ? `Stop syncing ${s.name}` : `Sync ${s.name}`}
-                            aria-pressed={s.syncOn ? "true" : "false"}
-                            onClick={() => void toggleSync(s.name, !s.syncOn)}
-                        >
-                            <RefreshCw size={13} />
-                        </button>
-                        <Show when={s.behind}>
-                            <button role="menuitem" class="hb" title={`Update Cavvy on ${s.name}`} aria-label={`Update Cavvy on ${s.name}`} onClick={() => (close(), void updateServer(s.name))}>
-                                <CircleArrowUp size={13} />
+                        <span class="machine-acts">
+                            <button
+                                role="menuitem"
+                                class={`icon-btn icon-btn-sm machine-act${s.sync?.state === "error" ? " tone-warn" : ""}`}
+                                title={s.sync?.state === "error" ? `Sync failed: ${s.sync.error}` : s.syncOn ? `Stop syncing ${s.name}` : `Sync ${s.name} with ${HERE === "This Mac" ? "this Mac" : "this computer"}`}
+                                aria-label={s.syncOn ? `Stop syncing ${s.name}` : `Sync ${s.name}`}
+                                aria-pressed={s.syncOn ? "true" : "false"}
+                                onClick={() => void toggleSync(s.name, !s.syncOn)}
+                            >
+                                <RefreshCw size={14} />
                             </button>
-                        </Show>
-                        {/* Not the one this window is on: it's removed from another. */}
-                        <Show when={machine !== s.name}>
-                            <button role="menuitem" class="hb" title={`Remove ${s.name}`} aria-label={`Remove ${s.name}`} onClick={() => void remove(s.name, s.rented)}>
-                                <Trash2 size={13} />
-                            </button>
-                        </Show>
+                            <Show when={s.behind}>
+                                <button role="menuitem" class="icon-btn icon-btn-sm machine-act" title={`Update Cavvy on ${s.name}`} aria-label={`Update Cavvy on ${s.name}`} onClick={() => (close(), void updateServer(s.name))}>
+                                    <CircleArrowUp size={14} />
+                                </button>
+                            </Show>
+                            {/* Not the one this window is on: it's removed from another. */}
+                            <Show when={machine !== s.name}>
+                                <button role="menuitem" class="icon-btn icon-btn-sm machine-act" title={`Remove ${s.name}`} aria-label={`Remove ${s.name}`} onClick={() => void remove(s.name, s.rented)}>
+                                    <Trash2 size={14} />
+                                </button>
+                            </Show>
+                        </span>
                     </div>
                 )}
             </For>
             <div class="menu-sep" />
-            <button role="menuitem" class="menu-item compact" onClick={() => (close(), setAddServerOpen(true))}>
-                <Plus size={14} /> Add server…
+            <button role="menuitem" class="menu-item" onClick={() => (close(), setAddServerOpen(true))}>
+                <Plus size={14} />
+                <span class="menu-item-name">Add server…</span>
             </button>
         </Menu>
     );
@@ -256,7 +279,7 @@ type AddStep =
 
 /** Adding a server: its address, its key when it's new to this computer, the one-time copy, and what it lacks. */
 function AddServerDialog() {
-    const titleId = createUniqueId();
+    const formId = createUniqueId();
     const [name, setName] = createSignal("");
     const [destination, setDestination] = createSignal("");
     const [identity, setIdentity] = createSignal("");
@@ -278,7 +301,7 @@ function AddServerDialog() {
     });
 
     /** What the copy leaves here, said so nobody looks for it there. */
-    const notCopied = (left?: string) => (left ? `Not copied, since they could hold a key: ${left}.` : undefined);
+    const notCopied = (left?: string) => (left ? `Left here, as they could hold a key: ${left}.` : undefined);
     const finish = async (r: Extract<AddResult, { status: "added" }>, copied?: string) => {
         // The first server: its sessions are listed from now on, not from the window's next start, and a new
         // session says where it runs.
@@ -319,129 +342,152 @@ function AddServerDialog() {
         }
     };
 
+    const here = HERE === "This Mac" ? "this Mac" : "this computer";
+    const at = <K extends AddStep["at"]>(k: K) => (step().at === k ? (step() as Extract<AddStep, { at: K }>) : undefined);
+    // A title, at most a line under it, the step's own body, and its buttons in the foot. It hangs from the
+    // window's top, so a step of another height doesn't move it.
+    const title = () => {
+        const s = step();
+        if (s.at === "form") return "Add a server";
+        if (s.at === "working") return `Adding ${name().trim()}`;
+        if (s.at === "trust") return `Trust ${s.unknown.host}?`;
+        if (s.at === "sync") return `Sync ${s.added.name} with ${here}?`;
+        if (s.at === "done") return `${s.name} is ready`;
+        return `Couldn't add ${name().trim() || "the server"}`;
+    };
+    const sub = () => {
+        const s = step();
+        if (s.at === "trust") return `${HERE} hasn't seen its key before.`;
+        if (s.at === "sync") return "Settings, skills, plugins and API keys. Not sign-ins.";
+        if (s.at === "failed") return s.problem.message;
+        // Ready: what it says about the copy, under the title as the design has it.
+        if (s.at === "done") return [s.note, s.copied, s.left].filter(Boolean).join(" ") || undefined;
+        return undefined;
+    };
+    const foot = () => {
+        const s = step();
+        if (s.at === "working") return undefined;
+        return (
+            <Switch>
+                <Match when={s.at === "form"}>
+                    <button type="button" class="btn" onClick={close}>
+                        Cancel
+                    </button>
+                    <button type="submit" form={formId} class="btn btn-primary" disabled={!name().trim() || !destination().trim()}>
+                        Add
+                    </button>
+                </Match>
+                <Match when={at("trust")}>
+                    {(t) => (
+                        <>
+                            <button type="button" class="btn" onClick={() => setStep({ at: "form" })}>
+                                Cancel
+                            </button>
+                            <button type="button" class="btn btn-primary" autofocus onClick={() => void add(t().unknown.fingerprints)}>
+                                Trust
+                            </button>
+                        </>
+                    )}
+                </Match>
+                <Match when={s.at === "sync"}>
+                    <button type="button" class="btn" onClick={() => void sync(false)}>
+                        Not now
+                    </button>
+                    <button type="button" class="btn btn-primary" autofocus onClick={() => void sync(true)}>
+                        Sync
+                    </button>
+                </Match>
+                <Match when={at("done")}>
+                    {(d) => (
+                        <>
+                            <button type="button" class="btn" onClick={close}>
+                                Close
+                            </button>
+                            <button type="button" class="btn btn-primary" autofocus onClick={() => switchMachine(d().name)}>
+                                Open {d().name}
+                            </button>
+                        </>
+                    )}
+                </Match>
+                <Match when={s.at === "failed"}>
+                    <button type="button" class="btn" onClick={close}>
+                        Cancel
+                    </button>
+                    <button type="button" class="btn btn-primary" autofocus onClick={() => setStep({ at: "form" })}>
+                        Back
+                    </button>
+                </Match>
+            </Switch>
+        );
+    };
+
+    // Made once per step: the dialog reads it twice (whether there's one, then to show it).
+    const footer = children(foot);
     return (
-        <Dialog open={addServerOpen()} onClose={close} bare labelledBy={titleId} width={460}>
-            <div class="server-dialog">
-                <Switch>
-                    <Match when={step().at === "form"}>
-                        <h2 id={titleId}>Add a server</h2>
-                        <form
-                            onSubmit={(e) => {
-                                e.preventDefault();
-                                if (name().trim() && destination().trim()) void add();
-                            }}
-                        >
-                            <label>
-                                Name
-                                <input class="input" value={name()} onInput={(e) => setName(e.currentTarget.value)} placeholder="build-box" autocapitalize="off" spellcheck={false} autofocus />
-                            </label>
-                            <label>
-                                Address
-                                <input class="input" value={destination()} onInput={(e) => setDestination(e.currentTarget.value)} placeholder="user@host" autocapitalize="off" spellcheck={false} />
-                            </label>
-                            <label>
-                                SSH key file
-                                <input class="input" value={identity()} onInput={(e) => setIdentity(e.currentTarget.value)} placeholder="Optional" autocapitalize="off" spellcheck={false} />
-                            </label>
-                            <div class="server-actions">
-                                <button type="button" class="btn" onClick={close}>
-                                    Cancel
-                                </button>
-                                <button type="submit" class="btn btn-primary" disabled={!name().trim() || !destination().trim()}>
-                                    Add
-                                </button>
-                            </div>
-                        </form>
-                    </Match>
-                    <Match when={step().at === "working" && (step() as Extract<AddStep, { at: "working" }>)}>
-                        {(s) => (
-                            <>
-                                <h2 id={titleId}>Adding {name().trim()}</h2>
-                                <div class="server-working">
-                                    <Spinner size={16} />
-                                    <span>
-                                        {s().text}
-                                        <Show when={s().percent !== undefined}> {s().percent}%</Show>
-                                    </span>
-                                </div>
-                            </>
-                        )}
-                    </Match>
-                    <Match when={step().at === "trust" && (step() as Extract<AddStep, { at: "trust" }>)}>
-                        {(s) => (
-                            <>
-                                <h2 id={titleId}>Trust {s().unknown.host}?</h2>
-                                <HostKey unknown={s().unknown} />
-                                <div class="server-actions">
-                                    <button class="btn" onClick={() => setStep({ at: "form" })}>
-                                        Cancel
-                                    </button>
-                                    <button class="btn btn-primary" onClick={() => void add(s().unknown.fingerprints)}>
-                                        Trust
-                                    </button>
-                                </div>
-                            </>
-                        )}
-                    </Match>
-                    <Match when={step().at === "sync" && (step() as Extract<AddStep, { at: "sync" }>)}>
-                        {(s) => (
-                            <>
-                                <h2 id={titleId}>
-                                    Sync {s().added.name} with {HERE === "This Mac" ? "this Mac" : "this computer"}?
-                                </h2>
-                                <p class="muted">Settings, skills, plugins and API keys. Sign-ins stay on each machine.</p>
-                                <div class="server-actions">
-                                    <button class="btn" onClick={() => void sync(false)}>
-                                        Not now
-                                    </button>
-                                    <button class="btn btn-primary" autofocus onClick={() => void sync(true)}>
-                                        Sync
-                                    </button>
-                                </div>
-                            </>
-                        )}
-                    </Match>
-                    <Match when={step().at === "done" && (step() as Extract<AddStep, { at: "done" }>)}>
-                        {(s) => (
-                            <>
-                                <h2 id={titleId}>{s().name} is ready</h2>
-                                <Show when={s().note}>{(n) => <p class="muted">{n()}</p>}</Show>
-                                <Show when={s().copied}>{(c) => <p class="muted">{c()}</p>}</Show>
-                                <Show when={s().left}>{(l) => <p class="muted">{l()}</p>}</Show>
-                                <Show when={s().lines?.length}>
-                                    <ul class="server-lacks">
-                                        <For each={s().lines}>{(l) => <li>{l}</li>}</For>
-                                    </ul>
+        <Dialog open={addServerOpen()} onClose={close} title={title()} subtitle={sub()} footer={footer()} width={480} class="dlg-top">
+            <Switch>
+                <Match when={step().at === "form"}>
+                    <form
+                        id={formId}
+                        class="form-stack"
+                        onSubmit={(e) => {
+                            e.preventDefault();
+                            if (name().trim() && destination().trim()) void add();
+                        }}
+                    >
+                        <label class="field">
+                            <span class="field-label">Name</span>
+                            <input class="input" value={name()} onInput={(e) => setName(e.currentTarget.value)} placeholder="build-box" autocapitalize="off" spellcheck={false} autofocus />
+                        </label>
+                        <label class="field">
+                            <span class="field-label">Address</span>
+                            <input class="input mono" value={destination()} onInput={(e) => setDestination(e.currentTarget.value)} placeholder="user@host" autocapitalize="off" spellcheck={false} />
+                        </label>
+                        <label class="field">
+                            <span class="field-label">SSH key file</span>
+                            <input class="input mono" value={identity()} onInput={(e) => setIdentity(e.currentTarget.value)} placeholder="Optional" autocapitalize="off" spellcheck={false} />
+                        </label>
+                    </form>
+                </Match>
+                <Match when={at("working")}>
+                    {(w) => (
+                        <div class="progress" role="status">
+                            <div class="progress-top">
+                                <Spinner size={14} />
+                                <span class="progress-text">{w().text}</span>
+                                <Show when={w().percent !== undefined}>
+                                    <span class="progress-pct num">{w().percent}%</span>
                                 </Show>
-                                <div class="server-actions">
-                                    <button class="btn" onClick={close}>
-                                        Close
-                                    </button>
-                                    <button class="btn btn-primary" onClick={() => switchMachine(s().name)}>
-                                        Open {s().name}
-                                    </button>
-                                </div>
-                            </>
-                        )}
-                    </Match>
-                    <Match when={step().at === "failed" && (step() as Extract<AddStep, { at: "failed" }>)}>
-                        {(s) => (
-                            <>
-                                <h2 id={titleId}>Couldn't add {name().trim() || "the server"}</h2>
-                                <Problem problem={s().problem} />
-                                <div class="server-actions">
-                                    <button class="btn" onClick={close}>
-                                        Cancel
-                                    </button>
-                                    <button class="btn btn-primary" onClick={() => setStep({ at: "form" })}>
-                                        Back
-                                    </button>
-                                </div>
-                            </>
-                        )}
-                    </Match>
-                </Switch>
-            </div>
+                            </div>
+                            <Show when={w().percent !== undefined}>
+                                <span class="bar" data-tone="accent">
+                                    <i style={{ width: `${w().percent}%` }} />
+                                </span>
+                            </Show>
+                        </div>
+                    )}
+                </Match>
+                <Match when={at("trust")}>{(t) => <HostKey unknown={t().unknown} />}</Match>
+                <Match when={at("done")}>
+                    {(d) => (
+                        <>
+                            <Show when={d().lines?.length}>
+                                <ul class="lacks">
+                                    <For each={d().lines}>{(l) => <li>{l}</li>}</For>
+                                </ul>
+                            </Show>
+                        </>
+                    )}
+                </Match>
+                <Match when={at("failed")}>
+                    {(f) => (
+                        <>
+                            <Show when={f().problem.detail}>{(d) => <p class="problem-line mono">{d()}</p>}</Show>
+                            <Show when={f().problem.fix}>{(x) => <p class="dlg-text mono">{x()}</p>}</Show>
+                        </>
+                    )}
+                </Match>
+            </Switch>
         </Dialog>
     );
 }
@@ -474,7 +520,8 @@ function MachineCover(p: { reconnect: () => void }) {
     };
     // Made anew wherever it's shown: one element can't be in two of the states below.
     const Back = () => (
-        <button class="btn" onClick={() => switchMachine(undefined)}>
+        <button type="button" class="btn btn-ghost cover-back" onClick={() => switchMachine(undefined)}>
+            <ArrowLeft size={14} />
             {HERE}
         </button>
     );
@@ -484,64 +531,96 @@ function MachineCover(p: { reconnect: () => void }) {
         const i = machineIssue();
         return Boolean(updating() || busy()) || (i !== undefined && (i.kind !== "connecting" || i.percent !== undefined));
     };
+    type Issue<K extends string> = Extract<NonNullable<ReturnType<typeof machineIssue>>, { kind: K }>;
+    const issue = <K extends NonNullable<ReturnType<typeof machineIssue>>["kind"]>(k: K) => (machineIssue()?.kind === k ? (machineIssue() as Issue<K>) : undefined);
+    /** The design's cover card: what's happening or asked and where, its details, then the way back and the answer. */
+    const Card = (c: { title: string; spin?: boolean; failed?: boolean; back?: boolean; body?: JSX.Element; actions?: JSX.Element }) => {
+        // Made once: read twice (whether there's one, then to show it), a prop would make it twice.
+        const actions = children(() => c.actions);
+        return (
+            <section class="cover-card" aria-live="polite">
+                <header class="cover-head">
+                    <span class="cover-icon" data-tone={c.failed ? "red" : "plain"}>
+                        <Show when={c.spin} fallback={<Server size={16} />}>
+                            <Spinner size={16} />
+                        </Show>
+                    </span>
+                    <div class="cover-heading">
+                        <h1 class="cover-title">{c.title}</h1>
+                        <p class="cover-sub mono">{machine}</p>
+                    </div>
+                </header>
+                <div class="cover-body">{c.body}</div>
+                <Show when={c.back || actions()}>
+                    <footer class="cover-foot">
+                        <Show when={c.back}>
+                            <Back />
+                        </Show>
+                        <span class="grow" />
+                        {actions()}
+                    </footer>
+                </Show>
+            </section>
+        );
+    };
     return (
         <div class="server-cover" classList={{ "server-asks": asks() }}>
-            <Switch
-                fallback={
-                    <>
-                        <Logo size={44} />
-                        <Spinner size={18} />
-                        <div class="muted">{updating() ?? `Connecting to ${machine}…`}</div>
-                        <Back />
-                    </>
-                }
-            >
-                <Match when={updating()}>
-                    <Logo size={44} />
-                    <Spinner size={18} />
-                    <div class="muted">{updating()}</div>
-                </Match>
+            <div class="cover">
+            <Switch fallback={<Card spin title={updating() ?? `Connecting to ${machine}…`} back />}>
+                <Match when={updating()}>{(u) => <Card spin title={u()} />}</Match>
                 <Match when={busy()}>
-                    <Server size={36} />
-                    <h2>Stop work on {machine} to update?</h2>
-                    <p class="muted">{busy()}</p>
-                    <div class="server-actions">
-                        <button class="btn" onClick={() => setBusy(undefined)}>
-                            Cancel
-                        </button>
-                        <button
-                            class="btn btn-danger-solid"
-                            onClick={() => {
-                                setBusy(undefined);
-                                void update(true);
-                            }}
-                        >
-                            Stop and update
-                        </button>
-                    </div>
-                </Match>
-                <Match when={machineIssue()?.kind === "connecting" && (machineIssue() as Extract<ReturnType<typeof machineIssue>, { kind: "connecting" }>)}>
-                    {(i) => (
-                        <>
-                            <Logo size={44} />
-                            <Spinner size={18} />
-                            <div class="muted">
-                                {i().text ?? `Connecting to ${machine}…`}
-                                <Show when={i().percent !== undefined}> {i().percent}%</Show>
-                            </div>
-                            <Back />
-                        </>
+                    {(b) => (
+                        <Card
+                            title={`Stop work on ${machine} to update?`}
+                            body={<p class="cover-text">{b()}</p>}
+                            actions={
+                                <>
+                                    <button type="button" class="btn" onClick={() => setBusy(undefined)}>
+                                        Cancel
+                                    </button>
+                                    <button
+                                        type="button"
+                                        class="btn btn-danger-solid"
+                                        onClick={() => {
+                                            setBusy(undefined);
+                                            void update(true);
+                                        }}
+                                    >
+                                        Stop and update
+                                    </button>
+                                </>
+                            }
+                        />
                     )}
                 </Match>
-                <Match when={machineIssue()?.kind === "unknown-host" && (machineIssue() as Extract<ReturnType<typeof machineIssue>, { kind: "unknown-host" }>)}>
+                <Match when={issue("connecting")}>
                     {(i) => (
-                        <>
-                            <Server size={36} />
-                            <h2>Trust {i().unknown.host}?</h2>
-                            <HostKey unknown={i().unknown} />
-                            <div class="server-actions">
-                                <Back />
+                        <Card
+                            spin
+                            title={i().text ?? `Connecting to ${machine}…`}
+                            back
+                            body={
+                                i().percent !== undefined ? (
+                                    <div class="progress-inline" role="status">
+                                        <span class="bar" data-tone="accent">
+                                            <i style={{ width: `${i().percent}%` }} />
+                                        </span>
+                                        <span class="progress-pct num">{i().percent}%</span>
+                                    </div>
+                                ) : undefined
+                            }
+                        />
+                    )}
+                </Match>
+                <Match when={issue("unknown-host")}>
+                    {(i) => (
+                        <Card
+                            title={`Trust ${i().unknown.host}?`}
+                            back
+                            body={<HostKey unknown={i().unknown} />}
+                            actions={
                                 <button
+                                    type="button"
                                     class="btn btn-primary"
                                     onClick={() => {
                                         trustMachine(i().unknown.fingerprints);
@@ -550,52 +629,53 @@ function MachineCover(p: { reconnect: () => void }) {
                                 >
                                     Trust
                                 </button>
-                            </div>
-                        </>
+                            }
+                        />
                     )}
                 </Match>
-                <Match when={machineIssue()?.kind === "other-version" && (machineIssue() as Extract<ReturnType<typeof machineIssue>, { kind: "other-version" }>)}>
+                <Match when={issue("other-version")}>
                     {(i) => (
-                        <>
-                            <Server size={36} />
-                            <h2>{machine} runs another version of Cavvy</h2>
-                            <Show when={i().problem}>{(p) => <Problem problem={p()} />}</Show>
-                            <div class="server-actions">
-                                <Back />
-                                <button class="btn btn-primary" onClick={() => void update()}>
+                        <Card
+                            title={`${machine} runs another version of Cavvy`}
+                            back
+                            body={i().problem ? <Problem problem={i().problem!} /> : undefined}
+                            actions={
+                                <button type="button" class="btn btn-primary" onClick={() => void update()}>
                                     Update {machine}
                                 </button>
-                            </div>
-                        </>
+                            }
+                        />
                     )}
                 </Match>
-                <Match when={machineIssue()?.kind === "stopped"}>
-                    <Server size={36} />
-                    <h2>Start Cavvy on {machine}?</h2>
-                    <p class="muted">It was stopped there.</p>
-                    <div class="server-actions">
-                        <Back />
-                        <button class="btn btn-primary" onClick={retry}>
-                            Start
-                        </button>
-                    </div>
+                <Match when={issue("stopped")}>
+                    <Card
+                        title={`Start Cavvy on ${machine}?`}
+                        back
+                        body={<p class="cover-text">It was stopped there.</p>}
+                        actions={
+                            <button type="button" class="btn btn-primary" onClick={retry}>
+                                Start
+                            </button>
+                        }
+                    />
                 </Match>
-                <Match when={machineIssue()?.kind === "failed" && (machineIssue() as Extract<ReturnType<typeof machineIssue>, { kind: "failed" }>)}>
+                <Match when={issue("failed")}>
                     {(i) => (
-                        <>
-                            <Server size={36} class="tone-warn" />
-                            <h2>Can't connect to {machine}</h2>
-                            <Problem problem={i().problem} />
-                            <div class="server-actions">
-                                <Back />
-                                <button class="btn btn-primary" onClick={retry}>
+                        <Card
+                            title={`Can't connect to ${machine}`}
+                            failed
+                            back
+                            body={<Problem problem={i().problem} />}
+                            actions={
+                                <button type="button" class="btn btn-primary" onClick={retry}>
                                     Try again
                                 </button>
-                            </div>
-                        </>
+                            }
+                        />
                     )}
                 </Match>
             </Switch>
+            </div>
         </div>
     );
 }

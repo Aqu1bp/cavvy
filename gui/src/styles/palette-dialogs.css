@@ -1,0 +1,107 @@
+/* ---- The branch and pull request dialogs: the design's palette (the mock's dialogs.css "command palette").
+   Only under .branch-dialog: this sheet loads with them, and the command palette and file finder keep their own
+   rules (overlays.css) until they're ported. The search line is overlays.css's, shared with them. Where it sits is Cavvy's Dialog's (ui/Dialog.tsx, top). */
+
+.dialog.palette.branch-dialog {
+    max-height: min(calc(540 * var(--sp)), 72vh);
+    border-radius: var(--radius-l);
+    background: var(--surface);
+    box-shadow: var(--shadow-pop);
+}
+
+/* The design sizes the field's words, not the line: its icon and key keep the dialog's line height. */
+.branch-dialog .pal-input {
+    font-size: inherit;
+}
+
+.branch-dialog .pal-input input {
+    font-size: 1rem;
+}
+
+.branch-dialog .pal-list {
+    flex: 1;
+    min-height: 0;
+    max-height: none;
+    scroll-padding: calc(30 * var(--sp)) 0 calc(6 * var(--sp));
+}
+
+.branch-dialog .pal-head {
+    padding: calc(9 * var(--sp)) calc(10 * var(--sp)) calc(4 * var(--sp));
+    font-weight: 600;
+}
+
+.branch-dialog .pal-group:first-child .pal-head {
+    padding-top: calc(5 * var(--sp));
+}
+
+/* On the palette's shared row (overlays.css .pal-row: its gap, height, width and centring are the design's; a button's pointer is base.css's). */
+.branch-dialog .pal-row {
+    display: flex;
+    padding: 0 calc(8 * var(--sp)) 0 calc(10 * var(--sp));
+    border-radius: var(--radius-s);
+    color: var(--text-2);
+    text-align: start;
+    user-select: none;
+}
+
+.branch-dialog .pal-row[data-active] {
+    background: var(--fill-2);
+    color: var(--text);
+}
+
+.branch-dialog .pal-row[aria-disabled] {
+    opacity: 0.45;
+}
+
+.branch-dialog .pal-label {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.branch-dialog .pal-meta {
+    flex: 0 1 auto;
+    max-width: 46%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-3);
+    font-size: 0.857rem;
+    font-variant-numeric: tabular-nums;
+}
+
+/* The design's foot carries the palette's status. Here also the branch with Fetch and Pull, what an action said,
+   and a failure's way out (Sign in, Trust): it grows past one line rather than cut it. */
+.branch-dialog .pal-foot {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    flex: none;
+    min-height: calc(32 * var(--sp));
+    padding: 0 calc(15 * var(--sp));
+    border-top: 1px solid var(--line);
+    background: var(--fill-1);
+    color: var(--text-3);
+    font-size: 0.857rem;
+}
+
+.branch-dialog .pal-foot-text {
+    flex: 1;
+    min-width: 0;
+    padding: calc(4 * var(--sp)) 0;
+}
+
+.branch-dialog .pal-foot b {
+    color: var(--text);
+    font: 500 1em var(--font-mono);
+}
+
+.branch-dialog .pal-foot[data-tone="warn"] {
+    color: var(--amber);
+}
+
+.branch-dialog .pal-foot[data-tone="error"] {
+    color: var(--red);
+}

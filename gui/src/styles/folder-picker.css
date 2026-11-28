@@ -1,0 +1,59 @@
+/* Open a project folder (components/FolderPicker.tsx): loaded with it. Taken as is from the design's dialogs.css;
+   px that sits with text is in --sp. */
+
+/* ---------- the folder picker ---------- */
+
+.fpick-bar {
+    display: flex;
+    align-items: center;
+    gap: calc(2 * var(--sp));
+    flex: none;
+    padding: calc(8 * var(--sp)) calc(12 * var(--sp));
+    border-bottom: 1px solid var(--line);
+}
+
+.fpick-bar .icon-btn:disabled {
+    opacity: 0.35;
+    background: none;
+}
+
+.fpick-path {
+    flex: 1;
+    height: calc(28 * var(--sp));
+    margin-left: calc(6 * var(--sp));
+    border-radius: var(--radius-s);
+}
+
+.fpick-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    height: calc(284 * var(--sp));
+    padding: calc(6 * var(--sp));
+    overflow-y: auto;
+}
+
+.fpick-row {
+    display: flex;
+    align-items: center;
+    gap: calc(9 * var(--sp));
+    flex: none;
+    height: calc(30 * var(--sp));
+    padding: 0 calc(9 * var(--sp));
+    border-radius: var(--radius-s);
+    transition: background 0.1s;
+}
+
+.fpick-row:hover {
+    background: var(--fill-1);
+}
+
+.fpick-row > svg {
+    flex: none;
+    color: var(--text-3);
+}
+
+.fpick-empty {
+    margin: auto;
+    color: var(--text-3);
+}

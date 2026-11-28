@@ -115,7 +115,7 @@ function PeerQuote(p: { from: { id: string; title: string }; /** The session it 
             <button class="peer-head" title={`Open ${from()}`} aria-label={`Message from ${from()}`} onClick={show}>
                 <MessageSquareText size={14} aria-hidden="true" />
                 <span class="truncate">{p.from.title}{at() ? ` · ${at()![1]}` : ""}</span>
-                <ArrowUpRight size={14} class="peer-go" aria-hidden="true" />
+                <ArrowUpRight size={14} aria-hidden="true" />
             </button>
             <div class={`peer-body ${long() && !open() ? "clamped" : ""}`} data-find={p.find}>
                 <Markdown text={p.text} />
@@ -198,7 +198,7 @@ export function UserPrompt(p: { turn: Turn; sessionId?: string; onRewind?: (inde
             </Show>
             {/* Not for a message that's only attachments (a side chat's answer brought back, say). */}
             <Show when={text().trim()}>
-                <div class={`bubble ${p.turn.prompt?.command ? "bubble-command" : ""} ${shell() ? "shell" : ""} ${clamped()} ${shortPrompt(text()) && !parts().comments.length ? "short" : ""}`} data-find="prompt">
+                <div class={`bubble user-bubble ${p.turn.prompt?.command ? "bubble-command" : ""} ${shell() ? "shell" : ""} ${clamped()} ${shortPrompt(text()) && !parts().comments.length ? "short" : ""}`} data-find="prompt">
                     <Show when={shell()} fallback={<span class="user-text">{text()}</span>}>
                         <span class="user-text mono">
                             <SquareTerminal size={13} /> {text().slice(1)}

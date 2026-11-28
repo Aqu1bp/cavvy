@@ -4,7 +4,7 @@
 
 import { createEffect, createMemo, createResource, createSignal, For, on, Show } from "solid-js";
 import { syncReadSkipped } from "../lib/branch-sync";
-import { ArrowDown, ArrowUp, Check, CloudDownload, FolderGit2, GitBranch, GitPullRequest, Globe, Plus, Search } from "lucide-solid";
+import { ArrowDown, ArrowUp, CloudDownload, GitBranch, GitPullRequest, Search } from "lucide-solid";
 import type { GitBranchEntry, GitBranchList, GitPrListInfo, GitPrWorktree, GitSyncInfo } from "@shared/protocol";
 import { RpcError } from "../lib/rpc";
 import type { SessionHandle } from "../state/app";
@@ -17,6 +17,7 @@ import { ago, plural, tildify } from "../lib/format";
 import { openExternal } from "../lib/platform";
 import { Dialog } from "./ui/Dialog";
 import { Spinner } from "./ui/bits";
+import "../styles/palette-dialogs.css";
 
 /** Bumped after a fetch, pull, switch or new branch: every chip reads its counts again. */
 const [moved, setMoved] = createSignal(0);
@@ -46,8 +47,8 @@ export function syncWords(s: GitSyncInfo | undefined): string {
 function Counts(p: { sync?: GitSyncInfo }) {
     return (
         <>
-            <Show when={p.sync?.ahead}>{(n) => <span class="br-n"><ArrowUp size={11} />{n()}</span>}</Show>
-            <Show when={p.sync?.behind}>{(n) => <span class="br-n"><ArrowDown size={11} />{n()}</span>}</Show>
+            <Show when={p.sync?.ahead}>{(n) => <span class="main-branch-n"><ArrowUp size={11} />{n()}</span>}</Show>
+            <Show when={p.sync?.behind}>{(n) => <span class="main-branch-n"><ArrowDown size={11} />{n()}</span>}</Show>
         </>
     );
 }
@@ -73,13 +74,13 @@ export function BranchChip(p: { handle: SessionHandle; branch: string }) {
     const words = () => syncWords(sync());
     return (
         <button
-            class="br br-btn"
+            class="main-branch"
             title={withShortcut(`${p.branch}${words() ? ` · ${words()}` : ""}. Switch branch`, "app:switchBranch")}
             aria-label={`Branch ${p.branch}${words() ? `, ${words()}` : ""}. Switch branch`}
             onClick={() => setGitDialog({ kind: "branch", cwd: st().cwd, sessionId: p.handle.id })}
         >
-            <GitBranch size={13} />
-            <span class="truncate">{p.branch}</span>
+            <GitBranch size={12} />
+            <span class="mono">{p.branch}</span>
             <Counts sync={sync()} />
         </button>
     );
@@ -290,73 +291,56 @@ function BranchDialog(p: { cwd: string; sessionId?: string; query?: string }) {
                 for (let i = 1; i <= n; i++) if (!rows()[(s + step * i + n * i) % n]!.disabled) return (s + step * i + n * i) % n;
                 return at;
             });
-            requestAnimationFrame(() => listEl?.querySelector(".pal-row.sel")?.scrollIntoView({ block: "nearest" }));
+            requestAnimationFrame(() => listEl?.querySelector(".pal-row[data-active]")?.scrollIntoView({ block: "nearest" }));
         } else if (e.key === "Enter") {
             e.preventDefault();
             runAt(sel());
         }
     };
     const group = (r: Row) => (r.icon === "remote" ? "Remote branches" : r.icon === "create" ? "New branch" : r.icon === "pr" ? "Pull request" : r.icon === "worktree" ? "Checked out in other worktrees" : "Branches");
-    const icon = (r: Row) => {
-        switch (r.icon) {
-            case "current": return <Check size={15} />;
-            case "remote": return <Globe size={15} />;
-            case "create": return <Plus size={15} />;
-            case "worktree": return <FolderGit2 size={15} />;
-            case "pr": return <GitPullRequest size={15} />;
-            default: return <GitBranch size={15} />;
-        }
-    };
-
     return (
-        <Dialog open onClose={close} bare top width={600} class="palette branch-dialog" labelledBy="branch-dialog-h">
+        <Dialog open onClose={close} bare top width={640} class="palette branch-dialog" labelledBy="branch-dialog-h">
             <h2 id="branch-dialog-h" class="sr-only">Switch branch</h2>
-            <div class="pal-in">
-                <Search size={17} class="pal-search" />
+            <div class="pal-input">
+                <Search size={15} class="pal-input-icon" />
                 <input ref={input} autofocus value={q()} onInput={(e) => setQ(e.currentTarget.value)} onKeyDown={onKey} placeholder="Switch or create a branch" aria-label="Branch" spellcheck={false} autocomplete="off" disabled={busy() === "switch"} />
-                <Show when={busy() === "switch"}><Spinner size={13} class="muted" /></Show>
-                <kbd>Esc</kbd>
+                <Show when={busy() === "switch"}><Spinner size={12} /></Show>
+                <span class="kbd-group" aria-hidden="true"><kbd class="kbd">esc</kbd></span>
             </div>
-            <div class="br-sync">
-                <GitBranch size={14} />
-                <span class="br-sync-t truncate">
-                    <b>{sync()?.branch ?? (sync()?.detached ? "Detached HEAD" : list()?.current ?? "")}</b>
-                    <Show when={syncWords(sync())}>{(w) => <span class="muted"> · {w()}</span>}</Show>
-                </span>
-                <button class="btn btn-sm" disabled={Boolean(busy())} onClick={() => void fetchNow()}>
-                    <Show when={busy() === "fetch"} fallback={<CloudDownload size={14} />}><Spinner size={13} /></Show> Fetch
-                </button>
-                <button class="btn btn-sm" disabled={Boolean(busy()) || !sync()?.upstream || sync()?.gone} onClick={() => void pull()} title={sync()?.upstream ? `Fast-forward to ${sync()!.upstream}` : "No upstream"}>
-                    <Show when={busy() === "pull"} fallback={<ArrowDown size={14} />}><Spinner size={13} /></Show> Pull
-                </button>
-            </div>
-            <Show when={note()}>{(n) => <div class={`br-note ${n().level}`} role={n().level === "info" ? "status" : "alert"}>{n().text}</div>}</Show>
-            <div class="pal-list" ref={listEl}>
+            <div class="pal-list" ref={listEl} role="listbox" aria-label="Branches">
                 <Show when={!list.loading || list()} fallback={<div class="pal-empty">Loading branches…</div>}>
                     <Show when={!list()?.error} fallback={<div class="pal-empty">{list()?.error}</div>}>
                         <For each={rows()} fallback={<div class="pal-empty">No branch matches.</div>}>
                             {(r, i) => (
-                                <>
+                                <div class="pal-group">
                                     <Show when={i() === 0 || group(rows()[i() - 1]!) !== group(r)}>
-                                        <div class="pal-h">{group(r)}</div>
+                                        <div class="pal-head">{group(r)}</div>
                                     </Show>
-                                    <button class={`pal-row ${sel() === i() ? "sel" : ""} ${r.desc ? "two" : ""}`} title={r.title} disabled={r.disabled || Boolean(busy())} onMouseMove={() => setSel(i())} onClick={() => runAt(i())}>
-                                        <span class="pal-ic">{icon(r)}</span>
-                                        <span class="pal-text">
-                                            <Show when={r.verb} fallback={<span class={r.icon === "pr" ? "pal-l" : "pal-l mono"}>{r.label}</span>}>
-                                                <span class="pal-l">{r.verb} “<span class="mono">{r.label}</span>”</span>
-                                            </Show>
-                                            <Show when={r.desc}><span class="pal-d">{r.desc}</span></Show>
-                                        </span>
-                                        <Show when={r.action} fallback={<Show when={r.end}><span class="pal-end">{r.end}</span></Show>}>
-                                            <span class="pal-end pal-act">{r.action}</span>
+                                    <button class="pal-row" role="option" aria-selected={sel() === i()} data-active={sel() === i() || undefined} aria-disabled={r.disabled || undefined} title={r.title} disabled={r.disabled || Boolean(busy())} onMouseMove={() => setSel(i())} onClick={() => runAt(i())}>
+                                        <Show when={r.verb} fallback={<span class={r.icon === "pr" ? "pal-label" : "pal-label mono"}>{r.label}</span>}>
+                                            <span class="pal-label">{r.verb} “<span class="mono">{r.label}</span>”</span>
                                         </Show>
+                                        <Show when={[r.desc, r.action ?? r.end].filter(Boolean).join(" · ")}>{(m) => <span class="pal-meta">{m()}</span>}</Show>
                                     </button>
-                                </>
+                                </div>
                             )}
                         </For>
                     </Show>
                 </Show>
+            </div>
+            <Show when={note()}>{(n) => <div class="pal-foot" data-tone={n().level === "info" ? undefined : n().level} role={n().level === "info" ? "status" : "alert"}><span class="pal-foot-text">{n().text}</span></div>}</Show>
+            <div class="pal-foot">
+                <GitBranch size={12} />
+                <span class="pal-foot-text truncate">
+                    <b>{sync()?.branch ?? (sync()?.detached ? "Detached HEAD" : list()?.current ?? "")}</b>
+                    <Show when={syncWords(sync())}>{(w) => <> · {w()}</>}</Show>
+                </span>
+                <button class="btn btn-sm" disabled={Boolean(busy())} onClick={() => void fetchNow()}>
+                    <Show when={busy() === "fetch"} fallback={<CloudDownload size={13} />}><Spinner size={12} /></Show> Fetch
+                </button>
+                <button class="btn btn-sm" disabled={Boolean(busy()) || !sync()?.upstream || sync()?.gone} onClick={() => void pull()} title={sync()?.upstream ? `Fast-forward to ${sync()!.upstream}` : "No upstream"}>
+                    <Show when={busy() === "pull"} fallback={<ArrowDown size={13} />}><Spinner size={12} /></Show> Pull
+                </button>
             </div>
         </Dialog>
     );
@@ -462,7 +446,7 @@ function PrDialog(p: { cwd: string; sessionId?: string; query?: string; start?: 
             e.preventDefault();
             if (!n) return;
             setSel((s) => (s + (e.key === "ArrowDown" ? 1 : -1) + n) % n);
-            requestAnimationFrame(() => listEl?.querySelector(".pal-row.sel")?.scrollIntoView({ block: "nearest" }));
+            requestAnimationFrame(() => listEl?.querySelector(".pal-row[data-active]")?.scrollIntoView({ block: "nearest" }));
         } else if (e.key === "Enter") {
             e.preventDefault();
             const r = rows()[sel()];
@@ -471,21 +455,36 @@ function PrDialog(p: { cwd: string; sessionId?: string; query?: string; start?: 
     };
 
     return (
-        <Dialog open onClose={close} bare top width={600} class="palette branch-dialog" labelledBy="pr-dialog-h">
+        <Dialog open onClose={close} bare top width={640} class="palette branch-dialog" labelledBy="pr-dialog-h">
             <h2 id="pr-dialog-h" class="sr-only">Work on a pull request</h2>
-            <div class="pal-in">
-                <GitPullRequest size={17} class="pal-search" />
+            <div class="pal-input">
+                <GitPullRequest size={15} class="pal-input-icon" />
                 <input ref={input} autofocus value={q()} onInput={(e) => edit(e.currentTarget.value)} onKeyDown={onKey} placeholder="Pull request number, URL or title" aria-label="Pull request" spellcheck={false} autocomplete="off" disabled={Boolean(busy())} />
-                <Show when={busy()}><Spinner size={13} class="muted" /></Show>
-                <kbd>Esc</kbd>
+                <Show when={busy()}><Spinner size={12} /></Show>
+                <span class="kbd-group" aria-hidden="true"><kbd class="kbd">esc</kbd></span>
+            </div>
+            <div class="pal-list" ref={listEl} role="listbox" aria-label="Pull requests">
+                <Show when={!list.loading || list()} fallback={<div class="pal-empty">Loading pull requests…</div>}>
+                    <For each={rows()} fallback={<Show when={list()}><div class="pal-empty">{q().trim() ? "No match. Enter a number or URL." : "No open pull requests."}</div></Show>}>
+                        {(r, i) => (
+                            <div class="pal-group">
+                                <Show when={i() === 0 && list()}>{(l) => <div class="pal-head">Open pull requests in {l().repo}</div>}</Show>
+                                <button class="pal-row" role="option" aria-selected={sel() === i()} data-active={sel() === i() || undefined} disabled={Boolean(busy())} onMouseMove={() => setSel(i())} onClick={() => void start(r.ref)}>
+                                    <span class="pal-label">{r.label}</span>
+                                    <Show when={[r.desc, r.end].filter(Boolean).join(" · ")}>{(m) => <span class="pal-meta">{m()}</span>}</Show>
+                                </button>
+                            </div>
+                        )}
+                    </For>
+                </Show>
             </div>
             <Show when={busy() && busy() !== "sign-in"}>
-                <div class="br-note" role="status">Checking out {prNumber(busy()!) ? `#${prNumber(busy()!)}` : "the pull request"}…</div>
+                <div class="pal-foot" role="status"><Spinner size={12} /><span class="pal-foot-text">Checking out {prNumber(busy()!) ? `#${prNumber(busy()!)}` : "the pull request"}…</span></div>
             </Show>
             <Show when={failure()}>
                 {(f) => (
-                    <div class="br-note error br-fail" role="alert">
-                        <span>{f().text}<Show when={f().code === "sign_in" && !signInSession()}> Run <code>gh auth login</code> in a terminal.</Show></span>
+                    <div class="pal-foot" data-tone="error" role="alert">
+                        <span class="pal-foot-text">{f().text}<Show when={f().code === "sign_in" && !signInSession()}> Run <code>gh auth login</code> in a terminal.</Show></span>
                         <Show when={f().code === "sign_in" && signInSession()}>
                             <button class="btn btn-sm" disabled={Boolean(busy())} onClick={() => void signIn()}>Sign in to GitHub</button>
                         </Show>
@@ -495,23 +494,6 @@ function PrDialog(p: { cwd: string; sessionId?: string; query?: string; start?: 
                     </div>
                 )}
             </Show>
-            <div class="pal-list" ref={listEl}>
-                <Show when={!list.loading || list()} fallback={<div class="pal-empty">Loading pull requests…</div>}>
-                    <Show when={list()}>{(l) => <div class="pal-h">Open pull requests in {l().repo}</div>}</Show>
-                    <For each={rows()} fallback={<Show when={list()}><div class="pal-empty">{q().trim() ? "No match. Enter a number or URL." : "No open pull requests."}</div></Show>}>
-                        {(r, i) => (
-                            <button class={`pal-row ${sel() === i() ? "sel" : ""} ${r.desc ? "two" : ""}`} disabled={Boolean(busy())} onMouseMove={() => setSel(i())} onClick={() => void start(r.ref)}>
-                                <span class="pal-ic"><GitPullRequest size={15} /></span>
-                                <span class="pal-text">
-                                    <span class="pal-l">{r.label}</span>
-                                    <Show when={r.desc}><span class="pal-d">{r.desc}</span></Show>
-                                </span>
-                                <Show when={r.end}><span class="pal-end">{r.end}</span></Show>
-                            </button>
-                        )}
-                    </For>
-                </Show>
-            </div>
         </Dialog>
     );
 }

@@ -84,7 +84,7 @@ export function Submenu(p: { icon?: JSX.Element; label: string; width?: number; 
             <button
                 ref={item}
                 role="menuitem"
-                class="menu-item compact menu-sub"
+                class="menu-item menu-sub"
                 aria-haspopup="menu"
                 aria-expanded={open()}
                 aria-controls={open() ? id : undefined}
@@ -95,7 +95,7 @@ export function Submenu(p: { icon?: JSX.Element; label: string; width?: number; 
                 onPointerLeave={(e) => e.pointerType === "mouse" && later(hide, CLOSE_MS)}
                 onFocusOut={away}
             >
-                {p.icon} <span>{p.label}</span>
+                {p.icon}<span class="menu-item-name">{p.label}</span>
                 <ChevronRight size={14} class="menu-sub-chev" />
             </button>
             <Show when={open()}>

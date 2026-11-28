@@ -30,7 +30,7 @@ export function nextMode(m: PermissionModeId, bypass: boolean): PermissionModeId
 
 const BYPASS_OFF = "Turn on “Allow bypass mode” in Settings first.";
 
-/** Words alone, on the button and in its menu. Grey but Plan, in the accent, and Bypass, in red: the two worth noticing. */
+/** Words alone, on the button and in its menu. Plan, in the accent, and Bypass, in red, on the button: the two worth noticing. */
 export function ModePicker(p: ComposerMenu & { /** The session it's for (default: the one shown). */ sessionId?: string; mode: PermissionModeId; bypassAllowed: boolean }) {
     let anchor: HTMLButtonElement | undefined;
     const describe = (m: PermissionModeId) => MODE_LABELS[m].description;
@@ -38,53 +38,46 @@ export function ModePicker(p: ComposerMenu & { /** The session it's for (default
         <>
             <button
                 ref={anchor}
-                class={`pick mode ${p.mode === "plan" ? "mode-plan" : p.mode === "bypassPermissions" ? "mode-bypass" : ""} ${p.open ? "open" : ""}`}
+                class="bar-btn mode"
+                data-mode={p.mode === "plan" ? "plan" : p.mode === "bypassPermissions" ? "bypass" : undefined}
                 aria-haspopup="menu"
                 aria-expanded={p.open}
                 onClick={() => p.setOpen(!p.open)}
-                title={`Permission mode: ${MODE_LABELS[p.mode].label} (⇧Tab cycles)`}
+                title="Permission mode (⇧Tab)"
             >
-                <span>{MODE_LABELS[p.mode].label}</span>
-                <ChevronDown size={13} class="chev" />
+                <span class="bar-main">{MODE_LABELS[p.mode].label}</span>
+                <ChevronDown size={13} class="bar-chev" />
             </button>
-            <Menu label="Permission mode" open={p.open} anchor={() => anchor} onClose={() => p.setOpen(false)} placement={p.placement ?? "top"} width={340}>
-                <div class="mode-menu">
-                    <div class="menu-label">
-                        <span>Permission mode</span>
-                        <kbd>⇧Tab</kbd>
-                    </div>
-                    <For each={MODES}>
-                        {(m) => {
-                            const disabled = () => m === "bypassPermissions" && !p.bypassAllowed;
-                            return (
-                                <button
-                                    class={`menu-item ${p.mode === m ? "on" : ""} ${m === "bypassPermissions" ? "danger" : ""}`}
-                                    role="menuitemradio"
-                                    aria-checked={p.mode === m}
-                                    disabled={disabled()}
-                                    title={disabled() ? BYPASS_OFF : describe(m)}
-                                    onClick={() => {
-                                        p.setOpen(false);
-                                        void setMode(m, p.sessionId);
-                                    }}
-                                >
-                                    <span class="menu-item-text">
-                                        <span class="menu-item-name">{MODE_LABELS[m].label}</span>
-                                        {/* Off, what turns it on matters more than what it does. */}
-                                        <Show when={disabled()} fallback={<span class="menu-item-sub">{describe(m)}</span>}>
-                                            <span class="menu-item-sub menu-hint">{BYPASS_OFF}</span>
-                                        </Show>
-                                    </span>
+            <Menu label="Permission mode" open={p.open} anchor={() => anchor} onClose={() => p.setOpen(false)} placement={p.placement ?? "top"} align="start" offset={8} width={336} class="menu menu-wide">
+                <div class="menu-label">Permission mode</div>
+                <For each={MODES}>
+                    {(m) => {
+                        const disabled = () => m === "bypassPermissions" && !p.bypassAllowed;
+                        return (
+                            <button
+                                class="menu-item menu-item-two"
+                                role="menuitemradio"
+                                aria-checked={p.mode === m}
+                                disabled={disabled()}
+                                onClick={() => {
+                                    p.setOpen(false);
+                                    void setMode(m, p.sessionId);
+                                }}
+                            >
+                                <span class="menu-check">
                                     <Show when={p.mode === m}>
-                                        <span class="menu-ico">
-                                            <Check size={15} stroke-width={2} class="menu-check" />
-                                        </span>
+                                        <Check size={14} />
                                     </Show>
-                                </button>
-                            );
-                        }}
-                    </For>
-                </div>
+                                </span>
+                                <span class="menu-item-text">
+                                    <span class="menu-item-name">{MODE_LABELS[m].label}</span>
+                                    {/* Off, what turns it on matters more than what it does. */}
+                                    <span class="menu-item-sub">{disabled() ? BYPASS_OFF : describe(m)}</span>
+                                </span>
+                            </button>
+                        );
+                    }}
+                </For>
             </Menu>
         </>
     );

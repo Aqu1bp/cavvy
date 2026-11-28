@@ -22,8 +22,9 @@ import "./styles/usage.css";
 import "./styles/runs.css";
 import "./styles/transcript.css";
 import "./styles/composer.css";
-import "./styles/plan.css";
 import "./styles/overlays.css";
+// After overlays.css: its lists open in popovers, and their own padding and width are the design's.
+import "./styles/composer-trays.css";
 import "./styles/markdown.css";
 import "./styles/remix-conversation.css";
 import "./styles/theme.css";

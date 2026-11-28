@@ -248,7 +248,7 @@ function LayerRow(p: { layer: Layer; hint?: string; isOpen: (id: string) => bool
                 <Show when={p.hint}>{(h) => <span class="hint">{h()}</span>}</Show>
                 <Show when={time()}>
                     {(t) => (
-                        <span class="working-time tm num">
+                        <span class="working-time num">
                             {t()}
                             <Show when={s().meta}>{(m) => ` ${m()}`}</Show>
                         </span>

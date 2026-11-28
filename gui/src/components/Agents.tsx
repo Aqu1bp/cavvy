@@ -188,10 +188,10 @@ export function AgentView(p: { handle: SessionHandle; agent: AgentRun }) {
             <div class="stage">
                 <div class="transcript-wrap convo-wrap">
                     <section class="transcript convo" aria-label="Sub-agent transcript" style={{ "--dock-h": `${dockH()}px` }}>
-                        <div class="transcript-col convo-col agentview agent-col">
+                        <div class="transcript-col convo-col agentview">
                             {/* What the parent asked: on the right, as a prompt, under where it came from. */}
-                            <div class="msg-user user-row agent-task">
-                                <span class="msg-tag agent-from" data-find-skip>
+                            <div class="msg-user agent-task">
+                                <span class="msg-tag" data-find-skip>
                                     {parent() ? `From ${parentName()}` : "From the session"}
                                 </span>
                                 <div class={`bubble user-bubble ${longTask() && !fullTask() ? "clamped" : ""}`}>
@@ -202,11 +202,11 @@ export function AgentView(p: { handle: SessionHandle; agent: AgentRun }) {
                                         </button>
                                     </Show>
                                 </div>
-                                <div class="msg-actions user-actions" data-find-skip>
-                                    <time class="msg-time user-when" dateTime={new Date(a().startedAt).toISOString()}>{clock(a().startedAt)}</time>
+                                <div class="msg-actions" data-find-skip>
+                                    <time class="msg-time" dateTime={new Date(a().startedAt).toISOString()}>{clock(a().startedAt)}</time>
                                 </div>
                             </div>
-                            <div class="turn agent-reply">
+                            <div class="turn">
                                 <Show when={!live(a()) && items().length}>
                                     <button class="tools-head worklog-head fold worked" aria-expanded={unfolded()} onClick={() => setUnfolded(!unfolded())}>
                                         <span class="num">Worked for {elapsed(a())}</span>

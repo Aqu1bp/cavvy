@@ -14,6 +14,8 @@ export interface DialogProps {
     bare?: boolean;
     /** A bare dialog's name: the id of the heading its content brings. */
     labelledBy?: string;
+    /** The body runs edge to edge (a list): the design's .dlg-body-bare. */
+    edge?: boolean;
     /** Opens near the top of the window (the command palette) instead of in its middle. */
     top?: boolean;
     /** None: the dialog is its head and foot (a confirm). */
@@ -114,13 +116,13 @@ function DialogInner(p: DialogProps) {
                                     <p class="dlg-sub selectable">{p.subtitle}</p>
                                 </Show>
                             </div>
-                            <button class="icon-btn icon-btn-sm dlg-close" onClick={() => p.onClose()} aria-label="Close">
+                            <button type="button" class="icon-btn icon-btn-sm dlg-close" onClick={() => p.onClose()} aria-label="Close">
                                 <X size={14} />
                             </button>
                         </div>
                     </Show>
                     <Show when={hasBody()}>
-                        <div class="dlg-body dialog-body selectable">{body()}</div>
+                        <div class={`dlg-body dialog-body selectable${p.edge ? " dlg-body-bare" : ""}`}>{body()}</div>
                     </Show>
                     <Show when={p.footer}>
                         <div class="dlg-foot">{p.footer}</div>

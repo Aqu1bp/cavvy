@@ -1,6 +1,6 @@
 import { createEffect, createMemo, createSignal, createUniqueId, For, Match, on, onCleanup, onMount, Show, Switch, type JSX } from "solid-js";
 import { isMod, machine, mod } from "../lib/platform";
-import { ArrowUp, CornerDownRight, Database, FileText, Folder, KeyRound, ListEnd, Maximize2, Minimize2, Slash, Sparkles, SquareTerminal, Plus, X } from "lucide-solid";
+import { ArrowUp, CornerDownRight, Database, FileText, Folder, KeyRound, ListEnd, Maximize2, Minimize2, Slash, Sparkles, Square, SquareTerminal, Plus, X } from "lucide-solid";
 import type { CommandInfo, FollowUpMode, McpResourceInfo, PermissionModeId } from "@shared/protocol";
 import { app, awayMachine, connFor, handleFor, homeDraftKey, homeModeOf, homeSettings, modelsFor, reportError, rpc, rpcFor, serversUi, showSending, toast, wasDeleted } from "../state/app";
 import { far, interrupt, send, setMode } from "../state/actions";
@@ -40,7 +40,7 @@ import { canStop } from "../lib/session-status";
 import { listedSchedules } from "../lib/notices";
 import { QueueTab } from "./QueueTab";
 import { StashTray } from "./StashTray";
-import { StepsTray } from "./StepsTray";
+import { StepsTray, stepsTrayShown } from "./StepsTray";
 
 /** `mention`: a skill picked from the $ menu, which goes in where the $ is. */
 type MenuItem = { kind: "command"; cmd: CommandInfo; mention?: boolean } | { kind: "file"; path: string } | { kind: "resource"; res: McpResourceInfo };
@@ -63,7 +63,7 @@ export interface ComposerAside {
     open?: (text: string, attachments: Attachment[]) => Promise<boolean>;
 }
 
-export function Composer(p: { sessionId?: string; placeholder?: string; autofocus?: boolean; variant?: "home" | "session"; aside?: ComposerAside; /** Tucked under the card, like a drawer (Home's project, worktree and the composer's prefixes). */ strip?: JSX.Element; /** Home: sending to several models at once. */ compare?: CompareOption; /** Home: told what's in the box each time it changes. */ onText?: (text: string) => void }) {
+export function Composer(p: { sessionId?: string; placeholder?: string; autofocus?: boolean; variant?: "home" | "session"; aside?: ComposerAside; /** A row at the top of the card (Home: trusting the folder). */ lead?: JSX.Element; /** Under the card, at its far end (Home: the composer's prefixes). */ under?: JSX.Element; /** Home: sending to several models at once. */ compare?: CompareOption; /** Home: told what's in the box each time it changes. */ onText?: (text: string) => void }) {
     /** The last @ search asked MCP servers too, so its empty state says so. */
     const [searchedResources, setSearchedResources] = createSignal(false);
     const whileMounted = createLifetimeGuard();
@@ -126,9 +126,9 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     /** The text's height at the large size (lib/composer-size): up from the window's foot to near the column's top, or (Home) down to near the page's foot. */
     const largeHeight = () => {
         if (!ta || !root) return least;
-        const stage = root.closest(".stage");
+        const stage = root.closest(".stage, .home");
         if (stage) return expandedHeight({ text: ta.offsetHeight, top: root.getBoundingClientRect().top, columnTop: stage.getBoundingClientRect().top, column: (!p.aside && shellLayout().column.h) || stage.clientHeight, least });
-        const page = root.closest(".home") ?? document.documentElement;
+        const page = document.documentElement;
         return expandedDown({ text: ta.offsetHeight, bottom: root.getBoundingClientRect().bottom, pageBottom: page.getBoundingClientRect().bottom, least });
     };
     const resize = () => {
@@ -202,7 +202,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         // Closed with the caret at the end: the end is what shows.
         if (!open && ta.selectionEnd === text().length) ta.scrollTop = ta.scrollHeight;
         if (p.variant !== "home") glideDock();
-        grow(box, from, box.offsetHeight, p.variant === "home" ? "top" : "bottom", motionMs(GROW_MS));
+        grow(box, from, box.offsetHeight, "bottom", motionMs(GROW_MS));
         ta.focus();
     };
 
@@ -470,7 +470,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         const t = text();
         if (!canSend() || sending()) return;
         const picks = runPicks();
-        if (picks && (picks.length < 2 || !app.homeCwd)) return toast(picks.length < 2 ? "Pick 2–4 models, or turn off Compare" : "Choose a project folder first.", "warn");
+        if (picks && (picks.length < 2 || !app.homeCwd)) return toast(picks.length < 2 ? "Pick 2–4 models" : "Choose a project folder first", "warn");
         setSending(true);
         const submitted = draft.capture();
         const { attachments: atts } = submitted.draft;
@@ -718,7 +718,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         if (queueId === undefined || !p.sessionId || !handle) return;
         try {
             const r = await rpc.call("session.dequeue", { id: p.sessionId, queueId, edit });
-            if (!r.removed) toast("That message has already been sent", "info");
+            if (!r.removed) toast("Already sent", "info");
             else if (edit) handle.addDraft({ text: r.text ?? "", images: r.images, files: r.files });
         } catch (e) {
             reportError(e);
@@ -736,7 +736,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     const placeholder = () => {
         if (shell()) return "Run a shell command";
         // A message doesn't wait for an idle compaction: it stops it and goes.
-        if (busy() && st()?.activity?.idle) return "Send a message to stop compacting and carry on…";
+        if (busy() && st()?.activity?.idle) return "Send to stop compacting…";
         if (busy()) return labels().placeholder;
         return p.placeholder ?? "Ask, plan, or describe a change…";
     };
@@ -763,24 +763,15 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         return [[enter, FOLLOW_UP_WORDS[shown()]], [otherKey || `${mod}-click`, FOLLOW_UP_WORDS[other]]];
     };
     const canSend = createMemo(() => hasContent() && !blocked());
-    // The pickers open from their own button, left-aligned with it (design/glass placePop): above it in a
-    // session, at the bottom of the window; below it on Home, which has the page below it. Each flips if there's no room.
-    const menuSide = () => (p.variant === "home" ? "bottom" : "top");
-    // Home: the @ and / menu opens downward, from just under the card (over the strip under it), and is as tall as
-    // the window has room for there (CSS caps it as ever). The card grows as you write, so it follows the text.
-    createEffect(on([menuOpen, text], ([open]) => {
-        if (!open || p.variant !== "home") return;
-        requestAnimationFrame(() => {
-            const el = menuList;
-            if (!el?.isConnected || !box || !root) return;
-            const top = box.offsetTop + box.offsetHeight + 6;
-            el.style.setProperty("--menu-top", `${top}px`);
-            el.style.setProperty("--room", `${Math.max(140, window.innerHeight - root.getBoundingClientRect().top - top - 16)}px`);
-        });
-    }));
+    // The pickers open from their own button, left-aligned with it (design/glass placePop), above it: the composer is
+    // at the column's foot, on Home too. Each flips if there's no room.
+    const menuSide = () => "top" as const;
     const interactions = () => st()?.interactions ?? [];
     /** A sign-in's card is up for this put-off row: the row isn't shown beside its own card. */
     const signInCardUp = (watchId: string) => interactions().some((i) => i.kind === "signin" && signInCardFor(watchId, i));
+    const laterSignIns = () => (p.sessionId ? st()?.watches?.filter((w) => w.kind === "sign-in" && !signInCardUp(w.id)) ?? [] : []);
+    /** A tray sits on the box: its top corners square off to meet it. */
+    const attached = () => Boolean((p.sessionId && h() && stepsTrayShown(p.sessionId, h()!.view)) || (p.sessionId && st()?.queued.length) || laterSignIns().length);
     /** A turn runs, and no request card is up: what it's doing is the turn's live line (LiveLine.tsx), not a row here. */
     const working = () => Boolean(p.sessionId && busy() && !interactions().length && !far.asks?.(p.sessionId));
 
@@ -806,7 +797,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     return (
         <div
             ref={root}
-            class={`composer v-${p.variant ?? "session"} ${p.aside ? "aside" : ""} ${shell() ? "shell" : ""} ${dragging() ? "dragging" : ""} ${working() ? "running" : ""} ${expanded() ? "expanded" : ""} ${expanded() || overflows() ? "expandable" : ""}`}
+            class={`composer-root v-${p.variant ?? "session"} ${p.aside ? "aside" : ""} ${shell() ? "shell" : ""} ${dragging() ? "dragging" : ""} ${working() ? "running" : ""} ${expanded() ? "expanded" : ""} ${expanded() || overflows() ? "expandable" : ""}`}
             onDragEnter={(e) => {
                 if (!e.dataTransfer?.types.includes("Files")) return;
                 dragDepth++;
@@ -841,8 +832,9 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
             >
                 {(a) => <InteractionTab sessionId={a().id} items={a().items} />}
             </Show>
+            <div class="composer-stack">
             <Show when={menuOpen()}>
-                <div class={`composer-menu ${menu().some((m) => m.kind !== "command") ? "files" : ""}`} ref={menuList} id={menuId} role="listbox" aria-label="Composer suggestions" aria-busy={menuStatus() === "loading"}>
+                <div class={`suggest menu ${menu().some((m) => m.kind !== "command") ? "files" : ""}`} ref={menuList} id={menuId} role="listbox" aria-label="Composer suggestions" aria-busy={menuStatus() === "loading"}>
                     <For each={menu()}>
                         {(item, i) => (
                             <button
@@ -850,7 +842,8 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                                 role="option"
                                 aria-selected={i() === menuSel()}
                                 tabIndex={-1}
-                                class={`cm-item ${i() === menuSel() ? "sel" : ""}`}
+                                class={`suggest-item ${i() === menuSel() ? "sel" : ""}`}
+                                data-active={i() === menuSel() || undefined}
                                 onMouseDown={(e) => {
                                     e.preventDefault();
                                     apply(item, true);
@@ -861,21 +854,19 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                                     <Match when={item.kind === "command" && item}>
                                         {(c) => (
                                             <>
-                                                <span class={`cm-icon ${c().cmd.skill ? "skill" : ""}`}>
-                                                    <Show when={c().cmd.skill} fallback={<Slash size={13} />}>
-                                                        <Sparkles size={13} />
-                                                    </Show>
-                                                </span>
-                                                <span class="cm-name mono">
+                                                <Show when={c().cmd.skill} fallback={<Slash size={13} class="suggest-icon" />}>
+                                                    <Sparkles size={13} class="suggest-icon" />
+                                                </Show>
+                                                <span class="suggest-name">
                                                     {c().mention ? "$" : ""}
                                                     {c().cmd.name}
-                                                    <Show when={c().cmd.args && !c().mention}>
-                                                        <span class="cm-args"> {c().cmd.args}</span>
-                                                    </Show>
                                                 </span>
+                                                <Show when={c().cmd.args && !c().mention}>
+                                                    <span class="suggest-args">{c().cmd.args}</span>
+                                                </Show>
                                                 {/* /compact and the like answer without the model: what's attached would be lost, so the server refuses it. */}
-                                                <Show when={c().cmd.noAttachments && !c().mention && attachments().length} fallback={<span class="cm-desc truncate">{c().cmd.description}</span>}>
-                                                    <span class="cm-desc cm-warn truncate">Doesn't take attachments: send them on their own</span>
+                                                <Show when={c().cmd.noAttachments && !c().mention && attachments().length} fallback={<span class="suggest-desc">{c().cmd.description}</span>}>
+                                                    <span class="suggest-desc warn">Send attachments on their own</span>
                                                 </Show>
                                             </>
                                         )}
@@ -883,22 +874,20 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                                     <Match when={item.kind === "resource" && item}>
                                         {(r) => (
                                             <>
-                                                <span class="cm-icon" title="MCP resource">
-                                                    <Database size={13} />
-                                                </span>
-                                                <span class="cm-name mono truncate">
+                                                <Database size={13} class="suggest-icon" aria-label="MCP resource" />
+                                                <span class="suggest-name truncate">
                                                     {r().res.server}:{r().res.uri}
                                                 </span>
-                                                <span class="cm-desc truncate">{r().res.title ?? (r().res.name !== r().res.uri ? r().res.name : r().res.description)}</span>
+                                                <span class="suggest-desc">{r().res.title ?? (r().res.name !== r().res.uri ? r().res.name : r().res.description)}</span>
                                             </>
                                         )}
                                     </Match>
                                     <Match when={item.kind === "file" && item}>
                                         {(f) => (
                                             <>
-                                                <span class="cm-icon">{f().path.endsWith("/") ? <Folder size={14} /> : <FileText size={14} />}</span>
-                                                <span class="cm-name truncate">{fileName(f().path)}</span>
-                                                <span class="cm-dir truncate">{fileDir(f().path)}</span>
+                                                {f().path.endsWith("/") ? <Folder size={13} class="suggest-icon" /> : <FileText size={13} class="suggest-icon" />}
+                                                <span class="suggest-name file truncate">{fileName(f().path)}</span>
+                                                <span class="suggest-desc">{fileDir(f().path)}</span>
                                             </>
                                         )}
                                     </Match>
@@ -907,7 +896,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                         )}
                     </For>
                     <Show when={menuStatus()}>
-                        <div class="cm-status" role="status">
+                        <div class="suggest-empty" role="status">
                             {menuStatus() === "loading" ? "Searching…" : menuStatus() === "empty" ? (searchedResources() ? "No matching files or resources" : "No matching files") : menuStatus() === "no-skills" ? (
                                 <>No skills yet. Add one as <span class="mono">&lt;name&gt;/SKILL.md</span> in <span class="mono">~/.cavvy/skills</span> or the project's <span class="mono">.cavvy/skills</span>.</>
                             ) : "Could not search files"}
@@ -915,53 +904,45 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                     </Show>
                 </div>
             </Show>
-            <Show when={p.sessionId ? h() : undefined}>{(handle) => <StepsTray sessionId={p.sessionId!} view={handle().view} />}</Show>
-            <Show when={p.sessionId && st()?.queued.length}>
-                <QueueTab sessionId={p.sessionId!} state={st()!} dequeue={(i, edit) => void dequeue(i, edit)} />
-            </Show>
             <Show when={draft.stashes().length}>
                 <StashTray items={draft.stashes()} box={() => ta} onRestore={restoreStash} onDiscard={discardStash} />
             </Show>
-            {/* Sign-ins put off with Later: a strip of its own above the box, until each is signed in or dismissed. Not the one whose card is up. */}
-            <Show when={p.sessionId ? st()?.watches?.filter((w) => w.kind === "sign-in" && !signInCardUp(w.id)) : undefined}>
-                {(items) => (
-                    <Show when={items().length}>
-                        <div class="si-later card-surface" role="status">
-                            <For each={items()}>
-                                {(w) => {
-                                    // A session on a server doesn't know what this machine calls it: the window does.
-                                    const what = putOffSignIn(w.label, machine);
-                                    return (
-                                        <div class="si-later-row" title={w.label}>
-                                            {/* The service's own mark where there is one; a key for the rest (and for several at once). */}
-                                            <Show when={signInMark(w.id)} fallback={<KeyRound size={14} class="si-later-icon" />}>
-                                                {(mark) => <ProviderIcon id={mark()} size={15} class="si-later-icon" />}
-                                            </Show>
-                                            <span class="si-later-what truncate">
-                                                {what.name}
-                                                <span class="si-later-why">
-                                                    Not signed in
-                                                    <Show when={what.on}>
-                                                        {" on "}
-                                                        <span class="mono">{what.on}</span>
-                                                    </Show>
-                                                </span>
-                                            </span>
-                                            <button class="pbtn sm" onClick={() => { signInPressed.at = Date.now(); void rpc.call("session.signIn", { id: p.sessionId!, watchId: w.id }).catch(reportError); }}>
-                                                Sign in
-                                            </button>
-                                            <button class="hb sm" title="Dismiss" aria-label={`Dismiss: ${w.label}`} onClick={() => void rpc.call("session.stopWatch", { id: p.sessionId!, watchId: w.id }).catch(reportError)}>
-                                                <X size={14} />
-                                            </button>
-                                        </div>
-                                    );
-                                }}
-                            </For>
-                        </div>
-                    </Show>
-                )}
-            </Show>
-            <div class="composer-box card-surface" ref={box}>
+            <div class="trays">
+                <Show when={p.sessionId ? h() : undefined}>{(handle) => <StepsTray sessionId={p.sessionId!} view={handle().view} />}</Show>
+                <Show when={p.sessionId && st()?.queued.length}>
+                    <QueueTab sessionId={p.sessionId!} state={st()!} dequeue={(i, edit) => void dequeue(i, edit)} />
+                </Show>
+                {/* Sign-ins put off with Later: a tray each above the box, until each is signed in or dismissed. Not the one whose card is up. */}
+                <For each={laterSignIns()}>
+                    {(w) => {
+                        // A session on a server doesn't know what this machine calls it: the window does.
+                        const what = putOffSignIn(w.label, machine);
+                        return (
+                            <div class="tray tray-signin" role="status" title={w.label}>
+                                {/* The service's own mark where there is one; a key for the rest (and for several at once). */}
+                                <Show when={signInMark(w.id)} fallback={<KeyRound size={14} />}>
+                                    {(mark) => <ProviderIcon id={mark()} size={14} />}
+                                </Show>
+                                <span class="tray-text">
+                                    <b>{what.name}</b> Not signed in
+                                    <Show when={what.on}>
+                                        {" on "}
+                                        <span class="mono">{what.on}</span>
+                                    </Show>
+                                </span>
+                                <button type="button" class="btn btn-sm" onClick={() => { signInPressed.at = Date.now(); void rpc.call("session.signIn", { id: p.sessionId!, watchId: w.id }).catch(reportError); }}>
+                                    Sign in
+                                </button>
+                                <button type="button" class="icon-btn icon-btn-sm" title="Dismiss" aria-label={`Dismiss: ${w.label}`} onClick={() => void rpc.call("session.stopWatch", { id: p.sessionId!, watchId: w.id }).catch(reportError)}>
+                                    <X size={13} />
+                                </button>
+                            </div>
+                        );
+                    }}
+                </For>
+            </div>
+            <div class="composer-box card-surface" classList={{ composer: true, "composer-attached": attached() }} data-dropping={dragging() || undefined} ref={box}>
+                {p.lead}
                 <Show when={p.sessionId ? st()?.goal : undefined}>
                     {(goal) => <GoalTab sessionId={p.sessionId!} goal={goal()} />}
                 </Show>
@@ -975,7 +956,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                 <Show when={comments().length}>
                     <ReviewCommentChips
                         items={comments()}
-                        held={holdsComments() ? "Review comments wait: commands and shell lines don't take them" : undefined}
+                        held={holdsComments() ? "Comments wait: commands don't take them" : undefined}
                         onOpen={(c) => setReview({ path: c.path })}
                         onRemove={(c) => reviewComments.remove(p.sessionId!, [c.id])}
                         onClear={() => reviewComments.remove(p.sessionId!, comments().map((c) => c.id))}
@@ -984,18 +965,17 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                 <Show when={attachments().length}>
                     <AttachmentChips items={attachments()} readsPdf={readsPdf()} blocked={blocked()} onRemove={(i) => setAttachments((list) => list.filter((_, j) => j !== i))} onToText={toText} />
                 </Show>
-                <div class="composer-input">
+                <div class="composer-field" classList={{ marked: Boolean(marked()) }}>
                     <Show when={shell()}>
-                        <span class="shell-badge" title="Runs in your shell; the output is shared with the model">
-                            <SquareTerminal size={14} />
+                        <span class="shell-badge" title="Runs in your shell; the model sees the output">
+                            <SquareTerminal size={13} />
                         </span>
                     </Show>
-                    <div class="composer-field" classList={{ marked: Boolean(marked()) }}>
                         <Show when={marked()}>
                             {(m) => (
                                 <div ref={mirror} class="composer-mirror" aria-hidden="true">
-                                    <For each={m().pieces}>{(piece) => (piece.kind ? <span class={`ctok ${piece.kind}`}>{piece.text}</span> : piece.text)}</For>
-                                    <Show when={m().hint}>{(hint) => <span class="ctok-hint">{hint()}</span>}</Show>
+                                    <For each={m().pieces}>{(piece) => (piece.kind ? <span class={piece.kind === "skill" ? "hl-skill" : "hl-cmd"}>{piece.text}</span> : piece.text)}</For>
+                                    <Show when={m().hint}>{(hint) => <span class="hl-hint">{hint()}</span>}</Show>
                                     {/* A last line that's empty is a line in the textarea too. */}
                                     {"\u200b"}
                                 </div>
@@ -1003,6 +983,8 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                         </Show>
                         <textarea
                             ref={ta}
+                            class="composer-input"
+                            data-shell={shell() || undefined}
                             rows={1}
                             style={{ "--column-h": columnHeight() }}
                             value={text()}
@@ -1035,7 +1017,6 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                             aria-controls={menuOpen() ? menuId : undefined}
                             aria-activedescendant={menu().length ? `${menuId}-${menuSel()}` : undefined}
                         />
-                    </div>
                 </div>
                 <div ref={bar} class="composer-bar">
                     <input
@@ -1050,13 +1031,11 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                             input.value = "";
                         }}
                     />
-                    <button class="cb" title="Attach files" aria-label="Attach files" onClick={() => fileInput?.click()}>
-                        <Plus size={17} />
+                    <button class="icon-btn bar-attach" title="Attach files" aria-label="Attach files" onClick={() => fileInput?.click()}>
+                        <Plus size={16} />
                     </button>
                     {pickers()}
-                    <span class="grow" />
-                    {/* Home has no context yet: only a plan near its limit shows, here. In a session the context is under the card. */}
-                    <Show when={p.variant === "home"}>{meter()}</Show>
+                    <span class="composer-spacer" />
                     <span class="send-wrap">
                     <Show when={sendHint()}>
                         {(rows) => (
@@ -1064,7 +1043,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                                 <For each={rows()}>
                                     {([key, what]) => (
                                         <span class="sh-row">
-                                            <kbd>{key}</kbd>
+                                            <kbd class="kbd">{key}</kbd>
                                             <span>{what}</span>
                                         </span>
                                     )}
@@ -1076,24 +1055,22 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                         when={canStop(st()) && !hasContent()}
                         fallback={
                             <button
-                                class={`send ${(runPicks()?.length ?? 0) >= 2 ? "wide" : ""} ${busy() ? `mid-${shown()}` : ""}`}
+                                class={`send-btn ${(runPicks()?.length ?? 0) >= 2 ? "send-wide" : ""} ${busy() ? `mid-${shown()}` : ""}`}
                                 disabled={connFor(p.sessionId) !== "open" || !canSend() || sending() || Boolean(runPicks() && runPicks()!.length < 2)}
                                 onClick={(e) => void submit(busy() && isMod(e))}
-                                title={connFor(p.sessionId) !== "open" ? "Not connected" : runPicks() ? "Each model gets this prompt in a new worktree" : busy() ? undefined : withShortcut("Send", "chat:submit")}
+                                title={connFor(p.sessionId) !== "open" ? "Not connected" : runPicks() ? "Each model gets a new worktree" : busy() ? undefined : withShortcut("Send", "chat:submit")}
                                 aria-description={connFor(p.sessionId) !== "open" ? "Not connected" : busy() ? sendTitle() : undefined}
                                 aria-label={runPicks() ? `Send to ${runPicks()!.length} models` : busy() ? (shown() === "steer" ? "Steer the current turn" : "Queue for after this turn") : "Send"}
                             >
                                 <Show when={(runPicks()?.length ?? 0) >= 2}><span>Send to {runPicks()!.length} models</span></Show>
-                                <Show when={busy()} fallback={shell() ? <SquareTerminal size={16} stroke-width={2.25} /> : <ArrowUp size={17} stroke-width={2.4} />}>
-                                    {shown() === "steer" ? <CornerDownRight size={16} stroke-width={2.4} /> : <ListEnd size={16} stroke-width={2.4} />}
+                                <Show when={busy()} fallback={shell() ? <SquareTerminal size={16} stroke-width={2.2} /> : <ArrowUp size={16} stroke-width={2.2} />}>
+                                    {shown() === "steer" ? <CornerDownRight size={16} stroke-width={2.2} /> : <ListEnd size={16} stroke-width={2.2} />}
                                 </Show>
                             </button>
                         }
                     >
-                        <button class="send stop" onClick={() => interrupt(p.sessionId)} aria-label={busy() ? "Stop" : "Pause the goal"} aria-keyshortcuts="Escape">
-                            <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
-                                <rect x="1" y="1" width="10" height="10" rx="2.5" fill="currentColor" />
-                            </svg>
+                        <button class="send-btn send-stop" onClick={() => interrupt(p.sessionId)} aria-label={busy() ? "Stop" : "Pause the goal"} aria-keyshortcuts="Escape">
+                            <Square size={11} fill="currentColor" stroke-width={0} />
                         </button>
                     </Show>
                     </span>
@@ -1101,25 +1078,24 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                 {/* Past its modest height the text scrolls: this opens it large (and closes it again). */}
                 <Show when={expanded() || overflows()}>
                     <button
-                        class="cb c-expand"
+                        class="icon-btn icon-btn-sm composer-expand"
                         title={withShortcut(expanded() ? "Collapse" : "Expand", "chat:expand")}
                         aria-label={expanded() ? "Collapse the message box" : "Expand the message box"}
                         onMouseDown={(e) => e.preventDefault()}
                         onClick={() => toggleExpanded()}
                     >
-                        <Show when={expanded()} fallback={<Maximize2 size={14} />}>
-                            <Minimize2 size={14} />
+                        <Show when={expanded()} fallback={<Maximize2 size={13} />}>
+                            <Minimize2 size={13} />
                         </Show>
                     </button>
                 </Show>
             </div>
-            {/* How full the context is: a few quiet words under the card, at its far end. */}
-            <Show when={p.variant !== "home"}>
-                <div class="composer-under">{meter()}</div>
-            </Show>
-            <Show when={p.strip}>
-                <div class="composer-strip">{p.strip}</div>
-            </Show>
+            </div>
+            {/* How full the context is (Home: only a plan near its limit), a few quiet words under the card; then what Home puts at its far end. */}
+            <div class="composer-under">
+                {meter()}
+                {p.under}
+            </div>
         </div>
     );
 }

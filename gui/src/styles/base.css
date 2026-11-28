@@ -196,8 +196,7 @@ h1,
 h2,
 h3 {
     margin: 0;
-    font-weight: 600;
-    letter-spacing: -0.01em;
+    padding: 0;
 }
 
 /* Scrollbars: thin and quiet. */
@@ -223,13 +222,6 @@ h3 {
 }
 
 /* ---- Utilities ---- */
-
-.truncate {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    min-width: 0;
-}
 
 .grow,
 .spacer {
@@ -571,15 +563,13 @@ select:focus-visible {
     select:focus-visible,
     .input:focus,
     .select:focus,
-    .composer-box:focus-within,
+    .composer:focus-within,
     :root .itab-input:focus,
     :root .itab-feedback:focus,
     :root .mp-search input:focus-visible {
         outline: 2px solid Highlight;
     }
 
-    .card.cur,
-    .slim.cur,
     .navi.on:not(:focus-visible),
     .segmented-item.on:not(:focus-visible),
     .menu-item.sel:not(:focus-visible),
@@ -613,14 +603,14 @@ select:focus-visible {
     }
 
     /* button: outranks composer.css, which loads later. */
-    button.send,
-    button.send.stop {
+    button.send-btn,
+    button.send-btn.send-stop {
         border: 1px solid ButtonText;
         background: ButtonText;
         color: ButtonFace;
     }
 
-    button.send:disabled {
+    button.send-btn:disabled {
         background: GrayText;
     }
 }
@@ -629,29 +619,29 @@ select:focus-visible {
    width="N", and is N × --sp wide. :where() keeps these the weakest rules, so
    a rule that sizes an icon itself wins. The buttons on the window's top line
    (the rail's top row, the title bar's) keep theirs, with the traffic lights. */
-:where(svg[width="8"]:not(.side-top *, .header .hb *)) { width: calc(8 * var(--sp)); height: calc(8 * var(--sp)); }
-:where(svg[width="9"]:not(.side-top *, .header .hb *)) { width: calc(9 * var(--sp)); height: calc(9 * var(--sp)); }
-:where(svg[width="10"]:not(.side-top *, .header .hb *)) { width: calc(10 * var(--sp)); height: calc(10 * var(--sp)); }
-:where(svg[width="11"]:not(.side-top *, .header .hb *)) { width: calc(11 * var(--sp)); height: calc(11 * var(--sp)); }
-:where(svg[width="12"]:not(.side-top *, .header .hb *)) { width: calc(12 * var(--sp)); height: calc(12 * var(--sp)); }
-:where(svg[width="13"]:not(.side-top *, .header .hb *)) { width: calc(13 * var(--sp)); height: calc(13 * var(--sp)); }
-:where(svg[width="14"]:not(.side-top *, .header .hb *)) { width: calc(14 * var(--sp)); height: calc(14 * var(--sp)); }
-:where(svg[width="15"]:not(.side-top *, .header .hb *)) { width: calc(15 * var(--sp)); height: calc(15 * var(--sp)); }
-:where(svg[width="16"]:not(.side-top *, .header .hb *)) { width: calc(16 * var(--sp)); height: calc(16 * var(--sp)); }
-:where(svg[width="17"]:not(.side-top *, .header .hb *)) { width: calc(17 * var(--sp)); height: calc(17 * var(--sp)); }
-:where(svg[width="18"]:not(.side-top *, .header .hb *)) { width: calc(18 * var(--sp)); height: calc(18 * var(--sp)); }
-:where(svg[width="19"]:not(.side-top *, .header .hb *)) { width: calc(19 * var(--sp)); height: calc(19 * var(--sp)); }
-:where(svg[width="20"]:not(.side-top *, .header .hb *)) { width: calc(20 * var(--sp)); height: calc(20 * var(--sp)); }
-:where(svg[width="21"]:not(.side-top *, .header .hb *)) { width: calc(21 * var(--sp)); height: calc(21 * var(--sp)); }
-:where(svg[width="22"]:not(.side-top *, .header .hb *)) { width: calc(22 * var(--sp)); height: calc(22 * var(--sp)); }
-:where(svg[width="23"]:not(.side-top *, .header .hb *)) { width: calc(23 * var(--sp)); height: calc(23 * var(--sp)); }
-:where(svg[width="24"]:not(.side-top *, .header .hb *)) { width: calc(24 * var(--sp)); height: calc(24 * var(--sp)); }
-:where(svg[width="26"]:not(.side-top *, .header .hb *)) { width: calc(26 * var(--sp)); height: calc(26 * var(--sp)); }
-:where(svg[width="28"]:not(.side-top *, .header .hb *)) { width: calc(28 * var(--sp)); height: calc(28 * var(--sp)); }
-:where(svg[width="32"]:not(.side-top *, .header .hb *)) { width: calc(32 * var(--sp)); height: calc(32 * var(--sp)); }
-:where(svg[width="36"]:not(.side-top *, .header .hb *)) { width: calc(36 * var(--sp)); height: calc(36 * var(--sp)); }
-:where(svg[width="44"]:not(.side-top *, .header .hb *)) { width: calc(44 * var(--sp)); height: calc(44 * var(--sp)); }
-:where(svg[width="48"]:not(.side-top *, .header .hb *)) { width: calc(48 * var(--sp)); height: calc(48 * var(--sp)); }
+:where(svg[width="8"]:not(.side-top *, .header .icon-btn *)) { width: calc(8 * var(--sp)); height: calc(8 * var(--sp)); }
+:where(svg[width="9"]:not(.side-top *, .header .icon-btn *)) { width: calc(9 * var(--sp)); height: calc(9 * var(--sp)); }
+:where(svg[width="10"]:not(.side-top *, .header .icon-btn *)) { width: calc(10 * var(--sp)); height: calc(10 * var(--sp)); }
+:where(svg[width="11"]:not(.side-top *, .header .icon-btn *)) { width: calc(11 * var(--sp)); height: calc(11 * var(--sp)); }
+:where(svg[width="12"]:not(.side-top *, .header .icon-btn *)) { width: calc(12 * var(--sp)); height: calc(12 * var(--sp)); }
+:where(svg[width="13"]:not(.side-top *, .header .icon-btn *)) { width: calc(13 * var(--sp)); height: calc(13 * var(--sp)); }
+:where(svg[width="14"]:not(.side-top *, .header .icon-btn *)) { width: calc(14 * var(--sp)); height: calc(14 * var(--sp)); }
+:where(svg[width="15"]:not(.side-top *, .header .icon-btn *)) { width: calc(15 * var(--sp)); height: calc(15 * var(--sp)); }
+:where(svg[width="16"]:not(.side-top *, .header .icon-btn *)) { width: calc(16 * var(--sp)); height: calc(16 * var(--sp)); }
+:where(svg[width="17"]:not(.side-top *, .header .icon-btn *)) { width: calc(17 * var(--sp)); height: calc(17 * var(--sp)); }
+:where(svg[width="18"]:not(.side-top *, .header .icon-btn *)) { width: calc(18 * var(--sp)); height: calc(18 * var(--sp)); }
+:where(svg[width="19"]:not(.side-top *, .header .icon-btn *)) { width: calc(19 * var(--sp)); height: calc(19 * var(--sp)); }
+:where(svg[width="20"]:not(.side-top *, .header .icon-btn *)) { width: calc(20 * var(--sp)); height: calc(20 * var(--sp)); }
+:where(svg[width="21"]:not(.side-top *, .header .icon-btn *)) { width: calc(21 * var(--sp)); height: calc(21 * var(--sp)); }
+:where(svg[width="22"]:not(.side-top *, .header .icon-btn *)) { width: calc(22 * var(--sp)); height: calc(22 * var(--sp)); }
+:where(svg[width="23"]:not(.side-top *, .header .icon-btn *)) { width: calc(23 * var(--sp)); height: calc(23 * var(--sp)); }
+:where(svg[width="24"]:not(.side-top *, .header .icon-btn *)) { width: calc(24 * var(--sp)); height: calc(24 * var(--sp)); }
+:where(svg[width="26"]:not(.side-top *, .header .icon-btn *)) { width: calc(26 * var(--sp)); height: calc(26 * var(--sp)); }
+:where(svg[width="28"]:not(.side-top *, .header .icon-btn *)) { width: calc(28 * var(--sp)); height: calc(28 * var(--sp)); }
+:where(svg[width="32"]:not(.side-top *, .header .icon-btn *)) { width: calc(32 * var(--sp)); height: calc(32 * var(--sp)); }
+:where(svg[width="36"]:not(.side-top *, .header .icon-btn *)) { width: calc(36 * var(--sp)); height: calc(36 * var(--sp)); }
+:where(svg[width="44"]:not(.side-top *, .header .icon-btn *)) { width: calc(44 * var(--sp)); height: calc(44 * var(--sp)); }
+:where(svg[width="48"]:not(.side-top *, .header .icon-btn *)) { width: calc(48 * var(--sp)); height: calc(48 * var(--sp)); }
 
 /* Icons: a lighter stroke than the library's default (2) reads calmer at UI sizes, and sits with the text's weight. */
 svg.lucide {
@@ -659,7 +649,7 @@ svg.lucide {
 }
 
 .btn svg.lucide,
-.send svg.lucide {
+.send-btn svg.lucide {
     stroke-width: 2;
 }
 
@@ -720,12 +710,12 @@ svg.lucide {
    the end, and in a list that fits, nothing is drawn. Driven by the list's own scroll position (no script). Where
    the browser has no scroll timelines the animation ends at once, on nothing drawn: the list is as it was.
    The row the keys select stops above the fade, never under it (lib/composer-menu.ts reads this for its own list). */
-.composer-menu,
+.suggest,
 .pal-list {
     scroll-padding-bottom: calc(30 * var(--sp));
 }
 
-.composer-menu::after,
+.suggest::after,
 .pal-list::after {
     content: "";
     position: sticky;

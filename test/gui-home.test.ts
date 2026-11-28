@@ -1,6 +1,6 @@
 // Home (gui/src/components/Home.tsx, CliSessions.tsx, ComposerMeter.tsx), rendered by Cavvy (no browser):
-// the composer's strip and its prefixes, the cards before the first message, the sessions from this project's
-// terminal to carry on here, and the limit pill Home shows in place of the context ring.
+// the card of where it runs, the composer's prefixes under it, the cards before the first message, the sessions
+// from this project's terminal to carry on here, and the limit Home shows in place of the context.
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import type { CliSessionInfo, CliSourceInfo, PlanLimits } from "../src/server/protocol";
@@ -30,7 +30,6 @@ const source = (o: Partial<CliSourceInfo> = {}): CliSourceInfo => ({ source: "cl
 function cli(sessions: CliSessionInfo[], sources: CliSourceInfo[] = [source()], rows?: number, providers: { id: string; configured: boolean }[] = []) {
     const continued: string[] = [];
     const tabs: string[] = [];
-    const shown: number[] = [];
     let refetched = 0;
     const CliSessions = componentCode("CliSessions", {
         node, Show, For, createSignal, React: { Fragment: "Fragment" },
@@ -46,9 +45,9 @@ function cli(sessions: CliSessionInfo[], sources: CliSourceInfo[] = [source()], 
         basename: (p: string) => p.split("/").pop(),
         now: () => Date.now(),
     });
-    const tree = CliSessions({ cwd: "/work/cavvy", rows, onShown: (n: number) => void shown.push(n) });
-    const rowsOf = () => byClass(tree, "div", "cli-row");
-    return { tree, continued, tabs, shown, refetched: () => refetched, rows: rowsOf, text: text(tree) };
+    const tree = CliSessions({ cwd: "/work/cavvy", rows });
+    const rowsOf = () => byClass(tree, "div", "home-cli-row");
+    return { tree, continued, tabs, refetched: () => refetched, rows: rowsOf, text: text(tree) };
 }
 
 test("Home lists the three newest sessions not yet in Cavvy, each with its mark, when and how long, and Import", () => {
@@ -61,15 +60,17 @@ test("Home lists the three newest sessions not yet in Cavvy, each with its mark,
     ], [source(), source({ source: "codex", name: "Codex" })]);
     // Newest first; the one already in Cavvy isn't offered here.
     expect(r.rows().map((row) => row.props["aria-label"])).toEqual(["Import “Session new” from Claude Code", "Import “Session mid” from Codex", "Import “Session old” from Claude Code"]);
-    expect(r.shown).toEqual([3]);
     expect(elements(elements(r.tree, "section"), "ProviderIcon").map((i) => i.props.id)).toEqual(["claude-code", "codex", "claude-code"]);
     const [first, second] = r.rows();
-    expect(text(byClass(first, "span", "cli-meta"))).toBe("Claude Code · 6m ago · 5+ messages · Still open in a terminal");
+    // Whose it is, when and how long: the row's tooltip; a session still open in a terminal says so under its title.
+    expect(first!.props.title).toBe("Claude Code · 6m ago · 5+ messages");
+    expect(text(byClass(first, "span", "row-sub"))).toBe("Still open in a terminal");
     // Still open: the warning keeps saying why, in its tooltip.
-    expect(byClass(first, "span", "cli-live")[0]!.props.title).toBe("Using it here and in the terminal at once mixes the two.");
-    expect(text(byClass(second, "span", "cli-meta"))).toBe("Codex · 2h ago · 1 message");
-    expect(text(byClass(first, "span", "cli-go"))).toBe("Import");
-    expect(text(byClass(r.tree, "div", "cli-h"))).toBe("Continue from your terminalShow all 4");
+    expect(byClass(first, "span", "row-sub")[0]!.props.title).toBe("Using both at once mixes them.");
+    expect(second!.props.title).toBe("Codex · 2h ago · 1 message");
+    expect(byClass(second, "span", "row-sub")).toHaveLength(0);
+    expect(text(byClass(first, "span", "btn"))).toBe("Import");
+    expect(text(byClass(r.tree, "header", "home-cli-head"))).toBe("Continue from your terminalShow all 4");
 });
 
 test("a row is a button: a click, Enter or Space imports it; one whose CLI is off goes to Settings → Providers", async () => {
@@ -85,8 +86,8 @@ test("a row is a button: a click, Enter or Space imports it; one whose CLI is of
     await Bun.sleep(0);
     expect(r.continued).toEqual(["a", "a"]);
     expect(prevented).toBe(2);
-    expect(text(byClass(b, "span", "cli-off"))).toBe("Turn on in Settings");
-    expect(byClass(b, "span", "cli-go")).toHaveLength(0);
+    expect(text(byClass(b, "span", "link-btn"))).toBe("Turn on in Settings");
+    expect(byClass(b, "span", "btn")).toHaveLength(0);
     expect(b!.props["aria-label"]).toBe("Turn on Codex in Settings → Providers to import “Session b”");
     b!.props.onClick();
     expect(r.tabs).toEqual(["providers"]);
@@ -113,7 +114,6 @@ test("with nothing to import the section is gone, even with sessions already in 
     expect(elements(r.tree, "section")).toHaveLength(0);
     // The dialog stays mounted (closed), so an open one survives the list reloading.
     expect(elements(r.tree, "Dialog").map((d) => d.props.open)).toEqual([false]);
-    expect(r.shown).toEqual([0]);
     expect(elements(cli([]).tree, "section")).toHaveLength(0);
 });
 
@@ -127,7 +127,6 @@ test("with no room for a row, what's to import is still reachable: the heading a
 test("a short column shows fewer rows; Show all is there only when it lists more", () => {
     const short = cli([session("a"), session("b"), session("c")], [source()], 1);
     expect(short.rows()).toHaveLength(1);
-    expect(short.shown).toEqual([1]);
     expect(short.text).toContain("Show all 3");
     expect(cli([session("a")], [source()], 0).rows()).toHaveLength(0);
     // Everything shows, and nothing is left out: no Show all (one already in Cavvy isn't listed there either).
@@ -147,19 +146,19 @@ test("Show all lists every one to import, and what isn't listed; none already in
     const dialog = elements(r.tree, "Dialog")[0]!;
     expect(dialog.props.title).toBe("Continue from your terminal");
     const body = text(dialog.children);
-    expect(body).toStartWith("Claude Code and Codex sessions started in cavvy.");
     expect(body).not.toContain("Already here");
-    const items = byClass(dialog, "button", "cl-item");
-    expect(items.map((i) => text(byClass(i, "span", "cl-act")))).toEqual(["Import", "Import"]);
+    const items = byClass(dialog, "li", "cli-row");
+    const acts = items.map((i) => byClass(i, "button", "cli-btn")[0]!);
+    expect(acts.map(text)).toEqual(["Import", "Import"]);
     expect(text(items[0]!)).toContain("Session b");
-    expect(byClass(dialog, "div", "cl-sub")).toEqual([]);
-    expect(byClass(dialog, "div", "cl-note").map(text)).toEqual(["1 more Claude Code session not shown", "3 more Codex sessions not shown"]);
-    items[1]!.props.onClick();
+    // What isn't listed is said in the foot, beside Done.
+    expect(byClass(dialog.props.footer, "span", "dlg-foot-note").map(text)).toEqual(["4 older sessions not shown"]);
+    acts[1]!.props.onClick();
     await Bun.sleep(0);
     expect(r.continued).toEqual(["a"]);
 });
 
-// ---- The strip, the placeholder and the cards ------------------------------------------------------
+// ---- The card, the prefixes, the placeholder and the cards ------------------------------------------
 
 test("a prefix goes in where the caret is, as typing would: an @ after a word gets a space first", () => {
     const events: string[] = [];
@@ -196,12 +195,12 @@ function home(o: { cwd?: string; needsTrust?: string[]; askTrust?: boolean; mode
     const Home = componentCode("Home", {
         node, Show, For, createSignal, onCleanup: stub, onMount: stub, React: { Fragment: "Fragment" },
         createResource: () => [() => ({ needsTrust: o.needsTrust ?? [], askTrust: o.askTrust, git: true, branch: "main" }), { refetch: stub }],
-        ChevronDown: "ChevronDown", Folder: "Folder", FolderGit2: "FolderGit2", FolderOpen: "FolderOpen", KeyRound: "KeyRound", Plug: "Plug", ShieldAlert: "ShieldAlert", Shield: "Shield",
+        ChevronDown: "ChevronDown", FolderGit2: "FolderGit2", FolderOpen: "FolderOpen", KeyRound: "KeyRound", Plug: "Plug", ShieldAlert: "ShieldAlert", Shield: "Shield", ShieldQuestion: "ShieldQuestion",
         app: { conn: "open", homeCwd: o.cwd === undefined ? "/work/cavvy" : o.cwd || undefined, providers: o.providers ?? [], projects: [], models: o.models ?? [{ models: [{}] }], modelsLoaded: true, modelsLoading: false },
         refreshProjects: stub, reportError: stub, rpc: {}, rpcFor: () => ({}), homeOn: () => undefined, chooseProject: stub, homeProjects: () => [],
         noModel: () => (o.models ?? [{ models: [{}] }]).every((g: any) => !g.models.length),
         // No servers here: where a session runs isn't said (the servers code says it, when there are any).
-        createEffect: (fn: () => void) => fn(), isElectron: false, machine: undefined, serversUi: () => Promise.reject(new Error("not loaded here")),
+        createEffect: (fn: () => void) => fn(), isElectron: false, motionMs: () => 0, machine: undefined, serversUi: () => Promise.reject(new Error("not loaded here")),
         connectCli: async (pr: { id: string }) => (connected.push(pr.id), true),
         openProject: stub,
         trustAndContinue: async (...args: unknown[]) => void trusts.push(args),
@@ -215,34 +214,39 @@ function home(o: { cwd?: string; needsTrust?: string[]; askTrust?: boolean; mode
     }) as () => Element;
     const tree = Home();
     const composer = elements(tree, "Composer")[0]!;
-    return { tree, composer, strip: composer.props.strip, trusts, connected, tabs, cliProps };
+    const card = byClass(tree, "section", "home-card")[0]!;
+    return { tree, card, composer, hints: composer.props.under, lead: composer.props.lead, trusts, connected, tabs, cliProps };
 }
 
-test("Home is the question, then the composer with the project, its worktree and the three prefixes in the strip under it", () => {
+test("Home is a card asking what to work on, with the project, its folder and its worktree, and the three prefixes under the composer", () => {
     const h = home();
-    expect(text(elements(h.tree, "h1"))).toBe("What should we work on?");
+    expect(text(elements(h.card, "h1"))).toBe("What should we work on?");
     expect(elements(h.tree, "Logo")).toHaveLength(0);
     expect(h.composer.props.placeholder).toBe("Describe a task or ask a question");
     expect(h.composer.props.variant).toBe("home");
-    const chip = byClass(h.strip, "button", "strip-ctl")[0]!;
+    const rows = byClass(h.card, "div", "home-row");
+    // No servers: where it runs isn't asked.
+    expect(rows.map((r) => text(byClass(r, "span", "home-label")))).toEqual(["Project", "Folder", "Branch"]);
+    const chip = byClass(h.card, "button", "home-select")[0]!;
     expect(text(chip)).toBe("cavvy");
-    expect(elements(h.strip, "WorktreePicker")[0]!.props).toMatchObject({ cwd: "/work/cavvy", branch: "main" });
-    const hints = elements(byClass(h.strip, "span", "strip-hints"), "button");
+    expect(text(byClass(h.card, "span", "home-value"))).toBe("/work/cavvy");
+    expect(elements(h.card, "WorktreePicker")[0]!.props).toMatchObject({ cwd: "/work/cavvy", branch: "main" });
+    const hints = elements(h.hints, "button");
     expect(hints.map((b) => [text(elements(b, "kbd")), text(b)])).toEqual([["/", "/commands"], ["@", "@files"], ["!", "!shell"]]);
     // Pressing one leaves the caret in the composer.
     let prevented = false;
     hints[0]!.props.onMouseDown({ preventDefault: () => (prevented = true) });
     expect(prevented).toBe(true);
     // No cards when there's nothing to ask.
-    expect(byClass(h.tree, "div", "hcard")).toHaveLength(0);
+    expect(byClass(h.tree, "section", "home-trust")).toHaveLength(0);
     expect(h.cliProps[0]).toMatchObject({ cwd: "/work/cavvy", rows: 3 });
 });
 
 test("/ and ! type only into an empty composer, as it is when clicked, whatever filled or cleared it; @ goes anywhere", () => {
     const h = home();
     const ta = { value: "", selectionStart: 0, selectionEnd: 0, focused: 0, focus() { this.focused++; }, setSelectionRange(a: number, b: number) { this.selectionStart = a; this.selectionEnd = b; }, dispatchEvent: stub };
-    byClass(h.tree, "div", "home-composer")[0]!.props.ref({ querySelector: (q: string) => (q === "textarea" ? ta : null) });
-    const [slash, at, bang] = elements(byClass(h.strip, "span", "strip-hints"), "button");
+    byClass(byClass(h.tree, "div", "composer-wrap-home"), "div", "composer-col")[0]!.props.ref({ querySelector: (q: string) => (q === "textarea" ? ta : null) });
+    const [slash, at, bang] = elements(h.hints, "button");
     // History recalled into the box, with no input event: / and ! only focus it.
     ta.value = "earlier message";
     ta.selectionStart = ta.selectionEnd = ta.value.length;
@@ -263,26 +267,27 @@ test("/ and ! type only into an empty composer, as it is when clicked, whatever 
     expect(composer).toContain("createEffect(() => p.onText?.(text()));");
 });
 
-test("with no folder Home asks for one, and the strip has no prefixes", () => {
+test("with no folder Home asks for one, with no folder or branch rows and no prefixes", () => {
     const h = home({ cwd: "" });
     expect(text(elements(h.tree, "h1"))).toBe("Choose a project to start");
     expect(h.composer.props.placeholder).toBe("Choose a project folder to start");
-    expect(text(byClass(h.strip, "button", "strip-ctl")[0]!)).toBe("Choose a project");
-    expect(byClass(h.strip, "span", "strip-hints")).toHaveLength(0);
+    expect(text(byClass(h.card, "button", "home-select")[0]!)).toBe("Choose a project");
+    expect(byClass(h.card, "div", "home-row")).toHaveLength(1);
+    expect(elements(h.hints, "button")).toHaveLength(0);
     expect(elements(h.tree, "CliSessions")).toHaveLength(0);
 });
 
 test("the trust card lists the folder's files and keeps both answers", async () => {
     const h = home({ needsTrust: [".mcp.json", ".claude/settings.json"] });
-    const card = byClass(h.tree, "div", "trust")[0]!;
-    expect(card.props.class).toBe("hcard card-surface trust");
-    expect(text(byClass(card, "span", "ask-title"))).toBe("Do you trust this folder?");
+    const card = byClass(h.tree, "section", "home-trust")[0]!;
+    expect(card.props.class).toBe("home-card card-surface card home-trust");
+    expect(text(elements(card, "h2"))).toBe("Do you trust this folder?");
     expect(elements(card, "code").map(text)).toEqual([".mcp.json", ".claude/settings.json"]);
-    // The answer that goes ahead first, filled; the way out at the far end.
-    const [trust, skip] = elements(byClass(card, "div", "ask-row"), "button");
+    // The answer that goes ahead first, filled; the way out after it.
+    const [trust, skip] = elements(byClass(card, "div", "home-trust-actions"), "button");
     expect([text(trust), text(skip)]).toEqual(["Trust this folder", "Open without them"]);
-    expect(skip!.props.class).toBe("pbtn quiet");
-    expect(trust!.props.class).toBe("pbtn primary");
+    expect(skip!.props.class).toBe("btn");
+    expect(trust!.props.class).toBe("btn btn-primary");
     await skip!.props.onClick();
     await trust!.props.onClick();
     expect(h.trusts).toEqual([["/work/cavvy", false], ["/work/cavvy", true]]);
@@ -294,8 +299,9 @@ test("with no model the question asks for one, and the ways to connect sit in a 
     const h = home({ models: [{ models: [] }], providers: [{ id: "claude-code", name: "Claude Code", configured: false, agentCli: { installed: true, plan: "Claude subscription" } }] });
     expect(text(elements(h.tree, "h1"))).toBe("Connect a model to start");
     expect(h.composer.props.placeholder).toBe("Describe a task or ask a question");
-    // A row, not a card.
-    expect(byClass(h.tree, "div", "hcard")).toHaveLength(0);
+    // A row in the card, not a card of its own.
+    expect(byClass(h.tree, "section", "home-trust")).toHaveLength(0);
+    expect(byClass(h.card, "div", "home-connect")).toHaveLength(1);
     const [plan, key] = elements(byClass(h.tree, "div", "home-connect")[0]!, "button");
     expect(text(plan)).toBe("Claude");
     expect(plan!.props.title).toBe("Use your Claude subscription");
@@ -314,25 +320,26 @@ test("with no model the question asks for one, and the ways to connect sit in a 
 test("a short column shows fewer terminal rows, down to none, and a card in a narrow one takes more room", () => {
     const rows = (o: Parameters<typeof home>[0]) => home(o).cliProps[0]!.rows;
     // 1024×700 and 720×480 windows, and shorter.
-    expect(rows({ height: 640 })).toBe(3);
-    expect(rows({ height: 464, width: 700 })).toBe(2);
-    expect(rows({ height: 400 })).toBe(1);
-    expect(rows({ height: 330 })).toBe(0);
-    expect(rows({ height: 700, needsTrust: [".mcp.json"], width: 900 })).toBe(3);
-    expect(rows({ height: 700, needsTrust: [".mcp.json"], width: 500 })).toBe(2);
+    // 1024×700 and 720×600 windows, and shorter.
+    expect(rows({ height: 700 })).toBe(3);
+    expect(rows({ height: 600, width: 700 })).toBe(1);
+    expect(rows({ height: 560 })).toBe(1);
+    expect(rows({ height: 500 })).toBe(0);
+    expect(rows({ height: 800, needsTrust: [".mcp.json"], width: 900 })).toBe(3);
+    expect(rows({ height: 800, needsTrust: [".mcp.json"], width: 500 })).toBe(2);
 });
 
-test("a folder with nothing to protect, not yet trusted, is asked about in a bar on the composer, by name: trusting it turns on checking edits", async () => {
-    const bar = (h: ReturnType<typeof home>) => byClass(h.tree, "div", "home-tab")[0];
+test("a folder with nothing to protect, not yet trusted, is asked about in a row at the top of the composer, by name: trusting it turns on checking edits", async () => {
+    const bar = (h: ReturnType<typeof home>) => (h.lead ? byClass(h.lead, "div", "crow-trust")[0] ?? (String(h.lead.props?.class).includes("crow-trust") ? h.lead : undefined) : undefined);
     const h = home({ askTrust: true });
-    expect(byClass(h.tree, "div", "trust")).toEqual([]);
-    const tab = bar(h)!;
-    expect(tab.props["aria-label"]).toBe("Trust this folder");
-    expect(text(tab)).toContain("Trust cavvy?");
-    const [later, trust] = byClass(tab, "button", "strip-ctl");
+    expect(byClass(h.tree, "section", "home-trust")).toEqual([]);
+    const row = bar(h)!;
+    expect(row.props["aria-label"]).toBe("Trust this folder");
+    expect(text(row)).toContain("Trust cavvy?");
+    const [later, trust] = elements(row, "button");
     expect([text(later), text(trust)]).toEqual(["Not now", "Trust"]);
-    // Not in the strip under the composer, where the folder and its branch are.
-    expect(text(h.strip)).not.toContain("trust");
+    // Not in the card, where the folder and its branch are.
+    expect(text(h.card)).not.toContain("Trust");
     later!.props.onClick();
     trust!.props.onClick();
     expect(h.trusts).toEqual([["/work/cavvy", false], ["/work/cavvy", true]]);
@@ -340,17 +347,17 @@ test("a folder with nothing to protect, not yet trusted, is asked about in a bar
     expect(bar(home())).toBeUndefined();
     // No model yet: connecting one comes first.
     expect(bar(home({ askTrust: true, models: [{ models: [] }] }))).toBeUndefined();
-    // Settings that can run commands are asked about by name, in the card: not in the bar as well.
+    // Settings that can run commands are asked about by name, in the card: not in the composer as well.
     const settings = home({ askTrust: true, needsTrust: [".mcp.json"] });
-    expect(byClass(settings.tree, "div", "trust").length).toBe(1);
+    expect(byClass(settings.tree, "section", "home-trust").length).toBe(1);
     expect(bar(settings)).toBeUndefined();
 });
 
-test("Home shows the error cards above the trust and connect cards", () => {
+test("Home shows the error cards over the composer, where a session has them", () => {
     const source = readFileSync(new URL("../gui/src/components/Home.tsx", import.meta.url), "utf8");
     const at = source.indexOf('<ErrorCards place="home" />');
-    expect(at).toBeGreaterThan(source.indexOf('<div class="home-composer"'));
-    expect(at).toBeLessThan(source.indexOf("<Show when={needsTrust().length}>"));
+    expect(at).toBeGreaterThan(source.indexOf('<div class="composer-wrap composer-wrap-home"'));
+    expect(at).toBeLessThan(source.indexOf("<Composer"));
 });
 
 // ---- The worktree picker ----------------------------------------------------------------------------
@@ -360,7 +367,7 @@ function picker(cwd: string, listed: { path: string; on?: string; worktrees: unk
     const WorktreePicker = componentCode("WorktreePicker", {
         node, Show, For, createSignal, React: { Fragment: "Fragment" },
         createResource: () => [Object.assign(() => listed, { loading }), { refetch: stub }],
-        Check: "Check", ChevronDown: "ChevronDown", FolderGit2: "FolderGit2", GitBranch: "GitBranch", GitPullRequest: "GitPullRequest", Plus: "Plus", Trash2: "Trash2",
+        Check: "Check", ChevronDown: "ChevronDown", FolderGit2: "FolderGit2", GitBranch: "GitBranch", GitPullRequest: "GitPullRequest", Plus: "Plus", Trash2: "Trash2", Spinner: "Spinner",
         app: { conn: "open" }, homeOn: () => on, rpcFor: () => ({}), openGit: stub,
         openProject: async (path: string) => void opened.push(path),
         requestComposerFocus: stub, tildify: (p: string) => p,
@@ -380,7 +387,7 @@ test("the worktree picker never offers another project's worktrees while this on
     // This folder's own, kept while it lists them again: still there.
     const same = picker("/work/a", a, true);
     const items = byClass(elements(same.tree, "Popover"), "button", "menu-item");
-    expect(items.map(text)).toEqual(["main/work/a · main checkout", "fix/work/a-wt", "New worktree…", "Work on a pull request…"]);
+    expect(items.map(text)).toEqual(["main/work/a· main checkout", "fix/work/a-wt", "New worktree…", "Work on a pull request…"]);
     // Home moved to the same path on another machine, its listing not back yet: nothing of this computer's folder.
     expect(elements(elements(picker("/work/a", a, true, "box").tree, "Popover")[0]!, "button")).toHaveLength(0);
     expect(byClass(elements(picker("/work/a", { ...a, on: "box" }, true, "box").tree, "Popover"), "button", "menu-item")).toHaveLength(4);
@@ -451,18 +458,19 @@ function meter(home: boolean, used?: number, sessionId?: string, o: { windows?: 
         Gauge: "Gauge", Shrink: "Shrink", Ring: "Ring", Popover: tagged("Popover"),
     }) as (p: { provider?: string; sessionId?: string; home?: boolean; model?: { id: string; resolvedModel?: string; resolvedFor?: string } }) => unknown;
     const tree = ComposerMeter({ provider, sessionId, home, model: o.model });
-    return { tree, trigger: home ? elements(tree, "span").find((s) => String(s.props.class).startsWith("ctx-limit")) : elements(tree, "button")[0] };
+    return { tree, trigger: home ? elements(tree, "span").find((s) => String(s.props.class).startsWith("meter meter-static")) : elements(tree, "button")[0] };
 }
 
 test("Home shows only the limit pill, as status with no card; a session has its context in words", () => {
     // A new session has no context: below 80% Home shows nothing there.
     expect(meter(true, 60).trigger).toBeUndefined();
     const pill = meter(true, 94);
-    expect(pill.trigger!.props.class).toStartWith("ctx-limit");
+    expect(pill.trigger!.props.class).toStartWith("meter meter-static");
     expect(elements(pill.trigger, "Ring")).toHaveLength(0);
-    expect(elements(pill.trigger, "Gauge")).toHaveLength(1);
-    expect(text(pill.trigger)).toBe("94%of 5-hour limit");
-    expect(text(byClass(pill.trigger, "span", "lbl"))).toBe("of 5-hour limit");
+    // Words alone: no gauge.
+    expect(elements(pill.trigger, "Gauge")).toHaveLength(0);
+    expect(text(pill.trigger)).toBe("94% of 5-hour limit");
+    expect(pill.trigger!.props["data-tone"]).toBe("red");
     // Its label says what the pill shows, no more.
     expect(pill.trigger!.props["aria-label"]).toMatch(/^Claude Code: 94% of 5-hour limit, resets /);
     // Home has no session: nothing to compact or switch, so no card to open; when it resets is the tooltip.
@@ -470,13 +478,13 @@ test("Home shows only the limit pill, as status with no card; a session has its 
     expect(pill.trigger!.props.title).toMatch(/^Resets \d{1,2}:\d\d [AP]M$/);
     expect(meter(true, 100).trigger!.props.title).toMatch(/^Resets \d{1,2}:\d\d [AP]M, in 1h 4[56]m$/);
     // At the limit, it names the limit that stops the chosen model.
-    expect(text(meter(true, 100).trigger)).toBe("5-hourlimit reached");
+    expect(text(meter(true, 100).trigger)).toBe("5-hour limit reached");
     expect(meter(true, 100).trigger!.props["aria-label"]).toMatch(/^Claude Code: 5-hour limit reached, resets /);
     expect(elements(pill.tree, "button")).toHaveLength(0);
     expect(elements(pill.tree, "Popover")).toHaveLength(0);
     // A session's composer: the context in words, at any plan usage (no ring, no pill).
     const words = meter(false, 94, "s1");
-    expect(words.trigger!.props.class).toStartWith("ctx-btn");
+    expect(words.trigger!.props.class).toStartWith("meter");
     expect(elements(words.trigger, "Gauge")).toHaveLength(0);
     expect(text(words.trigger)).toMatch(/context$|^Context$/);
     expect(text(meter(false, 10, "s1").trigger)).toMatch(/context$|^Context$/);
@@ -486,13 +494,13 @@ test("Home's pill for the chosen model: a model's limit reached only for a model
     const later = Date.now() + 2 * 86_400_000;
     const windows = [{ id: "seven_day", label: "Weekly", usedPercent: 40, resetsAt: later }, { id: "seven_day_overage_included", label: "Weekly Fable", usedPercent: 97, reached: true, scope: "fable", resetsAt: later }] as PlanLimits["windows"];
     const fable = meter(true, undefined, undefined, { windows, model: { id: "fable" } });
-    expect(text(fable.trigger)).toBe("Fablelimit reached");
+    expect(text(fable.trigger)).toBe("Fable limit reached");
     expect(fable.trigger!.props["aria-label"]).toMatch(/^Claude Code: Fable limit reached, resets /);
     // Opus: Fable's says nothing; the week at 40% neither.
     expect(meter(true, undefined, undefined, { windows, model: { id: "opus" } }).trigger).toBeUndefined();
     // Said to be allowed at 100% (allowed_warning): a share, not a limit reached.
     const allowed = meter(true, undefined, undefined, { windows: [{ id: "seven_day_overage_included", label: "Weekly Fable", usedPercent: 100, reached: false, scope: "fable", resetsAt: later }] as PlanLimits["windows"], model: { id: "fable" } });
-    expect(text(allowed.trigger)).toBe("100%of weekly Fable limit");
+    expect(text(allowed.trigger)).toBe("100% of weekly Fable limit");
 });
 
 test("a configured model not in the list yet still counts for its model limits", () => {
@@ -510,10 +518,10 @@ test("Home's pill for an alias: by what it's known to stand for on the account, 
     // Or last served as Opus on this account.
     expect(meter(true, undefined, undefined, { windows, model: { id: "default" }, served: { [servedKey("claude-code", "default", "default")]: "claude-opus-5-5" } }).trigger).toBeUndefined();
     // Listed for another account only: not known for this one, so it may be Fable's: it warns.
-    expect(text(meter(true, undefined, undefined, { windows, model: { id: "default", resolvedModel: "claude-opus-5-5", resolvedFor: "work" } }).trigger)).toBe("Fablelimit reached");
-    expect(text(meter(true, undefined, undefined, { windows, model: { id: "default" } }).trigger)).toBe("Fablelimit reached");
+    expect(text(meter(true, undefined, undefined, { windows, model: { id: "default", resolvedModel: "claude-opus-5-5", resolvedFor: "work" } }).trigger)).toBe("Fable limit reached");
+    expect(text(meter(true, undefined, undefined, { windows, model: { id: "default" } }).trigger)).toBe("Fable limit reached");
     // Fable chosen: its limit.
-    expect(text(meter(true, undefined, undefined, { windows, model: { id: "fable" } }).trigger)).toBe("Fablelimit reached");
+    expect(text(meter(true, undefined, undefined, { windows, model: { id: "fable" } }).trigger)).toBe("Fable limit reached");
 });
 
 test("what an alias stands for: last served on the account first, else as listed for that account", () => {
