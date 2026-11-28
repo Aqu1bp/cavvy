@@ -2693,7 +2693,7 @@ export class Engine {
     /** What the CLI said of an account's sign-in; true when that's news. */
     private noteStatus(provider: string, id: string, status: AgentCliStatus): boolean {
         const key = `${provider}:${id}`;
-        const next: Partial<AccountInfo> = { signedIn: status.signedIn, description: status.description, email: status.email, plan: status.plan, apiKey: status.apiKey };
+        const next: Partial<AccountInfo> = { signedIn: status.signedIn, description: status.description, email: status.email, plan: status.plan, apiKey: status.apiKey, ...(status.free ? { free: true } : {}) };
         if (JSON.stringify(next) === JSON.stringify(this.accountStatus.get(key))) return false;
         this.accountStatus.set(key, next);
         return true;

@@ -72,6 +72,8 @@ interface ToolState {
 
 interface Turn {
     ref: string;
+    /** Times its agent said it's waiting to try again (AcpAgent.stalled). */
+    retries?: number;
     tools: Map<string, ToolState>;
     /** Tool calls the agent asked about, or Cavvy's gate answered. */
     asked: Set<string>;
@@ -235,6 +237,16 @@ export class AcpConnection implements CliConnection {
         this.caps = { ...def.caps };
         this.rpc = new AcpRpc(proc, (m, p) => this.onNotification(m, p), (m, p) => this.onRequest(m, p));
         this.done = this.rpc.done.then(() => this.lost());
+        // An error it waits out without a word over ACP (OpenCode's refusals): the turn says why it's waiting.
+        const stalled = agent.stalled;
+        if (stalled) {
+            proc.onStderrLine = (line) => {
+                const turn = this.turn;
+                if (!turn || turn.ended || !this.sessionId) return;
+                const why = stalled.why(line, this.sessionId);
+                if (why) this.emit({ type: "retry", attempt: (turn.retries = (turn.retries ?? 0) + 1), delayMs: 0, reason: why });
+            };
+        }
     }
 
     /** initialize: no file system or terminal offered. */

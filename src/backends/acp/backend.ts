@@ -69,7 +69,7 @@ class AcpAdapter implements AgentCliAdapter {
     spawn(cfg: SpawnConfig): SpawnSpec {
         const bin = requireCli(this.def.id, this.def.cli);
         const own = this.agent.spawn(cfg);
-        const args = [...extraArgs(this.def.id), ...(this.def.acpArgs ?? []), ...own.args];
+        const args = [...extraArgs(this.def.id), ...(this.def.acpArgs ?? []), ...(this.agent.stalled?.args ?? []), ...own.args];
         // The user's variables for it (agent-env.ts), then what Cavvy sets for it (its permission config).
         const env = { ...cliEnv(this.def.id), ...own.env };
         return { bin, args, cwd: cfg.cwd, env, fingerprint: spawnFingerprint({ bin, args, cwd: cfg.cwd, env }) };
@@ -126,7 +126,7 @@ export async function acpStatus(providerId: string, signal?: AbortSignal): Promi
     if (own) {
         try {
             const s = await own(path, signal, cliEnv(providerId));
-            return { ...base, installed: true, path, signedIn: s.signedIn, description: `${def.name}, ${s.description}` };
+            return { ...base, installed: true, path, signedIn: s.signedIn, ...(s.free ? { free: true } : {}), description: `${def.name}, ${s.description}` };
         } catch (e) {
             if (signal?.aborted) throw new Error("aborted");
             return { ...base, installed: true, path, signedIn: false, probeFailed: true, description: `${def.name} didn't answer: ${cliMessage((e as Error).message) || "no answer"}` };

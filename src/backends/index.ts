@@ -33,6 +33,8 @@ export interface AgentCliStatus {
     description: string;
     /** Signed in with an API key: usage is billed to that, not a plan. */
     apiKey?: boolean;
+    /** Usable without a sign-in, on its free models only (OpenCode with no credentials). */
+    free?: boolean;
     /** Why it can't be used, when that isn't its sign-in (it didn't answer, or it can't run here): what to tell the user. */
     problem?: string;
     /** True when the status probe errored/failed rather than confirming signed-out state. */

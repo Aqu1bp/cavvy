@@ -3111,7 +3111,7 @@ export class Runtime {
                 this.responseBlocks = [];
                 this.responseTurn.clear();
                 this.openText = this.openThinking = undefined;
-                this.activity(`Retrying in ${Math.ceil(e.delayMs / 1000)}s · Stop to cancel`, `${e.reason.slice(0, 160)} (attempt ${e.attempt})`);
+                this.activity(`Retrying${e.delayMs > 0 ? ` in ${Math.ceil(e.delayMs / 1000)}s` : ""} · Stop to cancel`, `${e.reason.slice(0, 160)} (attempt ${e.attempt})`);
                 break;
             }
             case "usage": {

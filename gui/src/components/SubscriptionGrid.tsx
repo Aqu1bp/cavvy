@@ -228,6 +228,13 @@ export default function SubscriptionGrid(p: { here: string; servers: readonly st
                         {(a) => (
                             <Switch fallback={<span class="sg-muted" title="Not checked yet" />}>
                                 <Match when={a().invalid}><span class="sg-muted">Unavailable</span></Match>
+                                {/* On its free models without a sign-in (OpenCode): it runs, and signing in is offered. */}
+                                <Match when={a().free}>
+                                    <span class="sg-free">
+                                        <span class="sg-muted">Free</span>
+                                        <button class="btn secondary sm" aria-label={`Sign in to ${pr()!.name} ${a().name} on ${q.c.label}`} onClick={() => signIn(q.c, pr()!, a())}>Sign in</button>
+                                    </span>
+                                </Match>
                                 <Match when={a().signedIn === true}><span class="cli-dot" role="img" aria-label="Signed in" title={a().email ?? "Signed in"} /></Match>
                                 <Match when={a().signedIn === false}>
                                     <button class="btn secondary sm" aria-label={`Sign in to ${pr()!.name} ${a().name} on ${q.c.label}`} onClick={() => signIn(q.c, pr()!, a())}>Sign in</button>
