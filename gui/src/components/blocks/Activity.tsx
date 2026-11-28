@@ -48,7 +48,7 @@ import { prefs } from "../../state/prefs";
 import { openAgents, openInEditor, openReview, stopBackground } from "../../state/actions";
 import { findReveal, setViewedImage } from "../../state/ui";
 import { imagesReady, toolImage, toolThumb } from "../../state/images";
-import { CopyButton, Spinner } from "../ui/bits";
+import { CopyButton, Shine, Spinner } from "../ui/bits";
 import { AgentMark, ProviderStack } from "../ui/AgentMark";
 import { CodeBlock } from "./CodeBlock";
 import { Counts, DiffView } from "./DiffView";
@@ -331,7 +331,7 @@ export function Thinking(p: { block: ThinkingBlock; live: boolean }) {
             <div ref={(el) => enterRow(el, motionMs(STAGGER_MS))} class={`wgroup thinking ${open() ? "open" : ""} ${p.live ? "live" : ""}`}>
                 <button class="acts-h wrow" onPointerEnter={fetch} onFocus={fetch} onClick={() => (fetch(), setOpen(!open()))} aria-expanded={open()}>
                     <ChevronRight size={14} class="chev" />
-                    <span class={`wtext ${p.live ? "shimmer" : ""}`}>{label()}</span>
+                    <span class={`wtext ${p.live ? "shimmer" : ""}`}>{label()}<Show when={p.live}><Shine text={label()} /></Show></span>
                 </button>
                 <Show when={open()} fallback={<Show when={p.live && preview()}><div class="thinking-peek">{preview()}</div></Show>}>
                     <div class="thinking-text">{p.block.text.trim()}</div>
@@ -627,6 +627,8 @@ function ToolRowContent(p: ToolRowProps) {
     // Shown by find: its whole title, where the match may be past the cut.
     const found = () => findReveal()?.part === p.tool.id;
     const label = createMemo(() => toolLabel(p.tool));
+    /** Running in the turn's activity: its verb has the light crossing it. */
+    const shines = () => p.activity && isLive(p.tool) && p.tool.status !== "awaiting" && p.tool.status !== "queued";
     const all = () => [p.tool, ...(p.also ?? [])];
     // Opened, a counted row shows each different call once: the same file read three times is one output.
     const distinct = createMemo(() => {
@@ -660,7 +662,7 @@ function ToolRowContent(p: ToolRowProps) {
                         </Switch>
                     </span>
                     {/* Spaces between the parts, as find counts them ("Read src/a.ts"); a flex row doesn't draw them. */}
-                    <span class={p.activity && isLive(p.tool) && p.tool.status !== "awaiting" && p.tool.status !== "queued" ? "tool-verb wverb shimmer" : p.activity && isLive(p.tool) ? "tool-verb wverb" : "tool-verb"} data-find-skip={isLive(p.tool) || undefined}>{p.activity && isLive(p.tool) ? runningVerb(p.tool) : label().verb}</span>{!isLive(p.tool) && " "}
+                    <span class={shines() ? "tool-verb wverb shimmer" : p.activity && isLive(p.tool) ? "tool-verb wverb" : "tool-verb"} data-find-skip={isLive(p.tool) || undefined}>{p.activity && isLive(p.tool) ? runningVerb(p.tool) : label().verb}<Show when={shines()}><Shine text={runningVerb(p.tool)} /></Show></span>{!isLive(p.tool) && " "}
                     <Show when={label().arg}>
                         <span class={p.activity ? "tool-arg warg mono truncate" : "tool-arg truncate"} data-find-skip={p.tool.status === "streaming" || undefined}>{label().arg}</span>{!isLive(p.tool) && " "}
                     </Show>
@@ -869,7 +871,7 @@ function EditCardContent(p: { tool: ToolBlock }) {
                         </Show>
                     </Show>
                 </span>
-                <span class={`tcard-verb ${live() && t().status !== "awaiting" ? "shimmer" : ""}`} data-find-skip>{live() ? runningVerb(t()) : label().verb}{" "}</span>
+                <span class={`tcard-verb ${live() && t().status !== "awaiting" ? "shimmer" : ""}`} data-find-skip>{live() ? runningVerb(t()) : label().verb}<Show when={live() && t().status !== "awaiting"}><Shine text={runningVerb(t())} /></Show>{" "}</span>
                 {/* Still arriving, its file is named as soon as that much has (the server reads it from the start of the input). */}
                 <Show when={label().arg}>
                     <span class="tcard-p truncate" title={label().arg} data-find-skip={t().status === "streaming" || undefined}>{label().arg}</span>{!live() && " "}

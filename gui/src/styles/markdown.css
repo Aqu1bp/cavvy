@@ -42,8 +42,8 @@
 .md h3,
 .md h4 {
     margin: 0;
-    line-height: 1.35;
-    font-weight: 650;
+    line-height: 1.3;
+    font-weight: 600;
     letter-spacing: -0.005em;
     color: var(--fg);
 }
@@ -127,8 +127,7 @@
     padding: calc(1.5 * var(--sp)) calc(5 * var(--sp));
     border-radius: calc(5 * var(--sp));
     color: var(--fg);
-    background: var(--sheet-2);
-    box-shadow: inset 0 0 0 0.5px var(--line);
+    background: color-mix(in srgb, var(--fg) 8%, transparent);
     overflow-wrap: anywhere;
 }
 
@@ -147,14 +146,9 @@
 }
 
 .md a {
-    color: var(--accent);
+    color: var(--accent-text);
     text-decoration: underline;
-    text-decoration-color: color-mix(in srgb, var(--accent) 35%, transparent);
     text-underline-offset: 2px;
-}
-
-.md a:hover {
-    text-decoration-color: var(--accent);
 }
 
 /* A file the session has: opens in the editor. */
@@ -162,18 +156,11 @@
     cursor: pointer;
 }
 
+/* A file named in code: the link's words, in mono. */
 .md a.md-file > code {
+    padding: 0;
+    background: none;
     color: inherit;
-}
-
-/* A file named in code: the code is the link, no underline under it. */
-.md a.md-file:has(> code:only-child) {
-    text-decoration: none;
-}
-
-.md a.md-file:has(> code:only-child):hover > code {
-    text-decoration: underline;
-    text-underline-offset: 2px;
 }
 
 .md .md-image {
@@ -219,9 +206,8 @@
    header row's fill can't cover), a quiet header row, hairlines between rows. */
 .md-table {
     overflow-x: auto;
-    background: var(--sheet);
-    border: 0.5px solid var(--line-strong);
-    border-radius: var(--r-card);
+    border: 1px solid var(--line);
+    border-radius: var(--r-well);
 }
 
 .md table {
@@ -233,9 +219,9 @@
 
 .md th,
 .md td {
-    padding: calc(8 * var(--sp)) calc(12 * var(--sp));
+    padding: calc(7 * var(--sp)) calc(12 * var(--sp));
     text-align: left;
-    border-bottom: 0.5px solid var(--line);
+    border-bottom: 1px solid var(--line);
     vertical-align: top;
     overflow-wrap: break-word;
 }
@@ -248,8 +234,9 @@
 }
 
 .md th {
-    background: var(--sheet-2);
-    font-weight: 600;
+    background: var(--well-head);
+    font-size: 0.857rem;
+    font-weight: 500;
     color: var(--fg-2);
 }
 
@@ -273,9 +260,8 @@
 }
 
 /* Code blocks: a tinted card with a hairline edge. */
-.md .md-pre,
-.md .code:not(.bare) {
-    box-shadow: inset 0 0 0 0.5px var(--line);
+.md .md-pre {
+    box-shadow: inset 0 0 0 1px var(--line);
 }
 
 .md .md-pre,

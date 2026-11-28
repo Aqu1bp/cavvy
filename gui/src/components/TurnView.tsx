@@ -1,6 +1,6 @@
 import { RenderBoundary } from "./ui/ErrorBoundary";
 import { createComputed, createEffect, createMemo, createResource, createSignal, For, Index, Match, on, onCleanup, Show, Switch, untrack } from "solid-js";
-import { AlertCircle, AlertTriangle, ArrowUpRight, BellRing, Check, ChevronRight, Clock, CornerDownRight, FileDiff, FileText, Folder, FolderGit2, GitFork, Info, MessageSquareText, RotateCcw, Square, SquareArrowOutUpRight, SquareTerminal, X } from "lucide-solid";
+import { AlertCircle, AlertTriangle, ArrowUpRight, BellRing, Check, ChevronRight, Clock, CornerDownRight, FileText, Folder, FolderGit2, Info, MessageSquareText, Square, SquareArrowOutUpRight, SquareTerminal, X } from "lucide-solid";
 import type { AgentRun, Block, CompactBlock, FileDiff as Diff, ImportedBlock, NoticeBlock, PeerBlock, SessionState, ShellBlock, TextBlock, ThinkingBlock, Turn, TurnPlace } from "@shared/protocol";
 import { basename, firstChangedLine, plural, promptTime, shortPrompt, stripAnsi, tildify } from "../lib/format";
 import { cardShape, incompleteLine, PLACES_SHOWN, placeRows, placesTotal, WHO_NAMED, workers, type OwnPlace } from "../lib/turn-places";
@@ -227,11 +227,11 @@ export function UserPrompt(p: { turn: Turn; sessionId?: string; onRewind?: (inde
                     )}
                 </Show>
                 <Show when={raw().trim()}>
-                    <CopyButton text={raw} label="Copy prompt" />
+                    <CopyButton text={raw} label="Copy prompt" words="Copy prompt" />
                 </Show>
                 <Show when={p.turn.prompt?.index != null && p.onRewind && !p.turn.archived}>
-                    <button class="icon-btn" title="Rewind to before this prompt" aria-label="Rewind to before this prompt" onClick={() => p.onRewind!(p.turn.prompt!.index!)}>
-                        <RotateCcw size={14} />
+                    <button class="copy-btn" aria-label="Rewind to before this prompt" onClick={() => p.onRewind!(p.turn.prompt!.index!)}>
+                        Rewind to before this prompt
                     </button>
                 </Show>
             </div>
@@ -441,9 +441,6 @@ function ChangesCard(p: { turn: Turn; cwd: string; sessionId: string; busy: bool
                     {/* Its own folder: the files, as before. */}
                     <Match when={shape() === "files"}>
                         <div class="tcard-h files-head">
-                            <span class="tcard-ic">
-                                <FileDiff size={14} />
-                            </span>
                             <span class="files-title">{!snapshotDiff() && !files().length ? "Turn snapshot incomplete" : plural(own()?.files ?? 0, "changed file")}</span>
                             <Show when={files().length}>
                                 <Stat {...total()} />
@@ -483,9 +480,6 @@ function ChangesCard(p: { turn: Turn; cwd: string; sessionId: string; busy: bool
                     {/* One other worktree: its files, with its branch beside Review. */}
                     <Match when={shape() === "worktree"}>
                         <div class="tcard-h files-head">
-                            <span class="tcard-ic">
-                                <FileDiff size={14} />
-                            </span>
                             <span class="files-title">{one().files !== undefined ? plural(one().files!, "changed file") : `Changes in ${basename(one().path)}`}</span>
                             <Show when={one().files !== undefined}>
                                 <Stat {...one()} />
@@ -528,9 +522,6 @@ function ChangesCard(p: { turn: Turn; cwd: string; sessionId: string; busy: bool
                     {/* Several places: a row each, its own folder first, then the busiest, with who worked there. */}
                     <Match when={shape() === "places"}>
                         <div class="tcard-h files-head">
-                            <span class="tcard-ic">
-                                <FolderGit2 size={14} />
-                            </span>
                             <span class="files-title">Changes in {rows().length} places</span>
                             <span class="files-sub">{plural(placesTotal(rows()).files, "file")}</span>
                             <Stat {...placesTotal(rows())} />
@@ -825,8 +816,8 @@ function TurnViewContent(p: TurnViewProps) {
                             if (p.onToggleWork) p.onToggleWork(event.currentTarget, toggle);
                             else toggle();
                         }}>
-                            <ChevronRight size={14} class="chev" />
                             <span class="num">{worked() ?? "Work log"}</span>
+                            <ChevronRight size={13} class="chev" />
                         </button>
                     </Show>
                     <Index each={segs().slice(lead())}>{(seg, i) => renderSeg(seg, lead() + i)}</Index>
@@ -843,17 +834,17 @@ function TurnViewContent(p: TurnViewProps) {
                         </Show>
                         <div class="turn-foot">
                             <Show when={reply().trim()}>
-                                <CopyButton text={reply} label="Copy response" class="foot-btn" />
+                                <CopyButton text={reply} label="Copy response" words="Copy response" />
                             </Show>
                             <Show when={p.onFork && !p.turn.archived}>
-                                <button class="icon-btn foot-btn" title="Fork from here" aria-label="Fork from here" onClick={() => p.onFork?.()}>
-                                    <GitFork size={14} />
+                                <button class="copy-btn" onClick={() => p.onFork?.()}>
+                                    Fork from here
                                 </button>
                             </Show>
                         </div>
                     </Show>
                     <Show when={live()}>
-                        <LiveLine state={line()} />
+                        <LiveLine state={line()} stop />
                     </Show>
                 </div>
             </Show>

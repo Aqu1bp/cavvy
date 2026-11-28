@@ -10,6 +10,15 @@ export function Kbd(p: { keys: string }) {
     );
 }
 
+/** The light crossing a `.shimmer`'s words ("Running", "Thinking"): a bright copy of them, its window moving (base.css). */
+export function Shine(p: { text: string }) {
+    return (
+        <span class="shine" aria-hidden="true" data-find-skip>
+            <span>{p.text}</span>
+        </span>
+    );
+}
+
 /** It turns as a box around the svg: Chromium turns an svg itself on the main thread, every frame, for as long as it shows. */
 export function Spinner(p: { size?: number; class?: string }) {
     const s = p.size ?? 14;
@@ -23,12 +32,13 @@ export function Spinner(p: { size?: number; class?: string }) {
     );
 }
 
-export function CopyButton(p: { text: () => string; label?: string; class?: string }) {
+/** `words`: said in words ("Copy response", then "Copied"), as a quiet text button, not an icon. */
+export function CopyButton(p: { text: () => string; label?: string; class?: string; words?: string }) {
     const [done, setDone] = createSignal(false);
     return (
         <button
-            class={`icon-btn ${p.class ?? ""}`}
-            title={p.label ?? "Copy"}
+            class={`${p.words ? "copy-btn" : "icon-btn"} ${p.class ?? ""}`}
+            title={p.words ? undefined : (p.label ?? "Copy")}
             aria-label={p.label ?? "Copy"}
             onClick={async (e) => {
                 e.stopPropagation();
@@ -38,8 +48,8 @@ export function CopyButton(p: { text: () => string; label?: string; class?: stri
                 }
             }}
         >
-            <Show when={done()} fallback={<Copy size={14} />}>
-                <Check size={14} />
+            <Show when={p.words} fallback={<Show when={done()} fallback={<Copy size={14} />}><Check size={14} /></Show>}>
+                {done() ? "Copied" : p.words}
             </Show>
         </button>
     );

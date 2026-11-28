@@ -35,7 +35,7 @@
     inset: 0;
     /* One width for the conversation and the composer under it: what's said starts at the composer's edge and
        what you said ends at its other one. (Settings → Conversation width, and a little more.) */
-    --dock-w: calc(var(--column-w) + 100 * var(--sp));
+    --dock-w: var(--column-w);
     /* How far both are from the column's edges. */
     --stage-x: calc(18 * var(--sp));
 }
