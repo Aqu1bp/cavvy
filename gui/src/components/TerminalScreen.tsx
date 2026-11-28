@@ -290,7 +290,7 @@ export default function TerminalScreen(p: { tab: Tab; visible: boolean; onClose:
     ];
 
     onMount(() => {
-        term = new Terminal({ fontFamily: '"JetBrains Mono Variable", monospace', fontSize: terminalFontSize(prefs.fontSize), cursorBlink: true, scrollback: 5000, allowProposedApi: false, allowTransparency: true });
+        term = new Terminal({ fontFamily: '"Geist Mono Variable", ui-monospace, monospace', fontSize: terminalFontSize(prefs.fontSize), cursorBlink: true, scrollback: 5000, allowProposedApi: false, allowTransparency: true });
         fit = new FitAddon();
         term.loadAddon(fit);
         term.open(container);
