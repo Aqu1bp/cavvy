@@ -1,581 +1,862 @@
-/* ---- The diff reader (ReviewPane): the inspector widened ----
-   One toolbar row (back, the view menu, "vs <base>" in Branch view, the files'
-   jump list, the total, side by side, refresh), then every file in one scroll,
-   each a card under a sticky header that folds it, the comment boxes under
-   their lines, Commit and Push at the foot. The diff's own look (.diff, .dl,
-   .sl) is transcript.css's; the inspector's shared parts (.insp-body,
-   .insp-foot, .fs-w, pills) are panel.css's. */
+/*
+ * The diff reader (ReviewPane), its pickers, and the Commit and Push dialogs. Loaded with the reader and with
+ * CommitDialog (both lazy). The diff's own rows (.diff-rows, .dl, .sl) are transcript.css's; here they take the
+ * reader's look. Cavvy's extra parts (the fold, the gap rows, the worktree list, a new branch, errors) are drawn
+ * in the same language.
+ */
 
-/* A size container: the narrow rules below go by its width, the compact ones by its height. */
-.review {
+.rv {
     position: relative;
     display: flex;
     flex-direction: column;
+    flex: 1;
     min-width: 0;
     min-height: 0;
-    font-size: 0.929rem;
-    container: review / size;
+    container-type: inline-size;
 }
 
-/* ---- The toolbar ---- */
-
-.rv-h {
+.rv-bar {
     display: flex;
     align-items: center;
-    gap: calc(4 * var(--sp));
-    height: calc(52 * var(--sp));
-    padding: calc(6 * var(--sp)) calc(10 * var(--sp)) calc(6 * var(--sp)) calc(8 * var(--sp));
-    flex: none;
-    min-width: 0;
-}
-
-.rv-h .grow {
-    flex: 1;
-    min-width: calc(4 * var(--sp));
-}
-
-.rv-h .hb {
-    flex: none;
-}
-
-/* A toolbar dropdown: a label and a chevron, quiet until hovered or open. */
-.tb {
-    display: inline-flex;
-    align-items: center;
     gap: calc(6 * var(--sp));
-    height: calc(30 * var(--sp));
-    min-width: 0;
-    padding: 0 calc(8 * var(--sp)) 0 calc(10 * var(--sp));
-    border-radius: var(--pill);
-    font-size: 0.929rem;
-    font-weight: 600;
-    color: var(--fg);
-    white-space: nowrap;
-    transition: background 140ms;
-}
-
-.tb:hover,
-.tb[aria-expanded="true"] {
-    background: var(--hover);
-}
-
-.tb .lbl {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.tb .chev {
     flex: none;
-    color: var(--fg-3);
-}
-
-/* Another worktree than the session's: its branch, tinted, so the view isn't taken for the session's own. */
-.tb .wt {
-    display: inline-flex;
-    align-items: center;
-    gap: calc(4 * var(--sp));
     min-width: 0;
-    max-width: calc(150 * var(--sp));
-    padding: calc(2 * var(--sp)) calc(7 * var(--sp)) calc(2 * var(--sp)) calc(5 * var(--sp));
-    border-radius: calc(6 * var(--sp));
-    font: 500 0.821rem/1.3 var(--font-mono);
-    color: var(--accent-text);
-    background: color-mix(in srgb, var(--accent) 11%, transparent);
+    height: calc(52 * var(--sp));
+    padding: 0 calc(10 * var(--sp));
+    border-bottom: 1px solid var(--line);
 }
 
-.tb .wt svg {
-    flex: none;
-}
-
-.tb .wt span {
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.tb.files,
-.tb.base {
-    font-weight: 500;
-    color: var(--fg-2);
-}
-
-/* "N files" stays whole: the view's name beside it gives way first. */
-.tb.files {
-    flex: none;
-}
-
-.tb.files:hover,
-.tb.files[aria-expanded="true"] {
-    color: var(--fg);
-}
-
-.tb.base {
+.rv-bar .select {
     flex: 0 1 auto;
-    padding-left: calc(8 * var(--sp));
+    min-width: 0;
 }
 
-.tb.base .mono {
-    font-family: var(--font-mono);
-    font-size: 0.857rem;
-    color: var(--fg);
+.rv-view {
+    max-width: calc(190 * var(--sp));
 }
 
-.rv-h .sep {
+.rv-view-icon,
+.rv-base-vs {
     flex: none;
-    width: 1px;
-    height: calc(16 * var(--sp));
-    margin: 0 calc(4 * var(--sp));
-    background: var(--line-strong);
+    color: var(--text-3);
+}
+
+.rv-base-vs {
+    font-weight: 400;
+}
+
+.rv-base {
+    max-width: calc(190 * var(--sp));
+}
+
+.rv-files {
+    flex: none !important;
 }
 
 .rv-total {
     flex: none;
-    margin: 0 calc(6 * var(--sp)) 0 calc(2 * var(--sp));
-    font: 600 0.857rem/1 var(--font-mono);
-    font-variant-numeric: tabular-nums;
+    margin: 0 calc(4 * var(--sp));
 }
 
-.rv-h .hb[aria-pressed="true"] {
-    background: var(--press);
-}
-
-/* ---- The view menu and the files' jump list ---- */
-
-/* The check in its own column on the left, so the labels line up whichever is picked. */
-.rv-vm-item.menu-item {
-    align-items: flex-start;
-    gap: calc(6 * var(--sp));
-}
-
-.rv-vm-check {
-    flex: none;
-    display: inline-grid;
-    place-items: center;
-    width: calc(16 * var(--sp));
-    height: calc(18 * var(--sp));
-}
-
-.rv-vm-item .rv-vm-check svg {
-    color: var(--accent);
-}
-
-.rv-vm .menu-item-name.truncate {
-    display: block;
-}
-
-.rv-fl-item.menu-item {
-    display: flex;
-    gap: calc(9 * var(--sp));
-    align-items: center;
-}
-
-.rv-fl-item .nm {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
-}
-
-.rv-fl-item .nm b,
-.rv-fl-item .nm span {
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.rv-fl-item .nm b {
-    font-weight: 500;
-}
-
-.rv-fl-item .nm span {
-    font-size: 0.821rem;
-    color: var(--fg-3);
-}
-
-.rv-fl-item .aside {
+.rv-layout .segmented-item {
     display: inline-flex;
     align-items: center;
-    gap: calc(8 * var(--sp));
-}
-
-.rv-fl-item .stat {
-    font-family: var(--font-mono);
-    font-size: 0.821rem;
-}
-
-.rv-fl-item .cm,
-.rf-h .cm {
-    display: inline-flex;
-    align-items: center;
-    gap: calc(3 * var(--sp));
-    flex: none;
-    font-size: 0.821rem;
-    font-weight: 600;
-    color: var(--accent-text);
-    font-variant-numeric: tabular-nums;
-}
-
-.rv-fl-item .cm svg {
-    color: var(--accent-text);
-}
-
-.rv-fl-foot {
-    display: flex;
-    gap: calc(6 * var(--sp));
-    padding: calc(4 * var(--sp)) calc(6 * var(--sp)) calc(2 * var(--sp));
-}
-
-.rv-fl-foot .btn {
-    flex: 1;
-}
-
-/* ---- The files, stacked ---- */
-
-/* The cards' positions (offsetTop) are the scroll's own. A file drawn at last above the view keeps
-   the view where it was (ReviewPane's stack, as DiffView does inside a long diff): the browser's own
-   scroll anchoring would move it a second time. WebKit doesn't anchor. */
-.rv-body {
-    position: relative;
-    padding-top: 0;
-    overflow-anchor: none;
-    scrollbar-width: thin;
-}
-
-/* A notice above the files: another worktree, an incomplete snapshot, why there's no Git. */
-.rv-slim {
-    display: flex;
-    align-items: center;
-    gap: calc(8 * var(--sp));
-    min-height: calc(34 * var(--sp));
-    margin: 0 0 calc(8 * var(--sp));
-    padding: calc(6 * var(--sp)) calc(8 * var(--sp)) calc(6 * var(--sp)) calc(10 * var(--sp));
-    border-radius: calc(10 * var(--sp));
-    font-size: 0.893rem;
-    line-height: 1.4;
-    color: var(--fg-2);
-    background: var(--sheet-2);
-    box-shadow: inset 0 0 0 0.5px var(--line);
-}
-
-.rv-slim > svg {
-    flex: none;
-    color: var(--fg-3);
-}
-
-.rv-slim .grow {
-    flex: 1;
-    min-width: 0;
-}
-
-.rv-slim b {
-    font-weight: 600;
-    color: var(--fg);
-}
-
-.rv-slim .link-btn {
-    flex: none;
-    font-size: 0.857rem;
-}
-
-.rv-slim.away {
-    background: color-mix(in srgb, var(--accent) 8%, var(--sheet));
-    box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--accent) 22%, transparent);
-}
-
-.rv-slim.away > svg {
-    color: var(--accent);
-}
-
-.rv-slim.warn {
-    background: var(--warn-bg);
-    box-shadow: none;
-}
-
-/* One file: a real border inside the card, so nothing is drawn outside it for the scroller's edge to clip.
-   No overflow clip of its own: the header sticks to the scroller. */
-.rf {
-    margin-bottom: calc(10 * var(--sp));
-    border: 1px solid var(--line);
-    border-radius: calc(10 * var(--sp));
-    /* Opaque, like the diff in it: its header and gutters cover what scrolls under them. */
-    background: var(--well-solid);
-    /* Off screen, not laid out or painted (each header sticks, so each would be drawn on every scroll).
-       Until it has been drawn, as tall as its placeholder (.rf-ph) would make it, with its two 1px borders, so the
-       scrollbar holds still. */
-    content-visibility: auto;
-    contain-intrinsic-size: auto calc(2 * 1px + 38 * var(--sp) + var(--held, calc(var(--rows, 0) * 1.312rem)));
-}
-
-.rf.closed {
-    contain-intrinsic-size: auto calc(2 * 1px + 38 * var(--sp));
-}
-
-.rf-h {
-    position: sticky;
-    top: 0;
-    z-index: 3;
-    display: flex;
-    align-items: center;
-    gap: calc(8 * var(--sp));
-    height: calc(38 * var(--sp));
-    padding: 0 calc(6 * var(--sp));
-    border-radius: calc(9 * var(--sp)) calc(9 * var(--sp)) 0 0;
-    background: var(--well-solid);
-    box-shadow: 0 1px 0 var(--line);
-    font-size: 0.893rem;
-    transition: border-radius 220ms var(--ease);
-    cursor: default;
-}
-
-/* Stuck to the top while its file scrolls under it: square, with a shadow under it. */
-.rf-h.stuck {
-    border-radius: 0;
-    box-shadow: 0 1px 0 var(--line), 0 calc(4 * var(--sp)) calc(10 * var(--sp)) calc(-6 * var(--sp)) rgba(15, 18, 30, 0.18);
-}
-
-.rf.closed .rf-h {
-    border-radius: calc(9 * var(--sp));
-    box-shadow: none;
-}
-
-.rf-h .tog {
-    flex: none;
-    display: grid;
-    place-items: center;
-    width: calc(22 * var(--sp));
-    height: calc(22 * var(--sp));
-    border-radius: calc(6 * var(--sp));
-    color: var(--fg-3);
-}
-
-.rf-h .tog:hover {
-    background: var(--hover);
-    color: var(--fg);
-}
-
-.rf-h .tog svg {
-    transform: rotate(90deg);
-    transition: transform 160ms var(--ease);
-}
-
-.rf.closed .rf-h .tog svg {
-    transform: none;
-}
-
-.rf-h .path {
-    flex: 1;
-    min-width: 0;
-    display: flex;
-    align-items: baseline;
-    gap: calc(7 * var(--sp));
-    overflow: hidden;
-    white-space: nowrap;
-}
-
-.rf-h .path b {
-    flex: none;
-    max-width: 100%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    font-weight: 600;
-    color: var(--fg);
-}
-
-.rf-h .path span {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    font-size: 0.821rem;
-    color: var(--fg-3);
-}
-
-.rf-h .stat {
-    flex: none;
-    margin-right: calc(6 * var(--sp));
-    font: 600 0.821rem/1 var(--font-mono);
-    font-variant-numeric: tabular-nums;
-}
-
-/* Open in editor (and Reveal): no room taken until the header is hovered, so the stat ends the row. */
-.rf-h .open {
-    flex: none;
-    display: grid;
-    place-items: center;
-    width: 0;
-    height: calc(26 * var(--sp));
-    margin-left: calc(-8 * var(--sp));
-    overflow: hidden;
-    border-radius: var(--pill);
-    color: var(--fg-3);
-    opacity: 0;
-    transition: opacity 120ms, width 160ms var(--ease), margin 160ms var(--ease);
-}
-
-.rf-h:hover .open,
-.rf-h .open:focus-visible {
+    justify-content: center;
     width: calc(26 * var(--sp));
-    margin-left: 0;
-    opacity: 1;
+    padding: 0;
 }
 
-.rf-h .open:hover {
-    background: var(--hover);
-    color: var(--fg);
+.rv-menu-branch {
+    font-size: calc(12 * var(--sp));
 }
 
-.rf.flash .rf-h {
-    animation: rf-flash 900ms var(--ease);
-}
-
-@keyframes rf-flash {
-    20% {
-        background: color-mix(in srgb, var(--accent) 14%, var(--insp-bg));
+@container (max-width: 560px) {
+    .rv-total {
+        display: none;
     }
 }
 
-/* Folding: the body's grid row closes, as the side panel's folds do; instant for a very long diff. */
+/* ---------- body ---------- */
+
+/* The cards' positions (offsetTop) are the scroll's own: the reader keeps the view where it was when a file above
+   it is drawn at last (ReviewPane's stack), so the browser's own scroll anchoring is off. */
+.rv-body.insp-body {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: calc(12 * var(--sp));
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-anchor: none;
+    padding: calc(14 * var(--sp)) calc(16 * var(--sp)) calc(28 * var(--sp));
+    outline: none;
+}
+
+.rv[data-full] .rv-body {
+    padding-left: max(calc(16 * var(--sp)), calc((100% - 1240px) / 2));
+    padding-right: max(calc(16 * var(--sp)), calc((100% - 1240px) / 2));
+}
+
+.rv-list {
+    display: flex;
+    flex-direction: column;
+    gap: calc(12 * var(--sp));
+}
+
+.rv-list:not(:has(> *)) {
+    display: none;
+}
+
+.rv-notes {
+    display: flex;
+    flex-direction: column;
+    gap: calc(6 * var(--sp));
+    flex: none;
+}
+
+.rv-notes:not(:has(> *)) {
+    display: none;
+}
+
+.rv-notes .note {
+    align-items: center;
+}
+
+.rv-notes .note > svg {
+    margin-top: 0;
+}
+
+.rv-pr-num {
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: var(--text);
+}
+
+.rv-pr .note-body {
+    color: var(--text);
+}
+
+/* Cavvy's: "N more not shown" under the files. */
+.rv-more {
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
+    text-align: center;
+}
+
+/* ---------- one file ---------- */
+
+/* Off screen, not laid out or painted. Until it's drawn, as tall as its placeholder (.rf-ph) makes it. */
+.cfile {
+    flex: none;
+    border-radius: calc(10 * var(--sp));
+    background: var(--code-bg);
+    box-shadow: inset 0 0 0 1px var(--line);
+    content-visibility: auto;
+    contain-intrinsic-size: auto calc(38 * var(--sp) + var(--held, calc(var(--rows, 0) * 20 * var(--sp))));
+}
+
+.cfile.closed {
+    contain-intrinsic-size: auto calc(38 * var(--sp));
+}
+
+.cfile.flash {
+    animation: cfile-flash 1.6s;
+}
+
+@keyframes cfile-flash {
+    0%,
+    80% {
+        box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+    }
+}
+
+.cfile-head {
+    position: sticky;
+    top: calc(-14 * var(--sp));
+    z-index: 3;
+    display: flex;
+    align-items: center;
+    gap: calc(10 * var(--sp));
+    height: calc(38 * var(--sp));
+    padding: 0 calc(6 * var(--sp)) 0 calc(4 * var(--sp));
+    border-radius: calc(10 * var(--sp));
+    background: var(--code-head);
+    box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.cfile:not(.closed) .cfile-head {
+    border-radius: calc(10 * var(--sp)) calc(10 * var(--sp)) 0 0;
+}
+
+.cfile-toggle {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    flex: 1;
+    min-width: 0;
+    height: calc(30 * var(--sp));
+    padding: 0 calc(6 * var(--sp));
+    border-radius: var(--radius-s);
+}
+
+.cfile-toggle:hover .path-base {
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+
+.cfile-kind {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    width: calc(18 * var(--sp));
+    height: calc(18 * var(--sp));
+    border-radius: calc(5 * var(--sp));
+    font-family: var(--font-mono);
+    font-size: calc(11 * var(--sp));
+    font-weight: 600;
+}
+
+.cfile-kind[data-kind="modified"] {
+    background: var(--amber-soft);
+    color: var(--amber);
+}
+
+.cfile-kind[data-kind="added"] {
+    background: var(--green-soft);
+    color: var(--green);
+}
+
+.cfile-kind[data-kind="deleted"] {
+    background: var(--red-soft);
+    color: var(--red);
+}
+
+.cfile .diff {
+    border-radius: 0 0 calc(10 * var(--sp)) calc(10 * var(--sp));
+    background: transparent;
+    box-shadow: none;
+}
+
+.rv-file {
+    container-type: inline-size;
+}
+
+.rv-file .cfile-head {
+    gap: calc(8 * var(--sp));
+    padding-right: calc(4 * var(--sp));
+}
+
+.rv-file-note {
+    flex: 0 20 auto;
+    min-width: 0;
+    margin-left: 2px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-3);
+    font-size: calc(11.5 * var(--sp));
+}
+
+.rv-file-comments {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    flex: none;
+    color: var(--accent-text);
+    font-size: calc(11.5 * var(--sp));
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+}
+
+.rv-file-actions {
+    display: inline-flex;
+    gap: 1px;
+    flex: none;
+}
+
+.rv-file-actions .icon-btn {
+    color: var(--text-3);
+}
+
+.rv-file-actions .icon-btn:hover {
+    color: var(--text);
+}
+
+/* Folding: the body's grid row closes; at once for a very long diff. */
 .rf-b {
     display: grid;
     grid-template-rows: 1fr;
     transition: grid-template-rows var(--dur-panel) var(--ease);
 }
 
-.rf.closed .rf-b {
+.cfile.closed .rf-b {
     grid-template-rows: 0fr;
 }
 
-.rf.instant .rf-b {
+.cfile.instant .rf-b {
     transition: none;
 }
 
 .rf-in {
     min-height: 0;
     overflow: hidden;
-    border-radius: 0 0 calc(9 * var(--sp)) calc(9 * var(--sp));
+    border-radius: 0 0 calc(10 * var(--sp)) calc(10 * var(--sp));
 }
 
-.rf.closed .rf-in {
+.cfile.closed .rf-in {
     visibility: hidden;
     transition: visibility 0s linear var(--dur-panel);
 }
 
 /* A diff not drawn (yet, or put away far from the view): as tall as its rows, or as it was. */
 .rf-ph {
-    /* 1.6em here is .rf's 1.312rem. */
-    height: var(--held, calc(var(--rows, 0) * 1.6em));
-    font-size: 0.82rem;
+    height: var(--held, calc(var(--rows, 0) * 20 * var(--sp) + 8 * var(--sp)));
 }
 
 .rf-wait {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: calc(8 * var(--sp));
     padding: calc(16 * var(--sp));
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
 }
 
-.rf .diff {
-    border-radius: 0;
-    box-shadow: none;
-}
-
-.review .diff-scroll {
+.rv .diff-scroll {
     max-height: none;
 }
 
-.rv-more {
-    padding: calc(4 * var(--sp)) calc(4 * var(--sp)) calc(8 * var(--sp));
-    font-size: 0.857rem;
-    color: var(--fg-3);
-    text-align: center;
+.rv-toolong,
+.rv .diff-note {
+    padding: calc(9 * var(--sp)) calc(14 * var(--sp));
+    border-top: 1px solid var(--line);
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
 }
 
-.rv-empty {
-    padding: calc(36 * var(--sp)) calc(16 * var(--sp));
-    text-align: center;
-    color: var(--fg-3);
-    line-height: 1.55;
+.rv .blank {
+    padding-bottom: 12vh;
 }
 
-.rv-empty .link-btn {
-    font-size: inherit;
-}
-
-/* The branch's pull request, when it has one (PublishStatus): a slim row; "unavailable" stays quiet. */
-.rv-pr .review-note {
+.rv-error {
     display: flex;
+    flex-direction: column;
     align-items: center;
     gap: calc(6 * var(--sp));
-    min-height: calc(34 * var(--sp));
+    margin: auto;
+    padding: calc(24 * var(--sp)) calc(24 * var(--sp)) 12vh;
+    color: var(--red);
+    text-align: center;
+}
+
+.rv-error-title {
+    margin-top: calc(4 * var(--sp));
+    color: var(--text);
+    font-size: calc(14 * var(--sp));
+    font-weight: 500;
+}
+
+.rv-error-detail {
     margin-bottom: calc(8 * var(--sp));
-    padding: calc(6 * var(--sp)) calc(10 * var(--sp));
-    border-radius: calc(10 * var(--sp));
-    font-size: 0.893rem;
-    line-height: 1.4;
-    color: var(--fg-3);
-    background: var(--sheet-2);
-    box-shadow: inset 0 0 0 0.5px var(--line);
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
     overflow-wrap: anywhere;
 }
 
-.rv-pr .review-note .link-btn {
-    display: inline;
-    color: var(--fg);
-    font-size: inherit;
-    font-weight: 600;
-    text-align: left;
+/* ---------- the diff's rows, as the reader draws them ---------- */
+
+.rv .diff-rows {
+    padding: calc(4 * var(--sp)) 0;
+    font-size: calc(12 * var(--sp));
+    line-height: calc(20 * var(--sp));
+    tab-size: 2;
 }
 
-@media (prefers-reduced-motion: reduce) {
-    .rf-b,
-    .rf-h,
-    .rf-h .tog svg,
-    .rf-h .open {
-        transition: none;
-    }
-
-    .rf.flash .rf-h {
-        animation: none;
-    }
+.rv .dl {
+    grid-template-columns: calc(42 * var(--sp)) calc(42 * var(--sp)) minmax(0, 1fr);
+    min-height: calc(20 * var(--sp));
 }
 
-/* ---- The worktrees (ReviewWorktreePicker), and the base picker's list ---- */
-
-/* "This session": a quiet tag after the branch. */
-.rv-wt-self {
-    flex: none;
-    padding: 1px calc(6 * var(--sp));
-    border-radius: var(--pill);
-    background: var(--hover);
-    color: var(--fg-3);
-    font: 500 0.75rem/1.4 var(--font-ui);
+.rv .dl.dv-sizer {
+    min-height: 0;
 }
 
-.base-list.rv-wt-list {
-    gap: calc(4 * var(--sp));
-    max-height: min(560 * var(--sp), 62vh);
+.rv .dl.one {
+    grid-template-columns: calc(42 * var(--sp)) minmax(0, 1fr);
 }
 
-/* Its full height, however long the list: a flex column would squeeze rows into each other. */
-.menu-item.rv-wt-item {
-    flex: none;
-    align-items: flex-start;
-    padding: calc(8 * var(--sp)) calc(10 * var(--sp)) calc(9 * var(--sp));
+.rv .dl .ln {
+    padding: 0 calc(8 * var(--sp)) 0 0;
+    border-right: 0;
+    background: var(--code-bg);
+    color: var(--text-4);
+    font-size: calc(11 * var(--sp));
+    font-variant-numeric: tabular-nums;
 }
 
-.menu-item.rv-wt-item > svg:first-child {
-    margin-top: calc(2 * var(--sp));
+.rv .dl .ln + .ln {
+    left: calc(42 * var(--sp));
+    border-right: 0;
 }
 
-.rv-wt-name {
+.rv .dl.one .ln {
+    border-right: 0;
+}
+
+.rv .dl .txt {
+    padding: 0 calc(16 * var(--sp)) 0 calc(20 * var(--sp));
+}
+
+.rv .dl .txt::before {
+    left: 0;
+    width: calc(20 * var(--sp));
+    text-align: center;
+    color: var(--text-3);
+}
+
+.rv .dl.add {
+    background: var(--diff-add);
+}
+
+.rv .dl.add .txt {
+    background: none;
+}
+
+.rv .dl.add .ln {
+    background: var(--diff-add-gutter);
+    color: var(--diff-add-text);
+}
+
+.rv .dl.add .txt::before {
+    color: var(--diff-add-text);
+}
+
+.rv .dl.del {
+    background: var(--diff-del);
+}
+
+.rv .dl.del .txt {
+    background: none;
+}
+
+.rv .dl.del .ln {
+    background: var(--diff-del-gutter);
+    color: var(--diff-del-text);
+}
+
+.rv .dl.del .txt::before {
+    color: var(--diff-del-text);
+}
+
+/* A hunk's header: the range, and Cavvy's button for the lines it leaves out, across the row. */
+.rv .dl.sep {
     display: flex;
-    align-items: center;
+    gap: calc(12 * var(--sp));
+    margin: calc(4 * var(--sp)) 0;
+    padding: calc(3 * var(--sp)) calc(12 * var(--sp)) calc(3 * var(--sp)) calc(14 * var(--sp));
+    background: var(--accent-soft);
+    color: var(--accent-text);
+    font-size: calc(11.5 * var(--sp));
+    white-space: nowrap;
+}
+
+.rv .dl.sep .ln {
+    display: none;
+}
+
+.rv .dl.sep .txt {
+    position: sticky;
+    left: calc(14 * var(--sp));
+    padding: 0;
+    background: none;
+    color: color-mix(in srgb, var(--accent-text) 80%, transparent);
+    font-size: inherit;
+}
+
+.rv .diff-rows > :first-child.sep {
+    margin-top: calc(-4 * var(--sp));
+}
+
+.dv-gapbtn {
+    margin-right: calc(10 * var(--sp));
+    padding: 0 calc(6 * var(--sp));
+    border-radius: calc(4 * var(--sp));
+    font: inherit;
+    color: var(--accent-text);
+    transition: background 0.1s;
+}
+
+.dv-gapbtn:hover {
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+/* Side by side: the same cells, both halves wrapped. */
+.rv .sl {
+    grid-template-columns: calc(42 * var(--sp)) minmax(0, 1fr) calc(42 * var(--sp)) minmax(0, 1fr);
+    min-height: calc(20 * var(--sp));
+}
+
+.rv .sl .ln {
+    padding: 0 calc(8 * var(--sp)) 0 0;
+    border-right: 0;
+    background: var(--code-bg);
+    color: var(--text-4);
+    font-size: calc(11 * var(--sp));
+    font-variant-numeric: tabular-nums;
+}
+
+.rv .sl .ln:nth-child(3) {
+    border-left: 1px solid var(--line);
+}
+
+.rv .sl .txt {
+    padding: 0 calc(10 * var(--sp)) 0 calc(10 * var(--sp));
+}
+
+.rv .sl .txt.add {
+    background: var(--diff-add);
+}
+
+.rv .sl .ln.add {
+    background: var(--diff-add-gutter);
+    color: var(--diff-add-text);
+}
+
+.rv .sl .txt.del {
+    background: var(--diff-del);
+}
+
+.rv .sl .ln.del {
+    background: var(--diff-del-gutter);
+    color: var(--diff-del-text);
+}
+
+.rv .sl .none,
+.rv .sl .ln.none {
+    background: var(--code-head);
+}
+
+.rv .sl.sep {
+    margin: calc(4 * var(--sp)) 0;
+}
+
+.rv .sl.sep .txt {
+    padding: calc(3 * var(--sp)) calc(12 * var(--sp)) calc(3 * var(--sp)) calc(14 * var(--sp));
+    background: var(--accent-soft);
+    color: color-mix(in srgb, var(--accent-text) 80%, transparent);
+    font-size: calc(11.5 * var(--sp));
+}
+
+/* ---------- picking lines ---------- */
+
+.diff-rows.commentable:focus {
+    outline: none;
+}
+
+.diff-rows.commentable:focus-visible {
+    box-shadow: inset 0 0 0 2px var(--focus);
+}
+
+.commentable .dl:not(.sep) .ln:first-child,
+.commentable .sl .ln:not(.none) {
+    position: sticky;
+    cursor: pointer;
+    transition: color 0.1s;
+}
+
+.commentable .sl .ln:not(.none) {
+    position: relative;
+}
+
+.commentable .dl:not(.sep) .ln:first-child:hover,
+.commentable .sl .ln:not(.none):hover {
+    color: var(--text);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+
+.commentable .dl.csel,
+.commentable .sl.csel > .txt {
+    background-image: linear-gradient(color-mix(in srgb, var(--accent) 13%, transparent), color-mix(in srgb, var(--accent) 13%, transparent));
+}
+
+.commentable .csel > .ln {
+    background-image: linear-gradient(color-mix(in srgb, var(--accent) 20%, transparent), color-mix(in srgb, var(--accent) 20%, transparent));
+    color: var(--accent-text);
+}
+
+/* The keyboard's row: its sign is the comment button (C or Enter). */
+.commentable .ccur > .txt::before {
+    content: "+";
+    top: 50%;
+    left: calc(2 * var(--sp));
+    width: calc(16 * var(--sp));
+    height: calc(16 * var(--sp));
+    border-radius: 4px;
+    background: var(--accent);
+    color: var(--on-accent);
+    font-weight: 700;
+    line-height: calc(16 * var(--sp));
+    transform: translateY(-50%);
+}
+
+/* ---------- comments ---------- */
+
+/* Under the line, at the width in view rather than the longest line's (cqi: the scroller's own width). */
+.diff-scroll.has-comments {
+    container-type: inline-size;
+}
+
+.rv-after {
+    position: sticky;
+    left: 0;
+    display: flex;
+    flex-direction: column;
     gap: calc(6 * var(--sp));
+    box-sizing: border-box;
+    width: 100cqi;
+    padding: calc(6 * var(--sp)) calc(12 * var(--sp)) calc(8 * var(--sp));
+    border-top: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+    background: var(--code-head);
+    font-family: var(--font-ui);
+    white-space: normal;
+}
+
+.diff-rows.split .rv-after {
+    width: auto;
+}
+
+.rv-orphans {
+    display: flex;
+    flex-direction: column;
+    gap: calc(6 * var(--sp));
+    padding: calc(8 * var(--sp)) calc(12 * var(--sp));
+    border-bottom: 1px solid var(--line);
+    background: var(--code-head);
+    font-family: var(--font-ui);
+}
+
+.rv-orphans-head {
+    color: var(--text-3);
+    font-size: calc(11.5 * var(--sp));
+}
+
+.rv-comment {
+    display: flex;
+    align-items: flex-start;
+    gap: calc(8 * var(--sp));
+    padding: calc(8 * var(--sp)) calc(6 * var(--sp)) calc(8 * var(--sp)) calc(12 * var(--sp));
+    border-radius: var(--radius-m);
+    background: var(--surface);
+    box-shadow: inset 0 0 0 1px var(--line-strong);
+    font-size: calc(13 * var(--sp));
+    line-height: 1.5;
+}
+
+.rv-comment-main {
+    flex: 1;
     min-width: 0;
 }
 
-/* What's working in it: sub-agents and sessions, each with its state's dot. */
+.rv-comment-text {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.rv-comment-meta {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    margin-top: 3px;
+}
+
+.rv-comment-lines {
+    color: var(--text-3);
+    font-size: calc(11.5 * var(--sp));
+    font-variant-numeric: tabular-nums;
+}
+
+.rv-comment-actions {
+    display: inline-flex;
+    gap: 1px;
+    flex: none;
+}
+
+.rv-comment[data-outdated] .rv-comment-text {
+    color: var(--text-2);
+}
+
+/* What the lines said when it was written, for an outdated one. */
+.rv-comment-snippet {
+    margin-top: calc(6 * var(--sp));
+    padding: calc(6 * var(--sp)) calc(8 * var(--sp));
+    max-height: 9em;
+    overflow: auto;
+    border-radius: var(--radius-s);
+    background: var(--code-bg);
+    color: var(--text-2);
+    font-size: calc(11.5 * var(--sp));
+    white-space: pre;
+}
+
+.rv-comment-box {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0;
+    padding: 0;
+    transition: box-shadow 0.12s;
+}
+
+.rv-comment-box:focus-within {
+    box-shadow: inset 0 0 0 1px var(--focus), 0 0 0 3px color-mix(in srgb, var(--focus) 18%, transparent);
+}
+
+.rv-comment-box textarea {
+    display: block;
+    width: 100%;
+    min-height: calc(36 * var(--sp));
+    padding: calc(9 * var(--sp)) calc(12 * var(--sp)) calc(4 * var(--sp));
+    border: 0;
+    background: none;
+    outline: none;
+    resize: none;
+    color: var(--text);
+    font: inherit;
+    font-size: calc(13 * var(--sp));
+    line-height: 1.5;
+}
+
+.rv-comment-box textarea::placeholder {
+    color: var(--text-3);
+}
+
+.rv-comment-foot {
+    display: flex;
+    align-items: center;
+    gap: calc(6 * var(--sp));
+    padding: calc(4 * var(--sp)) calc(6 * var(--sp)) calc(6 * var(--sp)) calc(12 * var(--sp));
+}
+
+/* ---------- footer ---------- */
+
+.rv-foot {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    flex: none;
+    padding: calc(10 * var(--sp)) calc(12 * var(--sp)) calc(10 * var(--sp)) calc(16 * var(--sp));
+    border-top: 1px solid var(--line);
+    background: var(--bg-side);
+}
+
+/* ---------- pickers ---------- */
+
+.rv-picker.menu {
+    padding: 0;
+    overflow: hidden;
+}
+
+.rv-search {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    flex: none;
+    height: calc(36 * var(--sp));
+    padding: 0 calc(12 * var(--sp));
+    border-bottom: 1px solid var(--line);
+    color: var(--text-3);
+    cursor: text;
+}
+
+.rv-search input {
+    flex: 1;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    background: none;
+    outline: none;
+    color: var(--text);
+}
+
+.rv-search input::placeholder {
+    color: var(--text-3);
+}
+
+.rv-search-lg {
+    height: calc(42 * var(--sp));
+    padding: 0 calc(20 * var(--sp));
+}
+
+.rv-picker-list {
+    max-height: calc(264 * var(--sp));
+    overflow-y: auto;
+    padding: calc(5 * var(--sp));
+}
+
+.rv-picker-list .menu-item-name {
+    font-size: calc(12 * var(--sp));
+}
+
+.rv-picker-none {
+    padding: calc(10 * var(--sp)) calc(9 * var(--sp));
+    color: var(--text-3);
+}
+
+/* The commit picker's rows: id, subject, age. */
+.rv-commits {
+    max-height: calc(340 * var(--sp));
+}
+
+.rv-commit .sha {
+    flex: none;
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
+}
+
+.rv-files-menu .path {
+    flex: 1;
+}
+
+.rv-wt-list {
+    display: flex;
+    flex-direction: column;
+    min-height: calc(120 * var(--sp));
+    max-height: calc(380 * var(--sp));
+    overflow-y: auto;
+}
+
+.rv-wt-list .row {
+    padding-left: calc(20 * var(--sp));
+    padding-right: calc(16 * var(--sp));
+    text-align: left;
+}
+
+.rv-wt-list .row[aria-disabled="true"] {
+    cursor: default;
+}
+
+.rv-wt-list .row[aria-disabled="true"] .row-text {
+    opacity: 0.55;
+}
+
+.rv-wt-list .row.sel {
+    background: var(--fill-1);
+}
+
+.rv-wt-branch {
+    font-size: calc(12.5 * var(--sp));
+}
+
+/* What works in it: sub-agents and sessions, each with its state's dot. */
 .rv-wt-work {
     display: flex;
     flex-wrap: wrap;
     gap: calc(3 * var(--sp)) calc(10 * var(--sp));
-    margin-top: calc(4 * var(--sp));
+    margin-top: calc(3 * var(--sp));
     min-width: 0;
 }
 
@@ -585,28 +866,25 @@
     gap: calc(5 * var(--sp));
     min-width: 0;
     max-width: 100%;
-    font-size: 0.821rem;
-    color: var(--fg-2);
+    color: var(--text-2);
+    font-size: calc(12 * var(--sp));
 }
 
 .rv-wt-ico {
     position: relative;
     display: inline-flex;
     flex: none;
-}
-
-.rv-wt-item .rv-wt-ico svg {
-    color: var(--fg-3);
+    color: var(--text-3);
 }
 
 .rv-wt-dot {
     position: absolute;
-    right: calc(-3 * var(--sp));
-    bottom: calc(-3 * var(--sp));
-    width: calc(7 * var(--sp));
-    height: calc(7 * var(--sp));
+    right: -3px;
+    bottom: -3px;
+    width: 7px;
+    height: 7px;
     border-radius: 50%;
-    box-shadow: 0 0 0 1.5px var(--sheet);
+    box-shadow: 0 0 0 1.5px var(--surface);
 }
 
 .rv-wt-dot.st-running {
@@ -614,250 +892,217 @@
 }
 
 .rv-wt-dot.st-waiting {
-    background: var(--warn);
+    background: var(--amber-strong);
 }
 
-.rv-wt-more {
-    font-size: 0.821rem;
-    color: var(--fg-3);
+.rv-wt-foot {
+    padding: calc(10 * var(--sp)) calc(20 * var(--sp));
+    border-top: 1px solid var(--line);
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
 }
 
-/* The branch picker's list (a popover). */
-.base-list {
+/* ---------- commit ---------- */
+
+.commit-files {
+    flex: none;
+    max-height: calc(198 * var(--sp));
+    overflow-y: auto;
+    border-radius: var(--radius-m);
+    background: var(--surface);
+    box-shadow: inset 0 0 0 1px var(--line);
+}
+
+[data-theme="dark"] .commit-files {
+    background: var(--fill-1);
+}
+
+.commit-file {
+    display: flex;
+    align-items: center;
+    gap: calc(12 * var(--sp));
+    min-height: calc(32 * var(--sp));
+    padding: 0 calc(12 * var(--sp)) 0 calc(10 * var(--sp));
+}
+
+.commit-file + .commit-file {
+    border-top: 1px solid var(--line);
+}
+
+.commit-file .check {
+    flex: 1;
+    align-items: center;
+    min-width: 0;
+}
+
+.commit-file .check-box {
+    margin-top: 0;
+}
+
+.commit-file .check-label {
+    display: inline-flex;
+    min-width: 0;
+}
+
+.commit-none {
+    padding: calc(9 * var(--sp)) calc(12 * var(--sp));
+    color: var(--text-3);
+}
+
+.commit-message .textarea {
+    width: 100%;
+    min-height: calc(108 * var(--sp));
+}
+
+.commit-draft {
+    display: flex;
+    align-items: center;
+    gap: calc(10 * var(--sp));
+    margin-top: calc(8 * var(--sp));
+    min-height: calc(26 * var(--sp));
+}
+
+.commit-drafted {
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
+}
+
+.commit-long {
+    margin-left: auto;
+    color: var(--amber);
+    font-variant-numeric: tabular-nums;
+}
+
+/* Cavvy's: Commit to a new branch, its name and Suggest. */
+.commit-branch {
     display: flex;
     flex-direction: column;
-    gap: calc(2 * var(--sp));
-    max-height: calc(280 * var(--sp));
-    overflow-y: auto;
-    padding: calc(6 * var(--sp));
-}
-
-/* The commit picker's rows: id, subject, age. */
-.rv-commits {
-    max-height: calc(340 * var(--sp));
-}
-
-.menu-item.rv-commit {
     gap: calc(8 * var(--sp));
 }
 
-.rv-commit .sha {
-    flex: none;
-    font-size: 0.821rem;
-    color: var(--fg-3);
-}
-
-.rv-commit .when {
-    flex: none;
-}
-
-/* The commit's short hash (its subject is in the tooltip and the list), or "Pick a commit". */
-.tb.rv-pick {
-    flex: none;
-}
-
-/* Lines a diff leaves out, before a hunk or after the last: a button in the hunk's header. */
-.dv-gapbtn {
-    margin-right: calc(10 * var(--sp));
-    padding: 0 calc(6 * var(--sp));
-    border-radius: calc(4 * var(--sp));
-    font: inherit;
-    color: var(--accent-text);
-}
-
-.dv-gapbtn:hover {
-    background: var(--hover);
-}
-
-/* ---- Comments on lines (blocks/DiffComments), as the mockup's boxes under the line ---- */
-
-.review .dc-slot {
-    gap: calc(6 * var(--sp));
-    padding: calc(6 * var(--sp)) calc(10 * var(--sp)) calc(8 * var(--sp)) calc(52 * var(--sp));
-    background: transparent;
-    border-block: 0;
-}
-
-.review .dc-card {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr) auto;
+.commit-branch-row {
+    display: flex;
     align-items: center;
-    column-gap: calc(6 * var(--sp));
-    row-gap: calc(4 * var(--sp));
-    padding: calc(10 * var(--sp)) calc(12 * var(--sp));
-    border-radius: calc(10 * var(--sp));
-    background: var(--sheet-2);
-    box-shadow: 0 0 0 0.5px var(--line);
-    font-size: 0.893rem;
-    line-height: 1.45;
-}
-
-.review .dc-card.outdated {
-    box-shadow: 0 0 0 0.5px var(--line), inset 2px 0 0 var(--fg-4);
-}
-
-.review .dc-body {
-    display: contents;
-}
-
-.review .dc-icon {
-    grid-column: 1;
-    grid-row: 1;
-    display: inline-grid;
-    margin: 0;
-    color: var(--fg-3);
-}
-
-.review .dc-icon svg {
-    width: calc(12 * var(--sp));
-    height: calc(12 * var(--sp));
-}
-
-.review .dc-meta {
-    grid-column: 2;
-    grid-row: 1;
-    gap: calc(6 * var(--sp));
-    font-size: 0.821rem;
-    font-weight: 600;
-    color: var(--fg-3);
-}
-
-.review .dc-label {
-    font-weight: 600;
-    color: var(--fg-3);
-}
-
-.review .dc-tag {
-    background: var(--warn-bg);
-    color: var(--warn);
-    font-weight: 600;
-}
-
-.review .dc-tools {
-    grid-column: 3;
-    grid-row: 1;
-    margin: calc(-4 * var(--sp)) calc(-6 * var(--sp)) calc(-4 * var(--sp)) 0;
-}
-
-.review .dc-tools .hb {
-    border-radius: var(--pill);
-}
-
-.review .dc-text {
-    grid-column: 1 / -1;
-    color: var(--fg);
-}
-
-.review .dc-snippet {
-    grid-column: 1 / -1;
-    margin: calc(2 * var(--sp)) 0 0;
-    border-radius: calc(8 * var(--sp));
-    background: var(--sheet);
-    box-shadow: inset 0 0 0 0.5px var(--line);
-}
-
-.review .dc-box {
     gap: calc(8 * var(--sp));
-    padding: calc(10 * var(--sp)) calc(12 * var(--sp));
-    border-radius: calc(10 * var(--sp));
-    background: var(--sheet-2);
-    box-shadow: 0 0 0 0.5px var(--line);
 }
 
-.review .dc-input {
-    min-height: calc(56 * var(--sp));
-    padding: calc(8 * var(--sp));
-    border: 0;
-    border-radius: calc(8 * var(--sp));
-    background: var(--sheet);
-    box-shadow: inset 0 0 0 0.5px var(--line);
-    font-size: 0.893rem;
-    line-height: 1.45;
+.commit-branch-row .input {
+    flex: 1;
+    min-width: 0;
 }
 
-.review .dc-input:focus {
-    border: 0;
-    box-shadow: inset 0 0 0 0.5px var(--line), 0 0 0 2px color-mix(in srgb, var(--accent) 40%, transparent);
-}
-
-.review .dc-actions {
-    justify-content: flex-end;
-}
-
-.review .dc-hint {
-    font-size: 0.786rem;
-    color: var(--fg-3);
-}
-
-.review .dc-outdated {
+/* What git said, as it said it. */
+.commit-error {
+    max-height: calc(160 * var(--sp));
+    overflow: auto;
+    margin: 0;
     padding: calc(8 * var(--sp)) calc(10 * var(--sp));
-    background: transparent;
-    border-bottom: 0.5px solid var(--line);
+    border-radius: var(--radius-m);
+    background: var(--fill-1);
+    box-shadow: inset 0 0 0 1px var(--line);
+    color: var(--text-2);
+    font-family: var(--font-mono);
+    font-size: calc(11.5 * var(--sp));
+    line-height: 1.5;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
 }
 
-.review .dc-outdated-head {
-    font-size: 0.821rem;
-    font-weight: 600;
-    color: var(--fg-3);
+.git-error {
+    display: flex;
+    flex-direction: column;
+    gap: calc(8 * var(--sp));
 }
 
-/* ---- Narrow (a floating reader, 1024px windows and down): the total goes; the toolbar keeps one row ---- */
+/* ---------- push ---------- */
 
-/* In rem: the toolbar's words grow with the text size, so the width they need does too. */
-@container review (width < 33.6rem) {
-    .rv-total,
-    .rv-h .sep {
-        display: none;
-    }
-
-    .tb .wt {
-        max-width: calc(90 * var(--sp));
-    }
-
-    .review .dc-slot {
-        padding-left: calc(10 * var(--sp));
-    }
-
-    .dc-hint {
-        display: none;
-    }
+.push-facts {
+    display: flex;
+    flex-direction: column;
+    margin: 0;
+    border-radius: var(--radius-m);
+    box-shadow: inset 0 0 0 1px var(--line);
 }
 
-@container review (width < 360px) {
-    .rf-h .path span {
-        display: none;
-    }
+.push-facts > div {
+    display: flex;
+    align-items: center;
+    gap: calc(12 * var(--sp));
+    min-height: calc(34 * var(--sp));
+    padding: 0 calc(12 * var(--sp));
 }
 
-/* ---- Short (a floating reader at 1024×700 and 720×480): the files keep most of the height ---- */
+.push-facts > div + div {
+    border-top: 1px solid var(--line);
+}
 
-@container review (height < 560px) {
-    .rv-h {
-        height: calc(44 * var(--sp));
-        padding-top: calc(4 * var(--sp));
-        padding-bottom: calc(2 * var(--sp));
+.push-facts dt {
+    flex: none;
+    width: calc(72 * var(--sp));
+    color: var(--text-2);
+}
+
+.push-facts dd {
+    display: flex;
+    align-items: center;
+    gap: calc(7 * var(--sp));
+    min-width: 0;
+    margin: 0;
+    overflow: hidden;
+    white-space: nowrap;
+}
+
+.push-facts code,
+.push-remote {
+    font-size: calc(12 * var(--sp));
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.push-pr {
+    display: flex;
+    flex-direction: column;
+    gap: calc(12 * var(--sp));
+}
+
+.push-pr-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: calc(12 * var(--sp));
+}
+
+.push-draft {
+    margin-left: auto;
+}
+
+.push-pr-row .input {
+    width: calc(220 * var(--sp));
+}
+
+.git-note {
+    align-items: center;
+}
+
+.git-note > svg {
+    margin-top: 0;
+}
+
+.git-note .check {
+    align-items: center;
+}
+
+.git-note .check-box {
+    margin-top: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .rf-b,
+    .rv-comment-box {
+        transition: none;
     }
 
-    .rv-slim,
-    .rv-pr .review-note {
-        min-height: calc(28 * var(--sp));
-        margin-bottom: calc(6 * var(--sp));
-        padding-block: calc(3 * var(--sp));
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-    }
-
-    .rv-slim .grow {
-        overflow: hidden;
-        text-overflow: ellipsis;
-    }
-
-    .review .insp-foot {
-        padding: calc(8 * var(--sp)) calc(10 * var(--sp));
-    }
-
-    .review .insp-foot .btn {
-        height: calc(28 * var(--sp));
+    .cfile.flash {
+        animation: none;
     }
 }

@@ -57,26 +57,29 @@ export function BasePicker(p: { value?: string; current?: string; bases: string[
     };
     return (
         <>
-            <button ref={anchor} class="tb base" title={p.value ? `Compared with ${p.value}. Compare with another branch` : "Compare with another branch"} aria-haspopup="dialog" aria-expanded={open()} onClick={() => setOpen(!open())}>
-                <Show when={p.value} fallback={<span class="lbl">Pick a base</span>}>
-                    vs <span class="mono lbl">{p.value}</span>
+            <button ref={anchor} class="select rv-base" aria-label={p.value ? `Compare with ${p.value}` : "Pick a base"} title={p.value ? `Compared with ${p.value}. Compare with another branch` : "Compare with another branch"} aria-haspopup="dialog" aria-expanded={open()} onClick={() => setOpen(!open())}>
+                <Show when={p.value} fallback={<span class="select-value">Pick a base</span>}>
+                    <span class="rv-base-vs">vs</span>
+                    <span class="select-value mono">{p.value}</span>
                 </Show>
-                <ChevronDown size={12} class="chev" />
+                <ChevronDown size={13} class="select-caret" />
             </button>
-            <Popover open={open()} anchor={() => anchor} onClose={() => setOpen(false)} placement="bottom" align="start" width={300} maxHeight={360}>
+            <Popover class="rv-picker" open={open()} anchor={() => anchor} onClose={() => setOpen(false)} placement="bottom" align="start" width={264} maxHeight={360}>
                 <div role="dialog" aria-label="Choose a base branch" onKeyDown={onKey}>
-                    <div class="mp-search">
-                        <Search size={14} />
+                    <label class="rv-search">
+                        <Search size={13} />
                         <input ref={input} value={q()} onInput={(e) => setQ(e.currentTarget.value)} placeholder="Search branches…" aria-label="Search branches" spellcheck={false} />
-                    </div>
-                    <div class="base-list" ref={list} role="listbox" aria-label="Branches">
-                        <For each={rows()} fallback={<div class="menu-note">{p.bases.length ? "No branches match." : "No other branches."}</div>}>
+                    </label>
+                    <div class="rv-picker-list" ref={list} role="listbox" aria-label="Branches">
+                        <For each={rows()} fallback={<p class="rv-picker-none">{p.bases.length ? "No branches match." : "No other branches."}</p>}>
                             {(b, i) => (
-                                <button class={`menu-item compact ${i() === sel() ? "sel" : ""}`} role="option" aria-selected={isCurrent(b)} onMouseMove={() => setSel(i())} onClick={() => choose(b)}>
-                                    <span class="menu-item-name mono truncate grow">{b.name}</span>
-                                    <Show when={isCurrent(b)}>
-                                        <Check size={14} class="menu-check" />
-                                    </Show>
+                                <button class={`menu-item ${i() === sel() ? "sel" : ""}`} role="option" aria-selected={isCurrent(b)} onMouseMove={() => setSel(i())} onClick={() => choose(b)}>
+                                    <span class="menu-check">
+                                        <Show when={isCurrent(b)}>
+                                            <Check size={14} />
+                                        </Show>
+                                    </span>
+                                    <span class="menu-item-name mono">{b.name}</span>
                                 </button>
                             )}
                         </For>
@@ -127,35 +130,37 @@ export function CommitPicker(p: { value?: GitLogEntry; load: () => Promise<{ com
     const label = () => (p.value ? `${p.value.sha.slice(0, 7)} ${p.value.subject}` : undefined);
     return (
         <>
-            <button ref={anchor} class="tb base rv-pick" title={label() ? `${label()}\nShow another commit` : "Show another commit"} aria-haspopup="dialog" aria-expanded={open()} onClick={() => setOpen(!open())}>
-                <Show when={p.value} fallback={<span class="lbl">Pick a commit</span>}>
-                    {/* The subject is in the tooltip and the list: beside the hash, the toolbar has room for a letter or two of it. */}
-                    {(c) => <span class="mono">{c().sha.slice(0, 7)}</span>}
+            <button ref={anchor} class="select rv-base rv-pick" aria-label={label() ? `Commit ${label()}` : "Pick a commit"} title={label() ? `${label()}\nShow another commit` : "Show another commit"} aria-haspopup="dialog" aria-expanded={open()} onClick={() => setOpen(!open())}>
+                <Show when={p.value} fallback={<span class="select-value">Pick a commit</span>}>
+                    {/* The subject is in the tooltip and the list. */}
+                    {(c) => <span class="select-value mono">{c().sha.slice(0, 7)}</span>}
                 </Show>
-                <ChevronDown size={12} class="chev" />
+                <ChevronDown size={13} class="select-caret" />
             </button>
-            <Popover open={open()} anchor={() => anchor} onClose={() => setOpen(false)} placement="bottom" align="start" width={380} maxHeight={420}>
+            <Popover class="rv-picker" open={open()} anchor={() => anchor} onClose={() => setOpen(false)} placement="bottom" align="start" width={380} maxHeight={420}>
                 <div role="dialog" aria-label="Choose a commit" onKeyDown={onKey}>
-                    <div class="mp-search">
-                        <Search size={14} />
+                    <label class="rv-search">
+                        <Search size={13} />
                         <input ref={input} value={q()} onInput={(e) => setQ(e.currentTarget.value)} placeholder="Search commits…" aria-label="Search commits" spellcheck={false} />
-                    </div>
-                    <div class="base-list rv-commits" ref={list} role="listbox" aria-label="Commits">
-                        <Show when={!log.loading} fallback={<div class="menu-note">Loading commits…</div>}>
-                            <For each={rows()} fallback={<div class="menu-note">{log()?.error ?? (log()?.commits.length ? "No commits match." : "No commits yet.")}</div>}>
+                    </label>
+                    <div class="rv-picker-list rv-commits" ref={list} role="listbox" aria-label="Commits">
+                        <Show when={!log.loading} fallback={<p class="rv-picker-none">Loading commits…</p>}>
+                            <For each={rows()} fallback={<p class="rv-picker-none">{log()?.error ?? (log()?.commits.length ? "No commits match." : "No commits yet.")}</p>}>
                                 {(c, i) => (
-                                    <button class={`menu-item compact rv-commit ${i() === sel() ? "sel" : ""}`} role="option" aria-selected={c.sha === p.value?.sha} title={`${c.subject}\n${c.author} · ${new Date(c.time).toLocaleString()}${c.parents > 1 ? "\nMerge: shown against its first parent" : ""}`} onMouseMove={() => setSel(i())} onClick={() => choose(c)}>
+                                    <button class={`menu-item rv-commit ${i() === sel() ? "sel" : ""}`} role="option" aria-selected={c.sha === p.value?.sha} title={`${c.subject}\n${c.author} · ${new Date(c.time).toLocaleString()}${c.parents > 1 ? "\nMerge: shown against its first parent" : ""}`} onMouseMove={() => setSel(i())} onClick={() => choose(c)}>
+                                        <span class="menu-check">
+                                            <Show when={c.sha === p.value?.sha}>
+                                                <Check size={14} />
+                                            </Show>
+                                        </span>
                                         <span class="mono sha">{c.sha.slice(0, 7)}</span>
-                                        <span class="menu-item-name truncate grow">{c.subject}</span>
-                                        <span class="menu-item-sub when">{since(c.time) === "now" ? "now" : since(c.time)}</span>
-                                        <Show when={c.sha === p.value?.sha}>
-                                            <Check size={14} class="menu-check" />
-                                        </Show>
+                                        <span class="menu-item-name">{c.subject}</span>
+                                        <span class="menu-item-note">{since(c.time)}</span>
                                     </button>
                                 )}
                             </For>
                             <Show when={log()?.more && !q()}>
-                                <div class="menu-note">The last {log()!.commits.length} commits</div>
+                                <p class="rv-picker-none">The last {log()!.commits.length} commits</p>
                             </Show>
                         </Show>
                     </div>

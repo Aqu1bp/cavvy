@@ -440,7 +440,7 @@
 }
 
 [data-lead] .insp-t,
-[data-lead] .rv-h,
+[data-lead] .rv-bar,
 [data-lead] .br-bar,
 [data-lead] .sim-bar {
     padding-left: calc(92px - var(--win-pad, 8px) + 76px);

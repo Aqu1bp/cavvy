@@ -1,4 +1,5 @@
-import { createEffect, createSignal, on, Show } from "solid-js";
+import { createEffect, createSignal, on, Show, type JSX } from "solid-js";
+import { Check as CheckIcon, CircleAlert, GitPullRequest, Sparkles, TriangleAlert } from "lucide-solid";
 import type { GitPublishInfo, GitPrInfo } from "@shared/protocol";
 import { handleFor, rpc, toast } from "../state/app";
 import { commitUnavailable, refreshGitChanges } from "../state/changes";
@@ -6,6 +7,7 @@ import { openExternal } from "../lib/platform";
 import { draftedBy } from "../lib/model-name";
 import { Dialog } from "./ui/Dialog";
 import { Spinner } from "./ui/bits";
+import { ProviderIcon } from "./ui/ProviderIcon";
 import { takeFocus } from "../lib/focus-trap";
 
 /** Where the branch stands with its upstream: "Up to date", else only the counts that aren't zero. */
@@ -140,87 +142,148 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
         } catch (e) { toast(errorText(e), "error"); }
     };
     /** The dialog scrolled to its end, where what went wrong is said: the form above may fill it. */
-    const reveal = (el: HTMLElement) => requestAnimationFrame(() => el.closest(".dialog-body")?.scrollTo({ top: el.closest(".dialog-body")!.scrollHeight }));
+    const reveal = (el: HTMLElement) => requestAnimationFrame(() => el.closest(".dlg-body")?.scrollTo({ top: el.closest(".dlg-body")!.scrollHeight }));
     // In the dialog's footer, so a long error above can't push them out of view. As the other dialogs place them: with
     // two ways to go ahead, Cancel alone on the left; with Push alone, Cancel beside it at the right.
-    const cancel = () => <button class="btn btn-ghost" disabled={busy()} onClick={close}>Cancel</button>;
+    const cancel = () => <button class="btn" disabled={busy()} onClick={close}>Cancel</button>;
     // A pull request needs the GitHub CLI, and a base that isn't the branch itself (the default branch is only pushed).
     // A branch with an open pull request already: pushing updates it, so there's nothing to fill in (its link is shown).
     const openPr = () => view()?.pr?.state === "open" || view()?.pr?.state === "draft";
     const prs = () => Boolean(view()?.gh) && !(view()?.base && view()?.base === view()?.target) && !openPr();
     const actions = () => (
-        <div class="dialog-actions">
-            {/* One Cancel, moved by the space around it as the form comes: the keyboard may be on it. */}
-            <Show when={!prs()}><span class="grow" /></Show>
+        <>
             {cancel()}
-            <Show when={prs()}><span class="grow" /></Show>
             <button ref={pushEl} autofocus={first() === "push"} class={`btn ${prs() ? "" : "btn-primary"}`} disabled={!ready()} onClick={() => void publish("push")}>{busy() ? "Pushing…" : "Push"}</button>
             <Show when={prs()}><button class="btn btn-primary" disabled={!ready() || generating() || !title().trim() || !baseOr()} onClick={() => void publish("pr")}>Open pull request</button></Show>
-        </div>
+        </>
+    );
+    const Check = (c: { checked: boolean; disabled?: boolean; ref?: (el: HTMLInputElement) => void; autofocus?: boolean; onChange: (on: boolean) => void; children: JSX.Element }) => (
+        <label class="check" data-disabled={c.disabled || undefined}>
+            <input ref={c.ref} autofocus={c.autofocus} type="checkbox" checked={c.checked} disabled={c.disabled} onChange={(e) => c.onChange(e.currentTarget.checked)} />
+            <span class="check-box" aria-hidden="true">
+                <CheckIcon size={11} stroke-width={3} />
+            </span>
+            <span class="check-label">{c.children}</span>
+        </label>
     );
     // Without the GitHub CLI, signed out of it, or on the base branch, it can only push: titled for that.
-    const heading = () => (view() && !prs() ? `Push ${view()!.branch}?` : "Push and open pull request");
+    const heading = () => (view() && !prs() ? `Push ${view()!.branch}?` : "Push and open a pull request?");
     return (
-        <Dialog open={Boolean(p.id)} onClose={close} title={heading()} width={620} footer={actions()}>
-            <div class="commit-dialog">
-                <Show when={!loading()} fallback={<Spinner />}>
-                    <Show when={view()}>
-                        {/* The title names the branch; this, where it goes (its URL on hover). */}
-                        <p title={view()?.destination}>
-                            <Show when={view()?.branch !== view()?.target} fallback="To ">Push <strong class="mono">{view()?.branch}</strong> to </Show>
-                            <strong class="mono">{view()?.remote}/{view()?.target}</strong>
-                        </p>
-                        <Show when={!view()?.hasUpstream && view()?.ahead == null} fallback={<Show when={view()?.ahead != null && view()?.behind != null}><p class="muted small">{syncWords(view()?.ahead ?? 0, view()?.behind ?? 0)}</p></Show>}>
-                            <p class="muted small">New branch</p>
-                        </Show>
-                        <Show when={view()?.protected}>
-                            <label class="check-row"><input ref={confirmEl} autofocus={first() === "confirm"} type="checkbox" checked={confirmed()} disabled={busy()} onChange={(e) => setConfirmed(e.currentTarget.checked)} /><span class="commit-warning">Push to this protected branch</span></label>
-                        </Show>
-                        <Show when={view()?.prError}><p class="commit-warning">PR state unavailable: {view()?.prError}</p></Show>
-                        <Show when={view()?.pr}>
-                            <button class="link-btn" onClick={() => void openExternal(view()!.pr!.url)}>#{view()?.pr?.number} {view()?.pr?.title} · {view()?.pr?.state}</button>
-                        </Show>
-                        <Show when={prs()} fallback={<Show when={!view()?.gh}>
-                            <Show when={!view()?.ghSignedOut}><p class="muted small">Pull requests need the GitHub CLI.</p></Show>
-                            {/* Its own width, as the pull request dialog's Sign in to GitHub; the comparison beside it. */}
-                            <Show when={view()?.ghSignedOut || view()?.compareUrl}>
-                                <div class="commit-generate">
-                                    <Show when={view()?.ghSignedOut}>
-                                        <button class="btn btn-sm" disabled={busy()} onClick={() => void signIn()}>Sign in to GitHub</button>
-                                    </Show>
-                                    <Show when={view()?.compareUrl}><button class="link-btn" onClick={() => void openExternal(view()!.compareUrl!)}>Compare on GitHub</button></Show>
+        <Dialog open={Boolean(p.id)} onClose={close} title={heading()} width={500} footer={actions()}>
+            <Show when={!loading()} fallback={<Spinner class="blank-spinner" />}>
+                <Show when={view()}>
+                    {(v) => (
+                        <>
+                            <dl class="push-facts">
+                                <div>
+                                    <dt>Push</dt>
+                                    <dd class="mono push-remote">{v().branch}</dd>
+                                </div>
+                                {/* Where it goes; its URL on hover. */}
+                                <div title={v().destination}>
+                                    <dt>To</dt>
+                                    <dd class="mono push-remote">{v().remote}/{v().target}</dd>
+                                </div>
+                                <Show when={(!v().hasUpstream && v().ahead == null) || (v().ahead != null && v().behind != null)}>
+                                    <div>
+                                        <dt>Commits</dt>
+                                        <dd class="num">{!v().hasUpstream && v().ahead == null ? "New branch" : syncWords(v().ahead ?? 0, v().behind ?? 0)}</dd>
+                                    </div>
+                                </Show>
+                            </dl>
+                            <Show when={v().protected}>
+                                <div class="note git-note" data-tone="amber">
+                                    <TriangleAlert size={13} />
+                                    <span class="note-body">
+                                        <Check ref={(el) => (confirmEl = el)} autofocus={first() === "confirm"} checked={confirmed()} disabled={busy()} onChange={setConfirmed}>
+                                            Push to this protected branch
+                                        </Check>
+                                    </span>
                                 </div>
                             </Show>
-                        </Show>}>
-                            <label class="commit-message-label" for="pr-base">Base</label>
-                            <input id="pr-base" class="input mono" placeholder={view()?.base ?? "main"} value={base()} disabled={busy()} onInput={(e) => setBase(e.currentTarget.value)} />
-                            <label class="commit-message-label" for="pr-title">Title</label>
-                            <input ref={titleEl} autofocus={first() === "title"} id="pr-title" class="input" maxlength={250} value={title()} disabled={busy() || generating()} onInput={(e) => setTitle(e.currentTarget.value)} />
-                            <label class="commit-message-label" for="pr-body">Description</label>
-                            <textarea id="pr-body" class="input" rows={6} maxlength={16000} value={body()} disabled={busy() || generating()} onInput={(e) => setBody(e.currentTarget.value)} />
-                            <div class="commit-generate">
-                                <button class="btn btn-ghost btn-sm" disabled={busy() || generating()} title={drafted() ? `Drafted by ${draftedBy(drafted()!.model, p.id)}` : undefined} onClick={() => void generate()}>{generating() ? "Generating…" : "Generate"}</button>
-                                <Show when={drafted()}>
-                                    <button class="link-btn small" disabled={busy()} onClick={undoDraft}>Undo</button>
-                                </Show>
-                                {/* The pull request's own option, at the row's end, under the description it goes with. */}
-                                <label class="check-row pr-draft"><input type="checkbox" checked={draft()} disabled={busy()} onChange={(e) => setDraft(e.currentTarget.checked)} /><span>Draft</span></label>
-                                <Show when={genError()}><span class="wt-error" role="status">{genError()}</span></Show>
-                            </div>
-                        </Show>
-                    </Show>
-                </Show>
-                <Show when={blocked()}><p class="commit-warning">{blocked()}</p></Show>
-                {/* Cavvy's sentence in the dialog's own type, then what git printed, as it printed it. */}
-                <Show when={error()}>
-                    {(e) => (
-                        <div class="publish-error" role="alert" ref={reveal}>
-                            <Show when={e().text}><p class="tone-err">{e().text}</p></Show>
-                            <Show when={e().raw}><pre class="commit-error">{e().raw}</pre></Show>
-                        </div>
+                            <Show when={v().prError}>
+                                <div class="note git-note" data-tone="amber">
+                                    <GitPullRequest size={13} />
+                                    <span class="note-body">PR state unavailable: {v().prError}</span>
+                                </div>
+                            </Show>
+                            <Show when={v().pr}>
+                                {(pr) => (
+                                    <div class="note git-note">
+                                        <GitPullRequest size={13} />
+                                        <span class="note-body truncate">
+                                            <span class="rv-pr-num">#{pr().number}</span> {pr().title}
+                                            <span class="dim"> · {pr().state}</span>
+                                        </span>
+                                        <button class="link-btn" onClick={() => void openExternal(pr().url)}>Open</button>
+                                    </div>
+                                )}
+                            </Show>
+                            <Show when={prs()} fallback={<Show when={!v().gh}>
+                                <div class="note git-note">
+                                    <ProviderIcon id="github" size={13} />
+                                    <span class="note-body">{v().ghSignedOut ? "Pull requests need GitHub." : "Pull requests need the GitHub CLI."}</span>
+                                    <Show when={v().compareUrl}><button class="link-btn" onClick={() => void openExternal(v().compareUrl!)}>Compare on GitHub</button></Show>
+                                    <Show when={v().ghSignedOut}>
+                                        <button class="btn btn-sm" disabled={busy()} onClick={() => void signIn()}>Sign in to GitHub</button>
+                                    </Show>
+                                </div>
+                            </Show>}>
+                                <div class="push-pr">
+                                    <div class="push-pr-row">
+                                        <label class="field-label" for="pr-base">Base branch</label>
+                                        <input id="pr-base" class="input input-sm mono" placeholder={v().base ?? "main"} value={base()} disabled={busy()} onInput={(e) => setBase(e.currentTarget.value)} />
+                                    </div>
+                                    <label class="field">
+                                        <span class="field-label">Pull request title</span>
+                                        <input ref={titleEl} autofocus={first() === "title"} id="pr-title" class="input" maxlength={250} value={title()} disabled={busy() || generating()} onInput={(e) => setTitle(e.currentTarget.value)} />
+                                    </label>
+                                    <label class="field">
+                                        <span class="field-label">Description</span>
+                                        <textarea id="pr-body" class="textarea" rows={4} maxlength={16000} value={body()} disabled={busy() || generating()} onInput={(e) => setBody(e.currentTarget.value)} />
+                                    </label>
+                                    <div class="commit-draft">
+                                        <button class="btn btn-sm" disabled={busy() || generating()} title={drafted() ? `Drafted by ${draftedBy(drafted()!.model, p.id)}` : undefined} onClick={() => void generate()}>
+                                            <Show when={generating()} fallback={<Sparkles size={13} />}>
+                                                <Spinner size={12} />
+                                            </Show>
+                                            Generate
+                                        </button>
+                                        <Show when={drafted()}>
+                                            <button class="link-btn" disabled={busy()} onClick={undoDraft}>Undo</button>
+                                        </Show>
+                                        <Show when={genError()}><span class="field-hint field-error" role="status">{genError()}</span></Show>
+                                        {/* The pull request's own option, at the row's end, under the description it goes with. */}
+                                        <span class="push-draft">
+                                            <Check checked={draft()} disabled={busy()} onChange={setDraft}>Draft</Check>
+                                        </span>
+                                    </div>
+                                </div>
+                            </Show>
+                        </>
                     )}
                 </Show>
-            </div>
+            </Show>
+            <Show when={blocked()}>
+                <div class="note git-note" data-tone="amber">
+                    <TriangleAlert size={13} />
+                    <span class="note-body">{blocked()}</span>
+                </div>
+            </Show>
+            {/* Cavvy's sentence, then what git printed, as it printed it. */}
+            <Show when={error()}>
+                {(e) => (
+                    <div class="git-error" role="alert" ref={reveal}>
+                        <Show when={e().text}>
+                            <div class="note" data-tone="red">
+                                <CircleAlert size={13} />
+                                <span class="note-body">{e().text}</span>
+                            </div>
+                        </Show>
+                        <Show when={e().raw}><pre class="commit-error">{e().raw}</pre></Show>
+                    </div>
+                )}
+            </Show>
         </Dialog>
     );
 }

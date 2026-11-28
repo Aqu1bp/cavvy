@@ -4,10 +4,12 @@ import type { SessionHandle } from "../state/app";
 import { rpc } from "../state/app";
 import { sessionReadReady } from "../state/changes";
 import { openExternal } from "../lib/platform";
+import { GitPullRequest } from "lucide-solid";
 import { PublishDialog } from "./PublishDialog";
 
 /** Mounted only in the visible Changes pane. Focus and timer share the same 60s budget. */
-export function PublishStatus(p: { handle: SessionHandle; request?: string; onClose: () => void }) {
+/** `shown`: its note is drawn (the Branch view); the dialog stays mounted either way. */
+export function PublishStatus(p: { handle: SessionHandle; shown?: boolean; request?: string; onClose: () => void }) {
     const [pr, setPr] = createSignal<GitPrInfo>();
     const [error, setError] = createSignal<string>();
     let last = 0, generation = 0, pending = false;
@@ -34,8 +36,24 @@ export function PublishStatus(p: { handle: SessionHandle; request?: string; onCl
     document.addEventListener("visibilitychange", focus);
     onCleanup(() => { generation++; clearInterval(timer); window.removeEventListener("focus", focus); document.removeEventListener("visibilitychange", focus); });
     return <>
-        <Show when={pr()}><div class="review-note"><button class="link-btn" onClick={() => void openExternal(pr()!.url)}>#{pr()?.number} {pr()?.title} · {pr()?.state}</button> · {pr()?.checks} checks</div></Show>
-        <Show when={error()}><div class="review-note" title={error()}>Couldn't check the pull request</div></Show>
+        <Show when={p.shown && pr()}>
+            {(r) => (
+                <div class="note rv-pr selectable">
+                    <GitPullRequest size={13} />
+                    <span class="note-body truncate">
+                        <span class="rv-pr-num">#{r().number}</span> {r().title}
+                        <span class="dim"> · {r().state} · {r().checks} checks</span>
+                    </span>
+                    <button class="link-btn" onClick={() => void openExternal(r().url)}>Open</button>
+                </div>
+            )}
+        </Show>
+        <Show when={p.shown && error()}>
+            <div class="note" title={error()}>
+                <GitPullRequest size={13} />
+                <span class="note-body">Couldn't check the pull request</span>
+            </div>
+        </Show>
         <PublishDialog id={p.request} onClose={p.onClose} onPublished={(next) => { generation++; pending = false; setPr(next); setError(undefined); last = Date.now(); }} />
     </>;
 }
