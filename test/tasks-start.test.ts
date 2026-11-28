@@ -152,6 +152,7 @@ describe("tasks.start", () => {
         expect(turns(n)[0]!.prompt?.from).toBeUndefined();
         const first = n.session.messages.find((m) => m.role === "user")!;
         expect(JSON.stringify(first.content)).toContain(`suggested by the agent in session ${rt.id}`);
+        expect(JSON.stringify(first.content)).not.toContain("new worktree");
         // Recorded on the card.
         const started = await call<SuggestionState>("session.suggestion", { id: rt.id, suggestionId: s.id, action: "started", started: { sessionId: r.sessionId, title: r.title, cwd: r.cwd, at: Date.now() } });
         expect(started).toMatchObject({ state: "started", started: { sessionId: r.sessionId } });
@@ -214,52 +215,57 @@ describe("tasks.start", () => {
         expect(reopened.state.suggestions![0]).toMatchObject({ state: "started", started: { sessionId: r.sessionId } });
     });
 
-    test("a first prompt a UserPromptSubmit hook blocks goes back to the new session's composer", async () => {
-        const blocked = realpathSync(tempDir("tasks-hook-"));
-        dirs.push(blocked);
+    test("a first prompt a UserPromptSubmit hook refuses fails the start: the session goes, and Start again makes another", async () => {
+        const folder = realpathSync(tempDir("tasks-hook-"));
+        dirs.push(folder);
         const settings = join(iso.home, "settings.json");
         const was = readFileSync(settings, "utf-8");
-        writeFileSync(settings, JSON.stringify({ ...JSON.parse(was), hooks: { UserPromptSubmit: [{ command: "echo 'not today' >&2; exit 2" }] } }));
+        writeFileSync(settings, JSON.stringify({ ...JSON.parse(was), hooks: { UserPromptSubmit: [{ command: "grep -q BLOCKME || exit 0; sleep 0.3; echo 'not today' >&2; exit 2" }] } }));
         try {
             const drafts: any[] = [];
             const watcher = { subs: new Set<string>(), send: (m: any) => m.type === "draft" && drafts.push(m) } as never;
             engine.clients.add(watcher);
-            const r = await engine.handle(watcher, "tasks.start", { cwd: blocked, title: "Fix it", prompt: "Fix the thing.", model: "mock:mock-opus", origin: { key: "s0#hook", session: "s0", title: "x" } }) as StartTaskResult;
-            await until(() => drafts.length > 0);
-            expect(drafts[0]).toMatchObject({ sessionId: r.sessionId, text: "Fix the thing." });
-            expect(engine.runtimes.get(r.sessionId!)!.session.messageCount).toBe(0);
-            expect(drafts.length).toBe(1);
-            // Nothing is in it: Start again makes another, not "already started".
-            const again = await engine.handle(watcher, "tasks.start", { cwd: blocked, title: "Fix it", prompt: "Fix the thing.", model: "mock:mock-opus", origin: { key: "s0#hook", session: "s0", title: "x" } }) as StartTaskResult;
-            expect(again.existing).toBeUndefined();
-            expect(again.sessionId).not.toBe(r.sessionId);
+            const start = { cwd: folder, title: "Fix it", prompt: "BLOCKME: fix the thing.", model: "mock:mock-opus", origin: { key: "s0#hook", session: "s0", title: "x" } };
+            const before = new Set(engine.runtimes.keys());
+            await expect(engine.handle(watcher, "tasks.start", start)).rejects.toMatchObject({ code: "blocked", message: "Prompt blocked by hook: not today" });
+            // No session left behind: not loaded, not listed, nothing in its composer.
+            expect([...engine.runtimes.keys()].filter((id) => !before.has(id))).toEqual([]);
+            const listed = (await engine.handle(watcher, "sessions.list", {})) as { cwd: string }[];
+            expect(listed.some((x) => x.cwd === folder)).toBe(false);
+            expect(drafts).toEqual([]);
+            // The prompt edited on the card: Start again makes the session, and counts it.
+            const r = (await engine.handle(watcher, "tasks.start", { ...start, prompt: "Fix the thing." })) as StartTaskResult;
+            expect(r.failed).toBeUndefined();
+            const n = engine.runtimes.get(r.sessionId!)!;
+            await until(() => n.session.messageCount > 0);
+            const again = (await engine.handle(watcher, "tasks.start", start)) as StartTaskResult;
+            expect(again).toMatchObject({ sessionId: r.sessionId, existing: true });
             engine.clients.delete(watcher);
         } finally {
             writeFileSync(settings, was);
         }
     });
 
-    test("a refused first prompt still goes back when a message sent after it, quoting it, is kept; Start again makes another", async () => {
-        const folder = realpathSync(tempDir("tasks-hook2-"));
-        dirs.push(folder);
+    test("refused in a new worktree: the worktree stays, and Start again starts in it", async () => {
+        const repo = realpathSync(tempDir("tasks-hook-repo-"));
+        dirs.push(repo);
+        writeFileSync(join(repo, "README.md"), "base\n");
+        git(repo, "init", "-q", "-b", "main");
+        git(repo, "add", ".");
+        git(repo, "commit", "-qm", "initial");
         const settings = join(iso.home, "settings.json");
         const was = readFileSync(settings, "utf-8");
-        // Refuses the first prompt (slowly), keeps the follow-up.
-        writeFileSync(settings, JSON.stringify({ ...JSON.parse(was), hooks: { UserPromptSubmit: [{ command: "grep -q FOLLOWUP && exit 0; sleep 1; echo 'not today' >&2; exit 2" }] } }));
+        writeFileSync(settings, JSON.stringify({ ...JSON.parse(was), hooks: { UserPromptSubmit: [{ command: "grep -q BLOCKME || exit 0; echo 'not today' >&2; exit 2" }] } }));
         try {
-            const drafts: any[] = [];
-            const watcher = { subs: new Set<string>(), send: (m: any) => m.type === "draft" && drafts.push(m) } as never;
-            engine.clients.add(watcher);
-            const start = { cwd: folder, title: "Fix it", prompt: "Fix the other thing.", model: "mock:mock-opus", origin: { key: "s0#hook2", session: "s0", title: "x" } };
-            const r = (await engine.handle(watcher, "tasks.start", start)) as StartTaskResult;
-            const n = engine.runtimes.get(r.sessionId!)!;
-            await n.send("FOLLOWUP: Fix the other thing. And more.");
-            await until(() => drafts.length > 0 && n.idle && n.session.messageCount > 0);
-            expect(drafts).toEqual([expect.objectContaining({ sessionId: r.sessionId, text: "Fix the other thing." })]);
-            const again = (await engine.handle(watcher, "tasks.start", start)) as StartTaskResult;
-            expect(again.existing).toBeUndefined();
-            expect(again.sessionId).not.toBe(r.sessionId);
-            engine.clients.delete(watcher);
+            const start = { cwd: repo, title: "Fix the header", prompt: "BLOCKME", model: "mock:mock-opus", worktree: true, origin: { key: "s0#hook-wt", session: "s0", title: "x" } };
+            const r = await call<StartTaskResult>("tasks.start", start);
+            expect(r.sessionId).toBeUndefined();
+            expect(r.failed).toMatchObject({ code: "blocked", message: "Prompt blocked by hook: not today" });
+            expect(r.worktree?.branch).toBe("fix/the-header");
+            const again = await call<StartTaskResult>("tasks.start", { ...start, prompt: "Fix it.", resume: r.worktree!.path });
+            expect(again.failed).toBeUndefined();
+            expect(again.worktree).toEqual(r.worktree);
+            expect(engine.runtimes.get(again.sessionId!)!.ws.cwd).toBe(r.worktree!.path);
         } finally {
             writeFileSync(settings, was);
         }
@@ -344,7 +350,12 @@ describe("tasks.start", () => {
         expect(a.worktree?.branch).toBe("fix/login-button-misaligned");
         // In the same sub-folder of the worktree as the suggester worked in.
         expect(a.cwd).toBe(join(a.worktree!.path, "app"));
-        expect(engine.runtimes.get(a.sessionId!)!.ws.cwd).toBe(a.cwd);
+        const na = engine.runtimes.get(a.sessionId!)!;
+        expect(na.ws.cwd).toBe(a.cwd);
+        // Its agent is told the paths the prompt names in the main checkout are this worktree's.
+        await until(() => na.session.messageCount > 0);
+        const note = JSON.stringify(na.session.messages.find((m) => m.role === "user")!.content);
+        expect(note).toContain(`You're working in a new worktree of ${repo}, at ${a.worktree!.path}: paths under ${repo} mean the same files in this worktree.`);
         const b = await call<StartTaskResult>("tasks.start", o("s0#b"));
         expect(b.worktree?.branch).toBe("fix/login-button-misaligned-2");
         // One that's only on a remote is taken too.
