@@ -1,5 +1,10 @@
 /* ---- Settings → Plugins (Plugins.tsx): the design's settings.css plugin rules, sizes in --sp. ---- */
 
+/* The design's base resets these (Cavvy's base.css doesn't: Markdown keeps its own). */
+.plugins :where(p, ul) {
+    margin: 0;
+}
+
 .plugins {
     display: flex;
     flex-direction: column;
@@ -56,7 +61,8 @@
     min-height: calc(150 * var(--sp));
 }
 
-.plugin-row {
+/* Over the kit's .row (its :not() outweighs a class). */
+.plugins .plugin-row {
     min-height: calc(50 * var(--sp));
 }
 
@@ -85,7 +91,7 @@
 }
 
 .plugins-foot {
-    margin-top: -6px;
+    margin-top: calc(-6 * var(--sp));
     padding-left: calc(2 * var(--sp));
     color: var(--text-3);
     font-size: calc(12 * var(--sp));
@@ -322,6 +328,25 @@
     object-fit: cover;
 }
 
+/* Cavvy's base .chip is the design's .tag (words on a tint); a category filter is the design's .chip: what the
+   base one sets and this one doesn't, put back. */
+.plugins .chip {
+    display: inline-block;
+    align-items: normal;
+    gap: normal;
+    flex: 0 1 auto;
+    max-width: none;
+    line-height: inherit;
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+}
+
+/* The kit's .dlg-body > p colour outweighs .dim. */
+.plugin-dlg .dlg-text.dim {
+    color: var(--text-3);
+}
+
 /* A category's count after its name. */
 .plugins .chip-n {
     margin-left: calc(3 * var(--sp));
@@ -350,19 +375,19 @@
     gap: calc(8 * var(--sp));
 }
 
-.plugins :is(p, ul) {
-    margin: 0;
-}
-
 .plugin-dlg .dlg-body {
     display: flex;
     flex-direction: column;
     gap: calc(12 * var(--sp));
 }
 
-/* The design's icon in a dialog's head is a glyph; a plugin's is its mark. */
-.plugin-dlg .dlg-icon {
-    margin-top: 0;
+/* The design's icon in a dialog's head is the glyph alone: the mark without its tile (a maker's logo, small). */
+.plugin-dlg .dlg-icon .plugin-mark {
+    width: calc(16 * var(--sp));
+    height: calc(16 * var(--sp));
+    background: none;
+    box-shadow: none;
+    color: inherit;
 }
 
 :where(.main[data-narrow~="600"], .stage-pane[data-narrow~="600"]) {

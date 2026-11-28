@@ -244,13 +244,3 @@
     position: absolute;
     display: block;
 }
-
-/* The user's own: Delete shows when the tile is pointed at or reached. */
-.tile-delete {
-    opacity: 0;
-}
-
-.tile:hover .tile-delete,
-.tile-delete:focus-visible {
-    opacity: 1;
-}

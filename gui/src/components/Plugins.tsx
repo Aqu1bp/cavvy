@@ -637,12 +637,12 @@ function MarketRow(p: { m: PluginMarketplaceInfo; busy?: string; act: Act; insta
     return (
         <div class="row plugin-row">
             <div class="row-text">
-                <span class="prow-name">
-                    <span class="row-title mono">{m().name}</span>
-                    <Show when={m().error}>
+                <Show when={m().error} fallback={<span class="row-title mono">{m().name}</span>}>
+                    <span class="prow-name">
+                        <span class="row-title mono">{m().name}</span>
                         <span class="tag" data-tone="red">Can't read</span>
-                    </Show>
-                </span>
+                    </span>
+                </Show>
                 <span class="row-sub">
                     <span class="mono">{local() ? tildify(m().source) : m().source}</span> · {plural(m().plugins, "plugin")}
                     <Show when={!Number.isNaN(updated())}> · updated {ago(updated()) === "now" ? "just now" : `${ago(updated())} ago`}</Show>

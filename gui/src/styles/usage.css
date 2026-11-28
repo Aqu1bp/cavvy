@@ -14,12 +14,12 @@
 }
 
 /* The design's base resets these (Cavvy's base.css doesn't: Markdown keeps its own). */
-.usage :is(p, ul, figure) {
+.usage :where(p, ul, figure) {
     margin: 0;
     padding: 0;
 }
 
-.usage ul {
+.usage :where(ul) {
     list-style: none;
 }
 
@@ -88,7 +88,8 @@
     border-radius: calc(2 * var(--sp));
 }
 
-.usage-row {
+/* Over the kit's .row (its :not() outweighs a class). */
+.usage .usage-row {
     min-height: calc(36 * var(--sp));
     gap: calc(12 * var(--sp));
 }
@@ -301,7 +302,7 @@
     font-weight: 400;
 }
 
-.limit-row {
+.usage .limit-row {
     min-height: calc(36 * var(--sp));
     gap: calc(12 * var(--sp));
 }
