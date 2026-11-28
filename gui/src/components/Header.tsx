@@ -293,7 +293,8 @@ export function Header(p: { handle?: SessionHandle; title?: string }) {
                                 </>
                             )}
                         </Show>
-                        <h1 class={`main-title-btn ${p.title ? "" : "main-title-none"}`}>{p.title ?? "New session"}</h1>
+                        {/* ttl-h: the benches' hook for the title (desktop-electron/bench-ux.ts); no rule styles it. */}
+                        <h1 class={`main-title-btn ttl-h ${p.title ? "" : "main-title-none"}`}>{p.title ?? "New session"}</h1>
                     </>
                 }
             >
@@ -326,7 +327,7 @@ export function Header(p: { handle?: SessionHandle; title?: string }) {
                                 />
                             }
                         >
-                            <h1 class="main-title-btn" title="Double-click to rename" onDblClick={() => (close(), setEditing(true))}>
+                            <h1 class="main-title-btn ttl-h" title="Double-click to rename" onDblClick={() => (close(), setEditing(true))}>
                                 {sessionTitle(p.handle)}
                             </h1>
                         </Show>
