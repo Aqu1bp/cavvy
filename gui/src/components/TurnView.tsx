@@ -1,6 +1,6 @@
 import { RenderBoundary } from "./ui/ErrorBoundary";
 import { createComputed, createEffect, createMemo, createResource, createSignal, For, Index, Match, on, onCleanup, Show, Switch, untrack } from "solid-js";
-import { AlertCircle, AlertTriangle, ArrowUpRight, BellRing, Check, ChevronRight, Clock, CornerDownRight, FileText, Folder, FolderGit2, Info, MessageSquareText, Square, SquareArrowOutUpRight, SquareTerminal, X } from "lucide-solid";
+import { AlertCircle, AlertTriangle, ArrowUpRight, BellRing, ChevronRight, Clock, CornerDownRight, FileText, Folder, FolderGit2, MessageSquareText, Square, SquareArrowOutUpRight, SquareTerminal } from "lucide-solid";
 import type { AgentRun, Block, CompactBlock, FileDiff as Diff, ImportedBlock, NoticeBlock, PeerBlock, SessionState, ShellBlock, TextBlock, ThinkingBlock, Turn, TurnPlace } from "@shared/protocol";
 import { basename, firstChangedLine, plural, promptTime, shortPrompt, stripAnsi, tildify } from "../lib/format";
 import { cardShape, incompleteLine, PLACES_SHOWN, placeRows, placesTotal, WHO_NAMED, workers, type OwnPlace } from "../lib/turn-places";
@@ -308,31 +308,25 @@ function Compacted(p: { block: CompactBlock; leaving?: boolean }) {
 /** A command you ran yourself ("!cmd"): a command card, marked as yours. */
 function Shell(p: { block: ShellBlock }) {
     return (
-        <div class={`tcard cmd-card you-ran shell-block ${findReveal()?.part === p.block.id ? "found" : ""}`} data-find={p.block.id}>
-            <div class="tcard-h shell-head">
-                <span class="tcard-ic">
-                    <SquareTerminal size={14} />
-                </span>
-                <span class="tcard-who" data-find-skip>You ran</span>
-                <code class="tcard-p truncate" title={p.block.command}>{p.block.command}</code>
-                <span class="grow" />
+        <div class={`youran shell-block ${findReveal()?.part === p.block.id ? "found" : ""}`} data-find={p.block.id}>
+            <div class="youran-head">
+                <span class="youran-label" data-find-skip>You ran</span>
+                <code class="youran-cmd" title={p.block.command}>{p.block.command}</code>
                 <Show
                     when={p.block.running}
                     fallback={
-                        <span class={`tpill ${p.block.exitCode ? "fail" : "ok"}`} data-find-skip>
-                            {p.block.exitCode ? <X size={12} /> : <Check size={12} />} Exit {p.block.exitCode ?? "?"}
+                        <span class={`pill ${p.block.exitCode ? "red" : ""}`} data-find-skip>
+                            Exit {p.block.exitCode ?? "?"}
                         </span>
                     }
                 >
-                    <span class="tpill run" data-find-skip>
+                    <span class="pill" data-find-skip>
                         <Spinner size={11} /> Running
                     </span>
                 </Show>
             </div>
             <Show when={p.block.output}>
-                <div class="tcard-body">
-                    <pre class="tcard-out">{stripAnsi(p.block.output)}</pre>
-                </div>
+                <pre class="youran-out" tabIndex={0}>{stripAnsi(p.block.output)}</pre>
             </Show>
         </div>
     );
@@ -436,32 +430,32 @@ function ChangesCard(p: { turn: Turn; cwd: string; sessionId: string; busy: bool
     );
     return (
         <Show when={files().length || places().length || incomplete()}>
-            <div class="tcard files-card" data-find-skip>
+            <div class="chg" data-find-skip>
                 <Switch>
                     {/* Its own folder: the files, as before. */}
                     <Match when={shape() === "files"}>
-                        <div class="tcard-h files-head">
-                            <span class="files-title">{!snapshotDiff() && !files().length ? "Turn snapshot incomplete" : plural(own()?.files ?? 0, "changed file")}</span>
+                        <div class="chg-head">
+                            <span class="chg-title">{!snapshotDiff() && !files().length ? "Turn snapshot incomplete" : plural(own()?.files ?? 0, "changed file")}</span>
                             <Show when={files().length}>
                                 <Stat {...total()} />
                             </Show>
                             <span class="grow" />
                             {/* Keep recorded changes tied to this turn, even after later edits. */}
-                            <button class="tbtn" onClick={reviewTurn}>
+                            <button class="btn sm" onClick={reviewTurn}>
                                 Review changes
                             </button>
                         </div>
-                        <div class="files-rows">
+                        <div class="chg-files">
                             <For each={all() ? files() : files().slice(0, FILES_SHOWN)}>
                                 {(f) => (
-                                    <div class="frow-line">
-                                        <button class="frow" onClick={() => reviewChanges(f.path, f.pathToken)}>
+                                    <div class="chg-file">
+                                        <button class="chg-file-main" onClick={() => reviewChanges(f.path, f.pathToken)}>
                                             <SplitPath path={f.path} cwd={p.cwd} />
                                             <Show when={f.status === "added"}>
                                                 <span class="frow-tag">new</span>
                                             </Show>
-                                            <Stat {...f} />
                                         </button>
+                                        <Stat {...f} />
                                         <Show when={f.status !== "deleted"}>
                                             <button class="icon-btn row-open" title="Open in editor" aria-label={`Open ${f.path} in editor`} onClick={() => void openInEditor(f.path, f.line, { sessionId: p.sessionId, gitToken: f.pathToken })}>
                                                 <SquareArrowOutUpRight size={13} />
@@ -471,7 +465,7 @@ function ChangesCard(p: { turn: Turn; cwd: string; sessionId: string; busy: bool
                                 )}
                             </For>
                             <Show when={files().length > FILES_SHOWN && !all()}>
-                                <button class="frow more" onClick={() => setAll(true)}>
+                                <button class="chg-more" onClick={() => setAll(true)}>
                                     {plural(files().length - FILES_SHOWN, "more file")}
                                 </button>
                             </Show>
@@ -479,40 +473,40 @@ function ChangesCard(p: { turn: Turn; cwd: string; sessionId: string; busy: bool
                     </Match>
                     {/* One other worktree: its files, with its branch beside Review. */}
                     <Match when={shape() === "worktree"}>
-                        <div class="tcard-h files-head">
-                            <span class="files-title">{one().files !== undefined ? plural(one().files!, "changed file") : `Changes in ${basename(one().path)}`}</span>
+                        <div class="chg-head">
+                            <span class="chg-title">{one().files !== undefined ? plural(one().files!, "changed file") : `Changes in ${basename(one().path)}`}</span>
                             <Show when={one().files !== undefined}>
                                 <Stat {...one()} />
                             </Show>
                             <Show when={one().commits}>
-                                <span class="files-sub">· {plural(one().commits!, "commit")}</span>
+                                <span class="chg-sub">· {plural(one().commits!, "commit")}</span>
                             </Show>
                             <span class="grow" />
-                            <span class="place-chip" title={`Worktree ${tildify(one().path, app.hello?.homeDir)}${one().base ? `, against ${one().base}` : ""}`}>
-                                <FolderGit2 size={13} />
-                                <span class="truncate">{one().branch ?? basename(one().path)}</span>
+                            <span class="chg-branch" title={`Worktree ${tildify(one().path, app.hello?.homeDir)}${one().base ? `, against ${one().base}` : ""}`}>
+                                <FolderGit2 size={12} />
+                                <span class="truncate mono">{one().branch ?? basename(one().path)}</span>
                             </span>
-                            <button class="tbtn" onClick={() => openWorktreeReview(one().path)}>
+                            <button class="btn sm" onClick={() => openWorktreeReview(one().path)}>
                                 Review changes
                             </button>
                         </div>
                         <Show when={one().top?.length}>
-                            <div class="files-rows">
+                            <div class="chg-files">
                                 <For each={one().top}>
                                     {(f) => (
-                                        <div class="frow-line">
-                                            <button class="frow" onClick={() => openWorktreeReview(one().path, f.path, f.pathToken)}>
+                                        <div class="chg-file">
+                                            <button class="chg-file-main" onClick={() => openWorktreeReview(one().path, f.path, f.pathToken)}>
                                                 <SplitPath path={f.path} />
                                                 <Show when={f.change === "added"}>
                                                     <span class="frow-tag">new</span>
                                                 </Show>
-                                                <Stat {...f} />
                                             </button>
+                                            <Stat {...f} />
                                         </div>
                                     )}
                                 </For>
                                 <Show when={(one().files ?? 0) > (one().top?.length ?? 0)}>
-                                    <button class="frow more" onClick={() => openWorktreeReview(one().path)}>
+                                    <button class="chg-more" onClick={() => openWorktreeReview(one().path)}>
                                         {plural((one().files ?? 0) - (one().top?.length ?? 0), "more file")}
                                     </button>
                                 </Show>
@@ -521,13 +515,13 @@ function ChangesCard(p: { turn: Turn; cwd: string; sessionId: string; busy: bool
                     </Match>
                     {/* Several places: a row each, its own folder first, then the busiest, with who worked there. */}
                     <Match when={shape() === "places"}>
-                        <div class="tcard-h files-head">
-                            <span class="files-title">Changes in {rows().length} places</span>
-                            <span class="files-sub">{plural(placesTotal(rows()).files, "file")}</span>
+                        <div class="chg-head">
+                            <span class="chg-title">Changes in {rows().length} places</span>
+                            <span class="chg-sub">{plural(placesTotal(rows()).files, "file")}</span>
                             <Stat {...placesTotal(rows())} />
                             <span class="grow" />
                         </div>
-                        <div class="files-rows">
+                        <div class="chg-files">
                             <For each={allPlaces() ? rows() : rows().slice(0, PLACES_SHOWN)}>
                                 {(r) => {
                                     const folk = () => (r.own ? [] : who().get(r.place.path) ?? []);
@@ -564,7 +558,7 @@ function ChangesCard(p: { turn: Turn; cwd: string; sessionId: string; busy: bool
                                             <Show when={r.place.files !== undefined} fallback={<span class="stat" />}>
                                                 <Stat {...r.place} />
                                             </Show>
-                                            <button class="tbtn" onClick={() => (r.own ? reviewTurn() : openWorktreeReview((r.place as TurnPlace).path))}>
+                                            <button class="btn sm" onClick={() => (r.own ? reviewTurn() : openWorktreeReview((r.place as TurnPlace).path))}>
                                                 Review
                                             </button>
                                         </div>
@@ -572,7 +566,7 @@ function ChangesCard(p: { turn: Turn; cwd: string; sessionId: string; busy: bool
                                 }}
                             </For>
                             <Show when={rows().length > PLACES_SHOWN}>
-                                <button class="frow more" onClick={() => setAllPlaces(!allPlaces())}>
+                                <button class="chg-more" onClick={() => setAllPlaces(!allPlaces())}>
                                     {allPlaces() ? "Show fewer" : plural(rows().length - PLACES_SHOWN, "more place")}
                                 </button>
                             </Show>
@@ -582,8 +576,8 @@ function ChangesCard(p: { turn: Turn; cwd: string; sessionId: string; busy: bool
                 {/* What the snapshot left out, in a line; why, in its tooltip. */}
                 <Show when={incomplete()}>
                     {(line) => (
-                        <div class="review-note files-note" title={line().detail}>
-                            <Info size={13} />
+                        <div class="chg-note" title={line().detail}>
+                            <AlertTriangle size={12} />
                             {line().text}
                         </div>
                     )}

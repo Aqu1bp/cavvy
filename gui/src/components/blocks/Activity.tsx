@@ -8,7 +8,6 @@ import { createContext, createEffect, createMemo, createResource, createSignal, 
 import {
     AlertTriangle,
     Bot,
-    Check,
     ChevronRight,
     CircleCheck,
     CircleX,
@@ -495,13 +494,12 @@ export function SubAgentsRow(p: { runs: AgentRun[] }) {
         const n = (s: AgentRun["status"][]) => p.runs.filter((a) => s.includes(a.status)).length;
         return [
             n(["running"]) && `${n(["running"])} working`,
-            n(["waiting"]) && `${n(["waiting"])} waiting for you`,
+            n(["waiting"]) && `${n(["waiting"])} waiting`,
             n(["done"]) && `${n(["done"])} done`,
             n(["failed"]) && `${n(["failed"])} failed`,
             n(["stopped"]) && `${n(["stopped"])} stopped`,
         ].filter(Boolean) as string[];
     };
-    const tone = () => (p.runs.some((a) => a.status === "waiting") ? "warn" : p.runs.some((a) => a.status === "running") ? "info" : p.runs.some((a) => a.status === "failed") ? "err" : "muted");
     const span = () => {
         const start = Math.min(...p.runs.map((a) => a.startedAt));
         const end = p.runs.some(agentLive) ? now() : Math.max(...p.runs.map((a) => a.endedAt ?? a.startedAt));
@@ -509,15 +507,11 @@ export function SubAgentsRow(p: { runs: AgentRun[] }) {
     };
     return (
         // One agent: its row alone, which opens it. Several: how many and how they're doing, opening into a row each.
-        <Show when={p.runs.length > 1} fallback={<div class="subagents single"><Show when={p.runs[0]} keyed>{(a) => <AgentRow a={a} providerOf={providerOf} />}</Show></div>}>
+        <Show when={p.runs.length > 1} fallback={<div class="subagents single"><div class="agl"><Show when={p.runs[0]} keyed>{(a) => <AgentRow a={a} providerOf={providerOf} />}</Show></div></div>}>
             <div class="subagents">
                 <button class="ag-head" aria-expanded={open()} onClick={() => setOpen(!open())}>
                     <ProviderStack providers={p.runs.map(providerOf)} />
-                    <span class="ag-text">
-                        <span class="ag-title">{plural(p.runs.length, "sub-agent")}</span>
-                        <span class={`ag-sub tone-${tone()}`}>{counts().join(" · ")}</span>
-                    </span>
-                    <span class="grow" />
+                    <span class="ag-sum">{[plural(p.runs.length, "sub-agent"), ...counts()].join(" · ")}</span>
                     <span class="ag-time num">{span()}</span>
                     <ChevronRight size={13} class="chev" />
                 </button>
@@ -1322,15 +1316,15 @@ function DiagnosticsChip(p: { report: DiagnosticReport }) {
         return `Language server: ${parts.join(", ")}`;
     };
     return (
-        <span class="diag-chip" title={title()} data-find-skip>
+        <span class={`diag-chip ${c().errors ? "err" : c().warnings ? "" : "ok"}`} title={title()} data-find-skip>
             <Show when={c().errors}>
-                <span class="diag-err"><CircleX size={11} />{c().errors}</span>
+                <span><CircleX size={11} />{c().errors}</span>
             </Show>
             <Show when={c().warnings}>
-                <span class="diag-warn"><AlertTriangle size={11} />{c().warnings}</span>
+                <span><AlertTriangle size={11} />{c().warnings}</span>
             </Show>
             <Show when={!c().errors && !c().warnings && c().fixed}>
-                <span class="diag-ok"><CircleCheck size={11} />{c().fixed} fixed</span>
+                <span><CircleCheck size={11} />{c().fixed} fixed</span>
             </Show>
         </span>
     );
@@ -1378,11 +1372,7 @@ function Todos(p: { todos: TodoEntry[] }) {
             <For each={p.todos}>
                 {(t) => (
                     <li class={t.status}>
-                        <span class="todo-box">
-                            <Show when={t.status === "completed"}>
-                                <Check size={11} />
-                            </Show>
-                        </span>
+                        <span class="todo-box" />
                         <span>{t.status === "in_progress" ? (t.activeForm ?? t.content) : t.content}</span>
                     </li>
                 )}
