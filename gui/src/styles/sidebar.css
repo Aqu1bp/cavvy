@@ -379,10 +379,9 @@
     text-overflow: ellipsis;
 }
 
+/* The provider's mark in its own colours, as the composer and the picker show it (one-colour marks in the text's). */
 .srow-provider {
-    color: var(--text-3);
-    filter: grayscale(1);
-    opacity: 0.8;
+    color: var(--text);
 }
 
 .srow-ask {

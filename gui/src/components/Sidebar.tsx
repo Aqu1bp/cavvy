@@ -263,7 +263,7 @@ type RowKind = "needs" | "card" | "slim";
 
 /**
  * A session's row, the design's markup for all three: the glyph, the title with its time or status, and (not slim)
- * a line under it. Archive and More come up over the time while you point at it.
+ * a line under it. More (and Pin, on a slim row) comes up over the time while you point at it.
  *
  * Under Needs you, a session waiting on you, its one row in the rail until it's answered (lib/session-order.ts
  * listedOnce): what it's asking, in amber. Any click opens it. Rows are picked together in the list below, which
@@ -366,18 +366,9 @@ function SessionRow(p: { s: SessionSummary; kind: RowKind; hold: (id: string, he
                     </span>
                 </button>
                 <div class="srow-actions" hidden={p.s.making}>
-                    <Show
-                        when={slim}
-                        fallback={
-                            /* A session waiting for you isn't archived from under its question. */
-                            <Show when={!waiting() && !p.s.archived}>
-                                <button class="icon-btn icon-btn-sm" title="Archive" aria-label={`Archive ${p.s.title}`} onClick={() => void archive(p.s.id, true)}>
-                                    <Archive size={14} />
-                                </button>
-                            </Show>
-                        }
-                    >
-                        {/* Snoozed: Pin is in its menu, and when it wakes stays in sight. */}
+                    {/* A full row: More alone (Archive is in it). A slim one: Pin too, except snoozed, where Pin is in its
+                        menu and when it wakes stays in sight. */}
+                    <Show when={slim}>
                         <Show when={!snoozed()}>
                             <button class="icon-btn icon-btn-sm" title={p.s.pinned ? "Unpin" : "Pin"} aria-label={`${p.s.pinned ? "Unpin" : "Pin"} ${p.s.title}`} onClick={() => void pin(p.s.id, !p.s.pinned)}>
                                 <Show when={p.s.pinned} fallback={<Pin size={14} />}>
