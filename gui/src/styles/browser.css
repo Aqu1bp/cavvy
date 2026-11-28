@@ -448,8 +448,8 @@ body.resizing .br-host-tab {
 
 .br-float {
     position: absolute;
-    top: calc(var(--header-h) + 8 * var(--sp));
-    right: calc(16 * var(--sp));
+    top: calc(var(--header-h) + 12 * var(--sp));
+    right: calc(22 * var(--sp));
     z-index: 20;
     width: min(calc(400 * var(--sp)), calc(100% - 32 * var(--sp)));
     transform-origin: top right;
@@ -491,22 +491,20 @@ body.resizing .br-host-tab {
     border-radius: var(--radius-md);
 }
 
-/* One size of text: the page's title, then its host in a quieter tone. */
+/* The remix's .br-float-head: the page's title, then its host in a quieter tone. */
 .br-float-bar {
     display: flex;
     align-items: center;
-    gap: calc(6 * var(--sp));
-    height: calc(32 * var(--sp));
-    padding: 0 0 0 calc(8 * var(--sp));
-    font-size: 0.857rem;
-    line-height: 1;
+    gap: calc(2 * var(--sp));
+    height: calc(34 * var(--sp));
+    padding: 0 0 0 calc(6 * var(--sp));
 }
 
 .br-float-title {
     flex: 0 1 auto;
     min-width: 0;
-    padding-block: calc(2 * var(--sp));
-    color: var(--fg-2);
+    margin: 0 calc(4 * var(--sp)) 0 calc(8 * var(--sp));
+    font-size: 0.893rem;
     font-weight: 500;
 }
 
@@ -514,8 +512,8 @@ body.resizing .br-host-tab {
 .br-float-host {
     flex: 0 100 auto;
     min-width: 0;
-    padding-block: calc(2 * var(--sp));
-    color: var(--fg-4);
+    color: var(--fg-3);
+    font-size: 0.857rem;
 }
 
 .br-float-bar .hb {

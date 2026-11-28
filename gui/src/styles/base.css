@@ -54,7 +54,7 @@ body {
 .code-body,
 .diff-rows,
 .tool-detail,
-.detail-section,
+.tsec,
 .diag-msg,
 .diag-code,
 .compacted-summary,
@@ -320,23 +320,59 @@ h3 {
     animation-play-state: var(--loops);
 }
 
-/* A continuous compositor animation. Text stays readable without repainting
-   a clipped background on every frame, including on high-refresh displays. */
+/* "Running", "Thinking": a light crosses the words, then rests (bits.tsx Shine). A window over them slides across
+   while the bright copy of the words in it slides back, so the light moves and the words hold still: transform alone,
+   on the compositor, in steps on the stream clock's grid. No clipped background moved on each frame. */
 @keyframes shimmer {
-    0%, 100% { opacity: 0.55; }
-    50% { opacity: 1; }
+    from {
+        transform: translateX(-100%);
+    }
+    to {
+        transform: translateX(100%);
+    }
+}
+
+@keyframes shimmer-back {
+    from {
+        transform: translateX(100%);
+    }
+    to {
+        transform: translateX(-100%);
+    }
 }
 
 .shimmer {
-    color: var(--fg-2);
-    animation: shimmer 2.2s steps(22) infinite;
+    position: relative;
+    color: var(--fg-3);
+}
+
+.shine {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    pointer-events: none;
+    -webkit-mask-image: linear-gradient(90deg, transparent, #000 40% 60%, transparent);
+    mask-image: linear-gradient(90deg, transparent, #000 40% 60%, transparent);
+    animation: shimmer 1.8s steps(36) infinite;
+    animation-play-state: var(--decor);
+}
+
+.shine > span {
+    display: block;
+    color: var(--fg);
+    white-space: nowrap;
+    animation: shimmer-back 1.8s steps(36) infinite;
     animation-play-state: var(--decor);
 }
 
 @media (prefers-reduced-motion: reduce) {
-    .shimmer {
+    .shine,
+    .shine > span {
         animation: none;
-        opacity: 1;
+    }
+
+    .shine {
+        display: none;
     }
 }
 

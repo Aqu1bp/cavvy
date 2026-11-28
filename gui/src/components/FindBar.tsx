@@ -1,5 +1,5 @@
-import { createEffect, createMemo, createSignal, on, onCleanup, onMount, Show, untrack } from "solid-js";
-import { ChevronLeft, ChevronRight, Search, X } from "lucide-solid";
+import { createEffect, createMemo, createSignal, on, onCleanup, onMount, untrack } from "solid-js";
+import { ChevronDown, ChevronUp, X } from "lucide-solid";
 import type { SessionFindMatch, Turn } from "@shared/protocol";
 import { allMatches, clearPaint, MAX_MATCHES, paintMatches, revealInBoxes, textRanges, type FindMatch } from "../lib/find";
 import { buildAgain, FAR } from "../lib/transcript-scroll";
@@ -291,17 +291,14 @@ export function FindBar(p: {
 
     return (
         <div class="find-bar glass" role="search" aria-label="Conversation" on:keydown={onBarKey}>
-            <Search size={14} class="find-ic" />
             <input ref={input} value={text()} onInput={(e) => onInput(e.currentTarget.value)} on:keydown={onKey} placeholder="Find in conversation" spellcheck={false} aria-label="Find in conversation" />
             <span class="find-count num" role="status" aria-live="polite" aria-atomic="true">{count()}</span>
-            <Show when={matches().length > 1}>
-                <button class="find-btn" title="Previous (Shift+Enter)" aria-label="Previous match" onClick={() => go(cur() - 1)}>
-                    <ChevronLeft size={14} />
-                </button>
-                <button class="find-btn" title="Next (Enter)" aria-label="Next match" onClick={() => go(cur() + 1)}>
-                    <ChevronRight size={14} />
-                </button>
-            </Show>
+            <button class="find-btn" title="Previous (Shift+Enter)" aria-label="Previous match" disabled={matches().length < 2} onClick={() => go(cur() - 1)}>
+                <ChevronUp size={14} />
+            </button>
+            <button class="find-btn" title="Next (Enter)" aria-label="Next match" disabled={matches().length < 2} onClick={() => go(cur() + 1)}>
+                <ChevronDown size={14} />
+            </button>
             <button class="find-btn" title="Close (Esc)" aria-label="Close find" onClick={close}>
                 <X size={14} />
             </button>

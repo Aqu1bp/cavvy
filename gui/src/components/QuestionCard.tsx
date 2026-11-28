@@ -13,6 +13,7 @@ import { usePane } from "../state/split";
 import { pickOption } from "../lib/question-pick";
 import { blockedBy, isLongPaste, pastedText, readAttachment, toWire, type Attachment } from "../lib/attachments";
 import { AttachmentChips } from "./AttachmentChips";
+import "../styles/question.css";
 import { Head, mayFocus, useKeys } from "./InteractionDock";
 
 export default function QuestionCard(p: { sessionId: string; it: QuestionInteraction }) {
@@ -177,12 +178,11 @@ export default function QuestionCard(p: { sessionId: string; it: QuestionInterac
             </div>
             <div class="itab-actions ask-row">
                 <Show when={choosing()}>
-                    <button class="pbtn primary" disabled={!hasAnswer() || Boolean(blocked()) || busy()} onClick={() => void answer()}>
+                    <button class="btn primary" disabled={!hasAnswer() || Boolean(blocked()) || busy()} onClick={() => void answer()}>
                         Answer
                     </button>
                 </Show>
-                <span class="grow" />
-                <button class="pbtn quiet" disabled={busy()} onClick={() => void submit(undefined)}>
+                <button class="btn" disabled={busy()} onClick={() => void submit(undefined)}>
                     Skip <kbd>Esc</kbd>
                 </button>
             </div>

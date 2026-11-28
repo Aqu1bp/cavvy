@@ -244,25 +244,25 @@ export function AgentView(p: { handle: SessionHandle; agent: AgentRun }) {
                         <Show when={asks().length}>
                             <InteractionTab sessionId={p.handle.id} items={asks()} />
                         </Show>
-                        <div class="agent-bar card-surface" role="status">
+                        <div class="agent-bar" role="status">
                             <span class="av">
                                 <AgentMark provider={provider()} />
                                 <span class={`nd st-${a().status}`} />
                             </span>
                             <span class={`agent-bar-state num st-${a().status}`}>{statusLine(a())}</span>
-                            <span class="grow" />
                             <span class="agent-bar-model truncate" title={modelTitle()}>
                                 {model()}<Show when={a().effort}>{(effort) => ` · ${effort()}`}</Show>
                             </span>
-                            <span class="agent-sep" aria-hidden="true" />
-                            <button class="agent-back" onClick={back} title={parent() ? `Back to ${parentName()} (Esc)` : "Back to session (Esc)"}>
-                                <ArrowLeft size={14} /> Back
+                            <span class="grow" />
+                            <button class="btn sm" onClick={back} title={parent() ? `Back to ${parentName()}` : "Back to session"}>
+                                <ArrowLeft size={13} /> Back <kbd>Esc</kbd>
                             </button>
                             <Show when={live(a()) && a().taskId}>
-                                <button class="stop-btn" title="Stop this agent" aria-label="Stop this agent" onClick={() => void stopAgent(p.handle.id, a().id)}>
-                                    <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
-                                        <rect x="1" y="1" width="10" height="10" rx="2.5" fill="currentColor" />
+                                <button class="btn sm deny" onClick={() => void stopAgent(p.handle.id, a().id)}>
+                                    <svg width="9" height="9" viewBox="0 0 10 10" aria-hidden="true">
+                                        <rect width="10" height="10" rx="2" fill="currentColor" />
                                     </svg>
+                                    Stop this agent
                                 </button>
                             </Show>
                         </div>

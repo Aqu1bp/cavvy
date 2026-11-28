@@ -215,113 +215,102 @@
     }
 }
 
-/* ---- The proposed plan, as a card in its turn ------------------------------ */
+/* ---- The proposed plan, as a card in its turn (the remix's .plan) ---------- */
 
-.tcard.plan-card {
-    margin: calc(4 * var(--sp)) 0 calc(14 * var(--sp));
-    border-radius: calc(14 * var(--sp));
-    box-shadow: 0 0 0 0.5px var(--line-strong), 0 1px 2px var(--hover);
+.plan {
+    display: flex;
+    flex-direction: column;
+    margin: calc(2 * var(--sp)) 0;
+    border-radius: calc(10 * var(--sp));
+    background: var(--card);
+    box-shadow: inset 0 0 0 1px var(--line);
 }
 
-.pc-h {
+[data-theme="dark"] .plan {
+    background: var(--hover);
+}
+
+.plan[data-state="wait"] {
+    box-shadow: inset 0 0 0 1px var(--warn-line);
+}
+
+.plan-top {
     display: flex;
     align-items: center;
     gap: calc(8 * var(--sp));
     min-width: 0;
-    padding: calc(10 * var(--sp)) calc(8 * var(--sp)) 0 calc(14 * var(--sp));
+    height: calc(34 * var(--sp));
+    padding: 0 calc(6 * var(--sp)) 0 calc(14 * var(--sp));
+    border-bottom: 1px solid var(--line);
     font-size: 0.857rem;
+}
+
+.plan-kicker {
     font-weight: 600;
+}
+
+.plan-state {
+    min-width: 0;
     color: var(--fg-3);
 }
 
-.pc-h .grow {
-    flex: 1;
+.plan[data-state="wait"] .plan-state {
+    color: var(--warn);
 }
 
-.pc-state {
+.plan-title {
+    padding: calc(12 * var(--sp)) calc(14 * var(--sp)) 0;
+    font-size: 1.071rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    overflow-wrap: anywhere;
+}
+
+/* The start of it, fading out: Read the plan has all of it. */
+.plan-preview {
+    max-height: calc(104 * var(--sp));
+    padding: calc(6 * var(--sp)) calc(14 * var(--sp)) 0;
+    overflow: hidden;
+    mask-image: linear-gradient(to bottom, #000 40%, transparent);
+}
+
+.plan-preview .md {
+    color: var(--fg-2);
+    font-size: 0.964rem;
+    line-height: 1.55;
+}
+
+.plan-preview .md h2 {
+    font-size: 0.964rem;
+}
+
+.plan-preview .md > h2:not(:first-child) {
+    margin-top: calc(12 * var(--sp));
+}
+
+.plan-foot {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: calc(12 * var(--sp));
+    padding: calc(8 * var(--sp)) calc(14 * var(--sp)) calc(12 * var(--sp));
+}
+
+/* Where the plan went: a new worktree's session ("Implementing on <branch> · Open session"). */
+.plan-impl {
     display: inline-flex;
     align-items: center;
     gap: calc(5 * var(--sp));
     min-width: 0;
-    font-weight: 500;
     color: var(--fg-3);
-}
-
-.pc-state.ok {
-    color: var(--ok);
-}
-
-.pc-state.wait {
-    color: var(--warn);
-}
-
-.pc-t {
-    padding: calc(6 * var(--sp)) calc(14 * var(--sp)) 0;
-    font-size: 1.071rem;
-    font-weight: 650;
-    letter-spacing: -0.005em;
-    line-height: 1.35;
-    overflow-wrap: anywhere;
-}
-
-/* About three lines of the plan, fading out: Read the plan has all of it. */
-.pc-p {
-    position: relative;
-    max-height: calc(72 * var(--sp));
-    overflow: hidden;
-    padding: calc(6 * var(--sp)) calc(14 * var(--sp)) 0;
-    color: var(--fg-2);
-}
-
-/* Its last lines fade out: the card says there's more to read. */
-.pc-p {
-    mask-image: linear-gradient(#000 calc(100% - 36 * var(--sp)), transparent);
-}
-
-.pc-f {
-    display: flex;
-    align-items: center;
-    gap: calc(6 * var(--sp));
-    padding: calc(6 * var(--sp)) calc(8 * var(--sp)) calc(8 * var(--sp));
-}
-
-.pc-f .btn.ghost {
-    background: var(--sheet-2);
-    box-shadow: inset 0 0 0 0.5px var(--line);
-}
-
-/* Where the plan went: a new worktree's session ("Implementing on <branch>"). */
-.pc-link {
-    display: flex;
-    align-items: center;
-    gap: calc(8 * var(--sp));
-    width: 100%;
-    min-width: 0;
-    padding: calc(9 * var(--sp)) calc(14 * var(--sp));
-    border-top: 0.5px solid var(--line);
-    font-size: 0.893rem;
-    color: var(--fg-2);
-    background: var(--sheet-2);
-    text-align: left;
-}
-
-.pc-link:hover {
-    color: var(--fg);
-}
-
-.pc-link > svg {
-    flex: none;
-    color: var(--fg-3);
-}
-
-.pc-link .mono {
     font-size: 0.857rem;
-    color: var(--fg);
 }
 
-.pc-link .go {
-    flex: none;
-    margin-left: auto;
-    color: var(--accent-text);
-    font-weight: 500;
+.plan-impl .mono {
+    color: var(--fg-2);
+    font-size: 0.821rem;
+}
+
+.plan-impl .link-btn {
+    font-size: inherit;
 }

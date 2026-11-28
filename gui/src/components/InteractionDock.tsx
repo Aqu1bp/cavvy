@@ -7,7 +7,7 @@
 // number keys and Esc work when you're not typing.
 
 import { createEffect, createResource, createUniqueId, createSignal, For, lazy, Match, on, onCleanup, onMount, Show, Suspense, Switch, type JSX } from "solid-js";
-import { AlertTriangle, Eye, EyeOff, FolderGit2, KeyRound, Save } from "lucide-solid";
+import { AlertTriangle, Eye, EyeOff, KeyRound } from "lucide-solid";
 import type { ConfirmInteraction, Interaction, PermissionInteraction, PlanInteraction, QuestionInteraction, SecretInteraction, SignInInteraction } from "@shared/protocol";
 import { openAgents, respond } from "../state/actions";
 import { handleFor, rpc } from "../state/app";
@@ -175,7 +175,7 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
     });
     const Choice = (c: { o: PermissionInteraction["options"][number]; key: number }) => (
         <button
-            class={`pbtn ${c.o.id === "yes" ? "primary" : c.o.id === "no" ? "quiet" : "outlined"}`}
+            class={`btn ${c.o.id === "yes" ? "primary" : c.o.id === "no" ? "deny" : "wide"}`}
             disabled={busy()}
             title={c.o.label.replaceAll("`", "")}
             onClick={() => {
@@ -216,7 +216,7 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
                         <>
                             <AgentMark provider={askerProvider()} size={12} /> Requested by sub-agent ·{" "}
                             <Show when={p.it.agentId} fallback={asker()}>
-                                <button class="link-btn" tabIndex={-1} title="See what it has done so far" onClick={() => openAgents(p.it.agentId)}>
+                                <button class="link-btn" tabIndex={-1} title="See its work so far" onClick={() => openAgents(p.it.agentId)}>
                                     {asker()}
                                 </button>
                             </Show>
@@ -227,7 +227,7 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
             <div class="itab-body">
                 <Show when={p.it.plain}>
                     <div class="itab-desc selectable">
-                        {p.it.plainLabel ?? "AI summary"}: <b>{p.it.plain}</b>
+                        <span class="lbl">{p.it.plainLabel ?? "AI summary"}:</span> {p.it.plain}
                     </div>
                 </Show>
                 <Show when={p.it.dangerous}>
@@ -384,11 +384,10 @@ function SecretCard(p: { sessionId: string; it: SecretInteraction }) {
                 </div>
             </div>
             <div class="itab-actions ask-row">
-                <button class="pbtn primary" aria-busy={busy()} disabled={!ready() || busy()} title={ready() ? undefined : `At least ${MIN_SECRET} characters`} onClick={() => void provide()}>
+                <button class="btn primary" aria-busy={busy()} disabled={!ready() || busy()} title={ready() ? undefined : `At least ${MIN_SECRET} characters`} onClick={() => void provide()}>
                     Provide
                 </button>
-                <span class="grow" />
-                <button class="pbtn quiet" onClick={decline}>
+                <button class="btn" onClick={decline}>
                     Decline <kbd>Esc</kbd>
                 </button>
             </div>
@@ -447,31 +446,30 @@ function PlanCard(p: { sessionId: string; it: PlanInteraction }) {
                 </Show>
             </div>
             <div class="itab-actions ask-row plan-row">
-                <button class="pbtn primary" onClick={() => void approve("acceptEdits")}>
+                <button class="btn primary" onClick={() => void approve("acceptEdits")}>
                     Approve, auto-accept edits <kbd>1</kbd>
                 </button>
-                <button class="pbtn outlined" onClick={() => void approve("default")}>
+                <button class="btn" onClick={() => void approve("default")}>
                     Approve, ask for edits <kbd>2</kbd>
                 </button>
-                <button class="pbtn outlined" onClick={() => void approve("auto")}>
+                <button class="btn" onClick={() => void approve("auto")}>
                     Auto mode <kbd>3</kbd>
                 </button>
-                <span class="grow" />
-                <button class="pbtn quiet" onClick={() => (feedback() === undefined ? setFeedback("") : void reject())}>
+                <button class="btn" onClick={() => (feedback() === undefined ? setFeedback("") : void reject())}>
                     {feedback() === undefined ? "Keep planning" : "Send feedback"} <kbd>4</kbd>
                 </button>
             </div>
             <div class="itab-actions ask-row plan-row quiet-row">
                 <button
-                    class="pbtn quiet"
+                    class="btn"
                     disabled={!info()?.git}
                     title={info()?.notGit ?? "Implement in a new worktree; this session stops, still in plan mode"}
                     onClick={worktree}
                 >
-                    <FolderGit2 size={13} /> New worktree… <kbd>5</kbd>
+                    New worktree… <kbd>5</kbd>
                 </button>
-                <button class="pbtn quiet" title="Save the plan as a Markdown file" onClick={save}>
-                    <Save size={13} /> Save… <kbd>6</kbd>
+                <button class="btn" title="Save as Markdown" onClick={save}>
+                    Save… <kbd>6</kbd>
                 </button>
             </div>
         </>

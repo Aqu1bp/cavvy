@@ -15,7 +15,9 @@ test("activity motion is continuous, compositor friendly and disabled for reduce
     expect(shimmer).not.toMatch(/background-position|background-clip/);
     // Steps too small to see: smooth to look at, and the window isn't drawn again on every refresh for it.
     expect(Number(shimmer.match(/steps\((\d+)\)/)?.[1])).toBeGreaterThanOrEqual(20);
-    expect(shimmer).toMatch(/opacity:/);
+    // The light moves on transform (a window one way, the bright copy in it back), never a painted property.
+    expect(shimmer).toMatch(/transform:/);
+    expect(shimmer).not.toMatch(/@keyframes[^{]*\{[^}]*(background|color|mask)/);
     expect(shimmer).toMatch(/prefers-reduced-motion: reduce[\s\S]*animation: none/);
     for (const name of ["wkids", "tool-detail", "agl"]) {
         expect(transcript.match(new RegExp(`\\.${name} \\{([^}]+)\\}`))?.[1]).not.toMatch(/animation:/);
