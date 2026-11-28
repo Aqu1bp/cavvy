@@ -140,9 +140,9 @@ const servers = () => homeRpc(rpc);
 function Problem(p: { problem: ServerProblem }) {
     return (
         <>
-            <p class="server-said">{p.problem.message}</p>
+            <p class="cover-text">{p.problem.message}</p>
             <Show when={p.problem.detail}>{(d) => <p class="problem-line mono">{d()}</p>}</Show>
-            <Show when={p.problem.fix}>{(f) => <p class="server-said mono">{f()}</p>}</Show>
+            <Show when={p.problem.fix}>{(f) => <p class="cover-text mono">{f()}</p>}</Show>
         </>
     );
 }
@@ -209,33 +209,35 @@ function ServerMenu(p: { anchor: () => HTMLElement | undefined }) {
         }
     };
     return (
-        <Menu label="Machines" open={serverMenu()} anchor={p.anchor} onClose={close} align={menuAlign()} width={282} class="machine-menu">
+        <Menu label="Machines" open={serverMenu()} anchor={p.anchor} onClose={close} align={menuAlign()} width={272} class="menu machine-menu">
             <button role="menuitemradio" aria-checked={!runsOn()} class="menu-item" onClick={() => (close(), goTo(undefined))}>
-                <span class="menu-ico">
+                <span class="menu-check">
                     <Show when={!runsOn()}>
                         <Check size={14} />
                     </Show>
                 </span>
-                <span class="machine-name truncate">{HERE}</span>
+                <span class="menu-item-name">{HERE}</span>
             </button>
             <For each={list() ?? []}>
                 {(s) => (
                     <div class="machine-row">
                         <button role="menuitemradio" aria-checked={runsOn() === s.name} class="menu-item" title={s.destination} onPointerEnter={() => runsOn() !== s.name && warmLink(s.name)} onClick={() => (close(), goTo(s.name))}>
-                            <span class="menu-ico">
+                            <span class="menu-check">
                                 <Show when={runsOn() === s.name}>
                                     <Check size={14} />
                                 </Show>
                             </span>
-                            <span class="machine-name truncate">{s.name}</span>
+                            <span class="machine-name">
+                                <span class="truncate">{s.name}</span>
+                            </span>
                             <Show when={s.cost}>
-                                <span class="machine-cost num">{s.cost}</span>
+                                <span class="menu-item-note num">{s.cost}</span>
                             </Show>
                         </button>
                         <span class="machine-acts">
                             <button
                                 role="menuitem"
-                                class={`hb sm${s.syncOn ? " machine-sync-on" : ""}${s.sync?.state === "error" ? " tone-warn" : ""}`}
+                                class={`icon-btn icon-btn-sm machine-act${s.sync?.state === "error" ? " tone-warn" : ""}`}
                                 title={s.sync?.state === "error" ? `Sync failed: ${s.sync.error}` : s.syncOn ? `Stop syncing ${s.name}` : `Sync ${s.name} with ${HERE === "This Mac" ? "this Mac" : "this computer"}`}
                                 aria-label={s.syncOn ? `Stop syncing ${s.name}` : `Sync ${s.name}`}
                                 aria-pressed={s.syncOn ? "true" : "false"}
@@ -244,13 +246,13 @@ function ServerMenu(p: { anchor: () => HTMLElement | undefined }) {
                                 <RefreshCw size={14} />
                             </button>
                             <Show when={s.behind}>
-                                <button role="menuitem" class="hb sm" title={`Update Cavvy on ${s.name}`} aria-label={`Update Cavvy on ${s.name}`} onClick={() => (close(), void updateServer(s.name))}>
+                                <button role="menuitem" class="icon-btn icon-btn-sm machine-act" title={`Update Cavvy on ${s.name}`} aria-label={`Update Cavvy on ${s.name}`} onClick={() => (close(), void updateServer(s.name))}>
                                     <CircleArrowUp size={14} />
                                 </button>
                             </Show>
                             {/* Not the one this window is on: it's removed from another. */}
                             <Show when={machine !== s.name}>
-                                <button role="menuitem" class="hb sm" title={`Remove ${s.name}`} aria-label={`Remove ${s.name}`} onClick={() => void remove(s.name, s.rented)}>
+                                <button role="menuitem" class="icon-btn icon-btn-sm machine-act" title={`Remove ${s.name}`} aria-label={`Remove ${s.name}`} onClick={() => void remove(s.name, s.rented)}>
                                     <Trash2 size={14} />
                                 </button>
                             </Show>
@@ -261,7 +263,7 @@ function ServerMenu(p: { anchor: () => HTMLElement | undefined }) {
             <div class="menu-sep" />
             <button role="menuitem" class="menu-item" onClick={() => (close(), setAddServerOpen(true))}>
                 <Plus size={14} />
-                <span class="machine-name">Add server…</span>
+                <span class="menu-item-name">Add server…</span>
             </button>
         </Menu>
     );
@@ -358,92 +360,91 @@ function AddServerDialog() {
         if (s.at === "trust") return `${HERE} hasn't seen its key before.`;
         if (s.at === "sync") return "Settings, skills, plugins and API keys. Not sign-ins.";
         if (s.at === "failed") return s.problem.message;
+        // Ready: what it says about the copy, under the title as the design has it.
+        if (s.at === "done") return [s.note, s.copied, s.left].filter(Boolean).join(" ") || undefined;
         return undefined;
     };
     const foot = () => {
         const s = step();
         if (s.at === "working") return undefined;
         return (
-            <div class="dialog-actions">
-                <span class="grow" />
-                <Switch>
-                    <Match when={s.at === "form"}>
-                        <button type="button" class="btn" onClick={close}>
-                            Cancel
-                        </button>
-                        <button type="submit" form={formId} class="btn primary" disabled={!name().trim() || !destination().trim()}>
-                            Add
-                        </button>
-                    </Match>
-                    <Match when={at("trust")}>
-                        {(t) => (
-                            <>
-                                <button class="btn" onClick={() => setStep({ at: "form" })}>
-                                    Cancel
-                                </button>
-                                <button class="btn primary" autofocus onClick={() => void add(t().unknown.fingerprints)}>
-                                    Trust
-                                </button>
-                            </>
-                        )}
-                    </Match>
-                    <Match when={s.at === "sync"}>
-                        <button class="btn" onClick={() => void sync(false)}>
-                            Not now
-                        </button>
-                        <button class="btn primary" autofocus onClick={() => void sync(true)}>
-                            Sync
-                        </button>
-                    </Match>
-                    <Match when={at("done")}>
-                        {(d) => (
-                            <>
-                                <button class="btn" onClick={close}>
-                                    Close
-                                </button>
-                                <button class="btn primary" autofocus onClick={() => switchMachine(d().name)}>
-                                    Open {d().name}
-                                </button>
-                            </>
-                        )}
-                    </Match>
-                    <Match when={s.at === "failed"}>
-                        <button class="btn" onClick={close}>
-                            Cancel
-                        </button>
-                        <button class="btn primary" autofocus onClick={() => setStep({ at: "form" })}>
-                            Back
-                        </button>
-                    </Match>
-                </Switch>
-            </div>
+            <Switch>
+                <Match when={s.at === "form"}>
+                    <button type="button" class="btn" onClick={close}>
+                        Cancel
+                    </button>
+                    <button type="submit" form={formId} class="btn primary btn-primary" disabled={!name().trim() || !destination().trim()}>
+                        Add
+                    </button>
+                </Match>
+                <Match when={at("trust")}>
+                    {(t) => (
+                        <>
+                            <button type="button" class="btn" onClick={() => setStep({ at: "form" })}>
+                                Cancel
+                            </button>
+                            <button type="button" class="btn primary btn-primary" autofocus onClick={() => void add(t().unknown.fingerprints)}>
+                                Trust
+                            </button>
+                        </>
+                    )}
+                </Match>
+                <Match when={s.at === "sync"}>
+                    <button type="button" class="btn" onClick={() => void sync(false)}>
+                        Not now
+                    </button>
+                    <button type="button" class="btn primary btn-primary" autofocus onClick={() => void sync(true)}>
+                        Sync
+                    </button>
+                </Match>
+                <Match when={at("done")}>
+                    {(d) => (
+                        <>
+                            <button type="button" class="btn" onClick={close}>
+                                Close
+                            </button>
+                            <button type="button" class="btn primary btn-primary" autofocus onClick={() => switchMachine(d().name)}>
+                                Open {d().name}
+                            </button>
+                        </>
+                    )}
+                </Match>
+                <Match when={s.at === "failed"}>
+                    <button type="button" class="btn" onClick={close}>
+                        Cancel
+                    </button>
+                    <button type="button" class="btn primary btn-primary" autofocus onClick={() => setStep({ at: "form" })}>
+                        Back
+                    </button>
+                </Match>
+            </Switch>
         );
     };
 
     // Made once per step: the dialog reads it twice (whether there's one, then to show it).
     const footer = children(foot);
     return (
-        <Dialog open={addServerOpen()} onClose={close} title={title()} subtitle={sub()} footer={footer()} width={480} top class="server-dialog">
+        <Dialog open={addServerOpen()} onClose={close} title={title()} subtitle={sub()} footer={footer()} width={480} top class="dlg-top">
             <Switch>
                 <Match when={step().at === "form"}>
                     <form
                         id={formId}
-                        class="wt-form"
+                        class="form-stack"
                         onSubmit={(e) => {
                             e.preventDefault();
                             if (name().trim() && destination().trim()) void add();
                         }}
                     >
-                        <label class="wt-field">
-                            <span class="wt-label">Name</span>
+                        <label class="field">
+                            <span class="field-label">Name</span>
                             <input class="input" value={name()} onInput={(e) => setName(e.currentTarget.value)} placeholder="build-box" autocapitalize="off" spellcheck={false} autofocus />
                         </label>
-                        <label class="wt-field">
-                            <span class="wt-label">Address</span>
+                        <label class="field">
+                            <span class="field-label">Address</span>
                             <input class="input mono" value={destination()} onInput={(e) => setDestination(e.currentTarget.value)} placeholder="user@host" autocapitalize="off" spellcheck={false} />
                         </label>
-                        <label class="wt-field">
-                            <span class="wt-label">SSH key file</span>
+                        <label class="field">
+                            <span class="field-label">SSH key file</span>
                             <input class="input mono" value={identity()} onInput={(e) => setIdentity(e.currentTarget.value)} placeholder="Optional" autocapitalize="off" spellcheck={false} />
                         </label>
                     </form>
@@ -459,7 +460,7 @@ function AddServerDialog() {
                                 </Show>
                             </div>
                             <Show when={w().percent !== undefined}>
-                                <span class="progress-bar">
+                                <span class="bar" data-tone="accent">
                                     <i style={{ width: `${w().percent}%` }} />
                                 </span>
                             </Show>
@@ -470,9 +471,6 @@ function AddServerDialog() {
                 <Match when={at("done")}>
                     {(d) => (
                         <>
-                            <Show when={d().note}>{(n) => <p>{n()}</p>}</Show>
-                            <Show when={d().copied}>{(c) => <p>{c()}</p>}</Show>
-                            <Show when={d().left}>{(l) => <p>{l()}</p>}</Show>
                             <Show when={d().lines?.length}>
                                 <ul class="lacks">
                                     <For each={d().lines}>{(l) => <li>{l}</li>}</For>
@@ -485,7 +483,7 @@ function AddServerDialog() {
                     {(f) => (
                         <>
                             <Show when={f().problem.detail}>{(d) => <p class="problem-line mono">{d()}</p>}</Show>
-                            <Show when={f().problem.fix}>{(x) => <p class="server-said mono">{x()}</p>}</Show>
+                            <Show when={f().problem.fix}>{(x) => <p class="dlg-text mono">{x()}</p>}</Show>
                         </>
                     )}
                 </Match>
@@ -522,7 +520,7 @@ function MachineCover(p: { reconnect: () => void }) {
     };
     // Made anew wherever it's shown: one element can't be in two of the states below.
     const Back = () => (
-        <button class="btn ghost" onClick={() => switchMachine(undefined)}>
+        <button type="button" class="btn ghost btn-ghost cover-back" onClick={() => switchMachine(undefined)}>
             <ArrowLeft size={14} />
             {HERE}
         </button>
@@ -535,38 +533,39 @@ function MachineCover(p: { reconnect: () => void }) {
     };
     type Issue<K extends string> = Extract<NonNullable<ReturnType<typeof machineIssue>>, { kind: K }>;
     const issue = <K extends NonNullable<ReturnType<typeof machineIssue>>["kind"]>(k: K) => (machineIssue()?.kind === k ? (machineIssue() as Issue<K>) : undefined);
-    /** A card: what's happening or asked, the answer's details, then the way back and the answer. */
+    /** The design's cover card: what's happening or asked and where, its details, then the way back and the answer. */
     const Card = (c: { title: string; spin?: boolean; failed?: boolean; back?: boolean; body?: JSX.Element; actions?: JSX.Element }) => {
-        // Made once each: read twice (whether there's one, then to show it), a prop would make it twice.
-        const body = children(() => c.body);
+        // Made once: read twice (whether there's one, then to show it), a prop would make it twice.
         const actions = children(() => c.actions);
         return (
-        <section class="cover-card" aria-live="polite">
-            <header class="cover-head">
-                <span class="cover-icon" classList={{ failed: c.failed }}>
-                    <Show when={c.spin} fallback={<Server size={16} />}>
-                        <Spinner size={16} />
-                    </Show>
-                </span>
-                <h1 class="cover-title">{c.title}</h1>
-            </header>
-            <Show when={body()}>
-                <div class="cover-body">{body()}</div>
-            </Show>
-            <Show when={c.back || actions()}>
-                <footer class="cover-foot">
-                    <Show when={c.back}>
-                        <Back />
-                    </Show>
-                    <span class="grow" />
-                    {actions()}
-                </footer>
-            </Show>
-        </section>
+            <section class="cover-card" aria-live="polite">
+                <header class="cover-head">
+                    <span class="cover-icon" data-tone={c.failed ? "red" : "plain"}>
+                        <Show when={c.spin} fallback={<Server size={16} />}>
+                            <Spinner size={16} />
+                        </Show>
+                    </span>
+                    <div class="cover-heading">
+                        <h1 class="cover-title">{c.title}</h1>
+                        <p class="cover-sub mono">{machine}</p>
+                    </div>
+                </header>
+                <div class="cover-body">{c.body}</div>
+                <Show when={c.back || actions()}>
+                    <footer class="cover-foot">
+                        <Show when={c.back}>
+                            <Back />
+                        </Show>
+                        <span class="grow" />
+                        {actions()}
+                    </footer>
+                </Show>
+            </section>
         );
     };
     return (
         <div class="server-cover" classList={{ "server-asks": asks() }}>
+            <div class="cover">
             <Switch fallback={<Card spin title={updating() ?? `Connecting to ${machine}…`} back />}>
                 <Match when={updating()}>{(u) => <Card spin title={u()} />}</Match>
                 <Match when={busy()}>
@@ -576,11 +575,12 @@ function MachineCover(p: { reconnect: () => void }) {
                             body={<p class="cover-text">{b()}</p>}
                             actions={
                                 <>
-                                    <button class="btn" onClick={() => setBusy(undefined)}>
+                                    <button type="button" class="btn" onClick={() => setBusy(undefined)}>
                                         Cancel
                                     </button>
                                     <button
-                                        class="btn danger"
+                                        type="button"
+                                        class="btn danger btn-danger-solid"
                                         onClick={() => {
                                             setBusy(undefined);
                                             void update(true);
@@ -602,7 +602,7 @@ function MachineCover(p: { reconnect: () => void }) {
                             body={
                                 i().percent !== undefined ? (
                                     <div class="progress-inline" role="status">
-                                        <span class="progress-bar">
+                                        <span class="bar" data-tone="accent">
                                             <i style={{ width: `${i().percent}%` }} />
                                         </span>
                                         <span class="progress-pct num">{i().percent}%</span>
@@ -620,7 +620,8 @@ function MachineCover(p: { reconnect: () => void }) {
                             body={<HostKey unknown={i().unknown} />}
                             actions={
                                 <button
-                                    class="btn primary"
+                                    type="button"
+                                    class="btn primary btn-primary"
                                     onClick={() => {
                                         trustMachine(i().unknown.fingerprints);
                                         retry();
@@ -639,7 +640,7 @@ function MachineCover(p: { reconnect: () => void }) {
                             back
                             body={i().problem ? <Problem problem={i().problem!} /> : undefined}
                             actions={
-                                <button class="btn primary" onClick={() => void update()}>
+                                <button type="button" class="btn primary btn-primary" onClick={() => void update()}>
                                     Update {machine}
                                 </button>
                             }
@@ -652,7 +653,7 @@ function MachineCover(p: { reconnect: () => void }) {
                         back
                         body={<p class="cover-text">It was stopped there.</p>}
                         actions={
-                            <button class="btn primary" onClick={retry}>
+                            <button type="button" class="btn primary btn-primary" onClick={retry}>
                                 Start
                             </button>
                         }
@@ -666,7 +667,7 @@ function MachineCover(p: { reconnect: () => void }) {
                             back
                             body={<Problem problem={i().problem} />}
                             actions={
-                                <button class="btn primary" onClick={retry}>
+                                <button type="button" class="btn primary btn-primary" onClick={retry}>
                                     Try again
                                 </button>
                             }
@@ -674,6 +675,7 @@ function MachineCover(p: { reconnect: () => void }) {
                     )}
                 </Match>
             </Switch>
+            </div>
         </div>
     );
 }

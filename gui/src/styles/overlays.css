@@ -368,6 +368,70 @@
     margin: calc(4 * var(--sp)) calc(-20 * var(--sp)) calc(-18 * var(--sp));
 }
 
+/* ---- The design's dialog pieces: buttons straight in the foot, a note beside them, a paragraph, a form ---- */
+.dlg-foot:not(:has(> .dialog-actions)) {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: calc(8 * var(--sp));
+    flex: none;
+}
+
+.dlg-foot-note {
+    margin-right: auto;
+    padding-left: calc(4 * var(--sp));
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
+}
+
+.dlg-text {
+    color: var(--text-2);
+    font-size: calc(13 * var(--sp));
+    line-height: 1.5;
+}
+
+.dlg-text code,
+.dlg-sub code {
+    padding: 1px calc(5 * var(--sp));
+    border-radius: calc(4 * var(--sp));
+    background: color-mix(in srgb, var(--text) 8%, transparent);
+    font-size: 0.9em;
+}
+
+.form-stack {
+    display: flex;
+    flex-direction: column;
+    gap: calc(12 * var(--sp));
+}
+
+.field {
+    display: flex;
+    flex-direction: column;
+    gap: calc(5 * var(--sp));
+    min-width: 0;
+}
+
+.field-label {
+    color: var(--text-2);
+    font-size: calc(12 * var(--sp));
+    font-weight: 500;
+}
+
+.field-hint {
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
+    line-height: 1.4;
+}
+
+.field-error {
+    color: var(--red);
+}
+
+.field .input {
+    width: 100%;
+}
+
+
 .dialog-actions {
     display: flex;
     align-items: center;

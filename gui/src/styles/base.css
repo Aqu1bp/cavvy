@@ -712,6 +712,10 @@ kbd {
     opacity: 0.6;
 }
 
+.input.mono {
+    font-size: calc(12 * var(--sp));
+}
+
 textarea.input {
     height: auto;
     min-height: calc(84 * var(--sp));

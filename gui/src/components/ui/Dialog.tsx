@@ -94,7 +94,7 @@ function DialogInner(p: DialogProps) {
             <div class={`dialog-backdrop ${p.top ? "top" : ""}`} onPointerDown={(e) => e.target === e.currentTarget && p.onClose()}>
                 <div
                     ref={box}
-                    class={`dialog glass ${p.class ?? ""}`}
+                    class={`dialog dlg glass ${p.class ?? ""}`}
                     style={{ width: `min(calc(${p.width ?? 520} * var(--sp)), calc(100vw - 32px))` }}
                     role="dialog"
                     aria-modal="true"
@@ -103,21 +103,21 @@ function DialogInner(p: DialogProps) {
                     onPointerDown={() => focusMoved(box!)}
                 >
                     <Show when={!p.bare}>
-                        <div class="dialog-head">
-                            <div>
-                                <div class="dialog-title" id={titleId}>{p.title}</div>
+                        <div class="dialog-head dlg-head">
+                            <div class="dlg-heading">
+                                <div class="dialog-title dlg-title" id={titleId}>{p.title}</div>
                                 <Show when={p.subtitle}>
-                                    <div class="dialog-sub selectable">{p.subtitle}</div>
+                                    <div class="dialog-sub dlg-sub selectable">{p.subtitle}</div>
                                 </Show>
                             </div>
-                            <button class="icon-btn dialog-close" onClick={() => p.onClose()} aria-label="Close">
+                            <button class="icon-btn dialog-close dlg-close" onClick={() => p.onClose()} aria-label="Close">
                                 <X size={16} />
                             </button>
                         </div>
                     </Show>
-                    <div class="dialog-body selectable">{p.children}</div>
+                    <div class="dialog-body dlg-body selectable">{p.children}</div>
                     <Show when={p.footer}>
-                        <div class="dialog-foot">{p.footer}</div>
+                        <div class="dialog-foot dlg-foot">{p.footer}</div>
                     </Show>
                 </div>
             </div>
