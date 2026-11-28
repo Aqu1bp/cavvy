@@ -398,6 +398,17 @@ describe("tasks.start", () => {
             expect(again.failed).toBeUndefined();
             expect(again.worktree).toEqual(r.worktree);
             expect(engine.runtimes.get(again.sessionId!)!.ws.cwd).toBe(r.worktree!.path);
+            // One remembered isn't gone on in once there are changes in it, or a session is in it: a new one is made.
+            const other = { ...start, origin: { key: "s0#hook-wt2", session: "s0", title: "x" } };
+            const first = await call<StartTaskResult>("tasks.start", other);
+            writeFileSync(join(first.worktree!.path, "README.md"), "changed\n");
+            const dirty = await call<StartTaskResult>("tasks.start", other);
+            expect(dirty.failed?.code).toBe("blocked");
+            expect(dirty.worktree!.path).not.toBe(first.worktree!.path);
+            const open = await engine.createSession(dirty.worktree!.path);
+            const busy = await call<StartTaskResult>("tasks.start", other);
+            expect(busy.worktree!.path).not.toBe(dirty.worktree!.path);
+            expect(engine.runtimes.get(open.id)).toBe(open);
         } finally {
             writeFileSync(settings, was);
         }

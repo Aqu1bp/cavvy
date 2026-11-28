@@ -9,7 +9,8 @@ import { isolate, tempDir } from "./helpers/isolate";
 const iso = isolate();
 const { Engine } = await import("../src/server/engine");
 const { findSessionAnywhere } = await import("../src/agent/session");
-const { purgeTrash, trashDir } = await import("../src/server/session-delete");
+const { purgeTrash, removeUnsavedSession, trashDir } = await import("../src/server/session-delete");
+const { paths } = await import("../src/config/paths");
 const { startMockLlm } = await import("../scripts/mock-llm");
 const { createDemoProject } = await import("../scripts/demo-project");
 import type { ServerEvent, SessionSearchResult, SessionSnapshot, SessionSummary, TrashedSessionSummary } from "../src/server/protocol";
@@ -476,6 +477,32 @@ describe("session.delete", () => {
             await engine.stop();
         }
     });
+});
+
+test("what a discarded session left beside it goes, only in a project's folder in the home, never through a link", () => {
+    const proj = join(paths.projectsDir(), "unsaved-probe");
+    mkdirSync(join(proj, "ui"), { recursive: true });
+    mkdirSync(join(proj, "file-history", "s-gone"), { recursive: true });
+    writeFileSync(join(proj, "ui", "s-gone.jsonl"), "{}\n");
+    removeUnsavedSession(proj, "s-gone");
+    expect([existsSync(join(proj, "ui", "s-gone.jsonl")), existsSync(join(proj, "file-history", "s-gone"))]).toEqual([false, false]);
+    // One with a transcript is a session: left alone.
+    writeFileSync(join(proj, "s-kept.jsonl"), "{}\n");
+    writeFileSync(join(proj, "ui", "s-kept.jsonl"), "{}\n");
+    removeUnsavedSession(proj, "s-kept");
+    expect(existsSync(join(proj, "ui", "s-kept.jsonl"))).toBe(true);
+    // An id that names another folder, or a folder that isn't a project's: refused.
+    expect(() => removeUnsavedSession(proj, "../zz-probe2/x")).toThrow();
+    const outside = tempDir("unsaved-outside-");
+    writeFileSync(join(outside, "s-out.jsonl"), "keep\n");
+    expect(() => removeUnsavedSession(outside, "s-out")).toThrow();
+    // Its ui folder a link out of the home: nothing is removed through it.
+    const linked = join(paths.projectsDir(), "unsaved-linked");
+    mkdirSync(join(linked, "file-history", "s-out"), { recursive: true });
+    symlinkSync(outside, join(linked, "ui"));
+    expect(() => removeUnsavedSession(linked, "s-out")).toThrow();
+    expect(readFileSync(join(outside, "s-out.jsonl"), "utf-8")).toBe("keep\n");
+    expect(existsSync(join(linked, "file-history", "s-out"))).toBe(true);
 });
 
 test("purging removes only entries older than a week, and doesn't follow links", () => {
