@@ -151,7 +151,8 @@ test("Show all lists every one to import, and what isn't listed; none already in
     expect(items.map((i) => text(byClass(i, "span", "cl-act")))).toEqual(["Import", "Import"]);
     expect(text(items[0]!)).toContain("Session b");
     expect(byClass(dialog, "div", "cl-sub")).toEqual([]);
-    expect(byClass(dialog, "div", "cl-note").map(text)).toEqual(["1 more Claude Code session not shown", "3 more Codex sessions not shown"]);
+    // What isn't listed is said in the foot, beside Done.
+    expect(byClass(dialog.props.footer, "div", "cl-note").map(text)).toEqual(["1 more Claude Code session not shown", "3 more Codex sessions not shown"]);
     items[1]!.props.onClick();
     await Bun.sleep(0);
     expect(r.continued).toEqual(["a"]);

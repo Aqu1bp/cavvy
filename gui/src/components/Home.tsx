@@ -4,7 +4,7 @@
 // centred in the column; the composer is at its foot, where a session has it.
 
 import { createEffect, createResource, createSignal, For, onCleanup, onMount, Show } from "solid-js";
-import { ChevronDown, FolderGit2, FolderOpen, KeyRound, Shield } from "lucide-solid";
+import { Check, ChevronDown, FolderOpen, KeyRound, Shield } from "lucide-solid";
 import type { ProviderInfo } from "@shared/protocol";
 import { app, homeOn, homeProjects, noModel, refreshProjects, reportError, rpcFor, serversUi } from "../state/app";
 import { chooseProject, connectCli, homeJumped, openProject, trustAndContinue } from "../state/actions";
@@ -303,34 +303,39 @@ export function Home() {
                 </div>
             </div>
 
-            <Menu label="Recent projects" open={pickerOpen()} anchor={pickerAnchor} onClose={() => setPickerOpen(false)} width={360} align="end">
+            <Menu label="Recent projects" open={pickerOpen()} anchor={pickerAnchor} onClose={() => setPickerOpen(false)} width={360} align="end" class="recent-menu">
                 <div class="menu-head">Recent projects</div>
                 <For each={homeProjects()} fallback={<div class="menu-note">No projects yet.</div>}>
                     {(pr) => (
                         <button
-                            role="menuitem"
-                            class={`menu-item ${pr.path === app.homeCwd ? "current" : ""}`}
+                            role="menuitemradio"
+                            aria-checked={pr.path === app.homeCwd}
+                            class="menu-item"
                             onClick={() => {
                                 setPickerOpen(false);
                                 void openProject(pr.path, true);
                                 requestComposerFocus();
                             }}
                         >
-                            <FolderGit2 size={15} />
+                            <span class="menu-ico">
+                                <Show when={pr.path === app.homeCwd}>
+                                    <Check size={14} />
+                                </Show>
+                            </span>
                             <span class="menu-text">
-                                <span class="menu-label">{pr.name}</span>
-                                <span class="menu-desc mono truncate">{tildify(pr.path, app.hello?.homeDir)}</span>
+                                <span class="truncate">{pr.name}</span>
+                                <span class="recent-path mono truncate">{tildify(pr.path, app.hello?.homeDir)}</span>
                             </span>
                             <Show when={pr.openedAt}>
-                                <span class="muted small">{(now(), ago(pr.openedAt!))}</span>
+                                <span class="recent-when">{(now(), ago(pr.openedAt!))}</span>
                             </Show>
                         </button>
                     )}
                 </For>
                 <div class="menu-sep" />
                 <button role="menuitem" class="menu-item" onClick={() => void pick()}>
-                    <FolderOpen size={15} />
-                    <span class="menu-label">Open folder…</span>
+                    <FolderOpen size={14} />
+                    <span class="grow">Open folder…</span>
                 </button>
             </Menu>
         </div>

@@ -281,13 +281,16 @@
     color: var(--accent-text);
 }
 
-/* ---- Show all: every terminal session of the project ---- */
+/* ---- Show all: every terminal session of the project, a row each across the dialog ---- */
+.dialog.cli-dialog .dialog-body {
+    gap: 0;
+    padding: 0;
+}
+
 .cl-list {
     display: flex;
     flex-direction: column;
-    gap: 1px;
-    max-height: min(calc(340 * var(--sp)), 52vh);
-    margin: 0 calc(-8 * var(--sp));
+    max-height: min(calc(380 * var(--sp)), 56vh);
     overflow-y: auto;
 }
 
@@ -296,37 +299,37 @@
     align-items: center;
     gap: calc(10 * var(--sp));
     min-width: 0;
-    padding: calc(6 * var(--sp)) calc(8 * var(--sp));
-    border-radius: var(--r-row);
+    min-height: calc(48 * var(--sp));
+    padding: calc(6 * var(--sp)) calc(16 * var(--sp)) calc(6 * var(--sp)) calc(20 * var(--sp));
     text-align: left;
+    transition: background 0.1s;
+}
+
+.cl-item + .cl-item {
+    border-top: 1px solid var(--line);
 }
 
 .cl-item:hover:not(:disabled) {
     background: var(--hover);
 }
 
-.cl-main {
-    display: flex;
-    flex: 1;
-    flex-direction: column;
-    min-width: 0;
-    font-weight: 500;
+.cl-title {
+    font-weight: 450;
 }
 
-.cl-act {
-    flex: none;
-    font-size: calc(12 * var(--sp));
-    font-weight: 500;
-    color: var(--fg-3);
-}
-
-.cl-item:hover .cl-act {
-    color: var(--accent-text);
+.cl-act.btn {
+    min-width: calc(66 * var(--sp));
 }
 
 .cl-note {
-    padding: calc(6 * var(--sp)) calc(8 * var(--sp));
     font-size: calc(12 * var(--sp));
+    color: var(--fg-3);
+}
+
+.cl-none {
+    margin: 0;
+    padding: calc(28 * var(--sp)) calc(20 * var(--sp));
+    text-align: center;
     color: var(--fg-3);
 }
 
@@ -386,4 +389,23 @@
     .home-hints {
         display: none;
     }
+}
+
+/* ---- Recent projects (the Project row's menu): a check, the name over its path, when it was opened ---- */
+.recent-menu .menu-item {
+    align-items: flex-start;
+}
+
+.recent-path,
+.recent-when {
+    font-size: calc(12 * var(--sp));
+    color: var(--fg-3);
+}
+
+.recent-when {
+    flex: none;
+}
+
+.recent-menu .menu-ico svg {
+    color: var(--accent-text);
 }
