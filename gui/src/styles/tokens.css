@@ -561,6 +561,7 @@
     --red-soft: #fcebe8;
     --code-head: #f1eeea;
     --shadow-card: 0 1px 2px rgba(29, 28, 26, 0.05), 0 0 0 1px rgba(29, 28, 26, 0.06);
+    --logo-dot: #2a6bff;
 }
 
 [data-theme="dark"] {
@@ -572,4 +573,5 @@
     --red-soft: #371b17;
     --code-head: #242220;
     --shadow-card: 0 0 0 1px rgba(255, 255, 255, 0.06);
+    --logo-dot: #5b8cff;
 }

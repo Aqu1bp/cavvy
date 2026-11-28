@@ -1,7 +1,7 @@
 import { RenderBoundary } from "./components/ui/ErrorBoundary";
 import { watchCodeMetrics } from "./lib/code-metrics";
 import { batch, createEffect, createMemo, createSignal, For, lazy, Match, on, onCleanup, onMount, Show, Switch, untrack, type JSX } from "solid-js";
-import { PlugZap } from "lucide-solid";
+import { Unplug } from "lucide-solid";
 import { ErrorCards } from "./components/ErrorCards";
 import { activate, app, attentionCount, awayUnopened, themeEvents, connFor, connNote, handleFor, homeOn, linkedMachine, machineLink, problemFor, reportError, restoreActiveSession, rpc, rpcFor, serversUi, type SessionHandle } from "./state/app";
 import { tabMachines } from "./lib/terminal";
@@ -33,38 +33,57 @@ import { Home } from "./components/Home";
 import { CommandPalette } from "./components/CommandPalette";
 import { TrustDialog } from "./components/TrustDialog";
 import { RunSheet } from "./components/RunSheet";
-import { Logo, Spinner } from "./components/ui/bits";
+import { Mark, Spinner } from "./components/ui/bits";
 
 function Disconnected() {
     // On a server, what's being reached is that server, through this computer's own Cavvy.
     if (machine) return <div class="splash" ref={(el) => void serversUi().then((m) => m.mountCover(el, () => rpc.reconnectNow()), reportError)} />;
     return (
         <div class="splash">
-            <Switch
-                fallback={
-                    <>
-                        <Logo size={44} />
-                        <Spinner size={18} />
-                        <div class="muted">{app.conn === "reconnecting" ? "Reconnecting to Cavvy server…" : "Starting…"}</div>
-                    </>
-                }
-            >
-                <Match when={app.conn === "unauthorized"}>
-                    <Logo size={44} />
-                    <h2>Open Cavvy from your terminal</h2>
-                    <p class="muted">
-                        Run <code>cavvy gui</code> and use the link it opens or prints.
-                    </p>
-                </Match>
-                <Match when={app.conn === "unavailable"}>
-                    <PlugZap size={36} class="tone-warn" />
-                    <h2>Can't reach Cavvy server</h2>
-                    <p class="muted">{isDesktop ? "The background process stopped. Quit and reopen the app." : "Is `cavvy gui` still running? Still trying to reconnect…"}</p>
-                </Match>
-            </Switch>
-            <button class="btn secondary" onClick={() => rpc.reconnectNow()}>
-                Reconnect now
-            </button>
+            <div class="splash-body">
+                <Switch
+                    fallback={
+                        <>
+                            <Mark size={40} />
+                            <p class="splash-text splash-line" role="status">
+                                <Spinner size={13} />
+                                <span>{app.conn === "reconnecting" ? "Reconnecting to Cavvy server…" : "Starting…"}</span>
+                            </p>
+                            <button type="button" class="btn" onClick={() => rpc.reconnectNow()}>
+                                Reconnect now
+                            </button>
+                        </>
+                    }
+                >
+                    <Match when={app.conn === "unauthorized"}>
+                        <Mark size={40} />
+                        <h1 class="splash-title">Open Cavvy from your terminal</h1>
+                        <p class="splash-text">
+                            Run <code>cavvy gui</code> and use the link it opens or prints.
+                        </p>
+                    </Match>
+                    <Match when={app.conn === "unavailable"}>
+                        <Unplug size={32} class="splash-glyph" />
+                        <h1 class="splash-title">Can't reach Cavvy server</h1>
+                        <Show
+                            when={isDesktop}
+                            fallback={
+                                <p class="splash-text splash-line">
+                                    <Spinner size={13} />
+                                    <span>
+                                        Is <code>cavvy gui</code> still running? Still trying to reconnect…
+                                    </span>
+                                </p>
+                            }
+                        >
+                            <p class="splash-text">The background process stopped. Quit and reopen the app.</p>
+                        </Show>
+                        <button type="button" class="btn" onClick={() => rpc.reconnectNow()}>
+                            Reconnect now
+                        </button>
+                    </Match>
+                </Switch>
+            </div>
         </div>
     );
 }

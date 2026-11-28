@@ -3,25 +3,64 @@
 .splash {
     /* Positioned, so it's drawn over a theme's scene (theme-backdrop.css), as the window it stands in for is. */
     position: relative;
+    display: flex;
+    flex-direction: column;
     flex: 1;
+    min-width: 0;
+    background: var(--bg-side);
+}
+
+.splash-body {
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: calc(14 * var(--sp));
+    gap: calc(12 * var(--sp));
+    flex: 1;
+    padding: calc(32 * var(--sp)) calc(32 * var(--sp)) 8vh;
     text-align: center;
-    padding: calc(24 * var(--sp));
-    animation: fade 400ms;
+    animation: fade-in 0.2s;
 }
 
-.splash h2 {
-    font-size: 1.35rem;
+.splash-glyph {
+    color: var(--text-3);
 }
 
-.splash p {
-    max-width: calc(440 * var(--sp));
+.splash-title {
+    margin-top: calc(6 * var(--sp));
+    font-size: calc(15 * var(--sp));
+    font-weight: 600;
+    letter-spacing: -0.01em;
+}
+
+.splash-text {
+    max-width: calc(380 * var(--sp));
     margin: 0;
-    line-height: 1.6;
+    color: var(--text-2);
+    font-size: calc(13 * var(--sp));
+    line-height: 1.5;
+}
+
+.splash-title + .splash-text {
+    margin-top: calc(-6 * var(--sp));
+}
+
+.splash-line {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    margin-top: calc(4 * var(--sp));
+}
+
+.splash-line .spinner {
+    color: var(--text-3);
+}
+
+.splash code {
+    padding: calc(1.5 * var(--sp)) calc(5 * var(--sp));
+    border-radius: calc(5 * var(--sp));
+    background: color-mix(in srgb, var(--text) 8%, transparent);
+    font-size: 0.9em;
 }
 
 /* ---- Feedback: toasts and error cards in one place ----------------------
