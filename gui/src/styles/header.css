@@ -26,7 +26,7 @@
 }
 
 /* The rail's two buttons, here while it's hidden or floating: on the lights'
-   line, a fixed gap after them (macOS), then a hairline before the title.
+   line, a fixed gap after them (macOS), then the title.
    While the rail shows, a box of no width (its one column 0fr) that takes back the bar's gap after it. It opens and
    closes with the rail's slide (shell.css), so the title moves to its place in step with the sheet: shown and hidden
    at once, the title jumped by their width one way and then slid the other. Not seen or focused while closed. */
@@ -50,15 +50,6 @@
     margin: -4px;
     padding: 4px;
     overflow: hidden;
-}
-
-.bar-rail-in::after {
-    content: "";
-    width: 1px;
-    height: 16px;
-    margin: 0 6px;
-    background: var(--line-strong);
-    flex: none;
 }
 
 .header.rail-off,
