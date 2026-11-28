@@ -694,7 +694,6 @@ span.tool-target {
 /* ---------- work log ---------- */
 
 .worklog,
-.think,
 .agents,
 .say {
     margin: calc(-3 * var(--sp)) 0;

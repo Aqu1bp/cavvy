@@ -92,6 +92,7 @@ try {
     const icon = () => node("icon");
     const Thinking = component(source.slice(source.indexOf("/**\n * The model's reasoning"), source.indexOf("/** A run of calls in a turn's work")), "Thinking", {
         ChevronRight: icon,
+        Brain: icon,
         prefs: { showThinking: true },
         enterRow() {},
         motionMs: () => 0,
