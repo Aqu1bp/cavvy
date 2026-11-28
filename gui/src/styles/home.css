@@ -100,7 +100,7 @@
 
 .home-select > svg:first-child {
     flex: none;
-    color: var(--glyph-3);
+    color: var(--text-3);
 }
 
 /* On its way to another machine: dimmed until it's there. */

@@ -58,7 +58,7 @@
 .crow-icon {
     display: inline-flex;
     flex: none;
-    color: var(--glyph-3);
+    color: var(--text-3);
 }
 
 .crow-label {
@@ -179,7 +179,7 @@
     justify-content: center;
     width: calc(22 * var(--sp));
     border-radius: 0 var(--radius-s) var(--radius-s) 0;
-    color: var(--glyph-3);
+    color: var(--text-3);
 }
 
 .cchip-x:hover {

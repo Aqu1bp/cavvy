@@ -143,7 +143,7 @@
     height: calc(22 * var(--sp));
     padding: 0 calc(7 * var(--sp));
     border-radius: calc(5 * var(--sp));
-    color: var(--glyph-3);
+    color: var(--text-3);
     font-family: var(--font-ui);
     font-size: calc(11.5 * var(--sp));
     font-weight: 500;
@@ -227,7 +227,7 @@
 
 .chev {
     flex: none;
-    color: var(--glyph-3);
+    color: var(--text-3);
     transition: transform 0.14s var(--ease);
 }
 
@@ -832,7 +832,7 @@ span.menu-check {
 
 .select-caret {
     flex: none;
-    color: var(--glyph-3);
+    color: var(--text-3);
 }
 
 .field {
@@ -1003,7 +1003,7 @@ button.row:hover {
 .row-icon {
     display: inline-flex;
     flex: none;
-    color: var(--glyph-3);
+    color: var(--text-3);
 }
 
 /* ---------- notes: one quiet line inside a pane or dialog ---------- */
@@ -1023,7 +1023,7 @@ button.row:hover {
 .note > svg {
     flex: none;
     margin-top: calc(2 * var(--sp));
-    color: var(--glyph-3);
+    color: var(--text-3);
 }
 
 .note[data-tone="amber"] {
@@ -1080,7 +1080,7 @@ button.row:hover {
 }
 
 .blank-spinner {
-    color: var(--glyph-3);
+    color: var(--text-3);
 }
 
 /* ---------- small helpers ---------- */

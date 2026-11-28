@@ -227,7 +227,7 @@
 }
 
 .bar-attach {
-    color: var(--glyph-3);
+    color: var(--text-3);
 }
 
 .bar-btn {
@@ -266,7 +266,7 @@
 .bar-chev {
     flex: none;
     margin-left: calc(-2 * var(--sp));
-    color: var(--glyph-3);
+    color: var(--text-3);
 }
 
 .bar-fast {
@@ -906,7 +906,7 @@ button.meter[aria-expanded="true"] {
 .suggest-icon {
     flex: none;
     align-self: center;
-    color: var(--glyph-3);
+    color: var(--text-3);
 }
 
 .suggest-name {

@@ -42,7 +42,7 @@
 
 .mp-current-chev {
     margin-left: auto;
-    color: var(--glyph-3);
+    color: var(--text-3);
 }
 
 .mp-fast {
@@ -181,7 +181,7 @@
 .mp-search-icon {
     flex: none;
     margin: 0 calc(5 * var(--sp));
-    color: var(--glyph-3);
+    color: var(--text-3);
 }
 
 .mp-search input {
@@ -464,7 +464,7 @@
 
 /* The level a click would pick, under the pointer; dragging. */
 .effort-stop[data-hov] {
-    background: var(--glyph-3);
+    background: var(--text-3);
 }
 
 .effort-track[data-drag] {

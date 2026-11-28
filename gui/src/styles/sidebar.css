@@ -1,7 +1,6 @@
 /* ---- Rail: the sessions --------------------------------------------------
    The remix design's sidebar.css and rail.css, as they are: the rail's rules
-   cascaded into one, px that sit with text as calc(N * var(--sp)), icons on
-   --glyph-3. Cavvy's frame stays (the shell draws the rail's ground and sizes
+   cascaded into one, px that sit with text as calc(N * var(--sp)). Cavvy's frame stays (the shell draws the rail's ground and sizes
    it), and Cavvy's extras are in the same pattern. No row animates on its own. */
 
 .sidebar {
@@ -113,7 +112,7 @@ button.search:hover {
 
 .search-icon {
     flex: none;
-    color: var(--glyph-3);
+    color: var(--text-3);
 }
 
 .search-label {
@@ -182,9 +181,8 @@ button.search:hover {
     color: var(--text-3);
 }
 
-/* Icons keep the design's own grey (--glyph-3); the words take the AA one. */
 .sgroup-toggle > svg {
-    color: var(--glyph-3);
+    color: var(--text-3);
 }
 
 .sgroup-toggle:hover > svg {
@@ -233,7 +231,7 @@ button.search:hover {
 }
 
 .sgroup-add {
-    color: var(--glyph-3);
+    color: var(--text-3);
 }
 
 .sgroup-needs .sgroup-label {
@@ -366,7 +364,7 @@ button.search:hover {
 }
 
 .srow-provider {
-    color: var(--glyph-3);
+    color: var(--text-3);
     filter: grayscale(1);
     opacity: 0.8;
 }
@@ -537,7 +535,7 @@ button.search:hover {
 }
 
 .status-icon[data-status="stopped"] {
-    color: var(--glyph-3);
+    color: var(--text-3);
 }
 
 /* The dot that says a session waits: solid, no halo. */
@@ -592,7 +590,7 @@ button.search:hover {
 .srun-icon {
     flex: none;
     margin: 0 1px;
-    color: var(--glyph-3);
+    color: var(--text-3);
 }
 
 .srun-label {
