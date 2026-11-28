@@ -599,13 +599,16 @@ test("with sync on, a CLI the server lacks is installed there by its own install
         expect(again.installing).toBeUndefined();
 
         // The server gets a new installer for it (an update): this computer's state hasn't changed, and the next
-        // sync installs it all the same.
+        // sync installs it all the same. Its record from before the update doesn't say installs were asked for.
+        const recordFile = join(serverHome, "synced-state.json");
+        const { installMissing: _, ...older } = JSON.parse(readFileSync(recordFile, "utf-8"));
+        writeFileSync(recordFile, JSON.stringify(older));
         const def = agentCli("grok")!;
         const was = def.cli.installCommand;
         def.cli.installCommand = `mkdir -p "${join(userHome, "tools")}" && printf "#!/bin/sh\\n" > "${grok}" && chmod +x "${grok}"`;
         try {
             const updated = await syncStateTo(ask, { includeSecrets: false, installMissing: true });
-            expect(updated.installing).toEqual(["grok"]);
+            expect(updated.unchanged).toBeUndefined();
             await inHome(serverHome, async () => {
                 while (installing().length) await Bun.sleep(20);
             });

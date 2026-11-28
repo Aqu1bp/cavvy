@@ -545,7 +545,7 @@ interface SyncedStateRecord {
     installedClis?: string[];
     /** CLIs last requested by the Mac that weren't installed yet. */
     missingClis?: string[];
-    /** The last state taken asked for those to be installed (sync on). */
+    /** The last state taken asked for those to be installed (sync on). Unknown in a record from before it was kept. */
     installMissing?: boolean;
     settings: Record<string, string>;
     /** Only rules INSERTED/OWNED by sync: pre-existing server rules are never added here. */
@@ -583,7 +583,7 @@ export function readSyncedStateRecord(): SyncedStateRecord {
             ...(typeof v.digest === "string" ? { digest: v.digest } : {}),
             ...(Array.isArray(v.installedClis) ? { installedClis: v.installedClis.filter((x: unknown): x is string => typeof x === "string") } : {}),
             ...(Array.isArray(v.missingClis) ? { missingClis: v.missingClis.filter((x: unknown): x is string => typeof x === "string") } : {}),
-            ...(v.installMissing === true ? { installMissing: true } : {}),
+            ...(typeof v.installMissing === "boolean" ? { installMissing: v.installMissing } : {}),
             settings: v.settings && typeof v.settings === "object" ? v.settings : {},
             rules: {
                 allow: Array.isArray(v.rules?.allow) ? v.rules.allow.filter((x: unknown): x is string => typeof x === "string") : [],
@@ -674,7 +674,7 @@ export async function readSyncedStateDigest(signIns = true): Promise<SyncRemoteS
     const now = installing();
     // One missing that would be installed now (this server restarted since its installer failed, or has a new
     // installer): the computer's state, though unchanged, is asked for again, and taking it installs it.
-    const retry = r.installMissing === true && missingClis.some(wouldInstall);
+    const retry = r.installMissing !== false && missingClis.some(wouldInstall);
     return {
         // One being installed: asked for again once it's there, which a changed list of CLIs above sees to.
         ...(r.digest && sameClis && !retry ? { digest: r.digest } : {}),
@@ -1402,8 +1402,7 @@ export async function applyStateSync(digest: unknown, raw: unknown, o: { signIns
 
             record.agents = nextAgentRec;
             record.missingClis = [...missingClis].sort();
-            if (p.installMissing === true) record.installMissing = true;
-            else delete record.installMissing;
+            record.installMissing = p.installMissing === true;
         }
 
         // 4b. Named copies of a CLI (Claude Code · OpenRouter): one sync added, while unchanged here, follows the
