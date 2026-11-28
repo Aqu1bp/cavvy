@@ -154,11 +154,11 @@ test("what the rail's hiding puts before the title opens with the slide, so the 
     expect([ring?.decls.get("outline")?.split(" ")[0], ring?.decls.get("outline-offset")]).toEqual(["2px", "2px"]);
     expect([decls(".bar-rail-in").get("padding"), decls(".bar-rail-in").get("margin")]).toEqual(["4px", "-4px"]);
     // Closed, the box takes back the gap that would follow it: the bar's (10px).
-    expect(decls(".header").get("gap")).toBe("10px");
+    expect(decls(".main-head").get("gap")).toBe("10px");
     expect([decls(".bar-rail").get("margin-right"), decls(".header.rail-off .bar-rail").get("margin-right")]).toEqual(["-10px", "calc(2 * var(--sp))"]);
     // The boxes are in the bar whether the rail shows or not.
     const bar = read("components/Header.tsx");
-    expect(bar).toMatch(/<div class="bar-rail">\s*<div class="bar-rail-in">/);
+    expect(bar).toMatch(/<div class="bar-rail">\s*<div class="bar-rail-in main-head-lead">/);
 });
 
 test("the title bar keeps to the top line through the slide: its padding eases as the window's inset does", () => {

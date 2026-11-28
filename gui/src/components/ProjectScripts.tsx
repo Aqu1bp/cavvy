@@ -5,7 +5,7 @@
 
 import { createEffect, createSignal, For, on, onCleanup, Show } from "solid-js";
 import { Dynamic } from "solid-js/web";
-import { ArrowUp, Bug, ChevronDown, FlaskConical, Hammer, ListChecks, Pencil, Play, Plus, Trash2, Wrench } from "lucide-solid";
+import { ArrowUp, Bug, ChevronDown, Download, FlaskConical, Hammer, ListChecks, Pencil, Play, Plus, Trash2 } from "lucide-solid";
 import { SCRIPT_ICONS, SCRIPT_LIMITS, type ProjectScript, type ProjectScripts as ScriptList, type ScriptIcon } from "@shared/protocol";
 import { app, connFor, reportError, rpcFor } from "../state/app";
 import type { Rpc } from "../lib/rpc";
@@ -19,7 +19,7 @@ const ICONS: Record<ScriptIcon, { icon: typeof Play; label: string }> = {
     test: { icon: FlaskConical, label: "Test" },
     lint: { icon: ListChecks, label: "Lint" },
     build: { icon: Hammer, label: "Build" },
-    setup: { icon: Wrench, label: "Setup" },
+    setup: { icon: Download, label: "Setup" },
     debug: { icon: Bug, label: "Debug" },
 };
 
@@ -126,8 +126,8 @@ export function ProjectScripts(p: { cwd: string; sessionId?: string }) {
                     )}
                 </Show>
             </div>
-            <Popover open={open()} anchor={() => anchor} onClose={close} align="end" width={284} class="scripts-menu">
-                <div class="menu-head">Project scripts</div>
+            <Popover open={open()} anchor={() => anchor} onClose={close} align="end" width={284} class="menu scripts-menu">
+                <div class="menu-label">Project scripts</div>
                 <Show when={failed()}>
                     <div class="menu-note tone-err scripts-note">{failed()}</div>
                 </Show>
@@ -153,16 +153,16 @@ export function ProjectScripts(p: { cwd: string; sessionId?: string }) {
                                         <span class="scripts-row-icon"><ScriptGlyph icon={s.icon} size={14} /></span>
                                         <span class="scripts-row-name truncate">{s.name}</span>
                                         <Show when={s.runOnWorktreeCreate}>
-                                            <span class="dbadge" title="Runs in each new worktree">Setup</span>
+                                            <span class="tag" title="Runs in each new worktree">Setup</span>
                                         </Show>
                                     </button>
-                                    <button class="hb sm" title="Move up" aria-label={`Move ${s.name} up`} disabled={offline() || i() === 0} onClick={() => void moveUp(i())}>
+                                    <button class="icon-btn icon-btn-sm" title="Move up" aria-label={`Move ${s.name} up`} disabled={offline() || i() === 0} onClick={() => void moveUp(i())}>
                                         <ArrowUp size={13} />
                                     </button>
-                                    <button class="hb sm" title="Edit" aria-label={`Edit ${s.name}`} disabled={offline()} onClick={() => edit(s)}>
+                                    <button class="icon-btn icon-btn-sm" title="Edit" aria-label={`Edit ${s.name}`} disabled={offline()} onClick={() => edit(s)}>
                                         <Pencil size={13} />
                                     </button>
-                                    <button class="hb sm" title="Delete" aria-label={`Delete ${s.name}`} disabled={offline()} onClick={() => setConfirming(s.id)}>
+                                    <button class="icon-btn icon-btn-sm" title="Delete" aria-label={`Delete ${s.name}`} disabled={offline()} onClick={() => setConfirming(s.id)}>
                                         <Trash2 size={13} />
                                     </button>
                                 </div>
@@ -170,8 +170,8 @@ export function ProjectScripts(p: { cwd: string; sessionId?: string }) {
                         >
                             <div class="scripts-row scripts-row-confirm">
                                 <span class="scripts-confirm truncate">Delete “{s.name}”?</span>
-                                <button class="btn danger sm" ref={(el) => requestAnimationFrame(() => el.focus())} onClick={() => void remove(s)}>Delete</button>
-                                <button class="btn sm" onClick={() => setConfirming(undefined)}>Keep</button>
+                                <button class="btn btn-sm btn-danger" ref={(el) => requestAnimationFrame(() => el.focus())} onClick={() => void remove(s)}>Delete</button>
+                                <button class="btn btn-sm" onClick={() => setConfirming(undefined)}>Keep</button>
                             </div>
                         </Show>
                     )}
@@ -180,8 +180,9 @@ export function ProjectScripts(p: { cwd: string; sessionId?: string }) {
                     <Show when={scripts().length}>
                         <div class="menu-sep" />
                     </Show>
-                    <button class="menu-item compact" disabled={offline() || scripts().length >= SCRIPT_LIMITS.perProject} title={scripts().length >= SCRIPT_LIMITS.perProject ? `At most ${SCRIPT_LIMITS.perProject} scripts` : undefined} onClick={() => edit()}>
-                        <Plus size={14} /> {scripts().length ? "Add script…" : "Add your first script…"}
+                    <button class="menu-item" disabled={offline() || scripts().length >= SCRIPT_LIMITS.perProject} title={scripts().length >= SCRIPT_LIMITS.perProject ? `At most ${SCRIPT_LIMITS.perProject} scripts` : undefined} onClick={() => edit()}>
+                        <Plus size={14} />
+                        <span class="menu-item-name">{scripts().length ? "Add script…" : "Add your first script…"}</span>
                     </button>
                 </Show>
             </Popover>
@@ -270,9 +271,9 @@ function ScriptDialog(p: { cwd: string; link: Rpc; online: boolean; scripts: Pro
                 <div class="script-field-error" role="alert">{error()}</div>
             </Show>
             <div class="dialog-actions">
-                <button class="btn ghost" onClick={p.onClose}>Cancel</button>
+                <button class="btn" onClick={p.onClose}>Cancel</button>
                 <span class="grow" />
-                <button class="btn primary" disabled={!ready() || !p.online} onClick={() => void save()}>
+                <button class="btn btn-primary" disabled={!ready() || !p.online} onClick={() => void save()}>
                     {p.editing?.script ? "Save" : "Add script"}
                 </button>
             </div>
