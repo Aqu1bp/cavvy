@@ -311,7 +311,9 @@ function SessionRow(p: { s: SessionSummary; kind: RowKind; hold: (id: string, he
     return (
         <div
             ref={el}
+            // `cur`: the selected row's hook for the browser tests (perf-gui); the look keys on data-selected.
             class={slim ? "srow srow-slim" : "srow"}
+            classList={{ cur: current() }}
             data-session-id={needs ? undefined : p.s.id}
             data-needs-id={needs ? p.s.id : undefined}
             data-selected={current() || undefined}
@@ -793,7 +795,7 @@ export function Sidebar() {
             }
         >
             <div class="sidebar-actions">
-                <button class="new-session" title={withShortcut("New session", "app:newSession")} onClick={() => (setSettingsTab(undefined), newSession(app.homeCwd))}>
+                <button class="new-session nav-row" title={withShortcut("New session", "app:newSession")} onClick={() => (setSettingsTab(undefined), newSession(app.homeCwd))}>
                     <SquarePen size={15} />
                     <span>New session</span>
                     <NavKeys action="app:newSession" />
