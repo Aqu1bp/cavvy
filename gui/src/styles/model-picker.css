@@ -1,0 +1,477 @@
+/* The model picker (ModelPicker.tsx): the effort view, the models view, and the slider Settings uses too.
+   The design's rules as they are; Cavvy's own pieces (the tabs' scroll arrows, the accounts list, the slider's
+   hover and drag) follow at the end, in its pattern. */
+
+.popover.mp {
+    width: calc(348 * var(--sp));
+    padding: 0;
+    overflow: hidden;
+}
+
+.mp-effort {
+    padding: calc(8 * var(--sp)) calc(8 * var(--sp)) calc(14 * var(--sp));
+}
+
+.mp-row {
+    display: flex;
+    align-items: center;
+    gap: calc(6 * var(--sp));
+}
+
+.mp-current {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    flex: 1;
+    min-width: 0;
+    height: calc(34 * var(--sp));
+    padding: 0 calc(8 * var(--sp));
+    border-radius: var(--radius-s);
+    font-weight: 500;
+}
+
+.mp-current:hover {
+    background: var(--fill-2);
+}
+
+.mp-current-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.mp-current-chev {
+    margin-left: auto;
+    color: var(--glyph-3);
+}
+
+.mp-fast {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(5 * var(--sp));
+    flex: none;
+    height: calc(28 * var(--sp));
+    padding: 0 calc(9 * var(--sp)) 0 calc(7 * var(--sp));
+    border-radius: var(--radius-s);
+    box-shadow: inset 0 0 0 1px var(--line-strong);
+    color: var(--text-2);
+    font-size: calc(12.5 * var(--sp));
+    font-weight: 500;
+}
+
+.mp-fast:hover {
+    background: var(--fill-1);
+}
+
+.mp-fast[aria-pressed="true"] {
+    background: var(--amber-soft);
+    box-shadow: inset 0 0 0 1px var(--amber-line);
+    color: var(--amber);
+}
+
+.mp-fast[aria-disabled="true"] {
+    opacity: 0.5;
+    cursor: default;
+}
+
+.effort {
+    margin: calc(16 * var(--sp)) calc(28 * var(--sp)) 0;
+}
+
+.effort-track {
+    position: relative;
+    height: calc(16 * var(--sp));
+    cursor: pointer;
+    touch-action: none;
+    outline: none;
+}
+
+.effort-track::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: calc(7 * var(--sp));
+    height: calc(2 * var(--sp));
+    border-radius: 1px;
+    background: var(--fill-3);
+}
+
+.effort-fill {
+    position: absolute;
+    left: 0;
+    top: calc(7 * var(--sp));
+    height: calc(2 * var(--sp));
+    border-radius: 1px;
+    background: var(--text);
+}
+
+.effort-stop {
+    position: absolute;
+    top: calc(5 * var(--sp));
+    width: calc(6 * var(--sp));
+    height: calc(6 * var(--sp));
+    margin-left: calc(-3 * var(--sp));
+    border-radius: 50%;
+    background: var(--fill-3);
+    box-shadow: 0 0 0 2px var(--surface);
+}
+
+.effort-stop[data-on] {
+    background: var(--text);
+}
+
+.effort-thumb {
+    position: absolute;
+    top: 1px;
+    width: calc(14 * var(--sp));
+    height: calc(14 * var(--sp));
+    margin-left: calc(-7 * var(--sp));
+    border-radius: 50%;
+    background: var(--surface);
+    box-shadow: inset 0 0 0 4px var(--text), 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+.effort-track:focus-visible .effort-thumb {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+}
+
+.effort-labels {
+    position: relative;
+    height: calc(20 * var(--sp));
+    margin-top: calc(6 * var(--sp));
+}
+
+.effort-label {
+    position: absolute;
+    top: 0;
+    transform: translateX(-50%);
+    padding: 1px calc(4 * var(--sp));
+    border-radius: calc(4 * var(--sp));
+    color: var(--text-3);
+    font-size: calc(11.5 * var(--sp));
+    white-space: nowrap;
+}
+
+.effort-label:hover {
+    color: var(--text);
+}
+
+.effort-label[data-on] {
+    color: var(--text);
+    font-weight: 500;
+}
+
+.mp-models {
+    display: flex;
+    flex-direction: column;
+    max-height: min(calc(480 * var(--sp)), var(--radix-popover-content-available-height, calc(480 * var(--sp))));
+}
+
+.mp-search {
+    display: flex;
+    align-items: center;
+    gap: calc(4 * var(--sp));
+    height: calc(40 * var(--sp));
+    padding: 0 calc(6 * var(--sp)) 0 calc(8 * var(--sp));
+    border-bottom: 1px solid var(--line);
+}
+
+.mp-search-icon {
+    flex: none;
+    margin: 0 calc(5 * var(--sp));
+    color: var(--glyph-3);
+}
+
+.mp-search input {
+    flex: 1;
+    min-width: 0;
+    border: 0;
+    background: none;
+    outline: none;
+    padding: 0 calc(4 * var(--sp));
+}
+
+.mp-search input::placeholder {
+    color: var(--text-3);
+}
+
+.mp-tabs {
+    display: flex;
+    align-items: center;
+    padding: calc(6 * var(--sp)) calc(6 * var(--sp)) 0;
+}
+
+.mp-caption {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: calc(8 * var(--sp));
+    height: calc(30 * var(--sp));
+    padding: 0 calc(6 * var(--sp)) 0 calc(14 * var(--sp));
+    border-bottom: 1px solid var(--line);
+}
+
+.mp-caption-name {
+    color: var(--text-3);
+    font-size: calc(11.5 * var(--sp));
+    font-weight: 500;
+}
+
+.mp-tablist {
+    display: flex;
+    align-items: center;
+    gap: 1px;
+    flex: 1;
+    min-width: 0;
+}
+
+.mp-tab {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: calc(6 * var(--sp));
+    flex: none;
+    width: calc(32 * var(--sp));
+    height: calc(28 * var(--sp));
+    padding: 0;
+    border-radius: var(--radius-s);
+    color: var(--text-2);
+    font-size: calc(12 * var(--sp));
+    font-weight: 500;
+    white-space: nowrap;
+}
+
+.mp-tab:hover {
+    background: var(--fill-1);
+}
+
+.mp-tab[aria-selected="true"] {
+    background: var(--fill-2);
+    color: var(--text);
+}
+
+.mp-tab-dot {
+    position: absolute;
+    top: calc(3 * var(--sp));
+    right: calc(3 * var(--sp));
+    width: calc(5 * var(--sp));
+    height: calc(5 * var(--sp));
+    border-radius: 50%;
+    background: var(--red);
+}
+
+.mp-account {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(5 * var(--sp));
+    flex: none;
+    max-width: calc(160 * var(--sp));
+    height: calc(24 * var(--sp));
+    padding: 0 calc(6 * var(--sp)) 0 calc(8 * var(--sp));
+    border-radius: var(--radius-s);
+    color: var(--text-2);
+    font-size: calc(12 * var(--sp));
+}
+
+.mp-account:hover,
+.mp-account[aria-expanded="true"] {
+    background: var(--fill-1);
+    color: var(--text);
+}
+
+.mp-list {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: calc(5 * var(--sp));
+}
+
+.mp-item {
+    display: flex;
+    align-items: center;
+    border-radius: calc(6 * var(--sp));
+}
+
+.mp-item:is(:hover, .sel) {
+    background: var(--fill-2);
+}
+
+.mp-item-main {
+    display: flex;
+    align-items: center;
+    gap: calc(9 * var(--sp));
+    flex: 1;
+    min-width: 0;
+    height: calc(30 * var(--sp));
+    padding: 0 calc(4 * var(--sp)) 0 calc(9 * var(--sp));
+    border-radius: calc(6 * var(--sp));
+}
+
+.mp-item-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: left;
+}
+
+.mp-item .srow-pick {
+    margin: 0;
+}
+
+.mp-item .kbd {
+    background: none;
+    box-shadow: none;
+    color: var(--text-4);
+    padding: 0 1px;
+    min-width: 0;
+}
+
+.mp-star {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    width: calc(28 * var(--sp));
+    height: calc(30 * var(--sp));
+    border-radius: calc(6 * var(--sp));
+    color: var(--text-4);
+}
+
+.mp-star:hover {
+    color: var(--text);
+}
+
+.mp-star[aria-pressed="true"] {
+    color: var(--amber-strong);
+}
+
+.mp-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: calc(10 * var(--sp));
+    padding: calc(28 * var(--sp)) calc(16 * var(--sp));
+    color: var(--text-3);
+    font-size: calc(12.5 * var(--sp));
+    text-align: center;
+}
+
+.mp-note {
+    padding: calc(6 * var(--sp)) calc(9 * var(--sp));
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
+}
+
+.mp-note-warn {
+    color: var(--amber);
+    border-bottom: 1px solid var(--line);
+    padding: calc(8 * var(--sp)) calc(14 * var(--sp));
+}
+
+.mp-foot {
+    flex: none;
+    padding: calc(4 * var(--sp)) 0;
+    border-top: 1px solid var(--line);
+    background: var(--fill-1);
+}
+
+.mp-foot .mp-note {
+    padding: 0 calc(14 * var(--sp)) calc(6 * var(--sp));
+}
+
+.mp-compare {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: calc(10 * var(--sp));
+    height: calc(34 * var(--sp));
+    padding: 0 calc(12 * var(--sp)) 0 calc(14 * var(--sp));
+}
+
+.mp-compare-label {
+    display: inline-flex;
+    align-items: baseline;
+    gap: calc(8 * var(--sp));
+    font-weight: 500;
+}
+
+
+/* ---- Cavvy's own pieces, in the design's pattern ---- */
+
+/* The tabs scroll sideways when they don't fit, faded at an edge with more past it, where an arrow shows. */
+.mp-tabs {
+    position: relative;
+}
+
+.mp-tablist {
+    overflow-x: auto;
+    scrollbar-width: none;
+    scroll-padding: 0 calc(28 * var(--sp));
+}
+
+.mp-tablist.more-r {
+    mask-image: linear-gradient(90deg, #000 calc(100% - 52px), transparent calc(100% - 22px));
+}
+
+.mp-tablist.more-l {
+    mask-image: linear-gradient(90deg, transparent 22px, #000 52px);
+}
+
+.mp-tablist.more-l.more-r {
+    mask-image: linear-gradient(90deg, transparent 22px, #000 52px, #000 calc(100% - 52px), transparent calc(100% - 22px));
+}
+
+.mp-more {
+    position: absolute;
+    top: calc(8 * var(--sp));
+}
+
+.mp-more.l {
+    left: calc(4 * var(--sp));
+}
+
+.mp-more.r {
+    right: calc(4 * var(--sp));
+}
+
+/* A subscription's accounts: the caption's button opens their list under it. */
+.mp-acct {
+    position: relative;
+    display: inline-flex;
+    min-width: 0;
+    margin-left: auto;
+}
+
+.mp-account[data-missing] {
+    color: var(--amber);
+}
+
+.mp-acct-menu {
+    position: absolute;
+    top: calc(100% + 4 * var(--sp));
+    right: 0;
+    z-index: 2;
+    width: max-content;
+    max-width: calc(260 * var(--sp));
+    max-height: min(calc(220 * var(--sp)), calc((var(--mp-fit, 380) - 118) * var(--sp)));
+    overflow-y: auto;
+}
+
+/* The level a click would pick, under the pointer; dragging. */
+.effort-stop[data-hov] {
+    background: var(--glyph-3);
+}
+
+.effort-track[data-drag] {
+    cursor: grabbing;
+}
+
+/* Settings: the track alone, in its row. */
+.effort-sm {
+    margin: 0;
+}

@@ -7,6 +7,7 @@ import { ModelPicker } from "../src/components/ModelPicker";
 import { app, rpc, setApp } from "../src/state/app";
 import { addAccountFor, setAddAccountFor, setSettingsTab, settingsTab } from "../src/state/ui";
 import "../src/styles/composer.css";
+import "../src/styles/kit.css";
 import "../src/styles/overlays.css";
 
 function check(ok: unknown, message: string): asserts ok {
@@ -54,20 +55,20 @@ export async function checkModelPicker(root: HTMLElement) {
     box.style.cssText = "position: fixed; left: 20px; bottom: 20px";
     root.append(box);
     const dispose = render(() => <ModelPicker open={open()} setOpen={setOpen} currentRef="claude-code:opus" placement="top" />, box);
-    const trigger = box.querySelector<HTMLButtonElement>("button.pick")!;
+    const trigger = box.querySelector<HTMLButtonElement>("button.bar-btn.model")!;
     // The open panel's, not the closing copy's: reopening the picker builds them anew.
     const panel = () => document.querySelector<HTMLElement>(".popover.mp:not(.closing)");
     const inPanel = <T extends HTMLElement = HTMLElement>(selector: string) => [...(panel()?.querySelectorAll<T>(selector) ?? [])];
-    const rows = () => inPanel(".mr");
-    const row = (name: string) => rows().find((r) => r.querySelector(".mr-name")?.textContent === name)!;
+    const rows = () => inPanel(".mp-item");
+    const row = (name: string) => rows().find((r) => r.querySelector(".mp-item-name")?.textContent === name)!;
     // A filter by its name: its words, after the provider's icon (a letter, for a provider with no logo).
     const filterName = (t: Element) => (t.querySelector(".sr-only, .truncate") ?? t).textContent?.trim();
-    const filter = (name: string) => inPanel(".mp-filters [role='tab']").find((t) => filterName(t) === name)!;
+    const filter = (name: string) => inPanel(".mp-tablist [role='tab']").find((t) => filterName(t) === name)!;
     // A subscription's account, at the end of the filters' row: one button naming the session's, which opens a short
     // list of them (each by its name, and a plan near its limit), then "Add account".
-    const acctButton = () => panel()?.querySelector<HTMLButtonElement>(".mp-cap .mp-acct-btn");
-    const list = () => panel()?.querySelector<HTMLElement>(".mp-cap .mp-acct-menu");
-    const named = (b: Element) => b.querySelector(".truncate")?.textContent;
+    const acctButton = () => panel()?.querySelector<HTMLButtonElement>(".mp-caption .mp-account");
+    const list = () => panel()?.querySelector<HTMLElement>(".mp-caption .mp-acct-menu");
+    const named = (b: Element) => b.querySelector(".truncate, .menu-item-name")?.textContent;
     const items = () => inPanel<HTMLButtonElement>(".mp-acct-menu [role='menuitemradio']");
     const item = (name: string) => items().find((b) => named(b) === name)!;
     const checked = () => items().filter((b) => b.getAttribute("aria-checked") === "true").map(named).join();
@@ -97,21 +98,21 @@ export async function checkModelPicker(root: HTMLElement) {
         // The current model: only an accent check (and a hair heavier name). Rows are just names: no ids, context or price.
         const current = row("Opus 5.5");
         check(current, `rows read as clean names (${rows().map((r) => r.textContent).join(" | ")})`);
-        check(rows().every((r) => !/claude-/.test(r.querySelector(".mr-name")?.textContent ?? "")), `names show no model ids (${rows().map((r) => r.textContent).join(" | ")})`);
-        check(rows().every((r) => !r.querySelector(".mr-sub")), `rows have no line under the name (${rows().map((r) => r.textContent).join(" | ")})`);
-        check(current.querySelector(".mr-mark svg")?.checkVisibility(), "the current model has a check");
-        check(rows().filter((r) => r.querySelector(".mr-mark svg")).length === 1, "only the current model has a check");
+        check(rows().every((r) => !/claude-/.test(r.querySelector(".mp-item-name")?.textContent ?? "")), `names show no model ids (${rows().map((r) => r.textContent).join(" | ")})`);
+        check(rows().every((r) => !r.querySelector(".mp-item-sub")), `rows have no line under the name (${rows().map((r) => r.textContent).join(" | ")})`);
+        check(current.querySelector(".menu-check svg")?.checkVisibility(), "the current model has a check");
+        check(rows().filter((r) => r.querySelector(".menu-check svg")).length === 1, "only the current model has a check");
         check(current.querySelector("[role='option']")?.getAttribute("aria-selected") === "true", "the current model is the selected option");
         const plain = row("Haiku 4.5");
-        const weight = (r: Element) => Number(getComputedStyle(r.querySelector(".mr-name")!).fontWeight);
+        const weight = (r: Element) => Number(getComputedStyle(r.querySelector(".mp-item-name")!).fontWeight);
         check(weight(current) >= weight(plain) && weight(current) <= 600, `the current model's name is at most semibold (${weight(current)})`);
         // It opens highlighted (the keyboard's place), and that neutral fill is the only one.
         check(current.classList.contains("sel") && bg(current) !== bg(plain), "the picker opens with the current model highlighted");
         const neutral = bg(current);
         // The filters have no mark for the current model's provider: only the open filter's brighter words, and the label for screen readers.
-        const filterCurrent = filter("Claude Code");
+        let filterCurrent = filter("Claude Code");
         check(/current model/.test(filterCurrent.getAttribute("aria-label") ?? ""), "screen readers hear which provider has the current model");
-        check(!panel()!.querySelector(".mp-filters .bar, .mp-filters .mp-f-cur, .mp-filters .mp-f.cur"), "the filters have no current-provider marker");
+        check(!panel()!.querySelector(".mp-tablist .bar, .mp-tablist .mp-tab-cur, .mp-tablist .mp-tab.cur"), "the filters have no current-provider marker");
         // The provider's icon, its name for screen readers, nothing more.
         check([...filterCurrent.children].every((c) => c.matches(".provider-icon, .provider-mono, .sr-only")) && filterName(filterCurrent) === "Claude Code", `a filter is its icon and name, no mark and no pill (${filterCurrent.innerHTML.slice(0, 200)})`);
         check(bg(filterCurrent) !== "rgba(0, 0, 0, 0)", "the open filter is filled");
@@ -125,10 +126,10 @@ export async function checkModelPicker(root: HTMLElement) {
         check(highlighted.classList.contains("sel") && !current.classList.contains("sel"), `ArrowDown moves the highlight off the current model (prevented ${down.defaultPrevented}, right after: ${afterKey}; sel: ${rows().map((r) => r.className).join("|")}; focus: ${document.activeElement?.outerHTML.slice(0, 80)})`);
         check(document.querySelector(".mp-search input")!.getAttribute("aria-activedescendant") === highlighted.querySelector("[role='option']")!.id, "the search field points at the highlighted row");
         check(bg(highlighted) === neutral && bg(current) === bg(plain), `the highlight is the only fill; the current model's row has none once it moves off (${bg(highlighted)}, ${bg(current)}, ${bg(plain)})`);
-        check(current.querySelector(".mr-mark svg") && !highlighted.querySelector(".mr-mark svg"), "the check stays on the current model");
-        const hint = highlighted.querySelector("kbd")!;
+        check(current.querySelector(".menu-check svg") && !highlighted.querySelector(".menu-check svg"), "the check stays on the current model");
+        const hint = highlighted.querySelector<HTMLElement>(".kbd-group")!;
         check(getComputedStyle(hint).opacity === "1" && hint.checkVisibility() && hint.textContent?.endsWith("3"), `the highlighted row shows its shortcut (${hint.textContent})`);
-        check(getComputedStyle(plain.querySelector(".mr-star")!).opacity === "1" && getComputedStyle(highlighted.querySelector(".mr-star")!).opacity === "1", "every row shows its star");
+        check(getComputedStyle(plain.querySelector(".mp-star")!).opacity === "1" && getComputedStyle(highlighted.querySelector(".mp-star")!).opacity === "1", "every row shows its star");
 
         // Search still matches ids, though names don't show them: "haiku-4-5" isn't in Haiku 4.5's name. Results sit
         // under their provider's name.
@@ -141,18 +142,20 @@ export async function checkModelPicker(root: HTMLElement) {
         type("haiku-4-5");
         await settle();
         const found = rows()[0]?.closest(".mp-group");
-        check(rows().length === 1 && rows()[0]!.querySelector(".mr-name")?.textContent === "Haiku 4.5" && found?.getAttribute("aria-label") === "Claude Code" && found.querySelector(".mp-h")?.textContent === "Claude Code", `search by id finds the model (${rows().map((r) => r.textContent).join(" | ")})`);
+        check(rows().length === 1 && rows()[0]!.querySelector(".mp-item-name")?.textContent === "Haiku 4.5" && found?.getAttribute("aria-label") === "Claude Code" && found.querySelector(".menu-label")?.textContent === "Claude Code", `search by id finds the model (${rows().map((r) => r.textContent).join(" | ")})`);
         type("");
         await settle();
 
         // Another provider's list open: its filter's words are the bright ones; the current model's provider looks like any other.
+        // (Searching took the tabs away, as the design does: they're new ones now.)
+        filterCurrent = filter("Claude Code");
         const filterMock = filter("Mock");
         const filterFavorites = filter("Favorites");
         filterMock.click();
         await settle(200);
-        check(filterMock.classList.contains("on") && filterMock.getAttribute("aria-selected") === "true" && getComputedStyle(filterMock).color !== getComputedStyle(filterFavorites).color && rows().length === 2, "the open filter is brighter than the others, and the list is its provider's alone");
+        check(filterMock.getAttribute("aria-selected") === "true" && getComputedStyle(filterMock).color !== getComputedStyle(filterFavorites).color && rows().length === 2, "the open filter is brighter than the others, and the list is its provider's alone");
         check(row("local-7b"), "a model with no name goes by its id");
-        check(!filterCurrent.classList.contains("on") && bg(filterCurrent) === bg(filterFavorites) && getComputedStyle(filterCurrent).color === getComputedStyle(filterFavorites).color, "the current model's provider has no mark while another list is open");
+        check(filterCurrent.getAttribute("aria-selected") !== "true" && bg(filterCurrent) === bg(filterFavorites) && getComputedStyle(filterCurrent).color === getComputedStyle(filterFavorites).color, "the current model's provider has no mark while another list is open");
         filterCurrent.click();
         await settle();
 
@@ -160,7 +163,7 @@ export async function checkModelPicker(root: HTMLElement) {
         check(named(acctButton()!) === "Work" && acctButton()!.getAttribute("aria-haspopup") === "menu" && acctButton()!.getAttribute("aria-expanded") === "false" && !list(), `the heading names the session's account, its list closed (${acctButton()?.textContent})`);
         await openList();
         check(items().map(named).join() === "Personal,Work,Lab" && list()!.getAttribute("aria-label") === "Claude Code account", `the list has the accounts (${items().map(named).join()})`);
-        check(checked() === "Work" && item("Work").querySelector(".mp-acct-ck svg") && !item("Lab").querySelector(".mp-acct-ck svg"), `the session's account is checked (${checked()})`);
+        check(checked() === "Work" && item("Work").querySelector(".menu-check svg") && !item("Lab").querySelector(".menu-check svg"), `the session's account is checked (${checked()})`);
         check(acctButton()!.getAttribute("aria-expanded") === "true" && named(add()!) === "Add account", `Add account comes last (${add()?.textContent})`);
         check(item("Personal").title.includes("me@example.test") && item("Lab").title.includes("Not signed in"), `accounts say who they are and what's wrong (${item("Personal").title}; ${item("Lab").title})`);
 
@@ -192,14 +195,14 @@ export async function checkModelPicker(root: HTMLElement) {
         setApp("providers", providers());
         await reopen("on the accounts");
         check(list() && document.activeElement === item("Personal"), `the picker opens on the list of accounts (focus: ${document.activeElement?.outerHTML.slice(0, 80)})`);
-        check(panel()!.querySelector(".mp-acct-note")?.textContent?.includes("removed"), "the note explains");
-        check(checked() === "" && named(acctButton()!) === "Choose account" && acctButton()!.classList.contains("missing"), `no account is checked, and the heading asks for one (${checked()}; ${acctButton()?.textContent})`);
+        check(panel()!.querySelector(".mp-note-warn")?.textContent?.includes("removed"), "the note explains");
+        check(checked() === "" && named(acctButton()!) === "Choose account" && acctButton()!.hasAttribute("data-missing"), `no account is checked, and the heading asks for one (${checked()}; ${acctButton()?.textContent})`);
         check(trigger.textContent?.includes("Removed account"), "the model button says the account was removed");
         calls.length = 0;
         item("Work").click();
         await until(() => calls.some(([m, p]) => m === "accounts.setDefault" && p.id === "work"), "choosing another account");
         // The switch refreshes the providers; let that land before changing them here.
-        await until(() => named(acctButton()!) === "Work" && !panel()!.querySelector(".mp-acct-note"), "the chosen account in the heading");
+        await until(() => named(acctButton()!) === "Work" && !panel()!.querySelector(".mp-note-warn"), "the chosen account in the heading");
 
         // One account: the heading names it, and its list is it and Add account.
         accounts = [account("default", "Default", { email: "me@example.test" })];

@@ -83,11 +83,6 @@
     padding-bottom: calc(3 * var(--sp));
 }
 
-.menu-item svg {
-    flex: none;
-    color: var(--fg-2);
-}
-
 .menu-item.danger svg {
     color: var(--danger);
 }
