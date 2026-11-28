@@ -177,19 +177,14 @@ function rowStatus(s: SessionSummary, unread?: boolean): "working" | "needs" | "
     return s.messages > 0 || unread || s.woke ? "done" : "idle";
 }
 
-/** A row's start: how it's doing (a still glyph: nothing in the rail animates), or a box while rows are being picked, ticked when it's one. */
+/** A row's start: how it's doing (a glyph; working, a dot that pulses, the rail's one loop), or a box while rows are being picked, ticked when it's one. */
 function RowLead(p: { s: SessionSummary; picking?: boolean; picked?: boolean; unread?: boolean }) {
     const status = () => rowStatus(p.s, p.unread);
     return (
         <Show when={!p.picking} fallback={<span class="srow-pick" data-on={p.picked || undefined} aria-hidden="true"><Show when={p.picked}><Check size={11} stroke-width={3} /></Show></span>}>
             <span class="status-icon" data-status={status()} aria-hidden="true">
                 <Switch>
-                    <Match when={status() === "working"}>
-                        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
-                            <circle cx="8" cy="8" r="6" opacity="0.22" />
-                            <path d="M8 2a6 6 0 0 1 6 6" stroke-linecap="round" />
-                        </svg>
-                    </Match>
+                    <Match when={status() === "working"}><span class="status-working" /></Match>
                     <Match when={status() === "needs"}><span class="status-dot" /></Match>
                     <Match when={status() === "done" && (p.unread || p.s.woke)}><span class="status-unread" /></Match>
                     <Match when={status() === "done"}><Check size={14} stroke-width={2.4} /></Match>

@@ -6,7 +6,6 @@ import { openProject } from "../state/actions";
 import { openGit, requestComposerFocus } from "../state/ui";
 import { tildify } from "../lib/format";
 import { Popover } from "./ui/Popover";
-import { Spinner } from "./ui/bits";
 import type { NewWorktreeRequest, RemoveWorktreeRequest } from "./WorktreeDialogs";
 
 /** Not in the startup bundle: fetched as the picker opens, before either is asked for. */
@@ -56,7 +55,7 @@ export function WorktreePicker(p: { cwd: string; branch?: string }) {
         <Popover open={open()} anchor={() => anchor} onClose={() => setOpen(false)} placement="bottom" align="end" offset={6} width={404} class="menu wt-menu" label="Worktrees">
             <div class="menu-label">Worktrees</div>
             {/* What it listed for this folder before stays while it lists them again. */}
-            <Show when={here() || !listing.loading} fallback={<p class="wt-note"><Spinner size={13} />Loading worktrees…</p>}>
+            <Show when={here() || !listing.loading} fallback={<p class="wt-note">Loading worktrees…</p>}>
                 <Show when={!here()?.error} fallback={<p class="wt-note">{here()?.error}</p>}>
                     <Show when={here()?.worktrees.length} fallback={<p class="wt-note">No working trees found.</p>}>
                         <div class="wt-list" role="listbox" aria-label="Worktrees">

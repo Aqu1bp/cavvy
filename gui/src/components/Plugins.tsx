@@ -83,13 +83,10 @@ function PluginMark(p: { plugin: PluginInfo; markets: PluginMarketplaceInfo[] })
 }
 
 /** What a card shows when it has nothing: one line, and the way on when there is one. */
-function Blank(p: { title: string; busy?: boolean; children?: JSX.Element }) {
+function Blank(p: { title: string; children?: JSX.Element }) {
     return (
         <div class="card plugins-card">
             <div class="blank">
-                <Show when={p.busy}>
-                    <Spinner size={14} class="blank-spinner" />
-                </Show>
                 <p class="blank-title">{p.title}</p>
                 {p.children}
             </div>
@@ -268,12 +265,12 @@ export function Plugins() {
                 <span class="grow" />
                 <Show when={view() === "installed" && !loading() && installed().some((p) => p.installed && !p.orphaned)}>
                     <button class="btn btn-sm" disabled={Boolean(busy())} data-tip="Refresh marketplaces and fetch newer versions" onClick={() => void act("update:all", { action: "update" })}>
-                        {busy() === "update:all" ? <Spinner size={12} /> : <RotateCw size={12} />}
+                        <RotateCw size={12} />
                         {busy() === "update:all" ? "Checking…" : "Check for updates"}
                     </button>
                 </Show>
             </div>
-            <Show when={!loading()} fallback={<div role="status"><Blank title="Reading your marketplaces…" busy /></div>}>
+            <Show when={!loading()} fallback={<div role="status"><Blank title="Reading your marketplaces…" /></div>}>
                 <Switch>
                     {/* The list didn't come (the machine didn't answer): not an empty one, which would offer to add a marketplace there. */}
                     <Match when={!info()}>
@@ -288,10 +285,7 @@ export function Plugins() {
                             <div class="paste-line">
                                 <input class="input mono" ref={sourceEl} aria-label="Marketplace source" placeholder="owner/repo, git URL, folder or marketplace.json" value={source()} onInput={(e) => setSource(e.currentTarget.value)} onKeyDown={(e) => e.key === "Enter" && addMarketplace()} spellcheck={false} autocomplete="off" />
                                 <button class="btn" disabled={!source().trim() || Boolean(busy())} onClick={() => addMarketplace()}>
-                                    <Show when={busy() === "market:add" && source().trim()}>
-                                        <Spinner size={13} />
-                                    </Show>
-                                    Add marketplace
+                                    {busy() === "market:add" && source().trim() ? "Adding…" : "Add marketplace"}
                                 </button>
                             </div>
                         </div>
@@ -301,7 +295,7 @@ export function Plugins() {
                                 <Blank title="No marketplaces yet">
                                     <p class="plugins-blank-sub">Add one above, or start with Anthropic's official catalog.</p>
                                     <button class="btn btn-sm" disabled={Boolean(busy())} onClick={() => addMarketplace(SUGGESTED)}>
-                                        {busy() === "market:add" ? <Spinner size={12} /> : `Add ${SUGGESTED}`}
+                                        {busy() === "market:add" ? "Adding…" : `Add ${SUGGESTED}`}
                                     </button>
                                 </Blank>
                             }
@@ -319,7 +313,7 @@ export function Plugins() {
                                     <p class="plugins-blank-sub">A marketplace is a catalog of plugins.</p>
                                     <span class="plugins-blank-actions">
                                         <button class="btn btn-sm" disabled={Boolean(busy())} onClick={() => addMarketplace(SUGGESTED)}>
-                                            {busy() === "market:add" ? <Spinner size={12} /> : "Add Anthropic’s marketplace"}
+                                            {busy() === "market:add" ? "Adding…" : "Add Anthropic’s marketplace"}
                                         </button>
                                         <button class="btn btn-ghost btn-sm" onClick={() => show("marketplaces")}>
                                             Add another
@@ -467,9 +461,6 @@ function PluginDetails(p: { plugin: PluginInfo; markets: PluginMarketplaceInfo[]
                         Cancel
                     </button>
                     <button class="btn btn-primary" disabled={Boolean(p.busy)} onClick={() => void p.install(scope())}>
-                        <Show when={installing()}>
-                            <Spinner size={13} />
-                        </Show>
                         {installing() ? "Installing…" : `Install ${SCOPE_DONE[scope()]}`}
                     </button>
                 </>

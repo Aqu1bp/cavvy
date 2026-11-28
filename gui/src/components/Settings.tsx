@@ -666,10 +666,7 @@ function ProviderRow(p: { pr: ProviderInfo }) {
             </Show>
             <Show when={retry}>
                 <button class="btn btn-sm" disabled={busy()} onClick={() => retry!()}>
-                    <Show when={busy()} fallback="Check again">
-                        <Spinner size={12} />
-                        Checking
-                    </Show>
+                    {busy() ? "Checking…" : "Check again"}
                 </button>
             </Show>
         </>
@@ -791,7 +788,7 @@ function ProviderRow(p: { pr: ProviderInfo }) {
                                 }}
                             />
                             <button type="button" class="btn btn-sm btn-primary" disabled={!key().trim() || busy()} onClick={() => void save()}>
-                                {busy() ? <Spinner size={12} /> : "Save"}
+                                {busy() ? "Saving…" : "Save"}
                             </button>
                             <button type="button" class="btn btn-sm btn-ghost" onClick={closeAdd}>
                                 Cancel
@@ -847,10 +844,7 @@ function ProviderSections(p: { noSubscriptions?: boolean; localOnly?: boolean; s
             <div class="paste-line">
                 <input class="input mono" type="password" aria-label="API key" placeholder="Paste a key from any provider" value={key()} onInput={(e) => setKey(e.currentTarget.value)} />
                 <button type="submit" class="btn" disabled={!key().trim() || busy()}>
-                    <Show when={busy()}>
-                        <Spinner size={13} />
-                    </Show>
-                    Add
+                    {busy() ? "Adding…" : "Add"}
                 </button>
             </div>
             <p class="paste-note">
@@ -913,7 +907,7 @@ function Providers() {
         <>
             <Show when={withServers()}>
                 <Section title="Subscriptions" caption="Plans you use through their own CLI, on each computer" class="prov-group sg-card">
-                    <Suspense fallback={<div class="set-item"><Spinner size={12} /></div>}>
+                    <Suspense fallback={<div class="set-item dim">Loading…</div>}>
                         <SubscriptionGrid here={servers()?.HERE ?? ""} servers={listed().map((s) => s.name)} touched={() => servers()?.serverTouched() ?? 0} manage={(pr) => <ProviderRow pr={pr} />} />
                     </Suspense>
                 </Section>

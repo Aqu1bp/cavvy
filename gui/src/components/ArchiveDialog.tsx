@@ -10,7 +10,6 @@ import { archivedWithWorktree } from "../state/actions";
 import { archiveRequest, setArchiveRequest } from "../state/ui";
 import { errorOf, type FormError } from "./WorktreeDialogs";
 import { Dialog } from "./ui/Dialog";
-import { Spinner } from "./ui/bits";
 
 export function ArchiveDialog() {
     return <Show when={archiveRequest()} keyed>{(r) => <ArchiveWorktree id={r.id} title={r.title} offer={r.offer} />}</Show>;
@@ -77,13 +76,13 @@ function ArchiveWorktree(p: { id: string; title: string; offer: NonNullable<Retu
                         when={ignored()}
                         fallback={
                             <button class="btn btn-danger" disabled={busy()} onClick={() => void remove()}>
-                                {busy() ? <Spinner size={12} /> : "Archive and remove worktree"}
+                                {busy() ? "Removing…" : "Archive and remove worktree"}
                             </button>
                         }
                     >
                         {(i) => (
                             <button class="btn btn-danger" disabled={busy()} onClick={() => void remove(i().confirm)}>
-                                {busy() ? <Spinner size={12} /> : "Delete them and remove"}
+                                {busy() ? "Removing…" : "Delete them and remove"}
                             </button>
                         )}
                     </Show>

@@ -8,7 +8,6 @@ import { comparePicks, setAddAccountFor, setComparePicks, setSettingsTab } from 
 import { isMod, mod } from "../lib/platform";
 import { menuIndex, menuTypeahead } from "../lib/menu";
 import { Menu } from "./ui/Menu";
-import { Spinner } from "./ui/bits";
 import { ProviderIcon } from "./ui/ProviderIcon";
 import { withShortcut } from "../state/keybindings";
 import { effortAt, effortBeside, effortKey, effortLevels, effortOf, takesEffort, type Effort } from "../lib/effort";
@@ -659,10 +658,9 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                             </button>
                         </Show>
                         <input ref={input} role="combobox" aria-expanded="true" aria-controls={listId} aria-autocomplete="list" aria-activedescendant={rows()[sel()] ? `${listId}-${sel()}` : undefined} value={q()} onInput={(e) => (setQ(e.currentTarget.value), setSel(0))} placeholder="Search models…" aria-label="Search models" spellcheck={false} />
-                        <button class="icon-btn icon-btn-sm" title="Refresh model lists" aria-label="Refresh model lists" onClick={() => void refreshModelsFor(p.sessionId, true)} disabled={app.modelsLoading}>
-                            <Show when={app.modelsLoading} fallback={<RefreshCw size={13} />}>
-                                <Spinner size={13} />
-                            </Show>
+                        {/* While the lists come in, the button rests (dimmed); the list itself says it's loading when it's empty. */}
+                        <button class="icon-btn icon-btn-sm" title={app.modelsLoading ? "Refreshing…" : "Refresh model lists"} aria-label="Refresh model lists" onClick={() => void refreshModelsFor(p.sessionId, true)} disabled={app.modelsLoading}>
+                            <RefreshCw size={13} />
                         </button>
                         <button class="icon-btn icon-btn-sm" title="Providers…" aria-label="Set up providers" onClick={() => (p.setOpen(false), setSettingsTab("providers"))}>
                             <Settings2 size={14} />
@@ -739,9 +737,6 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                             when={rows().length}
                             fallback={
                                 <div class="mp-empty" role="status">
-                                    <Show when={empty().icon === "loading"}>
-                                        <Spinner size={14} />
-                                    </Show>
                                     <p>{empty().text}</p>
                                     <Show when={empty().action}>
                                         {(a) => (

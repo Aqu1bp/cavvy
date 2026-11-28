@@ -5,7 +5,6 @@ import type { AgentEnvVar, AgentInstanceInfo, ProviderInfo } from "@shared/proto
 import { toast } from "../state/app";
 import { useProvidersAt } from "../state/providers-at";
 import { Dialog } from "./ui/Dialog";
-import { Spinner } from "./ui/bits";
 import { envNameProblem, looksSecret } from "@shared/env-names";
 import { resetToast, shortName } from "../lib/reset-toast";
 
@@ -150,7 +149,7 @@ function Actions(p: { busy: boolean; blocked: boolean; label: string; onCancel: 
                 Cancel
             </button>
             <button type="button" class="btn btn-primary" disabled={p.busy || p.blocked} aria-busy={p.busy} onClick={() => p.onSave()}>
-                {p.busy ? <Spinner size={12} /> : p.label}
+                {p.busy ? "Saving…" : p.label}
             </button>
         </>
     );

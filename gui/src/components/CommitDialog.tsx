@@ -9,7 +9,7 @@ import { mod, os } from "../lib/platform";
 import { plural } from "../lib/format";
 import { draftedBy } from "../lib/model-name";
 import { Dialog } from "./ui/Dialog";
-import { Kbd, Spinner } from "./ui/bits";
+import { Kbd } from "./ui/bits";
 import { Counts } from "./blocks/DiffView";
 import { dirOf, nameOf } from "../lib/inspector";
 import "../styles/review.css";
@@ -216,7 +216,7 @@ export function CommitDialog() {
             width={520}
             footer={footer}
         >
-            <Show when={!loading()} fallback={<Spinner class="blank-spinner" />}>
+            <Show when={!loading()} fallback={<div class="blank">Loading…</div>}>
                 <Show when={view()?.repo}>
                     <Show when={warning()}>
                         {/* Ticked, the field below says where the commit goes. */}
@@ -319,10 +319,8 @@ export function CommitDialog() {
                     />
                     <div class="commit-draft">
                         <button class="btn btn-sm" disabled={!ready() || generating() || committing()} title={model() ? `Drafted by ${draftedBy(model()!, commitRequest()?.id)}` : undefined} onClick={() => void generate()}>
-                            <Show when={generating()} fallback={<Sparkles size={13} />}>
-                                <Spinner size={12} />
-                            </Show>
-                            Generate message
+                            <Sparkles size={13} />
+                            {generating() ? "Generating…" : "Generate message"}
                         </button>
                         <Show when={before() !== undefined && !generating()}>
                             <button class="link-btn" disabled={committing()} onClick={() => { revision++; setMessage(before()!); setBefore(undefined); messageEl?.focus(); }}>Undo</button>

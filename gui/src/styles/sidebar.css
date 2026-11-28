@@ -561,6 +561,23 @@
     background: var(--amber-strong);
 }
 
+/* Working: the accent's dot, breathing. Opacity alone, in 100ms steps on the stream clock's grid, paused with the
+   window's other loops: rows working together step together, on the compositor. */
+.status-working {
+    width: calc(8 * var(--sp));
+    height: calc(8 * var(--sp));
+    border-radius: 50%;
+    background: var(--accent);
+    animation: srow-working 1.2s steps(6) infinite;
+    animation-play-state: var(--loops);
+}
+
+@keyframes srow-working {
+    50% {
+        opacity: 0.3;
+    }
+}
+
 .status-unread {
     width: calc(8 * var(--sp));
     height: calc(8 * var(--sp));

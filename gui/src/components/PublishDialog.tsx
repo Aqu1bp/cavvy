@@ -6,7 +6,6 @@ import { commitUnavailable, refreshGitChanges } from "../state/changes";
 import { openExternal } from "../lib/platform";
 import { draftedBy } from "../lib/model-name";
 import { Dialog } from "./ui/Dialog";
-import { Spinner } from "./ui/bits";
 import { ProviderIcon } from "./ui/ProviderIcon";
 import { takeFocus } from "../lib/focus-trap";
 
@@ -173,7 +172,7 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
     const heading = () => (view() && !prs() ? `Push ${view()!.branch}?` : !view() && error() ? "Push?" : "Push and open a pull request?");
     return (
         <Dialog open={Boolean(p.id)} onClose={close} title={heading()} width={500} footer={actions()}>
-            <Show when={!loading()} fallback={<Spinner class="blank-spinner" />}>
+            <Show when={!loading()} fallback={<div class="blank">Loading…</div>}>
                 <Show when={view()}>
                             <dl class="push-facts">
                                 <div>
@@ -253,10 +252,8 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
                                     </label>
                                     <div class="commit-draft">
                                         <button class="btn btn-sm" disabled={busy() || generating()} title={drafted() ? `Drafted by ${draftedBy(drafted()!.model, p.id)}` : undefined} onClick={() => void generate()}>
-                                            <Show when={generating()} fallback={<Sparkles size={13} />}>
-                                                <Spinner size={12} />
-                                            </Show>
-                                            Generate
+                                            <Sparkles size={13} />
+                                            {generating() ? "Generating…" : "Generate"}
                                         </button>
                                         <Show when={drafted()}>
                                             <button class="link-btn" disabled={busy()} onClick={undoDraft}>Undo</button>
