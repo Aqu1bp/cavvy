@@ -19,7 +19,7 @@ import { RpcError } from "../lib/rpc";
 import { orderSessions } from "../lib/session-order";
 import { prefs } from "../state/prefs";
 import { freeRail } from "../state/ui";
-import { activate, app, forgetSession, markSeenAll, others, reportError, rpc, setApp, upsertSession } from "../state/app";
+import { activate, app, forgetSession, leaveSession, markSeenAll, others, reportError, rpc, setApp, upsertSession } from "../state/app";
 
 /** The servers as this computer's Cavvy last described them, by name. */
 const servers = new Map<string, MachineOverview>();
@@ -126,6 +126,8 @@ function hide(id: string, at: string | undefined) {
     batch(() => {
         setApp("sessions", (l) => l.filter((s) => s.id !== id));
         setApp("archived", (l) => l.filter((s) => s.id !== id));
+        // Open in the window: it goes Home, as for any delete.
+        leaveSession(id);
     });
 }
 

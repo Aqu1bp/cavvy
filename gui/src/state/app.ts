@@ -1768,6 +1768,11 @@ export function forgetSession(id: string) {
         setApp("seen", id, undefined!);
         saveSeen();
     }
+    leaveSession(id);
+}
+
+/** The window on `id` goes Home, in its folder: it's gone from the list (deleted). */
+export function leaveSession(id: string) {
     if (app.activeId === id) batch(() => {
         setApp("homeCwd", homeCwdAfter(id));
         setApp("activeId", undefined);
