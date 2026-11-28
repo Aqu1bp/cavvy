@@ -192,7 +192,7 @@ export type StreamEvent =
     | { type: "tool_call_start"; id: string; name: string }
     | { type: "tool_call_delta"; id: string; partial: string }
     | { type: "server_tool"; name: string; detail: string }
-    | { type: "retry"; attempt: number; delayMs: number; reason: string }
+    | { type: "retry"; attempt: number; delayMs: number; reason: string; /** What it streamed stands: it goes on with the same response. */ keep?: boolean }
     /** `resent`: the request was sent again (a feature or reasoning dropped, tool JSON malformed). */
     | { type: "notice"; message: string; resent?: true }
     | { type: "usage"; usage: Usage };

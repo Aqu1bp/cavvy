@@ -1586,6 +1586,11 @@ export class App {
                 this.notice(e.message, e.level);
                 break;
             case "retry":
+                // It goes on with the same response (`keep`): what's shown stays.
+                if (e.keep) {
+                    this.status = `${e.reason.slice(0, 80)} · retrying (attempt ${e.attempt})`;
+                    break;
+                }
                 if (this.md?.hasContent || this.mdLines) this.notice("(connection problem; the partial response above was discarded and is being retried)", "warn");
                 // A retry discards only this request's partial output. Rebuild the
                 // renderer with the accepted prefix, including its open Markdown state.

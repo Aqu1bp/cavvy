@@ -22,3 +22,10 @@
     margin-left: auto;
     flex: none;
 }
+
+/* "Free" beside its Sign in: OpenCode on its free models. */
+.sg-free {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(6 * var(--sp));
+}

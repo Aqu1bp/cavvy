@@ -205,10 +205,21 @@ export class JsonLinesProcess {
         this.stderrEnded = this.drainStderr();
     }
 
+    /** Each whole line of its stderr, as it comes (AcpAgent.stalled). */
+    onStderrLine?: (line: string) => void;
+
     private async drainStderr() {
         const d = new TextDecoder();
+        let partial = "";
         try {
-            for await (const chunk of this.proc.stderr) this.err = (this.err + d.decode(chunk, { stream: true })).slice(-STDERR_TAIL);
+            for await (const chunk of this.proc.stderr) {
+                const text = d.decode(chunk, { stream: true });
+                this.err = (this.err + text).slice(-STDERR_TAIL);
+                if (!this.onStderrLine) continue;
+                const lines = (partial + text).split("\n");
+                partial = lines.pop()!.slice(-STDERR_TAIL);
+                for (const l of lines) this.onStderrLine(l);
+            }
         } catch {
             // the process went away
         }

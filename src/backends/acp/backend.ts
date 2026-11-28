@@ -126,7 +126,7 @@ export async function acpStatus(providerId: string, signal?: AbortSignal): Promi
     if (own) {
         try {
             const s = await own(path, signal, cliEnv(providerId));
-            return { ...base, installed: true, path, signedIn: s.signedIn, description: `${def.name}, ${s.description}` };
+            return { ...base, installed: true, path, signedIn: s.signedIn, ...(s.free ? { free: true } : {}), description: `${def.name}, ${s.description}` };
         } catch (e) {
             if (signal?.aborted) throw new Error("aborted");
             return { ...base, installed: true, path, signedIn: false, probeFailed: true, description: `${def.name} didn't answer: ${cliMessage((e as Error).message) || "no answer"}` };

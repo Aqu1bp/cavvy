@@ -153,9 +153,10 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
         const a = single();
         return a?.invalid ? "Unavailable" : a?.signedIn === false ? "Not signed in" : undefined;
     };
-    const signedIn = () => { const a = main(); return !!a && !a.invalid && a.signedIn === true; };
+    // On its free models without a sign-in (OpenCode): no dot, and a sign-in offered.
+    const signedIn = () => { const a = main(); return !!a && !a.invalid && a.signedIn === true && !a.free; };
     // Under the name: what's missing, or the one account's email.
-    const sub = () => !installed() ? (cli()?.installing ? "Installing…" : cli()?.installError ? "Couldn't install" : "Not installed") : !p.provider.configured ? "Not set up" : single()?.email;
+    const sub = () => !installed() ? (cli()?.installing ? "Installing…" : cli()?.installError ? "Couldn't install" : "Not installed") : !p.provider.configured ? "Not set up" : single()?.free ? "Free models only" : single()?.email;
     return <section ref={section} class="cli-prov" aria-label={p.provider.name}>
         <div class="prov-line">
             <span class="prov-logo"><ProviderIcon id={p.provider.id} name={p.provider.name} size={18} /></span>
@@ -184,7 +185,7 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
                         <button class="btn secondary sm" title={cli()?.installError} onClick={install}>Install</button>
                     </Show>
                 </Show>
-                <Show when={installed() && p.provider.configured && single()?.signedIn === false && !single()?.invalid}>
+                <Show when={installed() && p.provider.configured && (single()?.signedIn === false || single()?.free) && !single()?.invalid}>
                     <button class="btn secondary sm" disabled={busy()} onClick={() => login(single()!)}>Sign in</button>
                 </Show>
                 <Show when={installed() && !p.provider.configured && p.onConnect}>

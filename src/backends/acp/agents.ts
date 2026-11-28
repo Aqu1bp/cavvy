@@ -23,7 +23,12 @@ export interface AcpAgent {
      * Whether it's signed in, without reading its sign-in (its own status command). Left out: it's signed in when it
      * starts and answers initialize.
      */
-    status?(bin: string, signal?: AbortSignal, env?: Record<string, string>): Promise<{ signedIn: boolean; description: string }>;
+    status?(bin: string, signal?: AbortSignal, env?: Record<string, string>): Promise<{ signedIn: boolean; description: string; free?: boolean }>;
+    /**
+     * A line of its stderr that says the running prompt hit an error it's waiting out by itself, unsaid over ACP: why.
+     * `sessionId`: the session Cavvy opened.
+     */
+    stalled?(line: string, sessionId: string): string | undefined;
     /**
      * Its own plan mode, set to `plan` in Cavvy's plan mode and back to `normal` outside it: a config option
      * (`configId`), or its session mode (session/set_mode) when there's none.
@@ -212,10 +217,41 @@ export function opencodeEnv(trusted: boolean): Record<string, string> {
     };
 }
 
+/**
+ * OpenCode 1.19.6 on a model that refuses (its free models past their limit: "Free usage limit reached…") logs a
+ * stream error and waits to try again, saying nothing over ACP: session/prompt doesn't answer. Its log line, printed
+ * to stderr by --print-logs: `… message="stream error" … session.id=ses_… small=false … error.error="AI_APICallError: …"`.
+ * `small=true` is its title's request, not the reply.
+ */
+export function opencodeStalled(line: string, sessionId: string): string | undefined {
+    if (!line.includes('message="stream error"') || !line.includes(` session.id=${sessionId} `) || !/ small=false( |$)/.test(line)) return undefined;
+    const said = line.match(/ error\.error="((?:[^"\\]|\\.)*)"/)?.[1];
+    if (!said) return undefined;
+    return said.replace(/\\(.)/g, "$1").replace(/^AI_\w+Error: /, "").trim() || undefined;
+}
+
+/** `opencode auth list`: its stored credentials and the provider keys it finds in its environment, counted. */
+async function opencodeStatus(bin: string, signal?: AbortSignal, env?: Record<string, string>): Promise<{ signedIn: boolean; description: string; free?: boolean }> {
+    const r = await runCli(bin, ["auth", "list"], { signal, timeoutMs: 30_000, env });
+    if (r.code !== 0) throw new Error(`opencode auth list failed: ${cliMessage(r.stderr) || `exit code ${r.code}`}`);
+    // "└  0 credentials", then "└  1 environment variable" when it has one (ANSI colours stripped).
+    // Written to stdout or stderr, as it finds them.
+    const out = `${r.stdout}\n${r.stderr}`.replace(/\x1b\[[0-9;]*m/g, "");
+    const stored = Number(out.match(/(\d+) credentials?\b/)?.[1] ?? NaN);
+    const fromEnv = Number(out.match(/(\d+) environment variables?\b/)?.[1] ?? 0);
+    // Said otherwise (a later version): usable, as before.
+    if (Number.isNaN(stored)) return { signedIn: true, description: "answering" };
+    if (stored + fromEnv === 0) return { signedIn: true, free: true, description: "free models only, not signed in" };
+    return { signedIn: true, description: `signed in (${stored + fromEnv} provider${stored + fromEnv === 1 ? "" : "s"})` };
+}
+
 const OPENCODE: AcpAgent = {
     // The same in every mode: a mode change needs no restart. Cavvy decides each ask by its mode then.
-    spawn: (cfg) => ({ args: ["--cwd", cfg.cwd], env: opencodeEnv(cfg.trusted) }),
+    // Its log on stderr, errors only: what `stalled` reads.
+    spawn: (cfg) => ({ args: ["--print-logs", "--log-level", "ERROR", "--cwd", cfg.cwd], env: opencodeEnv(cfg.trusted) }),
     keepsFolder: true,
+    status: opencodeStatus,
+    stalled: opencodeStalled,
     // `opencode models`: provider/model, one a line (about half a second).
     async listModels(bin, signal, env) {
         const r = await runCli(bin, ["models"], { signal, timeoutMs: 30_000, env });

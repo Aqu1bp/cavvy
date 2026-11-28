@@ -1,7 +1,8 @@
 // A stand-in ACP agent (as `opencode acp` speaks it: test/fixtures/protocol/opencode-1.19.4-*.jsonl) for
 // test/acp.test.ts and test/acp-backend.test.ts. JSON-RPC 2.0, one object a line.
 //
-// `models` as its first argument: prints model ids, one a line (opencode models).
+// `models` as its first argument: prints model ids, one a line (opencode models). `auth list`: says how many
+// credentials it has, as OpenCode 1.19.6 does (FAKE_OC_CREDENTIALS, 1 by default; FAKE_OC_ENV: environment variables).
 // FAKE_LOG: where it logs its start ({argv, cwd, env}) and every message it reads ({received}).
 // FAKE_ACP_INIT=fail: writes "fatal: can't start" to stderr and exits 2 before answering initialize.
 // FAKE_ACP_IMAGES=0: says it takes no images. FAKE_ACP_RESUME=load: no session/resume, only session/load.
@@ -31,6 +32,9 @@
 //   [[fail:KIND]]     a tool it doesn't ask about fails: `execute` a command that ran, `edit` an edit refused before
 //                     asking (must read first), `notrun` a command refused unrun; then waits a moment for session/cancel
 //   [[slow]]          starts a command and waits for session/cancel: answers cancelled
+//   [[stall]]         as OpenCode on a model that refuses: says "Before", logs its title's and its reply's stream
+//                     errors (to stderr, with --print-logs) and says nothing more until session/cancel.
+//                     [[stall:resume]]: then, a moment later, goes on: " after" and ends end_turn
 //   [[crash]]         starts a command, says something, then writes "fatal: boom" to stderr and exits 3
 //   [[auth]]          answers -32000 Authentication required. [[disabled]]: -32603 Model access is disabled
 //   [[late]]          ends, then sends a message chunk after its answer
@@ -104,6 +108,16 @@ const GROK = process.env.FAKE_ACP_FLAVOR === "grok";
 const FOLDERS = process.env.FAKE_ACP_FOLDERS;
 const folders = (): Record<string, string> => (FOLDERS && existsSync(FOLDERS) ? JSON.parse(readFileSync(FOLDERS, "utf-8")) : {});
 const SIGNED_OUT = process.env.FAKE_GROK_SIGNED_OUT === "1";
+if (process.argv[2] === "auth" && process.argv[3] === "list") {
+    if (process.env.FAKE_ACP_INIT === "fail") {
+        process.stderr.write("fatal: can't start\n");
+        process.exit(2);
+    }
+    const env = Number(process.env.FAKE_OC_ENV ?? 0);
+    process.stdout.write(`┌  Credentials ~/.local/share/opencode/auth.json\n│\n└  ${process.env.FAKE_OC_CREDENTIALS ?? "1"} credentials\n`);
+    if (env) process.stdout.write(`\n┌  Environment\n│\n●  OpenAI OPENAI_API_KEY\n│\n└  ${env} environment variable${env === 1 ? "" : "s"}\n`);
+    process.exit(0);
+}
 if (process.argv[2] === "models") {
     if (GROK) process.stdout.write(`${SIGNED_OUT ? "You are not authenticated." : "You are logged in with grok.com."}\n\nDefault model: grok-4.7\n\nAvailable models:\n  * grok-4.7 (default)\n  - grok-4.6\n`);
     else process.stdout.write("opencode/big-pickle\nopencode/gpt-5-nano\nanthropic/claude-x\n");
@@ -265,6 +279,23 @@ async function prompt(id: number, p: any) {
             update(sid, { sessionUpdate: "tool_call", toolCallId: "call_slow", title: "bash", kind: "execute", status: "in_progress", rawInput: { command: "sleep 20" } });
             if (await untilCancel(10_000)) return end("cancelled");
             break;
+        case "stall": {
+            update(sid, { sessionUpdate: "agent_message_chunk", messageId: "m1", content: { type: "text", text: "Before" } });
+            await sleep(50);
+            if (process.argv.includes("--print-logs")) {
+                const line = (small: boolean) => `timestamp=2026-11-28T00:12:19.614Z level=ERROR run=e01524ae message="stream error" providerID=opencode modelID=big-pickle session.id=${sid} small=${small} agent=${small ? "title" : "build"} mode=primary error.error="AI_APICallError: Free usage limit reached. Free models work in OpenCode (https://opencode.ai); subscribe to OpenCode Go to keep going: https://opencode.ai/go"\n`;
+                process.stderr.write(line(true));
+                process.stderr.write(line(false).replace(sid, `${sid}x`));
+                process.stderr.write(line(false));
+            }
+            if (arg === "resume") {
+                await sleep(300);
+                update(sid, { sessionUpdate: "agent_message_chunk", messageId: "m1", content: { type: "text", text: " after" } });
+                return end();
+            }
+            if (await untilCancel(10_000)) return end("cancelled");
+            break;
+        }
         case "fail": {
             const run = arg !== "edit";
             update(sid, { sessionUpdate: "tool_call", toolCallId: "call_fail", title: run ? "bash" : "edit", kind: run ? "execute" : "edit", status: "pending", locations: [], rawInput: {} });

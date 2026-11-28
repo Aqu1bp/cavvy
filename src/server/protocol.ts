@@ -1305,6 +1305,8 @@ export interface AccountInfo {
     plan?: string;
     /** Signed in with an API key: usage is billed to that key, so there's no plan to show. */
     apiKey?: boolean;
+    /** Not signed in, but usable on its free models (OpenCode): offered a sign-in all the same. */
+    free?: boolean;
     /** A Cavvy-made account's folder keeps some entries of its own instead of linking Default's. */
     sharing?: string;
 }
