@@ -10,6 +10,7 @@
 import { batch, createEffect, createRoot, For, on } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
 import { render } from "solid-js/web";
+import { Server } from "lucide-solid";
 import type { MachineOverview, ServerEvent, SessionSummary } from "@shared/protocol";
 import { listable, mayTake, otherRows, relisted, routeOf } from "../lib/machine-rows";
 import { home, switchMachine } from "../lib/machines";
@@ -174,9 +175,10 @@ function Trouble() {
     return (
         <For each={trouble.list}>
             {(m) => (
-                <button class="om-h" title={`Go to ${m.name}`} onClick={() => switchMachine(m.name)}>
-                    <span class="truncate">{m.name}</span>
-                    <span class="om-n">{m.note}</span>
+                <button class="server-row" title={`Go to ${m.name}`} onClick={() => switchMachine(m.name)}>
+                    <Server size={14} class="server-row-icon" />
+                    <span class="server-row-name">{m.name}</span>
+                    <span class="server-row-word" data-tone={m.note === NOTES["needs-you"] ? "amber" : "red"}>{m.note}</span>
                 </button>
             )}
         </For>
@@ -196,11 +198,11 @@ function attach(tries = 0) {
     }
     if (!host) {
         host = document.createElement("div");
-        host.className = "others";
+        host.className = "server-rows";
         render(() => <Trouble />, host);
     }
     const place = () => {
-        const foot = rail.querySelector(".sidebar .side-foot");
+        const foot = rail.querySelector(".sidebar .sidebar-foot");
         if (foot && host!.nextElementSibling !== foot) foot.before(host!);
     };
     place();

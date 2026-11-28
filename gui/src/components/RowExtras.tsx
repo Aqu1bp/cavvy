@@ -169,7 +169,7 @@ function BulkItems(p: { plan: BulkPlan; close: () => void; clear: () => void }) 
     const n = (ids: readonly string[]) => sessionCount(ids.length);
     return (
         <>
-            <div class="menu-head">{n(plan.delete)} selected</div>
+            <div class="menu-head">{plan.delete.length} selected</div>
             <Show when={plan.settle.length}>
                 <button role="menuitem" class="menu-item compact" onClick={() => (p.close(), void settleSessions(plan.settle, true))}>
                     <CheckCheck size={14} /> Settle {n(plan.settle)}

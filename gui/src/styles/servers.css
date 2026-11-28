@@ -97,52 +97,61 @@
 }
 
 /* The servers that can't be reached as they are, between the sidebar's list and its foot (components/OtherMachines.tsx). */
-.sidebar .others {
+.server-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
     flex: none;
-    padding: 0 calc(8 * var(--sp)) calc(4 * var(--sp));
+    padding: calc(6 * var(--sp));
+    border-top: 1px solid var(--line);
 }
 
-.sidebar .others:empty {
+.server-rows:empty {
     display: none;
 }
 
-.others .om-h {
+.server-row {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     gap: calc(8 * var(--sp));
-    width: 100%;
-    padding: calc(4 * var(--sp)) calc(8 * var(--sp));
-    border: 0;
+    height: calc(28 * var(--sp));
+    padding: 0 calc(9 * var(--sp));
     border-radius: calc(6 * var(--sp));
-    background: none;
-    color: var(--rail-fg-2);
-    font: inherit;
-    font-size: 0.786rem;
-    font-weight: 600;
-    text-align: left;
-    cursor: pointer;
+    font-size: 0.893rem;
+    transition: background 0.1s;
 }
 
-.others .om-h:hover {
-    color: var(--rail-fg);
+.server-row:hover {
+    background: var(--rail-hover);
 }
 
-.others .om-n {
+.server-row-icon {
     flex: none;
-    font-weight: 400;
+    color: var(--fg-3);
 }
 
-.others .om-h:focus-visible {
-    outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
-    outline-offset: -2px;
+.server-row-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 500;
 }
 
-/* The server a set-aside or archived session is on, after its title (the sidebar's rows: components/Sidebar.tsx). */
-.slim-at {
+.server-row-word {
     flex: none;
-    font-size: 0.786rem;
-    color: color-mix(in srgb, var(--rail-fg-2) 72%, transparent);
+    margin-left: auto;
+    font-size: 0.857rem;
 }
+
+.server-row-word[data-tone="red"] {
+    color: var(--danger);
+}
+
+.server-row-word[data-tone="amber"] {
+    color: var(--warn);
+}
+
 
 /* What a rented server costs, beside its name. */
 .server-cost {

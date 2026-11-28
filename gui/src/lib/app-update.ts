@@ -41,7 +41,7 @@ export function updateView(u: AppUpdateInfo | undefined, working: number, now = 
     if (u.release) return releaseView(u, working, now);
     if (u.unavailable) return { title: "Updates from main", detail: u.unavailable, busy: false };
     if (u.updating) {
-        if (u.updating.restarting) return { title: "Restarting Cavvy…", detail: "The new build is installed.", busy: true, rail: { state: "busy", label: "The update is installed: Cavvy is restarting" } };
+        if (u.updating.restarting) return { title: "Restarting Cavvy…", detail: "The new build is installed.", busy: true, rail: { state: "busy", label: "Restarting Cavvy" } };
         return {
             // Not the commit the last check saw: the update fetches main again and builds whatever it is then.
             title: "Updating to the latest main…",
@@ -51,7 +51,7 @@ export function updateView(u: AppUpdateInfo | undefined, working: number, now = 
             rail: { state: "busy", label: `Updating Cavvy: ${u.updating.line}` },
         };
     }
-    const failed = u.failed ? { state: "failed" as const, label: `${u.failed.replace(/[.!?]?$/, ".")} Click to try again.` } : undefined;
+    const failed = u.failed ? { state: "failed" as const, label: `${u.failed.replace(/[.!?]?$/, ".")} Try again.` } : undefined;
     if (u.available) {
         const title = u.behind ? `${plural(u.behind, "new change")} on main` : "An update from main";
         return {
@@ -60,7 +60,7 @@ export function updateView(u: AppUpdateInfo | undefined, working: number, now = 
             action: "update",
             busy: u.checking,
             warn: working ? `${plural(working, "session")} working: restarting stops ${working === 1 ? "it" : "them"}.` : undefined,
-            rail: failed ?? { state: "ready", label: `${title}. Click to update and restart Cavvy.` },
+            rail: failed ?? { state: "ready", label: `Update: ${title}` },
         };
     }
     if (u.checking) return { title: "Checking for updates…", detail: u.installed ? `This build ${u.installed}` : undefined, busy: true };
@@ -85,7 +85,7 @@ function releaseView(u: AppUpdateInfo, working: number, now: number): UpdateView
             rail: { state: "busy", label: `Updating Cavvy: ${u.updating.line}`, progress: u.updating.progress },
         };
     }
-    const failed = u.failed ? { state: "failed" as const, label: "Couldn't update. Click to try again." } : undefined;
+    const failed = u.failed ? { state: "failed" as const, label: "Couldn't update. Try again." } : undefined;
     const when = u.checkedAt ? checked(u.checkedAt, now) : undefined;
     if (u.ready) {
         return {
@@ -94,7 +94,7 @@ function releaseView(u: AppUpdateInfo, working: number, now: number): UpdateView
             action: "restart",
             busy: u.checking,
             warn: working ? stops(working) : undefined,
-            rail: failed ?? { state: "ready", label: `Cavvy ${u.latest} is ready. Click to restart.` },
+            rail: failed ?? { state: "ready", label: `Restart for Cavvy ${u.latest}` },
         };
     }
     if (u.available) {
@@ -108,7 +108,7 @@ function releaseView(u: AppUpdateInfo, working: number, now: number): UpdateView
             action: "update",
             busy: u.checking,
             warn: working ? stops(working) : undefined,
-            rail: failed ?? { state: "ready", label: `${title}. Click to update and restart Cavvy.` },
+            rail: failed ?? { state: "ready", label: `Update to Cavvy ${u.latest}` },
         };
     }
     if (u.checking) return { title: "Checking for updates…", busy: true };
