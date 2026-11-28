@@ -4,6 +4,7 @@ import { render } from "solid-js/web";
 import "./styles/fonts.css";
 import "./styles/tokens.css";
 import "./styles/base.css";
+import "./styles/kit.css";
 import "./styles/shell.css";
 import "./styles/sidebar.css";
 import "./styles/header.css";
