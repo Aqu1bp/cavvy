@@ -130,7 +130,7 @@ function CodeBlockContent(p: { code: string; lang?: string; streaming?: boolean;
             <Show when={!p.bare}>
                 <div class="code-head" data-find-skip>
                     <span class="code-lang">{label() || "Code"}</span>
-                    <CopyButton text={() => p.code} label="Copy code" />
+                    <CopyButton text={() => p.code} label="Copy code" words="Copy" />
                 </div>
             </Show>
             <pre class="code-body" style={{ ...(p.maxHeight ? { "max-height": `${p.maxHeight}px` } : {}), "contain-intrinsic-block-size": skippedAt() }}>

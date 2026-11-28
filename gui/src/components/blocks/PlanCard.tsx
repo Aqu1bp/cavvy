@@ -1,5 +1,5 @@
 import { createMemo, createResource, createSignal, For, Show } from "solid-js";
-import { ClipboardList, Copy, Ellipsis, FolderGit2, GitBranchPlus, Save } from "lucide-solid";
+import { Copy, Ellipsis, FolderGit2, GitBranch, Save } from "lucide-solid";
 import type { ToolBlock } from "@shared/protocol";
 import { activate, app, handleFor, reportError, rpc, toast } from "../../state/app";
 import { setPlanDialog } from "../../state/ui";
@@ -49,20 +49,13 @@ export function PlanCard(p: { tool: ToolBlock; sessionId?: string }) {
         return to.filter((l) => linkOwner(plans, l) === p.tool.id);
     });
     return (
-        <div class="tcard plan-card" data-find={p.tool.id}>
-            <div class="pc-h" data-find-skip>
-                <ClipboardList size={14} aria-hidden="true" />
-                <span>Plan</span>
+        <div class="plan" data-state={state()?.tone} data-find={p.tool.id}>
+            <div class="plan-top" data-find-skip>
+                <span class="plan-kicker">Plan</span>
+                <Show when={state()}>{(s) => <span class="plan-state truncate">{s().label}</span>}</Show>
                 <span class="grow" />
-                <Show when={state()}>
-                    {(s) => (
-                        <span class={`pc-state truncate ${s().tone}`}>
-                            {s().label}
-                        </span>
-                    )}
-                </Show>
-                <button ref={more} class="hb sm" title="Plan actions" aria-label="Plan actions" aria-haspopup="menu" aria-expanded={menu()} onClick={() => setMenu(!menu())}>
-                    <Ellipsis size={15} />
+                <button ref={more} class="hb sm" aria-label="Plan actions" aria-haspopup="menu" aria-expanded={menu()} onClick={() => setMenu(!menu())}>
+                    <Ellipsis size={14} />
                 </button>
             </div>
             <Menu label="Plan actions" open={menu()} anchor={() => more} onClose={() => setMenu(false)} width={260}>
@@ -70,7 +63,7 @@ export function PlanCard(p: { tool: ToolBlock; sessionId?: string }) {
                     role="menuitem"
                     class="menu-item compact"
                     disabled={!info()?.git}
-                    title={info()?.notGit ?? (info()?.git ? "Implement the plan in a new worktree" : info.loading ? "Checking the repository…" : "Repository information unavailable")}
+                    title={info()?.notGit ?? (info()?.git ? undefined : info.loading ? "Checking the repository…" : "Repository unavailable")}
                     onClick={() => open("worktree")}
                 >
                     <FolderGit2 size={14} /> Implement in a new worktree…
@@ -82,34 +75,31 @@ export function PlanCard(p: { tool: ToolBlock; sessionId?: string }) {
                     <Copy size={14} /> Copy plan
                 </button>
             </Menu>
-            <div class="pc-t selectable">{title()}</div>
+            <div class="plan-title selectable">{title()}</div>
             <Show when={body()}>
                 {/* A glimpse: the links and buttons in it aren't reachable until it's read in full. */}
-                <div class="pc-p" data-find-skip inert>
+                <div class="plan-preview" data-find-skip inert>
                     <Markdown text={body()} class="small" />
                 </div>
             </Show>
-            <div class="pc-f" data-find-skip>
-                <button class="btn ghost sm" onClick={() => open("view")}>
+            <div class="plan-foot" data-find-skip>
+                <button class="btn sm" onClick={() => open("view")}>
                     Read the plan
                 </button>
-            </div>
-            <For each={links()}>
-                {(l) => (
-                    <button
-                        class="pc-link"
-                        data-find-skip
-                        title={`Implemented: ${tildify(l.path, app.hello?.homeDir)} on ${l.branch}${l.base ? `, from ${l.base}` : ""}. Open that session.`}
-                        onClick={() => void activate(l.session)}
-                    >
-                        <GitBranchPlus size={14} aria-hidden="true" />
-                        <span class="truncate">
-                            Implementing on <span class="mono">{l.branch}</span>
+                <For each={links()}>
+                    {(l) => (
+                        <span class="plan-impl" title={`${tildify(l.path, app.hello?.homeDir)}${l.base ? `, from ${l.base}` : ""}`}>
+                            <GitBranch size={12} aria-hidden="true" />
+                            <span class="truncate">
+                                Implementing on <span class="mono">{l.branch}</span> ·
+                            </span>
+                            <button class="link-btn" onClick={() => void activate(l.session)}>
+                                Open session
+                            </button>
                         </span>
-                        <span class="go">Open session</span>
-                    </button>
-                )}
-            </For>
+                    )}
+                </For>
+            </div>
         </div>
     );
 }

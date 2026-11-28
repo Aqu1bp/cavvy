@@ -529,38 +529,33 @@
 
 /* ---- Find in the conversation (⌘F) ---------------------------------- */
 
-/* A small floating bar under the title bar, on the right. */
+/* A small floating bar under the title bar, on the right (the remix's .findbar). */
 .find-bar.glass {
     position: absolute;
     top: 58px;
-    right: 12px;
+    right: 24px;
     z-index: 26;
     display: flex;
     align-items: center;
-    gap: calc(4 * var(--sp));
-    height: 38px;
-    max-width: calc(100% - 24 * var(--sp));
-    padding: 0 calc(4 * var(--sp)) 0 calc(12 * var(--sp));
-    border-radius: var(--radius-md);
-    background: var(--ctl-strong);
+    gap: 2px;
+    height: 36px;
+    max-width: calc(100% - 48 * var(--sp));
+    padding: 0 calc(5 * var(--sp)) 0 calc(12 * var(--sp));
+    border-radius: var(--r-well);
+    background: var(--card);
+    box-shadow: var(--pop-shadow);
     animation: ov-pop 160ms var(--ease);
     transform-origin: top right;
 }
 
-.find-bar.glass .find-ic {
-    flex: none;
-    color: var(--fg-2);
-}
-
 .find-bar.glass input {
     flex: 1;
-    width: calc(180 * var(--sp));
+    width: calc(200 * var(--sp));
     min-width: 0;
-    margin-left: calc(4 * var(--sp));
+    padding: 0;
     border: 0;
     outline: 0;
-    background: transparent;
-    font-size: 0.929rem;
+    background: none;
     color: var(--fg);
 }
 
@@ -574,37 +569,31 @@
 }
 
 .find-bar.glass .find-count {
-    min-width: calc(52 * var(--sp));
+    min-width: calc(64 * var(--sp));
     margin-right: calc(4 * var(--sp));
-    padding: 0;
-    text-align: right;
-    font-size: 0.857rem;
     color: var(--fg-3);
+    font-size: 0.857rem;
+    text-align: right;
     white-space: nowrap;
-}
-
-.find-bar.glass .find-count:empty {
-    min-width: 0;
-    margin: 0;
 }
 
 .find-btn {
     display: inline-grid;
     place-items: center;
+    flex: none;
     width: calc(24 * var(--sp));
     height: calc(24 * var(--sp));
-    flex: none;
     border-radius: var(--radius-sm);
     color: var(--fg-2);
 }
 
-.find-btn:hover {
+.find-btn:hover:not(:disabled) {
     background: var(--hover);
     color: var(--fg);
 }
 
-.find-btn:active {
-    background: var(--press);
+.find-btn:disabled {
+    opacity: 0.4;
 }
 
 @media (forced-colors: active) {
@@ -1373,51 +1362,37 @@
 
 /* ---- Rewind, folder picker, trust ----------------------------------- */
 
-/* The prompts: plain rows, the chosen one tinted. */
+/* Rewind (the remix's .rw): the prompts, edge to edge under the title, the chosen one tinted; what going back
+   does under them. */
+.dialog.rw .dialog-body {
+    padding-top: 0;
+}
+
 .rw-list {
     display: flex;
     flex-direction: column;
-    gap: calc(2 * var(--sp));
-    max-height: calc(220 * var(--sp));
+    flex: none;
+    max-height: calc(168 * var(--sp));
+    margin: calc(12 * var(--sp)) calc(-20 * var(--sp)) 0;
     overflow-y: auto;
-    margin: 0 calc(-4 * var(--sp));
+    border-top: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
 }
 
 .rw-item {
     display: flex;
     align-items: center;
-    gap: calc(9 * var(--sp));
-    padding: calc(7 * var(--sp)) calc(10 * var(--sp));
-    border-radius: calc(10 * var(--sp));
-    color: var(--fg-2);
-    text-align: left;
+    gap: calc(11 * var(--sp));
+    flex: none;
     min-width: 0;
+    min-height: calc(36 * var(--sp));
+    padding: 0 calc(20 * var(--sp));
+    text-align: left;
+    transition: background 0.1s;
 }
 
-/* Inside the row: the list scrolls, and would clip a ring drawn outside it. */
-.rw-item:focus-visible {
-    outline-offset: -2px;
-    border-radius: calc(10 * var(--sp));
-}
-
-.rw-item > svg {
-    color: var(--fg-3);
-    flex: none;
-}
-
-.rw-item .truncate {
-    flex: 1;
-}
-
-.rw-item .small {
-    flex: none;
-    font-size: 0.821rem;
-    color: var(--fg-3);
-}
-
-/* When it was sent: the same prompt sent twice is told apart by it. */
-.rw-item .rw-when {
-    font-variant-numeric: tabular-nums;
+.rw-item + .rw-item {
+    border-top: 1px solid var(--line);
 }
 
 .rw-item:hover {
@@ -1425,79 +1400,134 @@
 }
 
 .rw-item.on {
-    background: color-mix(in srgb, var(--accent) 13%, transparent);
-    color: var(--fg);
+    background: color-mix(in srgb, var(--accent-soft) 55%, transparent);
 }
 
-.rw-item.on > svg {
-    color: var(--accent);
+/* Inside the row: the list scrolls, and would clip a ring drawn outside it. */
+.rw-item:focus-visible {
+    outline-offset: -2px;
 }
 
-/* What going back does, in a well on the sheet. */
+.radio-dot {
+    position: relative;
+    flex: none;
+    width: calc(16 * var(--sp));
+    height: calc(16 * var(--sp));
+    border-radius: 50%;
+    box-shadow: inset 0 0 0 1.5px var(--line-strong);
+}
+
+.rw-item.on > .radio-dot {
+    background: var(--accent);
+    box-shadow: none;
+}
+
+.rw-item.on > .radio-dot::after {
+    content: "";
+    position: absolute;
+    inset: calc(5 * var(--sp));
+    border-radius: 50%;
+    background: var(--accent-ink);
+}
+
+.rw-text {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.rw-changed {
+    flex: none;
+    color: var(--fg-3);
+    font-size: 0.857rem;
+    font-variant-numeric: tabular-nums;
+}
+
 .rw-plan {
     display: flex;
     flex-direction: column;
-    gap: calc(5 * var(--sp));
-    padding: calc(10 * var(--sp)) calc(12 * var(--sp));
-    border-radius: calc(12 * var(--sp));
-    background: var(--sheet);
-    box-shadow: inset 0 0 0 0.5px var(--line);
-    font-size: 0.893rem;
+    gap: calc(8 * var(--sp));
 }
 
-.rw-plan .small {
-    font-size: 0.857rem;
+.rw-plan > * {
+    flex: none;
+}
+
+.rw-head {
+    font-weight: 600;
+}
+
+.rw-files {
+    border-radius: var(--r-well);
+    box-shadow: inset 0 0 0 1px var(--line);
 }
 
 .rw-file {
     display: flex;
     align-items: center;
-    gap: calc(7 * var(--sp));
+    gap: calc(10 * var(--sp));
     min-width: 0;
-    font-size: 0.857rem;
-    color: var(--fg-2);
+    height: calc(30 * var(--sp));
+    padding: 0 calc(10 * var(--sp)) 0 calc(12 * var(--sp));
 }
 
-.rw-file > svg {
-    flex: none;
-    color: var(--fg-3);
+.rw-file + .rw-file {
+    border-top: 1px solid var(--line);
 }
 
 .rw-file .mono {
+    flex: 1;
     font-size: 0.857rem;
 }
 
-.rw-file .truncate {
-    flex: 1;
+.rw-action {
+    flex: none;
+    width: calc(58 * var(--sp));
+    color: var(--fg-3);
+    font-size: 0.857rem;
 }
 
-.rw-file.warn {
+.rw-action.del {
+    color: var(--danger);
+}
+
+.rw-none,
+.rw-foot {
+    color: var(--fg-3);
+    font-size: 0.893rem;
+}
+
+/* Why some files can't be put back: amber notes (the remix's .note). */
+.rw-warn {
+    display: flex;
     align-items: flex-start;
-}
-
-.rw-file.warn,
-.rw-file.warn > svg {
+    gap: calc(8 * var(--sp));
+    min-width: 0;
+    padding: calc(8 * var(--sp)) calc(10 * var(--sp));
+    border-radius: var(--r-well);
+    background: var(--warn-bg);
     color: var(--warn);
+    font-size: 0.893rem;
 }
 
-.rw-file.warn > svg {
+.rw-warn > svg {
+    flex: none;
     margin-top: calc(2 * var(--sp));
 }
 
-/* A question or a problem that needs an answer before going on. */
+/* A question that needs an answer before going on: a red note. */
 .rw-confirm {
     display: flex;
     align-items: center;
     flex-wrap: wrap;
-    gap: calc(10 * var(--sp));
-    margin-top: calc(4 * var(--sp));
-    padding: calc(10 * var(--sp)) calc(12 * var(--sp));
-    border-radius: calc(12 * var(--sp));
-    background: color-mix(in srgb, var(--danger) 9%, var(--sheet));
-    box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--danger) 28%, transparent);
+    gap: calc(8 * var(--sp));
+    padding: calc(8 * var(--sp)) calc(10 * var(--sp));
+    border-radius: var(--r-well);
+    background: var(--danger-soft);
     color: var(--danger);
-    font-size: 0.857rem;
-    line-height: 1.45;
+    font-size: 0.893rem;
 }
 
 .rw-confirm > span {
@@ -1507,6 +1537,10 @@
 
 .rw-confirm svg {
     flex: none;
+}
+
+.rw-undo {
+    font-size: 0.893rem;
 }
 
 /* A form in a dialog (worktrees, servers, plans, commits): a label over its field, a hint or an error under it. */
@@ -1940,8 +1974,9 @@
     position: relative;
     flex: none;
     overflow: hidden;
-    border-radius: var(--r-card);
-    box-shadow: var(--pop-shadow);
+    border-radius: calc(6 * var(--sp));
+    background: #fff;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
     outline: none;
     user-select: none;
     -webkit-user-select: none;
@@ -1951,8 +1986,8 @@
     display: block;
     width: 100%;
     height: 100%;
-    max-width: 92vw;
-    max-height: 88vh;
+    max-width: calc(100vw - 144 * var(--sp));
+    max-height: calc(100vh - 112 * var(--sp));
     -webkit-user-drag: none;
 }
 
@@ -1983,69 +2018,61 @@
 .iv.zoomed .iv-img {
     border-radius: 0;
     box-shadow: none;
-    cursor: zoom-out;
+    cursor: grab;
 }
 
 .iv.grabbing .iv-img {
     cursor: grabbing;
 }
 
-/* Name and pixel size under the picture; over it at the bottom while it's at 1:1. */
-.iv-caption,
-.iv-step {
-    background: var(--ctl-strong);
-    box-shadow: var(--pop-shadow);
-}
-
+/* Name and pixel size, at the bottom of the window (the remix's .viewer-caption). */
 .iv-caption {
+    position: fixed;
+    bottom: calc(18 * var(--sp));
+    left: 50%;
+    transform: translateX(-50%);
     display: flex;
     align-items: center;
     gap: calc(8 * var(--sp));
     max-width: 92vw;
-    height: calc(26 * var(--sp));
-    padding: 0 calc(11 * var(--sp));
-    border-radius: var(--pill);
-    font-size: 0.821rem;
+    padding: calc(5 * var(--sp)) calc(10 * var(--sp));
+    border-radius: var(--radius-sm);
+    background: rgba(0, 0, 0, 0.5);
+    color: rgba(255, 255, 255, 0.86);
+    font-size: 0.893rem;
     font-variant-numeric: tabular-nums;
-    color: var(--fg-2);
     white-space: nowrap;
 }
 
 .iv-count {
     flex: none;
-    color: var(--fg-3);
-}
-
-.iv.zoomed .iv-caption {
-    position: fixed;
-    bottom: calc(14 * var(--sp));
-    left: 50%;
-    transform: translateX(-50%);
+    color: rgba(255, 255, 255, 0.6);
 }
 
 .iv-step {
     position: absolute;
     top: 50%;
-    display: grid;
-    place-items: center;
-    width: calc(34 * var(--sp));
-    height: calc(34 * var(--sp));
-    margin-top: calc(-17 * var(--sp));
-    border-radius: 50%;
-    color: var(--fg-2);
-    transition: color var(--dur-fast), opacity var(--dur-fast);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: calc(36 * var(--sp));
+    height: calc(36 * var(--sp));
+    margin-top: calc(-18 * var(--sp));
+    border-radius: var(--r-well);
+    background: rgba(255, 255, 255, 0.1);
+    color: #fff;
 }
 
 .iv-step.prev {
-    left: calc(14 * var(--sp));
+    left: calc(20 * var(--sp));
 }
 
 .iv-step.next {
-    right: calc(14 * var(--sp));
+    right: calc(20 * var(--sp));
 }
 
 .iv-step:hover:not(:disabled) {
-    color: var(--fg);
+    background: rgba(255, 255, 255, 0.2);
 }
 
 .iv-step:disabled {

@@ -116,8 +116,7 @@ export default function SignInCard(p: { sessionId: string; it: SignInInteraction
     /** The way out, at the far end: back to the list this came from, or put off. */
     const Out = () => (
         <>
-            <span class="grow" />
-            <button class="pbtn quiet" onClick={() => void send({ action: "later" })}>
+            <button class="btn" onClick={() => void send({ action: "later" })}>
                 {it().back && it().step !== "list" && it().step !== "token" ? "Back" : "Later"} <kbd>Esc</kbd>
             </button>
         </>
@@ -141,7 +140,7 @@ export default function SignInCard(p: { sessionId: string; it: SignInInteraction
                                         <Show
                                             when={r.state === "in"}
                                             fallback={
-                                                <button class="pbtn sm" disabled={sending()} aria-label={`Sign in to ${r.name}`} onClick={() => void send({ action: "pick", target: r.target })}>
+                                                <button class="btn sm" disabled={sending()} aria-label={`Sign in to ${r.name}`} onClick={() => void send({ action: "pick", target: r.target })}>
                                                     Sign in
                                                 </button>
                                             }
@@ -169,7 +168,7 @@ export default function SignInCard(p: { sessionId: string; it: SignInInteraction
                         </Show>
                     </div>
                     <div class="itab-actions ask-row">
-                        <button class="pbtn primary" disabled={sending()} onClick={() => void send({ action: "retry" })}>
+                        <button class="btn primary" disabled={sending()} onClick={() => void send({ action: "retry" })}>
                             Try again <kbd>1</kbd>
                         </button>
                         <Out />
@@ -183,11 +182,11 @@ export default function SignInCard(p: { sessionId: string; it: SignInInteraction
                     </Show>
                     <div class="itab-actions ask-row">
                         <Show when={!it().busy}>
-                            <button class="pbtn primary" disabled={sending()} onClick={() => void send({ action: "start" })}>
+                            <button class="btn primary" disabled={sending()} onClick={() => void send({ action: "start" })}>
                                 Sign in <kbd>1</kbd>
                             </button>
                             <Show when={it().canToken}>
-                                <button class="pbtn" disabled={sending()} onClick={() => void send({ action: "token" })}>
+                                <button class="btn" disabled={sending()} onClick={() => void send({ action: "token" })}>
                                     Use a token <kbd>2</kbd>
                                 </button>
                             </Show>
@@ -201,7 +200,7 @@ export default function SignInCard(p: { sessionId: string; it: SignInInteraction
                     </div>
                     <div class="itab-actions ask-row">
                         <Show when={it().url && !it().busy}>
-                            <button class={`pbtn ${it().open ? "primary" : ""}`} onClick={open}>
+                            <button class={`btn ${it().open ? "primary" : ""}`} onClick={open}>
                                 <ExternalLink size={13} /> {it().open ? <>Open {host(it().site)}</> : "Open again"}
                                 <Show when={it().open}>
                                     <kbd>1</kbd>
@@ -227,12 +226,12 @@ export default function SignInCard(p: { sessionId: string; it: SignInInteraction
                         <Show
                             when={it().expired}
                             fallback={
-                                <button class="pbtn primary" onClick={open}>
+                                <button class="btn primary" onClick={open}>
                                     <ExternalLink size={13} /> Open {host(it().site)} <kbd>1</kbd>
                                 </button>
                             }
                         >
-                            <button class="pbtn primary" disabled={sending()} onClick={() => void send({ action: "retry" })}>
+                            <button class="btn primary" disabled={sending()} onClick={() => void send({ action: "retry" })}>
                                 New code <kbd>1</kbd>
                             </button>
                         </Show>
@@ -241,7 +240,7 @@ export default function SignInCard(p: { sessionId: string; it: SignInInteraction
                 </Match>
                 <Match when={it().step === "paste"}>
                     <Field it={it()} label="Code" placeholder="Paste the code from the page" send={send} masked={false} action="Continue">
-                        <button class="pbtn" onClick={open}>
+                        <button class="btn" onClick={open}>
                             <ExternalLink size={13} /> Open page
                         </button>
                     </Field>
@@ -249,7 +248,7 @@ export default function SignInCard(p: { sessionId: string; it: SignInInteraction
                 <Match when={it().step === "token"}>
                     <Field it={it()} label={`${it().name} token`} placeholder="Token" send={send} masked action="Sign in" link={it().tokenUrl}>
                         <Show when={it().back}>
-                            <button class="pbtn quiet" onClick={() => void send({ action: "back" })}>
+                            <button class="btn" onClick={() => void send({ action: "back" })}>
                                 Back
                             </button>
                         </Show>
@@ -271,16 +270,16 @@ export default function SignInCard(p: { sessionId: string; it: SignInInteraction
                         <Show
                             when={it().ran}
                             fallback={
-                                <button class="pbtn primary" onClick={openTerminal}>
+                                <button class="btn primary" onClick={openTerminal}>
                                     <SquareTerminal size={13} /> Open in terminal <kbd>1</kbd>
                                 </button>
                             }
                         >
-                            <button class="pbtn primary" disabled={sending()} onClick={() => void send({ action: "done" })}>
+                            <button class="btn primary" disabled={sending()} onClick={() => void send({ action: "done" })}>
                                 Done <kbd>1</kbd>
                             </button>
                             <Show when={it().canSave}>
-                                <button class="pbtn" disabled={sending()} title="Cavvy runs it for you next time" onClick={() => void send({ action: "done", save: true })}>
+                                <button class="btn" disabled={sending()} title="Runs automatically next time" onClick={() => void send({ action: "done", save: true })}>
                                     Done, and remember <kbd>2</kbd>
                                 </button>
                             </Show>
@@ -367,12 +366,11 @@ function Field(p: { it: SignInInteraction; label: string; placeholder: string; m
             </div>
             <div class="itab-actions ask-row">
                 <Show when={!p.masked}>{p.children}</Show>
-                <button class="pbtn primary" aria-busy={p.it.busy} disabled={!ready() || p.it.busy} onClick={() => void submit()}>
+                <button class="btn primary" aria-busy={p.it.busy} disabled={!ready() || p.it.busy} onClick={() => void submit()}>
                     {p.action}
                 </button>
                 <Show when={p.masked}>{p.children}</Show>
-                <span class="grow" />
-                <button class="pbtn quiet" onClick={() => void p.send({ action: "later" })}>
+                                <button class="btn" onClick={() => void p.send({ action: "later" })}>
                     Later <kbd>Esc</kbd>
                 </button>
             </div>
@@ -456,16 +454,15 @@ export function ConfirmCard(p: { sessionId: string; it: ConfirmInteraction }) {
                 </Show>
             </div>
             <div class="itab-actions ask-row">
-                <button class="pbtn primary" disabled={busy()} onClick={() => void answer("yes")}>
+                <button class="btn primary" disabled={busy()} onClick={() => void answer("yes")}>
                     {p.it.yes} <kbd>1</kbd>
                 </button>
                 <Show when={p.it.other}>
-                    <button class="pbtn" disabled={busy()} onClick={() => void answer("other")}>
+                    <button class="btn" disabled={busy()} onClick={() => void answer("other")}>
                         {p.it.other} <kbd>2</kbd>
                     </button>
                 </Show>
-                <span class="grow" />
-                <button class="pbtn quiet" disabled={busy()} onClick={() => void answer("no")}>
+                                <button class="btn" disabled={busy()} onClick={() => void answer("no")}>
                     {p.it.no} <kbd>Esc</kbd>
                 </button>
             </div>

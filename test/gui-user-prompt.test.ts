@@ -60,21 +60,21 @@ test("shortPrompt: one line of under 60 characters", () => {
 test("the bubble's styles: at the right, as wide as its text, its actions over the gap and shown by opacity alone", () => {
     const t = css("transcript.css");
     expect(decl(t, ".user-row", "align-self")).toBe("flex-end");
-    expect(decl(t, ".user-row", "max-width")).toBe("min(82%, 600 * var(--sp))");
+    expect(decl(t, ".user-row", "max-width")).toBe("82%");
     expect(decl(t, ".user-row", "position")).toBe("relative");
-    // A card like the others: one radius all round, whatever its length.
-    expect(decl(t, ".user-bubble", "border-radius")).toBe("var(--r-card)");
+    // The remix's bubble: rounded, its corner by the column's edge tucked in.
+    expect(decl(t, ".user-bubble", "border-radius")).toBe("calc(14 * var(--sp)) calc(14 * var(--sp)) calc(4 * var(--sp)) calc(14 * var(--sp))");
     expect(decl(t, ".user-row > .user-bubble", "border-radius")).toBeUndefined();
     expect(decl(t, ".user-bubble", "background")).toBe("var(--bubble)");
     // Absolutely placed under the bubble: showing them moves nothing.
     expect(decl(t, ".user-actions", "position")).toBe("absolute");
     expect(decl(t, ".user-actions", "top")).toBe("100%");
     expect(decl(t, ".user-actions", "opacity")).toBe("0");
-    expect(decl(t, ".user-actions", "transition")).toBe("opacity 140ms");
+    expect(decl(t, ".user-actions", "transition")).toBe("opacity 0.12s");
     expect(decl(t, ".user-row:hover .user-actions", "opacity")).toBe("1");
     expect(decl(t, ".user-actions:focus-within", "opacity")).toBe("1");
     // Its margin is the gap they're laid over.
-    expect(decl(t, ".user-row", "margin-bottom")).toBe("calc(22 * var(--sp))");
+    expect(decl(t, ".user-row", "margin-bottom")).toBe("calc(12 * var(--sp))");
 });
 
 test("--bubble is a token in both themes", () => {

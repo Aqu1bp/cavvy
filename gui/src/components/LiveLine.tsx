@@ -11,7 +11,7 @@
 // is open too. What it says, and DWELL_MS, are in lib/live-line.ts.
 
 import { createEffect, createMemo, createSignal, For, on, onCleanup, Show, untrack } from "solid-js";
-import { ChevronRight, Hand } from "lucide-solid";
+import { ChevronRight } from "lucide-solid";
 import { now } from "../lib/clock";
 import { turnDuration } from "../lib/format";
 import { dwellLeft, stepOf, urgent, type LiveLineState } from "../lib/live-line";
@@ -50,8 +50,11 @@ type Layer = {
 };
 
 
-/** `state` undefined: the line steps aside (the answer is streaming; its caret says so). `hint`: what the user can do. */
-export function LiveLine(p: { state: LiveLineState | undefined; hint?: string }) {
+/**
+ * `state` undefined: the line steps aside (the answer is streaming; its caret says so). `hint`: what the user can do.
+ * `stop`: the turn's own line, so Esc stops what it says (the composer's Stop: aria-keyshortcuts there).
+ */
+export function LiveLine(p: { state: LiveLineState | undefined; hint?: string; stop?: boolean }) {
     const [layers, setLayers] = createSignal<Layer[]>([]);
     let seq = 0;
     const drop = (id: number) => setLayers((list) => list.filter((l) => l.id !== id));
@@ -152,13 +155,18 @@ export function LiveLine(p: { state: LiveLineState | undefined; hint?: string })
                     {/* What the line says, for a screen reader: only the current state, not the one rolling away. A command's
                         line is a button, named by it: what it's for and the command. */}
                     <span class="sr-only">{command() ? [showing()?.label, showing()?.detail].filter(Boolean).join(": ") : (stepOf(showing()?.steps) ?? showing()?.label)}</span>
-                    {/* No spinner: the light sweeping the label says it's working. The hand when it waits on the user. */}
-                    <Show when={showing()?.kind === "wait"}>
-                        <span class="lic" aria-hidden="true">
-                            <Hand size={14} />
+                    {/* Three dots while it works, the light sweeping the label too; an amber dot when it waits on the user. */}
+                    <span class="lic" aria-hidden="true">
+                        <Show when={showing()?.kind === "wait"} fallback={<span class="dots"><i /><i /><i /></span>}>
+                            <span class="ldot" />
+                        </Show>
+                    </span>
+                    <For each={layers()}>{(l) => <LayerRow layer={l} hint={p.hint} isOpen={isOpen} onGone={() => drop(l.id)} />}</For>
+                    <Show when={p.stop && showing()?.kind !== "wait"}>
+                        <span class="lstop" aria-hidden="true">
+                            <kbd>Esc</kbd> Stop
                         </span>
                     </Show>
-                    <For each={layers()}>{(l) => <LayerRow layer={l} hint={p.hint} isOpen={isOpen} onGone={() => drop(l.id)} />}</For>
                 </div>
                 <Show when={opened()} keyed>
                     {(id) => {

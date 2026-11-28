@@ -8,7 +8,6 @@ import { createContext, createEffect, createMemo, createResource, createSignal, 
 import {
     AlertTriangle,
     Bot,
-    Check,
     ChevronRight,
     CircleCheck,
     CircleX,
@@ -48,7 +47,7 @@ import { prefs } from "../../state/prefs";
 import { openAgents, openInEditor, openReview, stopBackground } from "../../state/actions";
 import { findReveal, setViewedImage } from "../../state/ui";
 import { imagesReady, toolImage, toolThumb } from "../../state/images";
-import { CopyButton, Spinner } from "../ui/bits";
+import { CopyButton, Shine, Spinner } from "../ui/bits";
 import { AgentMark, ProviderStack } from "../ui/AgentMark";
 import { CodeBlock } from "./CodeBlock";
 import { Counts, DiffView } from "./DiffView";
@@ -253,7 +252,7 @@ export function WorkRun(p: { items: Item[]; /** The turn's live line says what's
                         </span>
                     </Show>
                     <Show when={!pictured()}>
-                        <ChevronRight size={14} class="chev" />
+                        <ChevronRight size={13} class="chev" />
                     </Show>
                 </button>
             </Show>
@@ -330,8 +329,8 @@ export function Thinking(p: { block: ThinkingBlock; live: boolean }) {
         <Show when={prefs.showThinking || p.live}>
             <div ref={(el) => enterRow(el, motionMs(STAGGER_MS))} class={`wgroup thinking ${open() ? "open" : ""} ${p.live ? "live" : ""}`}>
                 <button class="acts-h wrow" onPointerEnter={fetch} onFocus={fetch} onClick={() => (fetch(), setOpen(!open()))} aria-expanded={open()}>
-                    <ChevronRight size={14} class="chev" />
-                    <span class={`wtext ${p.live ? "shimmer" : ""}`}>{label()}</span>
+                    <ChevronRight size={13} class="chev" />
+                    <span class={`wtext ${p.live ? "shimmer" : ""}`}>{label()}<Show when={p.live}><Shine text={label()} /></Show></span>
                 </button>
                 <Show when={open()} fallback={<Show when={p.live && preview()}><div class="thinking-peek">{preview()}</div></Show>}>
                     <div class="thinking-text">{p.block.text.trim()}</div>
@@ -410,7 +409,7 @@ function ActivityGroupContent(p: GroupProps) {
         <div class={`acts ${open() ? "open" : ""} ${live() ? "live" : ""}`}>
             <Show when={done().length || live()}>
                 <button class="acts-h wrow" data-find-skip onClick={() => setOpen(!open())} aria-expanded={open()}>
-                    <Show when={live()} fallback={<ChevronRight size={14} class="chev" />}>
+                    <Show when={live()} fallback={<ChevronRight size={13} class="chev" />}>
                         <Spinner size={12} class="tone-accent" />
                     </Show>
                     <Show when={!working()} fallback={<span class="wtext">Working</span>}>
@@ -495,13 +494,12 @@ export function SubAgentsRow(p: { runs: AgentRun[] }) {
         const n = (s: AgentRun["status"][]) => p.runs.filter((a) => s.includes(a.status)).length;
         return [
             n(["running"]) && `${n(["running"])} working`,
-            n(["waiting"]) && `${n(["waiting"])} waiting for you`,
+            n(["waiting"]) && `${n(["waiting"])} waiting`,
             n(["done"]) && `${n(["done"])} done`,
             n(["failed"]) && `${n(["failed"])} failed`,
             n(["stopped"]) && `${n(["stopped"])} stopped`,
         ].filter(Boolean) as string[];
     };
-    const tone = () => (p.runs.some((a) => a.status === "waiting") ? "warn" : p.runs.some((a) => a.status === "running") ? "info" : p.runs.some((a) => a.status === "failed") ? "err" : "muted");
     const span = () => {
         const start = Math.min(...p.runs.map((a) => a.startedAt));
         const end = p.runs.some(agentLive) ? now() : Math.max(...p.runs.map((a) => a.endedAt ?? a.startedAt));
@@ -509,17 +507,13 @@ export function SubAgentsRow(p: { runs: AgentRun[] }) {
     };
     return (
         // One agent: its row alone, which opens it. Several: how many and how they're doing, opening into a row each.
-        <Show when={p.runs.length > 1} fallback={<div class="subagents single"><Show when={p.runs[0]} keyed>{(a) => <AgentRow a={a} providerOf={providerOf} />}</Show></div>}>
+        <Show when={p.runs.length > 1} fallback={<div class="subagents single"><div class="agl"><Show when={p.runs[0]} keyed>{(a) => <AgentRow a={a} providerOf={providerOf} />}</Show></div></div>}>
             <div class="subagents">
                 <button class="ag-head" aria-expanded={open()} onClick={() => setOpen(!open())}>
                     <ProviderStack providers={p.runs.map(providerOf)} />
-                    <span class="ag-text">
-                        <span class="ag-title">{plural(p.runs.length, "sub-agent")}</span>
-                        <span class={`ag-sub tone-${tone()}`}>{counts().join(" · ")}</span>
-                    </span>
-                    <span class="grow" />
+                    <span class="ag-sum">{[plural(p.runs.length, "sub-agent"), ...counts()].join(" · ")}</span>
                     <span class="ag-time num">{span()}</span>
-                    <ChevronRight size={14} class="chev" />
+                    <ChevronRight size={13} class="chev" />
                 </button>
                 <Show when={open()}>
                     <div class="agl">
@@ -552,7 +546,7 @@ function AgentRow(p: { a: AgentRun; providerOf: (a: AgentRun) => string | undefi
                 </span>
             </span>
             <span class="ag-time num">{agentElapsed(a)}</span>
-            <ChevronRight size={14} class="chev" />
+            <ChevronRight size={13} class="chev" />
         </button>
     );
 }
@@ -627,6 +621,8 @@ function ToolRowContent(p: ToolRowProps) {
     // Shown by find: its whole title, where the match may be past the cut.
     const found = () => findReveal()?.part === p.tool.id;
     const label = createMemo(() => toolLabel(p.tool));
+    /** Running in the turn's activity: its verb has the light crossing it. */
+    const shines = () => p.activity && isLive(p.tool) && p.tool.status !== "awaiting" && p.tool.status !== "queued";
     const all = () => [p.tool, ...(p.also ?? [])];
     // Opened, a counted row shows each different call once: the same file read three times is one output.
     const distinct = createMemo(() => {
@@ -660,7 +656,7 @@ function ToolRowContent(p: ToolRowProps) {
                         </Switch>
                     </span>
                     {/* Spaces between the parts, as find counts them ("Read src/a.ts"); a flex row doesn't draw them. */}
-                    <span class={p.activity && isLive(p.tool) && p.tool.status !== "awaiting" && p.tool.status !== "queued" ? "tool-verb wverb shimmer" : p.activity && isLive(p.tool) ? "tool-verb wverb" : "tool-verb"} data-find-skip={isLive(p.tool) || undefined}>{p.activity && isLive(p.tool) ? runningVerb(p.tool) : label().verb}</span>{!isLive(p.tool) && " "}
+                    <span class={shines() ? "tool-verb wverb shimmer" : p.activity && isLive(p.tool) ? "tool-verb wverb" : "tool-verb"} data-find-skip={isLive(p.tool) || undefined}>{p.activity && isLive(p.tool) ? runningVerb(p.tool) : label().verb}<Show when={shines()}><Shine text={runningVerb(p.tool)} /></Show></span>{!isLive(p.tool) && " "}
                     <Show when={label().arg}>
                         <span class={p.activity ? "tool-arg warg mono truncate" : "tool-arg truncate"} data-find-skip={p.tool.status === "streaming" || undefined}>{label().arg}</span>{!isLive(p.tool) && " "}
                     </Show>
@@ -869,7 +865,7 @@ function EditCardContent(p: { tool: ToolBlock }) {
                         </Show>
                     </Show>
                 </span>
-                <span class={`tcard-verb ${live() && t().status !== "awaiting" ? "shimmer" : ""}`} data-find-skip>{live() ? runningVerb(t()) : label().verb}{" "}</span>
+                <span class={`tcard-verb ${live() && t().status !== "awaiting" ? "shimmer" : ""}`} data-find-skip>{live() ? runningVerb(t()) : label().verb}<Show when={live() && t().status !== "awaiting"}><Shine text={runningVerb(t())} /></Show>{" "}</span>
                 {/* Still arriving, its file is named as soon as that much has (the server reads it from the start of the input). */}
                 <Show when={label().arg}>
                     <span class="tcard-p truncate" title={label().arg} data-find-skip={t().status === "streaming" || undefined}>{label().arg}</span>{!live() && " "}
@@ -898,7 +894,7 @@ function EditCardContent(p: { tool: ToolBlock }) {
                 </span>
                 <span class="chev-w" aria-hidden="true">
                     <Show when={hasBody()}>
-                        <ChevronRight size={14} class="chev" />
+                        <ChevronRight size={13} class="chev" />
                     </Show>
                 </span>
             </div>
@@ -1128,7 +1124,7 @@ function CommandCardContent(p: { tool: ToolBlock }) {
                 <span class="cmd-time num" data-find-skip>{time()}</span>
                 <span class="chev-w" aria-hidden="true">
                     <Show when={hasBody()}>
-                        <ChevronRight size={14} class="chev" />
+                        <ChevronRight size={13} class="chev" />
                     </Show>
                 </span>
             </div>
@@ -1181,50 +1177,55 @@ function CommandBody(p: { tool: ToolBlock; live: boolean; running: boolean; code
     const failed = () => p.tool.status === "error";
     return (
         <div class="cmd-body">
-            <div class="cmd-in">
-                <span class="ps" aria-hidden="true" data-find-skip>$</span>
+            <div class="cmd-in tsec">
+                <div class="tsec-head" data-find-skip>
+                    <span>Command</span>
+                    <Show when={!commandCut(command())}>
+                        <CopyButton text={command} label="Copy command" words="Copy" />
+                    </Show>
+                </div>
                 {/* Under way, find counts its first line, as the live line shows it (find.ts). */}
-                <pre>
+                <pre class="cmd-text">
+                    <span class="ps" aria-hidden="true" data-find-skip>${" "}</span>
                     <For each={tokens()[0]}>{token}</For>
                     <span data-find-skip={p.live || undefined}>
                         <For each={tokens()[1]}>{token}</For>
                     </span>
                 </pre>
-                <Show when={!commandCut(command())}>
-                    <span data-find-skip>
-                        <CopyButton text={command} label="Copy command" class="cp" />
-                    </span>
-                </Show>
             </div>
             {"\n"}
             {/* Under way, find counts only the command (find.ts): its output keeps changing. */}
-            <div class="cmd-out" data-find-skip={p.live || undefined}>
+            <div class="cmd-out tsec" data-find-skip={p.live || undefined}>
+                <div class="tsec-head" data-find-skip>
+                    <span>Output</span>
+                </div>
                 <Show
                     when={p.live}
                     fallback={
-                        <Show when={lines().length} fallback={<pre><span class="none" data-find-skip>{p.tool.status === "ok" || failed() ? "No output" : p.tool.status === "denied" ? "It didn't run" : "Nothing yet"}</span></pre>}>
+                        <Show when={lines().length} fallback={<p class="none" data-find-skip>{p.tool.status === "ok" || failed() ? "No output" : p.tool.status === "denied" ? "It didn't run" : "Nothing yet"}</p>}>
                             <pre class={failed() ? "err" : ""}>
                                 <For each={lines()}>{(l, i) => <>{i() > 0 && "\n"}<span class={lineTone(l) ?? ""}>{l}</span></>}</For>
                             </pre>
                         </Show>
                     }
                 >
-                    <pre ref={(el) => ((out = el), (atEnd = true))} onScroll={() => out && (atEnd = out.scrollHeight - out.scrollTop - out.clientHeight < 40)}>
-                        {progress() || <span class="none">Nothing yet</span>}
-                    </pre>
+                    <Show when={progress()} fallback={<p class="none">Nothing yet</p>}>
+                        <pre ref={(el) => ((out = el), (atEnd = true))} onScroll={() => out && (atEnd = out.scrollHeight - out.scrollTop - out.clientHeight < 40)}>
+                            {progress()}
+                        </pre>
+                    </Show>
                 </Show>
             </div>
             <div class="cmd-foot" data-find-skip>
-                <span class={failed() ? "exit" : ""}>{p.live ? "Running" : p.task ? p.task : p.tool.status === "denied" ? "Declined" : p.code !== undefined ? `Exit ${p.code}` : failed() ? "Failed" : "Exit 0"}</span>
+                <Show when={!p.live && !p.task && p.tool.status !== "denied"} fallback={<span>{p.live ? "Running" : p.task ? p.task : "Declined"}</span>}>
+                    <span class={`pill ${failed() ? "red" : ""}`}>{p.code !== undefined ? `Exit ${p.code}` : failed() ? "Failed" : "Exit 0"}</span>
+                </Show>
                 <Show when={p.time}>
-                    <span>·</span>
                     <span class="num">{p.time}</span>
                 </Show>
                 <Show when={!p.live && lines().length > 8}>
-                    <span>·</span>
                     <span class="num">{plural(lines().length, "line")}</span>
                 </Show>
-                <span class="grow" />
                 <Show when={!p.live && p.tool.outputTruncated && !full()}>
                     <button class="link-btn" disabled={loading()} onClick={(e) => (e.stopPropagation(), void load())}>
                         {loading() ? "Loading…" : "Show full output"}
@@ -1237,8 +1238,8 @@ function CommandBody(p: { tool: ToolBlock; live: boolean; running: boolean; code
 
 function Section(p: { label: string; children: JSX.Element; aside?: JSX.Element }) {
     return (
-        <div class="detail-section">
-            <div class="detail-label">
+        <div class="tsec">
+            <div class="tsec-head">
                 <span>{p.label}</span>
                 {p.aside}
             </div>
@@ -1315,15 +1316,15 @@ function DiagnosticsChip(p: { report: DiagnosticReport }) {
         return `Language server: ${parts.join(", ")}`;
     };
     return (
-        <span class="diag-chip" title={title()} data-find-skip>
+        <span class={`diag-chip ${c().errors ? "err" : c().warnings ? "" : "ok"}`} title={title()} data-find-skip>
             <Show when={c().errors}>
-                <span class="diag-err"><CircleX size={11} />{c().errors}</span>
+                <span><CircleX size={11} />{c().errors}</span>
             </Show>
             <Show when={c().warnings}>
-                <span class="diag-warn"><AlertTriangle size={11} />{c().warnings}</span>
+                <span><AlertTriangle size={11} />{c().warnings}</span>
             </Show>
             <Show when={!c().errors && !c().warnings && c().fixed}>
-                <span class="diag-ok"><CircleCheck size={11} />{c().fixed} fixed</span>
+                <span><CircleCheck size={11} />{c().fixed} fixed</span>
             </Show>
         </span>
     );
@@ -1340,7 +1341,7 @@ function Diagnostics(p: { report: DiagnosticReport }) {
     };
     return (
         <Section label="Diagnostics" aside={<span class="diag-aside">{aside()}</span>}>
-            <Show when={items().length} fallback={<div class="detail-note">The problems reported before are gone.</div>}>
+            <Show when={items().length} fallback={<div class="detail-note">Earlier problems are fixed.</div>}>
                 <ul class="diag-list">
                     <For each={items()}>
                         {(i) => (
@@ -1371,11 +1372,7 @@ function Todos(p: { todos: TodoEntry[] }) {
             <For each={p.todos}>
                 {(t) => (
                     <li class={t.status}>
-                        <span class="todo-box">
-                            <Show when={t.status === "completed"}>
-                                <Check size={11} />
-                            </Show>
-                        </span>
+                        <span class="todo-box" />
                         <span>{t.status === "in_progress" ? (t.activeForm ?? t.content) : t.content}</span>
                     </li>
                 )}
@@ -1386,7 +1383,7 @@ function Todos(p: { todos: TodoEntry[] }) {
 
 /** `openLink`: the row's header (and its open button) is hidden, so the details offer to open the file. */
 function ToolDetails(p: { tool: ToolBlock; openLink?: boolean }) {
-    return <RenderBoundary raw={() => p.tool}><ToolDetailsContent {...p} /></RenderBoundary>;
+    return <RenderBoundary raw={() => p.tool}><div class="tool-card"><ToolDetailsContent {...p} /></div></RenderBoundary>;
 }
 
 function ToolDetailsContent(p: { tool: ToolBlock; openLink?: boolean }) {
