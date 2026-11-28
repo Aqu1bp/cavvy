@@ -343,6 +343,8 @@ export class MachineWatch {
                 this.savePending();
             }
             let took: boolean;
+            /** Refused because the server has no such session. */
+            let missing = false;
             try {
                 await this.request(c.method, c.params, MAX_ANSWER);
                 took = true;
@@ -356,24 +358,27 @@ export class MachineWatch {
                     }
                     return;
                 }
-                // Refused there (the session is gone, say): the row shows what the server has.
+                // Refused there: the row shows what the server has.
                 took = false;
+                missing = (e as { code?: string }).code === "not_found";
             }
             this.sending = undefined;
             const id = c.params.id;
             const s = this.sessions.get(id);
-            if (took) {
+            // A delete done there, or of a session it doesn't have.
+            const gone = c.method === "session.delete" && (took || missing);
+            if (took || gone) {
                 // What it is there now, without waiting to hear it: the row doesn't go back and forth. Written down
                 // before the change is let go, so a restart in between can't bring back what was.
-                if (s && c.method === "session.delete") this.sessions.delete(id);
+                if (s && gone) this.sessions.delete(id);
                 else if (s) this.sessions.set(id, changed(s, c));
                 if (!this.forgotten) this.o.kept?.write([...this.sessions.values()].map((x) => this.resting(x)));
             }
             this.pending = this.pending.filter((x) => x !== c);
             this.savePending();
-            // A delete done there, or refused for a session it no longer has: gone for good (said again if the server
-            // said so first, or of one not listed here), so a window forgets what it kept of it. Else the row as it is.
-            if (c.method === "session.delete" && !this.sessions.has(id)) this.say({ remove: id }, true);
+            // Gone for good (said again if the server said so first, or of one not listed here), so a window forgets
+            // what it kept of it, its draft. Else the row as it is (a delete refused for another reason: its draft stays).
+            if (gone) this.say({ remove: id }, true);
             else this.reshow(id);
         }
     }

@@ -430,7 +430,7 @@ test("what a row offers is done here while the server can't be reached, kept thr
                 if (m.method === "sessions.list") return void ws.send(JSON.stringify({ id: m.id, result: m.params?.archived ? [] : [row("s1"), row("s2", { updatedAt: 1 }), row("s3", { updatedAt: 0 })] }));
                 if (!m.method.startsWith("session.")) return;
                 asked.push({ method: m.method, params: m.params });
-                ws.send(JSON.stringify(refuse ? { id: m.id, error: { message: "No such session." } } : { id: m.id, result: null }));
+                ws.send(JSON.stringify(refuse ? { id: m.id, error: m.params.id === "gone" ? { message: "No session", code: "not_found" } : { message: "It's in use.", code: "in_use" } } : { id: m.id, result: null }));
             },
         },
     });
@@ -466,7 +466,7 @@ test("what a row offers is done here while the server can't be reached, kept thr
     refused.start();
     await until("the refusal", () => (pending as unknown[]).length === 0);
     expect(refused.overview().sessions.map((s) => s.id)).toContain("s3");
-    // Its row comes back, and nothing said it was gone; the one the server doesn't have is gone for good.
+    // Refused while in use: its row comes back, and nothing said it was gone; the one the server doesn't have is gone for good.
     expect(shownAgain).toContainEqual({ session: expect.objectContaining({ id: "s3" }) });
     expect(shownAgain.filter((c) => "remove" in c)).toEqual([{ remove: "gone" }]);
 });
