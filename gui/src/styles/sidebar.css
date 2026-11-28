@@ -723,7 +723,7 @@
     color: var(--fg-2);
 }
 
-.ring > svg {
+.ring > svg:first-child {
     position: absolute;
     inset: 0;
     width: 100%;
