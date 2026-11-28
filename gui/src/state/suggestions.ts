@@ -214,6 +214,9 @@ export function startProblem(e: unknown, pick: Pick<StartPick, "on" | "cwd" | "m
             return { message: `${tildify(pick.cwd)} isn't a Git repository. Turn off New worktree.` };
         case "worktree_failed":
             return { message: err.message || "Couldn't make the worktree.", retry: true };
+        // A UserPromptSubmit hook refused the prompt: its reason, and Start once it's edited.
+        case "blocked":
+            return { message: err.message || "A hook refused the prompt." };
         default:
             return { message: err.message || "Couldn't start it.", retry: true };
     }
@@ -331,8 +334,8 @@ export async function startSuggestion(pick: StartPick, calls: StartCalls = windo
             calls.trust(folder, calls.again, link, pick.on);
             return { kind: "trust", resume };
         }
-        // Something was made (the worktree) but not the session: Try again starts in it.
-        return fail(result.failed?.message || "Couldn't start it.", { retry: true, resume });
+        // Something was made (the worktree) but not the session: Try again starts in it (Start, once a refused prompt's edited).
+        return fail(result.failed?.message || "Couldn't start it.", { retry: result.failed?.code !== "blocked", resume });
     }
     // Only a session new to this window, and not the suggesting one, is taken as the one it made.
     if (result.sessionId === sessionId || (calls.fresh && !calls.fresh(result.sessionId, pick.on))) return fail("Couldn't start it.", { retry: true });

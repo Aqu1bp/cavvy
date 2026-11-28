@@ -73,6 +73,8 @@ test("each failure of tasks.start says what to do, on that machine", () => {
     expect(startProblem(new RpcError("Disconnected", "disconnected"), pick)).toEqual({ message: "box didn't answer.", retry: true });
     expect(startProblem(new Error("socket"), { ...pick, on: undefined }).message).toMatch(/^This (Mac|computer) didn't answer\.$/);
     expect(startProblem(new RpcError("Branch fix/x couldn't be made", "worktree_failed"), pick)).toEqual({ message: "Branch fix/x couldn't be made", retry: true });
+    // A hook refused the prompt: its reason, and Start (not Try again: the same prompt would be refused again).
+    expect(startProblem(new RpcError("Prompt blocked by hook: not today", "blocked"), pick)).toEqual({ message: "Prompt blocked by hook: not today" });
 });
 
 // ---------------------------------------------------------------------------
@@ -173,6 +175,13 @@ test("an untrusted folder brings up the trust question; Start runs again once it
 test("a worktree made but no session: Try again starts in that worktree", async () => {
     const { c } = calls({ start: () => ({ title: "t", cwd: "/repo", worktree: { path: "/repo/.wt/fix", branch: "fix/t" }, failed: { message: "The CLI didn't start", code: "send_failed" } }) });
     expect(await startSuggestion(pick(), c)).toEqual({ kind: "failed", message: "The CLI didn't start", retry: true, resume: "/repo/.wt/fix" });
+});
+
+test("a hook refused the prompt in the worktree it made: the reason, and Start starts in that worktree", async () => {
+    const { c, log } = calls({ start: () => ({ title: "t", cwd: "/repo", worktree: { path: "/repo/.wt/fix", branch: "fix/t" }, failed: { message: "Prompt blocked by hook: not today", code: "blocked" } }) });
+    expect(await startSuggestion(pick(), c)).toEqual({ kind: "failed", message: "Prompt blocked by hook: not today", retry: false, resume: "/repo/.wt/fix" });
+    // The card goes back to waiting with the reason, not to Started.
+    expect((log.at(-1) as [string, any])[1]).toMatchObject({ action: "failed", message: "Prompt blocked by hook: not today" });
 });
 
 test("a session made whose first message wasn't sent: started, with the problem", async () => {
