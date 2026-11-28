@@ -34,15 +34,21 @@ export function installing(): string[] {
     return [...running.keys()].sort();
 }
 
+/** Whether startInstall would start `id` now: it isn't there, can be installed from here, isn't being installed, and this installer hasn't failed. */
+export function wouldInstall(id: string): boolean {
+    const def = agentCli(id);
+    const command = def?.cli.installCommand;
+    return Boolean(def && command && !running.has(id) && failed.get(id)?.command !== command && !findCli(def.id, def.cli));
+}
+
 /**
  * Starts installing `id` unless it's there, being installed, can't be installed from here, or this installer already
  * failed. Says whether it started. `done` runs when it ends, either way.
  */
 export function startInstall(id: string, done: (ok: boolean) => void = () => {}): boolean {
-    const def = agentCli(id);
-    const command = def?.cli.installCommand;
-    if (!def || !command || running.has(id) || findCli(def.id, def.cli)) return false;
-    if (failed.get(id)?.command === command) return false;
+    if (!wouldInstall(id)) return false;
+    const def = agentCli(id)!;
+    const command = def.cli.installCommand!;
     const run = (async () => {
         let out = "";
         let errors = "";
