@@ -24,139 +24,15 @@
     line-height: 1.6;
 }
 
-/* ---- Feedback: toasts and error cards in one place ----------------------
-   Right above the composer, where you're looking (ErrorCards.tsx): the error
-   cards in its column, and the confirmations as pills floating over them, so
-   one coming and going doesn't move the conversation. At the foot of Settings,
-   or of the window when there's neither, the two stack as one. */
+/* ---- Feedback ------------------------------------------------------------
+   Toasts are the kit's (kit.css .toasts): at the window's top centre, wherever they come from. The error cards are
+   right above the composer, where you're looking (ErrorCards.tsx); at the foot of Settings, or of the window when
+   there's neither. */
 
 /* Above the composer: no box of its own, so the cards stay in the composer's column. */
 .feedback.at-composer,
 .feedback.at-home {
     display: contents;
-}
-
-.toast-region {
-    display: flex;
-    flex-direction: column;
-    gap: calc(8 * var(--sp));
-    align-items: center;
-    max-width: 100%;
-    pointer-events: none;
-}
-
-.toast-region:empty {
-    display: none;
-}
-
-/* Over the composer column (and the cards in it), not in it. */
-.feedback.at-composer > .toast-region,
-.feedback.at-home > .toast-region {
-    position: absolute;
-    z-index: 5;
-    left: 0;
-    right: 0;
-    bottom: calc(100% + 10 * var(--sp));
-}
-
-/* On Home the heading is right above the composer: the pills go under it (and its strip) instead. */
-.feedback.at-home > .toast-region {
-    top: calc(100% + 14 * var(--sp));
-    bottom: auto;
-}
-
-/* An ink pill (the class is .glass too: this comes later, so it wins; it also covers a toast without it). */
-.toast {
-    position: relative;
-    flex: none;
-    pointer-events: auto;
-    display: flex;
-    align-items: center;
-    gap: calc(10 * var(--sp));
-    min-height: calc(36 * var(--sp));
-    max-width: min(520 * var(--sp), 100%);
-    padding: calc(5 * var(--sp)) calc(6 * var(--sp)) calc(5 * var(--sp)) calc(14 * var(--sp));
-    border-radius: calc(10 * var(--sp));
-    background: var(--ink);
-    box-shadow: 0 10px 30px -6px rgba(0, 0, 0, 0.35);
-    color: var(--ink-fg);
-    font-size: 0.929rem;
-    font-weight: 500;
-    animation: toast-in 200ms var(--ease);
-}
-
-@keyframes toast-in {
-    from {
-        opacity: 0;
-        transform: translateY(6px);
-    }
-}
-
-[data-motion="instant"] .toast {
-    animation: none;
-}
-
-.toast > svg {
-    flex: none;
-    color: var(--ink-fg);
-    opacity: 0.7;
-}
-
-/* One line (errors, which need all of theirs, are cards: ErrorCards.tsx). */
-.toast-msg {
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
-    line-height: calc(18 * var(--sp));
-}
-
-.toast-count {
-    flex: none;
-    color: color-mix(in srgb, var(--ink-fg) 65%, transparent);
-    font-variant-numeric: tabular-nums;
-    white-space: nowrap;
-}
-
-/* Undo, the saved file's choices: small buttons on the ink. */
-.toast .link-btn {
-    flex: none;
-    display: inline-flex;
-    align-items: center;
-    height: calc(26 * var(--sp));
-    padding: 0 calc(10 * var(--sp));
-    border-radius: calc(6 * var(--sp));
-    background: color-mix(in srgb, var(--ink-fg) 14%, transparent);
-    color: var(--ink-fg);
-    font-size: 0.929rem;
-    font-weight: 600;
-    text-decoration: none;
-    white-space: nowrap;
-}
-
-.toast .link-btn:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--ink-fg) 24%, transparent);
-    text-decoration: none;
-}
-
-.toast .link-btn:disabled {
-    opacity: 0.45;
-}
-
-.toast .icon-btn {
-    width: calc(24 * var(--sp));
-    height: calc(24 * var(--sp));
-    color: color-mix(in srgb, var(--ink-fg) 60%, transparent);
-}
-
-.toast .icon-btn:hover {
-    background: color-mix(in srgb, var(--ink-fg) 14%, transparent);
-    color: var(--ink-fg);
-}
-
-.toast :focus-visible {
-    outline-color: var(--ink-fg);
 }
 
 /* ---- Errors ------------------------------------------------------------
@@ -340,28 +216,6 @@
     flex-wrap: wrap;
     gap: calc(8 * var(--sp));
     margin-top: calc(10 * var(--sp));
-}
-
-/* The mockup's small pills: the first action primary, the rest (and Copy error) ghost. */
-.error-card .btn,
-.prov.err .prov-fix .btn {
-    height: calc(26 * var(--sp));
-    padding: 0 calc(11 * var(--sp));
-    border-radius: var(--pill);
-    font-size: 0.857rem;
-    font-weight: 600;
-}
-
-.error-card .btn.ghost,
-.prov.err .prov-fix .btn.ghost {
-    background: var(--ctl-strong);
-    box-shadow: inset 0 0 0 0.5px var(--ctl-stroke);
-    color: var(--fg-2);
-}
-
-.error-card .btn.ghost:hover:not(:disabled),
-.prov.err .prov-fix .btn.ghost:hover:not(:disabled) {
-    color: var(--fg);
 }
 
 .error-card .btn svg {

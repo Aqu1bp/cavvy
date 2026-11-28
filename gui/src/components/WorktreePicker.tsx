@@ -53,7 +53,7 @@ export function WorktreePicker(p: { cwd: string; branch?: string }) {
             <ChevronDown size={12} stroke-width={2} class="chv" />
         </button>
         <Popover open={open()} anchor={() => anchor} onClose={() => setOpen(false)} placement="bottom" align="start" width={400}>
-            <div class="menu-head">Worktrees</div>
+            <div class="menu-label">Worktrees</div>
             {/* What it listed for this folder before stays while it lists them again. */}
             <Show when={here() || !listing.loading} fallback={<div class="menu-note">Loading worktrees…</div>}>
                 <Show when={!here()?.error} fallback={<div class="menu-note">{here()?.error}</div>}>
@@ -67,11 +67,11 @@ export function WorktreePicker(p: { cwd: string; branch?: string }) {
                                 <Show when={w.main} fallback={<FolderGit2 size={15} />}>
                                     <GitBranch size={15} />
                                 </Show>
-                                <span class="menu-text">
-                                    <span class="menu-label">{label(w)}</span>
-                                    <span class="menu-desc mono truncate">{tildify(w.path, app.hello?.homeDir)}{w.main ? " · main checkout" : ""}</span>
+                                <span class="menu-item-text">
+                                    <span class="menu-item-name">{label(w)}</span>
+                                    <span class="menu-item-sub mono truncate">{tildify(w.path, app.hello?.homeDir)}{w.main ? " · main checkout" : ""}</span>
                                     <Show when={!w.exists || w.prunable !== undefined || w.locked !== undefined}>
-                                        <span class="menu-desc">{!w.exists ? "Folder missing" : w.prunable !== undefined ? `Unavailable${w.prunable ? `: ${w.prunable}` : ""}` : `Locked${w.locked ? `: ${w.locked}` : ""}`}</span>
+                                        <span class="menu-item-sub">{!w.exists ? "Folder missing" : w.prunable !== undefined ? `Unavailable${w.prunable ? `: ${w.prunable}` : ""}` : `Locked${w.locked ? `: ${w.locked}` : ""}`}</span>
                                     </Show>
                                 </span>
                                 <Show when={w.current}><Check size={14} aria-label="Current worktree" /></Show>
@@ -90,11 +90,11 @@ export function WorktreePicker(p: { cwd: string; branch?: string }) {
                         <div class="menu-sep" />
                         <button class="menu-item compact" onClick={startCreating}>
                             <Plus size={15} />
-                            <span class="menu-label">New worktree…</span>
+                            <span class="menu-item-name">New worktree…</span>
                         </button>
                         <button class="menu-item compact" onClick={() => (setOpen(false), openGit("openPullRequests"))}>
                             <GitPullRequest size={15} />
-                            <span class="menu-label">Work on a pull request…</span>
+                            <span class="menu-item-name">Work on a pull request…</span>
                         </button>
                     </Show>
                 </Show>

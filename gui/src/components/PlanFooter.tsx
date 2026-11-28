@@ -110,7 +110,7 @@ function PlanRow(p: { plans: RailPlan[]; check: () => void }) {
             </button>
             {/* Inside the rail, edge to edge with its footer (and the rows above), however wide the rail is. */}
             <Menu kind="dialog" label="Plan usage" open={open()} anchor={() => row} span={() => row?.closest<HTMLElement>(".side-foot") ?? undefined} onClose={() => setOpen(false)} placement="top" class="plans-card">
-                <div class="menu-head">Plan usage</div>
+                <div class="menu-label">Plan usage</div>
                 <PlanCardPlans plans={p.plans} />
                 <div class="menu-sep" />
                 <button class="menu-item compact" onClick={() => (setOpen(false), setSettingsTab("usage"))}>Usage and accounts…</button>

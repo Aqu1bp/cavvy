@@ -158,7 +158,7 @@ export function Popover(p: PopoverProps) {
                     role={p.role}
                     aria-label={p.label}
                     tabIndex={p.behavior ? -1 : undefined}
-                    class={`popover ${p.anchor()?.closest?.(".dialog") ? "over-dialog " : ""}${p.class ?? ""}`}
+                    class={`popover menu ${p.class ?? ""}`}
                     style={{
                         left: `${pos()?.left ?? -9999}px`,
                         top: pos()?.top !== undefined ? `${pos()!.top}px` : undefined,

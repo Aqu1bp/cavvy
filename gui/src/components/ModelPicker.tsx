@@ -752,7 +752,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                                     <span>{empty().text}</span>
                                     <Show when={empty().action}>
                                         {(a) => (
-                                            <button class="btn secondary sm" onClick={() => a().run()}>
+                                            <button class="btn btn-sm" onClick={() => a().run()}>
                                                 {a().label}
                                             </button>
                                         )}

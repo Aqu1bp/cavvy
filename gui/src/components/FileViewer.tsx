@@ -274,7 +274,7 @@ export function FileViewer(p: { handle: SessionHandle }) {
                         {(f) => (
                             <div class="fv-msg">
                                 <p>{f().kind === "large" ? `Too big to show (${sizeText(f().size)}).` : "Not a text file."}</p>
-                                <button class="btn secondary sm" onClick={editor}>
+                                <button class="btn btn-sm" onClick={editor}>
                                     Open in editor
                                 </button>
                             </div>

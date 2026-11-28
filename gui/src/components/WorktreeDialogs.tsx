@@ -240,7 +240,7 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
                             <AlertTriangle size={14} />
                             <span>{m()}</span>
                             <Show when={error()?.code === "needs_trust"}>
-                                <button type="button" class="btn secondary sm" disabled={busy()} onClick={() => void create(error()?.folder ?? r.cwd)}>
+                                <button type="button" class="btn btn-sm" disabled={busy()} onClick={() => void create(error()?.folder ?? r.cwd)}>
                                     Trust and create
                                 </button>
                             </Show>
@@ -273,7 +273,7 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
                             <pre class="wt-setup-command mono">{n().script.command}</pre>
                             <span class="wt-hint">Trusting it also turns on its .cavvy settings, hooks and MCP servers.</span>
                             <div>
-                                <button type="button" class="btn secondary sm" disabled={busy() || trusting()} onClick={() => void trustRepository(n().main)}>
+                                <button type="button" class="btn btn-sm" disabled={busy() || trusting()} onClick={() => void trustRepository(n().main)}>
                                     {trusting() ? <Spinner size={12} /> : "Trust this repository"}
                                 </button>
                             </div>
@@ -292,10 +292,10 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
                         <span class="muted small">Checking out files…</span>
                     </Show>
                     <span class="grow" />
-                    <button type="button" class="btn ghost" disabled={busy()} onClick={close}>
+                    <button type="button" class="btn btn-ghost" disabled={busy()} onClick={close}>
                         Cancel
                     </button>
-                    <button type="submit" class="btn primary" disabled={busy() || trusting() || note().kind === "loading" || !branch().trim() || !name()}>
+                    <button type="submit" class="btn btn-primary" disabled={busy() || trusting() || note().kind === "loading" || !branch().trim() || !name()}>
                         {busy() ? <Spinner size={12} /> : "Create"}
                     </button>
                 </div>
@@ -388,7 +388,7 @@ export function RemoveWorktreeDialog(p: { request: RemoveWorktreeRequest; onClos
                         <AlertTriangle size={14} />
                         <span>{m().message}</span>
                         <Show when={m().code === "needs_trust"}>
-                            <button class="btn secondary sm" disabled={busy()} onClick={() => void remove(ignored()?.confirm, m().folder ?? cwd)}>
+                            <button class="btn btn-sm" disabled={busy()} onClick={() => void remove(ignored()?.confirm, m().folder ?? cwd)}>
                                 Trust and remove
                             </button>
                         </Show>
@@ -397,19 +397,19 @@ export function RemoveWorktreeDialog(p: { request: RemoveWorktreeRequest; onClos
             </Show>
             <div class="dialog-actions">
                 <span class="grow" />
-                <button class="btn ghost" disabled={busy()} onClick={close}>
+                <button class="btn btn-ghost" disabled={busy()} onClick={close}>
                     Cancel
                 </button>
                 <Show
                     when={ignored()}
                     fallback={
-                        <button class="btn danger" disabled={busy()} onClick={() => void remove()}>
+                        <button class="btn btn-danger-solid" disabled={busy()} onClick={() => void remove()}>
                             {busy() ? <Spinner size={12} /> : "Remove"}
                         </button>
                     }
                 >
                     {(i) => (
-                        <button class="btn danger" disabled={busy()} onClick={() => void remove(i().confirm)}>
+                        <button class="btn btn-danger-solid" disabled={busy()} onClick={() => void remove(i().confirm)}>
                             {busy() ? <Spinner size={12} /> : "Delete them and remove"}
                         </button>
                     )}

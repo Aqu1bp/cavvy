@@ -1,0 +1,961 @@
+/* The kit, from the remix design's base.css and kit.css as they are: keys, tooltips, buttons, fields, switches,
+   segmented controls, checkboxes, selects, menus, dialogs, toasts, dots. Its sizes are the design's px at text size 14,
+   written calc(N * var(--sp)) so they follow Settings → Text size; colours are the design's names (tokens.css aliases).
+   What moved in from the design and why it differs: hovers change at once (no colour transitions, the owner's perf
+   rule), and nothing floats on a blur. */
+
+@keyframes pop-in {
+    from {
+        opacity: 0;
+        transform: translateY(2px) scale(0.98);
+    }
+}
+
+@keyframes drop-in {
+    from {
+        opacity: 0;
+        transform: translateY(-8px);
+    }
+}
+
+@keyframes fade-in {
+    from {
+        opacity: 0;
+    }
+}
+
+@keyframes settings-in {
+    from {
+        opacity: 0;
+        transform: translate(-50%, calc(-50% + 6px)) scale(0.985);
+    }
+}
+
+/* ---- Keys ---- */
+
+.kbd-group {
+    display: inline-flex;
+    gap: calc(2 * var(--sp));
+    flex: none;
+}
+
+kbd,
+.kbd {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: calc(18 * var(--sp));
+    height: calc(18 * var(--sp));
+    padding: 0 calc(4 * var(--sp));
+    border-radius: calc(4 * var(--sp));
+    background: var(--fill-1);
+    box-shadow: inset 0 0 0 1px var(--line);
+    color: var(--text-3);
+    font-family: var(--font-ui);
+    font-size: calc(11 * var(--sp));
+    font-weight: 500;
+    line-height: 1;
+}
+
+/* ---- Tooltips (ui/Tooltip.tsx) ---- */
+
+.tooltip {
+    position: fixed;
+    top: 0;
+    left: 0;
+    z-index: 80;
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    max-width: calc(320 * var(--sp));
+    padding: calc(5 * var(--sp)) calc(8 * var(--sp));
+    border-radius: var(--radius-s);
+    background: var(--ink);
+    color: var(--on-ink);
+    font-size: calc(12 * var(--sp));
+    font-weight: 500;
+    overflow-wrap: anywhere;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+    animation: pop-in 0.12s var(--ease);
+    pointer-events: none;
+    user-select: none;
+}
+
+/* A title of several lines (a session's name, folder and state) keeps them. */
+.tooltip.lines {
+    white-space: pre-line;
+}
+
+.tooltip kbd {
+    background: color-mix(in srgb, var(--on-ink) 16%, transparent);
+    box-shadow: none;
+    color: color-mix(in srgb, var(--on-ink) 82%, transparent);
+}
+
+/* ---- Buttons ---- */
+
+.icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    width: calc(28 * var(--sp));
+    height: calc(28 * var(--sp));
+    border-radius: var(--radius-s);
+    color: var(--text-2);
+}
+
+.icon-btn:hover:not(:disabled),
+.icon-btn[data-state="open"],
+.icon-btn[data-active],
+.icon-btn.active {
+    background: var(--fill-2);
+    color: var(--text);
+}
+
+.icon-btn:disabled {
+    opacity: 0.4;
+}
+
+.icon-btn-sm {
+    width: calc(24 * var(--sp));
+    height: calc(24 * var(--sp));
+}
+
+.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: calc(6 * var(--sp));
+    flex: none;
+    height: calc(32 * var(--sp));
+    padding: 0 calc(12 * var(--sp));
+    border: 0;
+    border-radius: var(--radius-m);
+    background: var(--surface);
+    box-shadow: inset 0 0 0 1px var(--line-strong);
+    color: var(--text);
+    font-weight: 500;
+    white-space: nowrap;
+    transition: transform 80ms;
+}
+
+.btn:hover {
+    background: var(--fill-1);
+}
+
+.btn:active {
+    background: var(--fill-2);
+}
+
+.btn:disabled {
+    opacity: 0.45;
+    pointer-events: none;
+}
+
+.btn-sm {
+    height: calc(26 * var(--sp));
+    padding: 0 calc(8 * var(--sp));
+    border-radius: var(--radius-s);
+    font-size: calc(12 * var(--sp));
+    gap: calc(5 * var(--sp));
+}
+
+.btn-primary {
+    background: var(--ink);
+    color: var(--on-ink);
+    box-shadow: none;
+}
+
+.btn-primary:hover,
+.btn-primary:active {
+    background: var(--ink-hover);
+}
+
+.btn-ghost {
+    background: transparent;
+    box-shadow: none;
+    color: var(--text-2);
+}
+
+.btn-ghost:hover {
+    background: var(--fill-2);
+    color: var(--text);
+}
+
+.btn-danger {
+    color: var(--red);
+}
+
+.btn-danger:hover {
+    background: var(--red-soft);
+    box-shadow: inset 0 0 0 1px var(--red-line);
+}
+
+.btn-accent {
+    background: var(--accent);
+    color: var(--on-accent);
+    box-shadow: none;
+}
+
+.btn-accent:hover,
+.btn-accent:active {
+    background: var(--accent-hover);
+}
+
+.btn-danger-solid {
+    background: var(--red);
+    color: #fff;
+    box-shadow: none;
+}
+
+[data-theme="dark"] .btn-danger-solid {
+    color: #2a0f0b;
+}
+
+.btn-danger-solid:hover,
+.btn-danger-solid:active {
+    background: color-mix(in srgb, var(--red) 88%, var(--text));
+}
+
+.btn kbd {
+    margin-left: calc(2 * var(--sp));
+    background: color-mix(in srgb, currentColor 14%, transparent);
+    box-shadow: none;
+    color: inherit;
+    opacity: 0.8;
+}
+
+.btn[aria-pressed="true"] {
+    background: var(--fill-2);
+}
+
+.link-btn {
+    color: var(--accent-text);
+    font-size: calc(12 * var(--sp));
+    font-weight: 500;
+    border-radius: calc(4 * var(--sp));
+    white-space: nowrap;
+}
+
+.link-btn:hover:not(:disabled) {
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+
+.link-btn:disabled {
+    opacity: 0.45;
+}
+
+/* ---- Fields ---- */
+
+.input {
+    height: calc(32 * var(--sp));
+    padding: 0 calc(10 * var(--sp));
+    border: 0;
+    border-radius: var(--radius-m);
+    background: var(--surface);
+    box-shadow: inset 0 0 0 1px var(--line-strong);
+    outline: none;
+    min-width: 0;
+}
+
+.input:focus,
+.textarea:focus {
+    box-shadow: inset 0 0 0 1px var(--focus), 0 0 0 3px color-mix(in srgb, var(--focus) 20%, transparent);
+}
+
+.input::placeholder,
+.textarea::placeholder {
+    color: var(--text-4);
+}
+
+.input:disabled {
+    opacity: 0.6;
+}
+
+.input-sm {
+    height: calc(26 * var(--sp));
+    padding: 0 calc(8 * var(--sp));
+    border-radius: var(--radius-s);
+    font-size: calc(12 * var(--sp));
+}
+
+.input.mono,
+.textarea.mono {
+    font-size: calc(12 * var(--sp));
+}
+
+.textarea,
+textarea.input {
+    display: block;
+    height: auto;
+    min-height: calc(84 * var(--sp));
+    padding: calc(8 * var(--sp)) calc(10 * var(--sp));
+    border: 0;
+    border-radius: var(--radius-m);
+    background: var(--surface);
+    box-shadow: inset 0 0 0 1px var(--line-strong);
+    outline: none;
+    resize: vertical;
+    line-height: 1.5;
+}
+
+.field {
+    display: flex;
+    flex-direction: column;
+    gap: calc(5 * var(--sp));
+    min-width: 0;
+}
+
+.field-label {
+    color: var(--text-2);
+    font-size: calc(12 * var(--sp));
+    font-weight: 500;
+}
+
+.field-hint {
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
+    line-height: 1.4;
+}
+
+.field-error {
+    color: var(--red);
+}
+
+.field .input,
+.field .textarea {
+    width: 100%;
+}
+
+/* A native select drawn as the design's: its value, then the caret. */
+.select {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(7 * var(--sp));
+    flex: none;
+    height: calc(28 * var(--sp));
+    max-width: 100%;
+    padding: 0 calc(26 * var(--sp)) 0 calc(10 * var(--sp));
+    border: 0;
+    border-radius: var(--radius-s);
+    background: var(--surface) no-repeat;
+    background-image: linear-gradient(45deg, transparent 50%, var(--text-3) 50%), linear-gradient(135deg, var(--text-3) 50%, transparent 50%);
+    background-position: calc(100% - 14 * var(--sp)) 50%, calc(100% - 9.5 * var(--sp)) 50%;
+    background-size: calc(4.5 * var(--sp)) calc(4.5 * var(--sp));
+    box-shadow: inset 0 0 0 1px var(--line-strong);
+    font-weight: 500;
+    appearance: none;
+}
+
+.select:hover {
+    background-color: var(--fill-1);
+}
+
+.select:disabled {
+    opacity: 0.5;
+}
+
+.select:focus-visible {
+    box-shadow: inset 0 0 0 1px var(--focus), 0 0 0 3px color-mix(in srgb, var(--focus) 20%, transparent);
+}
+
+input[type="range"] {
+    accent-color: var(--accent);
+    width: calc(160 * var(--sp));
+}
+
+/* ---- Switch (ui/bits.tsx Toggle) ---- */
+
+.switch {
+    position: relative;
+    flex: none;
+    width: calc(32 * var(--sp));
+    height: calc(18 * var(--sp));
+    border-radius: calc(9 * var(--sp));
+    background: var(--fill-3);
+}
+
+.switch-knob {
+    position: absolute;
+    top: calc(2 * var(--sp));
+    left: calc(2 * var(--sp));
+    width: calc(14 * var(--sp));
+    height: calc(14 * var(--sp));
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+    transition: transform 0.16s var(--ease);
+}
+
+.switch[aria-checked="true"] {
+    background: var(--accent);
+}
+
+.switch[aria-checked="true"][data-danger] {
+    background: var(--red);
+}
+
+.switch[aria-checked="true"] .switch-knob {
+    transform: translateX(calc(14 * var(--sp)));
+}
+
+.switch:disabled {
+    opacity: 0.45;
+}
+
+/* ---- Checkboxes and radios: the design's 15px box, drawn on the native input ---- */
+
+input:is([type="checkbox"], [type="radio"]) {
+    appearance: none;
+    flex: none;
+    width: calc(15 * var(--sp));
+    height: calc(15 * var(--sp));
+    margin: 0;
+    border-radius: calc(4 * var(--sp));
+    background: var(--surface) center / 100% no-repeat;
+    box-shadow: inset 0 0 0 1px var(--line-strong);
+}
+
+input[type="radio"] {
+    border-radius: 50%;
+}
+
+input[type="checkbox"]:checked {
+    background-color: var(--accent);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 8.2l2.6 2.6L12 5.4' fill='none' stroke='white' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    box-shadow: none;
+}
+
+input[type="checkbox"]:indeterminate {
+    background-color: var(--accent);
+    background-image: linear-gradient(white, white);
+    background-size: 50% 2px;
+    box-shadow: none;
+}
+
+input[type="radio"]:checked {
+    box-shadow: inset 0 0 0 calc(4.5 * var(--sp)) var(--accent);
+}
+
+input:is([type="checkbox"], [type="radio"]):disabled {
+    opacity: 0.45;
+}
+
+input:is([type="checkbox"], [type="radio"]):focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 1px;
+}
+
+/* ---- Segmented (ui/bits.tsx Segmented) ---- */
+
+.segmented {
+    display: inline-flex;
+    flex: none;
+    padding: calc(2 * var(--sp));
+    border-radius: var(--radius-m);
+    background: var(--fill-2);
+}
+
+.segmented-item {
+    height: calc(26 * var(--sp));
+    padding: 0 calc(12 * var(--sp));
+    border-radius: calc(6 * var(--sp));
+    color: var(--text-2);
+    font-weight: 500;
+}
+
+.segmented-item:hover {
+    color: var(--text);
+}
+
+.segmented-item[aria-checked="true"] {
+    background: var(--surface);
+    color: var(--text);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1), 0 0 0 0.5px rgba(0, 0, 0, 0.06);
+}
+
+[data-theme="dark"] .segmented-item[aria-checked="true"] {
+    background: var(--fill-3);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+}
+
+.segmented-item[aria-disabled="true"] {
+    opacity: 0.45;
+}
+
+.segmented-sm .segmented-item {
+    height: calc(22 * var(--sp));
+    padding: 0 calc(9 * var(--sp));
+    font-size: calc(12 * var(--sp));
+    border-radius: calc(5 * var(--sp));
+}
+
+/* ---- Menus and popovers (ui/Popover.tsx: every popover is a .menu) ---- */
+
+.menu {
+    z-index: 70;
+    min-width: calc(190 * var(--sp));
+    padding: calc(5 * var(--sp));
+    border-radius: calc(10 * var(--sp));
+    background: var(--surface);
+    box-shadow: var(--shadow-pop);
+    color: var(--text);
+    text-align: start;
+    animation: pop-in 0.13s var(--ease);
+    transform-origin: top left;
+    outline: none;
+}
+
+.menu[data-side="top"] {
+    transform-origin: bottom left;
+}
+
+.menu[data-align="end"] {
+    transform-origin: top right;
+}
+
+.menu[data-side="top"][data-align="end"] {
+    transform-origin: bottom right;
+}
+
+/* The copy a closed one leaves (ui/Popover.tsx fadeOut): gone in a blink. */
+/* A submenu (ui/Submenu.tsx) is over the menu it opened from. */
+.menu.submenu {
+    z-index: 71;
+}
+
+.menu.closing {
+    animation: fade-in 90ms linear reverse forwards;
+    pointer-events: none;
+}
+
+.menu-wide {
+    width: calc(336 * var(--sp));
+}
+
+.menu-label {
+    padding: calc(6 * var(--sp)) calc(9 * var(--sp)) calc(4 * var(--sp));
+    color: var(--text-3);
+    font-size: calc(11.5 * var(--sp));
+    font-weight: 500;
+}
+
+.menu-item {
+    display: flex;
+    align-items: center;
+    gap: calc(9 * var(--sp));
+    width: 100%;
+    min-height: calc(30 * var(--sp));
+    padding: calc(5 * var(--sp)) calc(9 * var(--sp));
+    border-radius: calc(6 * var(--sp));
+    color: var(--text);
+    text-align: start;
+    cursor: default;
+    outline: none;
+    user-select: none;
+}
+
+[data-density="compact"] .menu-item {
+    min-height: calc(26 * var(--sp));
+    padding-top: calc(3 * var(--sp));
+    padding-bottom: calc(3 * var(--sp));
+}
+
+.menu-item > svg {
+    color: var(--text-2);
+    flex: none;
+}
+
+.menu-item[data-highlighted],
+.menu-item.sel,
+.menu-item.current,
+.menu-item.on,
+.menu-item[aria-expanded="true"],
+button.menu-item:hover:not(:disabled),
+button.menu-item:focus-visible {
+    background: var(--fill-2);
+}
+
+.menu-item:disabled,
+.menu-item[aria-disabled="true"],
+.menu-item[data-disabled] {
+    opacity: 0.45;
+}
+
+/* Cavvy's menus mark it with the class danger. */
+.menu-item:is([data-danger], .danger),
+.menu-item:is([data-danger], .danger) > svg {
+    color: var(--red);
+}
+
+.menu-item:is([data-danger], .danger):is([data-highlighted], .sel, :hover, :focus-visible) {
+    background: var(--red-soft);
+}
+
+.menu-check {
+    display: inline-flex;
+    width: calc(14 * var(--sp));
+    height: calc(18 * var(--sp));
+    align-items: center;
+    flex: none;
+    color: var(--accent);
+}
+
+.menu-item-text {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    flex: 1;
+    min-width: 0;
+}
+
+.menu-item-title {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(6 * var(--sp));
+    font-weight: 500;
+}
+
+.menu-item-sub {
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
+    line-height: 1.35;
+}
+
+.menu-item-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.menu-item-note {
+    flex: none;
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
+}
+
+.menu-item .kbd-group {
+    margin-left: auto;
+    padding-left: calc(8 * var(--sp));
+}
+
+/* An item that opens a submenu (ui/Submenu.tsx): a chevron at its end. */
+.menu-sub-chev {
+    margin-left: auto;
+    color: var(--text-3) !important;
+}
+
+.menu-sep {
+    height: 1px;
+    margin: calc(5 * var(--sp)) calc(-5 * var(--sp));
+    background: var(--line);
+}
+
+.menu-scroll {
+    max-height: calc(420 * var(--sp));
+    overflow-y: auto;
+}
+
+/* Cavvy's: a line of text in a menu (loading, an error, "N more"). */
+.menu-note {
+    padding: calc(6 * var(--sp)) calc(9 * var(--sp));
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.menu-foot {
+    margin: calc(5 * var(--sp)) calc(-5 * var(--sp)) calc(-5 * var(--sp));
+    padding: calc(8 * var(--sp)) calc(14 * var(--sp));
+    border-top: 1px solid var(--line);
+    background: var(--fill-1);
+    border-radius: 0 0 calc(10 * var(--sp)) calc(10 * var(--sp));
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
+}
+
+/* ---- Dialogs (ui/Dialog.tsx) ---- */
+
+.overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    background: var(--overlay);
+    animation: fade-in 0.16s;
+}
+
+.dlg {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    z-index: 60;
+    display: flex;
+    flex-direction: column;
+    max-width: calc(100vw - calc(48 * var(--sp)));
+    max-height: calc(100vh - calc(64 * var(--sp)));
+    border-radius: var(--radius-l);
+    background: var(--bg);
+    box-shadow: var(--shadow-pop);
+    transform: translate(-50%, -50%);
+    animation: settings-in 0.18s var(--ease);
+    outline: none;
+}
+
+/* Near the top of the window (the command palette, Go to file): the design's palette place. */
+@keyframes palette-in {
+    from {
+        opacity: 0;
+        transform: translate(-50%, -4px);
+    }
+}
+
+.dialog-backdrop.top > .dlg {
+    top: 14vh;
+    transform: translateX(-50%);
+    animation-name: palette-in;
+    animation-duration: 0.14s;
+}
+
+.dlg-head {
+    display: flex;
+    align-items: flex-start;
+    gap: calc(10 * var(--sp));
+    flex: none;
+    padding: calc(16 * var(--sp)) calc(12 * var(--sp)) 0 calc(20 * var(--sp));
+}
+
+.dlg-icon {
+    display: inline-flex;
+    flex: none;
+    margin-top: calc(2 * var(--sp));
+    color: var(--text-2);
+}
+
+.dlg-heading {
+    flex: 1;
+    min-width: 0;
+    padding-bottom: calc(14 * var(--sp));
+}
+
+.dlg-title {
+    margin: 0;
+    font-size: calc(14.5 * var(--sp));
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    line-height: calc(20 * var(--sp));
+    overflow-wrap: anywhere;
+}
+
+.dlg-sub {
+    margin: calc(3 * var(--sp)) 0 0;
+    color: var(--text-2);
+    font-size: calc(13 * var(--sp));
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+}
+
+.dlg-close {
+    margin-top: calc(-2 * var(--sp));
+}
+
+.dlg-body {
+    display: flex;
+    flex-direction: column;
+    gap: calc(12 * var(--sp));
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: calc(2 * var(--sp)) calc(20 * var(--sp)) calc(18 * var(--sp));
+}
+
+.dlg-body-bare {
+    padding: 0;
+    gap: 0;
+    border-top: 1px solid var(--line);
+}
+
+/* The foot: the buttons on the rail's colour, under a hairline. Cavvy's dialogs that end their body with
+   .dialog-actions get the same band, held at the foot while the rest scrolls. */
+.dlg-foot,
+.dlg-body > .dialog-actions:last-child {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: calc(8 * var(--sp));
+    flex: none;
+    padding: calc(12 * var(--sp)) calc(16 * var(--sp));
+    border-top: 1px solid var(--line);
+    background: var(--bg-side);
+    border-radius: 0 0 var(--radius-l) var(--radius-l);
+}
+
+.dlg-body > .dialog-actions:last-child {
+    position: sticky;
+    z-index: 1;
+    bottom: calc(-18 * var(--sp));
+    flex-wrap: wrap;
+    margin: auto calc(-20 * var(--sp)) calc(-18 * var(--sp));
+}
+
+/* Cavvy's: a dialog's empty list. */
+.dlg .panel-empty {
+    padding: calc(14 * var(--sp)) calc(4 * var(--sp));
+    color: var(--text-3);
+}
+
+.dlg-foot-note {
+    margin-right: auto;
+    padding-left: calc(4 * var(--sp));
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
+}
+
+.dlg-text,
+.dlg-body > p {
+    margin: 0;
+    color: var(--text-2);
+    font-size: calc(13 * var(--sp));
+    line-height: 1.5;
+}
+
+.dlg-text code,
+.dlg-sub code {
+    padding: 1px calc(5 * var(--sp));
+    border-radius: calc(4 * var(--sp));
+    background: color-mix(in srgb, var(--text) 8%, transparent);
+    font-size: 0.9em;
+}
+
+/* What a dialog says can be copied (names, paths, warnings, errors); its buttons can't. */
+.dlg-body :is(button, [role="button"]) {
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+/* ---- Toasts: top centre (Toasts.tsx) ---- */
+
+.toasts {
+    position: fixed;
+    left: 50%;
+    top: calc(64 * var(--sp));
+    z-index: 90;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    transform: translateX(-50%);
+    pointer-events: none;
+}
+
+.toasts:empty {
+    display: none;
+}
+
+.toast {
+    display: flex;
+    align-items: center;
+    gap: calc(10 * var(--sp));
+    max-width: calc(520 * var(--sp));
+    padding: calc(8 * var(--sp)) calc(8 * var(--sp)) calc(8 * var(--sp)) calc(14 * var(--sp));
+    border-radius: calc(10 * var(--sp));
+    background: var(--ink);
+    color: var(--on-ink);
+    font-weight: 500;
+    box-shadow: 0 10px 30px -6px rgba(0, 0, 0, 0.35);
+    pointer-events: auto;
+    animation: drop-in 0.22s var(--ease);
+}
+
+.toast-msg {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.toast-count {
+    flex: none;
+    color: color-mix(in srgb, var(--on-ink) 60%, transparent);
+    font-variant-numeric: tabular-nums;
+}
+
+.toast-action {
+    flex: none;
+    height: calc(26 * var(--sp));
+    padding: 0 calc(10 * var(--sp));
+    border-radius: calc(6 * var(--sp));
+    background: color-mix(in srgb, var(--on-ink) 14%, transparent);
+    color: var(--on-ink);
+    font-weight: 600;
+}
+
+.toast-action:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--on-ink) 24%, transparent);
+}
+
+.toast-action:disabled {
+    opacity: 0.45;
+}
+
+.toast-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    width: calc(24 * var(--sp));
+    height: calc(24 * var(--sp));
+    border-radius: calc(6 * var(--sp));
+    color: color-mix(in srgb, var(--on-ink) 60%, transparent);
+}
+
+.toast-close:hover {
+    background: color-mix(in srgb, var(--on-ink) 14%, transparent);
+    color: var(--on-ink);
+}
+
+.toast :focus-visible {
+    outline-color: var(--on-ink);
+}
+
+[data-motion="instant"] :is(.menu, .tooltip, .toast, .dlg, .overlay) {
+    animation-duration: 0.001ms !important;
+}
+
+[data-motion="smooth"] .dlg {
+    animation-duration: 0.32s;
+}
+
+[data-motion="smooth"] :is(.menu, .overlay, .toast) {
+    animation-duration: 0.24s;
+}
+
+/* ---- Dots ---- */
+
+.dot {
+    flex: none;
+    display: inline-block;
+    width: calc(6 * var(--sp));
+    height: calc(6 * var(--sp));
+    border-radius: 50%;
+    background: var(--text-4);
+}
+
+.dot:is([data-tone="amber"], .warn) {
+    background: var(--amber-strong);
+}
+
+.dot:is([data-tone="green"], .ok) {
+    background: var(--green);
+}
+
+.dot:is([data-tone="red"], .err) {
+    background: var(--red);
+}
+
+.dot:is([data-tone="accent"], .accent) {
+    background: var(--accent);
+}

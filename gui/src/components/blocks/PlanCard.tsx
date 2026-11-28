@@ -83,7 +83,7 @@ export function PlanCard(p: { tool: ToolBlock; sessionId?: string }) {
                 </div>
             </Show>
             <div class="plan-foot" data-find-skip>
-                <button class="btn sm" onClick={() => open("view")}>
+                <button class="btn btn-sm" onClick={() => open("view")}>
                     Read the plan
                 </button>
                 <For each={links()}>

@@ -546,8 +546,8 @@ export function BrowserPane(p: { handle: SessionHandle }) {
                 <Show when={tab()?.choice}>
                     {(c) => (
                         <div class="br-note br-dialog" role="listbox" aria-label={c().label || "Options"} style="max-height:60%;overflow:auto;flex-direction:column;align-items:stretch;flex-wrap:nowrap">
-                            <For each={c().options}>{(o, i) => <button class={`btn ${i() === c().selected ? "primary" : "ghost"} sm`} role="option" aria-selected={i() === c().selected} disabled={o.disabled} onClick={() => choose(c().id, i())}>{o.label}</button>}</For>
-                            <button class="btn ghost sm" onClick={() => choose(c().id)}>
+                            <For each={c().options}>{(o, i) => <button class={`btn ${i() === c().selected ? "btn-primary" : "btn-ghost"} btn-sm`} role="option" aria-selected={i() === c().selected} disabled={o.disabled} onClick={() => choose(c().id, i())}>{o.label}</button>}</For>
+                            <button class="btn btn-ghost btn-sm" onClick={() => choose(c().id)}>
                                 Cancel
                             </button>
                         </div>
@@ -561,10 +561,10 @@ export function BrowserPane(p: { handle: SessionHandle }) {
                             <Show when={d().type === "prompt"}>
                                 <input aria-label="Answer" value={dialogText()} placeholder={d().defaultPrompt} onInput={(e) => setDialogText(e.currentTarget.value)} />
                             </Show>
-                            <button class="btn primary sm" onClick={() => answer(true)}>
+                            <button class="btn btn-primary btn-sm" onClick={() => answer(true)}>
                                 OK
                             </button>
-                            <button class="btn ghost sm" onClick={() => answer(false)}>
+                            <button class="btn btn-ghost btn-sm" onClick={() => answer(false)}>
                                 Cancel
                             </button>
                         </div>

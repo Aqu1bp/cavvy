@@ -178,7 +178,7 @@ export default function QuestionCard(p: { sessionId: string; it: QuestionInterac
             </div>
             <div class="itab-actions ask-row">
                 <Show when={choosing()}>
-                    <button class="btn primary" disabled={!hasAnswer() || Boolean(blocked()) || busy()} onClick={() => void answer()}>
+                    <button class="btn btn-primary" disabled={!hasAnswer() || Boolean(blocked()) || busy()} onClick={() => void answer()}>
                         Answer
                     </button>
                 </Show>

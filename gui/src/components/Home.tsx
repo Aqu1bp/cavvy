@@ -213,7 +213,7 @@ export function Home() {
             >
                 <h1 class="home-q">{!app.homeCwd ? "Choose a project to start" : modelMissing() ? "Connect a model to start" : "What should we work on?"}</h1>
                 <Menu label="Recent projects" open={pickerOpen()} anchor={pickerAnchor} onClose={() => setPickerOpen(false)} width={420}>
-                    <div class="menu-head">Recent projects</div>
+                    <div class="menu-label">Recent projects</div>
                     <For each={homeProjects()} fallback={<div class="menu-note">No projects yet.</div>}>
                         {(pr) => (
                             <button
@@ -226,9 +226,9 @@ export function Home() {
                                 }}
                             >
                                 <FolderGit2 size={15} />
-                                <span class="menu-text">
-                                    <span class="menu-label">{pr.name}</span>
-                                    <span class="menu-desc mono truncate">{tildify(pr.path, app.hello?.homeDir)}</span>
+                                <span class="menu-item-text">
+                                    <span class="menu-item-name">{pr.name}</span>
+                                    <span class="menu-item-sub mono truncate">{tildify(pr.path, app.hello?.homeDir)}</span>
                                 </span>
                                 <Show when={pr.openedAt}>
                                     <span class="muted small">{(now(), ago(pr.openedAt!))}</span>
@@ -239,7 +239,7 @@ export function Home() {
                     <div class="menu-sep" />
                     <button role="menuitem" class="menu-item" onClick={() => void pick()}>
                         <FolderOpen size={15} />
-                        <span class="menu-label">Open folder…</span>
+                        <span class="menu-item-name">Open folder…</span>
                     </button>
                 </Menu>
 

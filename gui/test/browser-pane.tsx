@@ -6,6 +6,7 @@ import { adoptBrowserState, browserState } from "../src/state/browser";
 import type { BrowserState, ServerEvent } from "@shared/protocol";
 import "../src/styles/tokens.css";
 import "../src/styles/base.css";
+import "../src/styles/kit.css";
 import "../src/styles/shell.css";
 import "../src/styles/sidebar.css";
 import "../src/styles/header.css";

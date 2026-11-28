@@ -14,6 +14,7 @@ import { checkDiffComments } from "./diff-comments";
 import { checkModelPicker } from "./model-picker";
 import "../src/styles/tokens.css";
 import "../src/styles/base.css";
+import "../src/styles/kit.css";
 import "../src/styles/transcript.css";
 
 const root = document.getElementById("root")!;

@@ -78,13 +78,13 @@ export function NeedsYou(p: { waiting: SessionSummary[] }) {
                 </Show>
             </button>
             <Menu label="Needs you" open={open()} anchor={() => btn} onClose={() => setOpen(false)} align="end" width={320}>
-                <div class="menu-head">Needs you</div>
+                <div class="menu-label">Needs you</div>
                 <For each={p.waiting}>{(s) => (
                     <button role="menuitem" class="menu-item" onClick={() => go(s.id)}>
                         <Hand size={15} />
-                        <span class="menu-text">
-                            <span class="menu-label truncate">{s.title}</span>
-                            <span class="menu-desc truncate">{s.projectName} · {asking(s)}</span>
+                        <span class="menu-item-text">
+                            <span class="menu-item-name truncate">{s.title}</span>
+                            <span class="menu-item-sub truncate">{s.projectName} · {asking(s)}</span>
                         </span>
                     </button>
                 )}</For>
@@ -365,7 +365,7 @@ export function Header(p: { handle?: SessionHandle; title?: string }) {
                             >
                                 {(it) => (
                                     <button role="menuitem" class="menu-item compact" disabled={it.disabled} onClick={it.run}>
-                                        <it.icon size={14} /> <span class="menu-label">{it.label}</span>
+                                        <it.icon size={14} /> <span class="menu-item-name">{it.label}</span>
                                         <Show when={it.kbd && shortcut(it.kbd)}>{(k) => <kbd class="menu-kbd">{keyText(k())}</kbd>}</Show>
                                     </button>
                                 )}

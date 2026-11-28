@@ -1,4 +1,4 @@
-import { createSignal, createUniqueId, onCleanup, onMount, Show, type JSX } from "solid-js";
+import { children, createSignal, createUniqueId, onCleanup, onMount, Show, type JSX } from "solid-js";
 import { Portal } from "solid-js/web";
 import { X } from "lucide-solid";
 import { focusMoved, tabWrap, userMovedFocus } from "../../lib/focus-trap";
@@ -16,7 +16,8 @@ export interface DialogProps {
     labelledBy?: string;
     /** Opens near the top of the window (the command palette) instead of in its middle. */
     top?: boolean;
-    children: JSX.Element;
+    /** None: the dialog is its head and foot (a confirm). */
+    children?: JSX.Element;
     footer?: JSX.Element;
 }
 
@@ -42,6 +43,8 @@ const FOCUSABLE = "a[href], button:not([disabled]), input:not([disabled]), texta
 
 function DialogInner(p: DialogProps) {
     const titleId = createUniqueId();
+    const body = children(() => p.children);
+    const hasBody = () => body.toArray().some((c) => c !== undefined && c !== null && c !== false && c !== "");
     let box: HTMLDivElement | undefined;
     const previous = document.activeElement as HTMLElement | null;
     onMount(() => {
@@ -78,7 +81,7 @@ function DialogInner(p: DialogProps) {
         // Focus the field marked autofocus, else the first, or the dialog itself.
         requestAnimationFrame(() => {
             if (box && userMovedFocus(box)) return;
-            const first = box?.querySelector<HTMLElement>("[autofocus]") ?? box?.querySelector<HTMLElement>("input, textarea, select, button:not(.dialog-close)");
+            const first = box?.querySelector<HTMLElement>("[autofocus]") ?? box?.querySelector<HTMLElement>("input, textarea, select, button:not(.dlg-close)");
             (first ?? box)?.focus();
         });
         onCleanup(() => {
@@ -91,10 +94,11 @@ function DialogInner(p: DialogProps) {
     });
     return (
         <Portal>
-            <div class={`dialog-backdrop ${p.top ? "top" : ""}`} onPointerDown={(e) => e.target === e.currentTarget && p.onClose()}>
+            {/* The design's markup (.overlay, .dlg, .dlg-head …); the older names stay for what finds a dialog by them. */}
+            <div class={`overlay dialog-backdrop ${p.top ? "top" : ""}`} onPointerDown={(e) => e.target === e.currentTarget && p.onClose()}>
                 <div
                     ref={box}
-                    class={`dialog glass ${p.class ?? ""}`}
+                    class={`dlg dialog ${p.class ?? ""}`}
                     style={{ width: `min(calc(${p.width ?? 520} * var(--sp)), calc(100vw - 32px))` }}
                     role="dialog"
                     aria-modal="true"
@@ -103,21 +107,23 @@ function DialogInner(p: DialogProps) {
                     onPointerDown={() => focusMoved(box!)}
                 >
                     <Show when={!p.bare}>
-                        <div class="dialog-head">
-                            <div>
-                                <div class="dialog-title" id={titleId}>{p.title}</div>
+                        <div class="dlg-head">
+                            <div class="dlg-heading">
+                                <h2 class="dlg-title" id={titleId}>{p.title}</h2>
                                 <Show when={p.subtitle}>
-                                    <div class="dialog-sub selectable">{p.subtitle}</div>
+                                    <p class="dlg-sub selectable">{p.subtitle}</p>
                                 </Show>
                             </div>
-                            <button class="icon-btn dialog-close" onClick={() => p.onClose()} aria-label="Close">
-                                <X size={16} />
+                            <button class="icon-btn icon-btn-sm dlg-close" onClick={() => p.onClose()} aria-label="Close">
+                                <X size={14} />
                             </button>
                         </div>
                     </Show>
-                    <div class="dialog-body selectable">{p.children}</div>
+                    <Show when={hasBody()}>
+                        <div class="dlg-body dialog-body selectable">{body()}</div>
+                    </Show>
                     <Show when={p.footer}>
-                        <div class="dialog-foot">{p.footer}</div>
+                        <div class="dlg-foot">{p.footer}</div>
                     </Show>
                 </div>
             </div>

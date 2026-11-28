@@ -53,10 +53,10 @@ export function FolderPicker() {
             <div class="dialog-actions">
                 <span class="muted small truncate">{listing()?.path}</span>
                 <span class="grow" />
-                <button class="btn ghost" onClick={close}>
+                <button class="btn btn-ghost" onClick={close}>
                     Cancel
                 </button>
-                <button class="btn primary" disabled={!listing()} onClick={() => choose(listing()!.path)}>
+                <button class="btn btn-primary" disabled={!listing()} onClick={() => choose(listing()!.path)}>
                     {folderPickerOpen()?.action ?? "Open this folder"}
                 </button>
             </div>

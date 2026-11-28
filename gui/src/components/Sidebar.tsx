@@ -794,15 +794,15 @@ export function Sidebar() {
                         <ListFilter size={16} />
                     </button>
                     <Menu label="View options" open={viewOpen()} anchor={() => viewBtn} onClose={() => setViewOpen(false)} align="end" width={220}>
-                        <div class="menu-head">Group</div>
+                        <div class="menu-label">Group</div>
                         <button role="menuitemradio" aria-checked={prefs.groupBy === "date"} class="menu-item compact" onClick={() => (setPrefs("groupBy", "date"), setViewOpen(false))}>
-                            <span class="menu-label">By date</span>
+                            <span class="menu-item-name">By date</span>
                             <Show when={prefs.groupBy === "date"}>
                                 <Check size={14} class="menu-check" />
                             </Show>
                         </button>
                         <button role="menuitemradio" aria-checked={prefs.groupBy === "project"} class="menu-item compact" onClick={() => (setPrefs("groupBy", "project"), setViewOpen(false))}>
-                            <span class="menu-label">By project</span>
+                            <span class="menu-item-name">By project</span>
                             <Show when={prefs.groupBy === "project"}>
                                 <Check size={14} class="menu-check" />
                             </Show>

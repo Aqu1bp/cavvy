@@ -143,7 +143,7 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
     const reveal = (el: HTMLElement) => requestAnimationFrame(() => el.closest(".dialog-body")?.scrollTo({ top: el.closest(".dialog-body")!.scrollHeight }));
     // In the dialog's footer, so a long error above can't push them out of view. As the other dialogs place them: with
     // two ways to go ahead, Cancel alone on the left; with Push alone, Cancel beside it at the right.
-    const cancel = () => <button class="btn ghost" disabled={busy()} onClick={close}>Cancel</button>;
+    const cancel = () => <button class="btn btn-ghost" disabled={busy()} onClick={close}>Cancel</button>;
     // A pull request needs the GitHub CLI, and a base that isn't the branch itself (the default branch is only pushed).
     // A branch with an open pull request already: pushing updates it, so there's nothing to fill in (its link is shown).
     const openPr = () => view()?.pr?.state === "open" || view()?.pr?.state === "draft";
@@ -154,8 +154,8 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
             <Show when={!prs()}><span class="grow" /></Show>
             {cancel()}
             <Show when={prs()}><span class="grow" /></Show>
-            <button ref={pushEl} autofocus={first() === "push"} class={`btn ${prs() ? "secondary" : "primary"}`} disabled={!ready()} onClick={() => void publish("push")}>{busy() ? "Pushing…" : "Push"}</button>
-            <Show when={prs()}><button class="btn primary" disabled={!ready() || generating() || !title().trim() || !baseOr()} onClick={() => void publish("pr")}>Open pull request</button></Show>
+            <button ref={pushEl} autofocus={first() === "push"} class={`btn ${prs() ? "" : "btn-primary"}`} disabled={!ready()} onClick={() => void publish("push")}>{busy() ? "Pushing…" : "Push"}</button>
+            <Show when={prs()}><button class="btn btn-primary" disabled={!ready() || generating() || !title().trim() || !baseOr()} onClick={() => void publish("pr")}>Open pull request</button></Show>
         </div>
     );
     // Without the GitHub CLI, signed out of it, or on the base branch, it can only push: titled for that.
@@ -186,7 +186,7 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
                             <Show when={view()?.ghSignedOut || view()?.compareUrl}>
                                 <div class="commit-generate">
                                     <Show when={view()?.ghSignedOut}>
-                                        <button class="btn sm" disabled={busy()} onClick={() => void signIn()}>Sign in to GitHub</button>
+                                        <button class="btn btn-sm" disabled={busy()} onClick={() => void signIn()}>Sign in to GitHub</button>
                                     </Show>
                                     <Show when={view()?.compareUrl}><button class="link-btn" onClick={() => void openExternal(view()!.compareUrl!)}>Compare on GitHub</button></Show>
                                 </div>
@@ -199,7 +199,7 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
                             <label class="commit-message-label" for="pr-body">Description</label>
                             <textarea id="pr-body" class="input" rows={6} maxlength={16000} value={body()} disabled={busy() || generating()} onInput={(e) => setBody(e.currentTarget.value)} />
                             <div class="commit-generate">
-                                <button class="btn ghost sm" disabled={busy() || generating()} title={drafted() ? `Drafted by ${draftedBy(drafted()!.model, p.id)}` : undefined} onClick={() => void generate()}>{generating() ? "Generating…" : "Generate"}</button>
+                                <button class="btn btn-ghost btn-sm" disabled={busy() || generating()} title={drafted() ? `Drafted by ${draftedBy(drafted()!.model, p.id)}` : undefined} onClick={() => void generate()}>{generating() ? "Generating…" : "Generate"}</button>
                                 <Show when={drafted()}>
                                     <button class="link-btn small" disabled={busy()} onClick={undoDraft}>Undo</button>
                                 </Show>

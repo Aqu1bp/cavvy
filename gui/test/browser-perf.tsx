@@ -6,6 +6,7 @@ import { rpc, setApp, type SessionHandle } from "../src/state/app";
 import { adoptBrowserState } from "../src/state/browser";
 import "../src/styles/tokens.css";
 import "../src/styles/base.css";
+import "../src/styles/kit.css";
 import "../src/styles/shell.css";
 import "../src/styles/panel.css";
 import "../src/styles/browser.css";

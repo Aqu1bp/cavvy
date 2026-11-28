@@ -47,10 +47,10 @@ export function RunSheet() {
                         <p class="small">{(phase() as Extract<Phase, { kind: "confirm" }>).message}</p>
                         <div class="dialog-actions">
                             <span class="grow" />
-                            <button class="btn ghost" onClick={close}>
+                            <button class="btn btn-ghost" onClick={close}>
                                 Cancel
                             </button>
-                            <button class="btn primary" autofocus onClick={confirm}>
+                            <button class="btn btn-primary" autofocus onClick={confirm}>
                                 Start {s()?.req.models.length} models
                             </button>
                         </div>
@@ -65,15 +65,15 @@ export function RunSheet() {
                                 <p class="muted small">Nothing has been created yet.</p>
                                 <div class="dialog-actions">
                                     <span class="grow" />
-                                    <button class="btn ghost" onClick={close}>
+                                    <button class="btn btn-ghost" onClick={close}>
                                         Cancel
                                     </button>
                                     <Show when={t().project}>
-                                        <button class="btn secondary" onClick={() => void decide(t().folder, false)}>
+                                        <button class="btn" onClick={() => void decide(t().folder, false)}>
                                             Open without its configuration
                                         </button>
                                     </Show>
-                                    <button class="btn primary" onClick={() => void decide(t().folder, true)}>
+                                    <button class="btn btn-primary" onClick={() => void decide(t().folder, true)}>
                                         Trust {basename(t().folder)} and start
                                     </button>
                                 </div>
@@ -89,7 +89,7 @@ export function RunSheet() {
                                 </div>
                                 <div class="dialog-actions">
                                     <span class="grow" />
-                                    <button class="btn primary" onClick={close}>
+                                    <button class="btn btn-primary" onClick={close}>
                                         Close
                                     </button>
                                 </div>
@@ -118,7 +118,7 @@ export function RunSheet() {
                                                 </div>
                                                 <Show when={r.ok && (r as { sessionId: string }).sessionId}>
                                                     {(id) => (
-                                                        <button class="btn secondary sm" onClick={() => (close(), void activate(id()))}>
+                                                        <button class="btn btn-sm" onClick={() => (close(), void activate(id()))}>
                                                             Open
                                                         </button>
                                                     )}
@@ -130,7 +130,7 @@ export function RunSheet() {
                                 <p class="muted small">Each worktree starts from {basename(s()!.req.path)}'s last commit, without its uncommitted changes.</p>
                                 <div class="dialog-actions">
                                     <span class="grow" />
-                                    <button class="btn primary" autofocus onClick={close}>
+                                    <button class="btn btn-primary" autofocus onClick={close}>
                                         Done
                                     </button>
                                 </div>

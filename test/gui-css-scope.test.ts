@@ -28,15 +28,15 @@ test("forced-colors selection outlines preserve keyboard focus on selected contr
 
     // These classes belong to focusable controls. Card/model/file row wrappers
     // instead keep their selection outline while a child button receives focus.
-    for (const selector of [".navi.on", ".segmented button.on", ".menu-item.sel", ".menu-item.current", ".rw-item.on", ".toggle.on"]) {
+    for (const selector of [".navi.on", ".segmented-item.on", ".menu-item.sel", ".menu-item.current", ".rw-item.on", '.switch[aria-checked="true"]']) {
         const outlines = rules.filter((r) => r.decls.has("outline") && r.selectors.some((s) => s.startsWith(selector)));
         expect(outlines).toHaveLength(1);
         expect(outlines[0]!.selectors.filter((s) => s.startsWith(selector))).toEqual([`${selector}:not(:focus-visible)`]);
-        expect(outlines[0]!.decls.get("outline")).toBe(selector === ".toggle.on" ? "1px solid Highlight" : "1px solid SelectedItem");
-        if (selector !== ".toggle.on") expect(outlines[0]!.decls.get("outline-offset")).toBe("-1px");
+        expect(outlines[0]!.decls.get("outline")).toBe(selector === '.switch[aria-checked="true"]' ? "1px solid Highlight" : "1px solid SelectedItem");
+        if (selector !== '.switch[aria-checked="true"]') expect(outlines[0]!.decls.get("outline-offset")).toBe("-1px");
     }
     // Enabled toggles retain their state background even while focused.
-    expect(rules.find((r) => r.selectors.includes(".toggle.on"))?.decls.get("background")).toBe("Highlight");
+    expect(rules.find((r) => r.selectors.includes('.switch[aria-checked="true"]'))?.decls.get("background")).toBe("Highlight");
 });
 
 // Read only class values, including literal branches of Solid's template expressions.

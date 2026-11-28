@@ -25,9 +25,9 @@ function at(value: string | undefined, size: number): string {
 // Rows, controls and icons people read and click: their px at 14 (as before the change), and the same at 18.
 const KEY: [file: string, selector: string, property: string, at14: string][] = [
     ["base.css", ".hb", "height", "28px"],
-    ["base.css", ".btn", "height", "32px"],
-    ["overlays.css", ".menu-item", "padding", "5px 9px"],
-    ["overlays.css", ".toggle.on .toggle-knob", "transform", "translateX(14px)"],
+    ["kit.css", ".btn", "height", "32px"],
+    ["kit.css", ".menu-item", "padding", "5px 9px"],
+    ["kit.css", ".switch[aria-checked=\"true\"] .switch-knob", "transform", "translateX(14px)"],
     ["sidebar.css", ".nav-row", "height", "32px"],
     ["sidebar.css", ".card-hit", "min-height", "32px"],
     ["composer.css", ".send", "width", "32px"],
@@ -36,7 +36,7 @@ const KEY: [file: string, selector: string, property: string, at14: string][] = 
     ["transcript.css", ".acts-h", "padding", "4px 7px"],
     ["transcript.css", ".code-body", "padding", "12px 14px"],
     ["overlays.css", ".pal-row", "min-height", "38px"],
-    ["toasts.css", ".toast", "min-height", "36px"],
+    ["kit.css", ".toast", "padding", "8px 8px 8px 14px"],
     ["terminal.css", ".terminal-tab", "height", "28px"],
     ["tokens.css", ":root", "--radius-sm", "6px"],
 ];

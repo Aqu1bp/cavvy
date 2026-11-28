@@ -221,7 +221,7 @@ export default function SubscriptionGrid(p: { here: string; servers: readonly st
                     </Match>
                     <Match when={!pr()?.configured}>
                         <Show when={q.head} fallback={<span />}>
-                            <button class="btn secondary sm" onClick={() => void turnOn(q.c, pr()!)}>Turn on</button>
+                            <button class="btn btn-sm" onClick={() => void turnOn(q.c, pr()!)}>Turn on</button>
                         </Show>
                     </Match>
                     <Match when={account()}>
@@ -232,12 +232,12 @@ export default function SubscriptionGrid(p: { here: string; servers: readonly st
                                 <Match when={a().free}>
                                     <span class="sg-free">
                                         <span class="sg-muted">Free</span>
-                                        <button class="btn secondary sm" aria-label={`Sign in to ${pr()!.name} ${a().name} on ${q.c.label}`} onClick={() => signIn(q.c, pr()!, a())}>Sign in</button>
+                                        <button class="btn btn-sm" aria-label={`Sign in to ${pr()!.name} ${a().name} on ${q.c.label}`} onClick={() => signIn(q.c, pr()!, a())}>Sign in</button>
                                     </span>
                                 </Match>
                                 <Match when={a().signedIn === true}><span class="cli-dot" role="img" aria-label="Signed in" title={a().email ?? "Signed in"} /></Match>
                                 <Match when={a().signedIn === false}>
-                                    <button class="btn secondary sm" aria-label={`Sign in to ${pr()!.name} ${a().name} on ${q.c.label}`} onClick={() => signIn(q.c, pr()!, a())}>Sign in</button>
+                                    <button class="btn btn-sm" aria-label={`Sign in to ${pr()!.name} ${a().name} on ${q.c.label}`} onClick={() => signIn(q.c, pr()!, a())}>Sign in</button>
                                 </Match>
                             </Switch>
                         )}
