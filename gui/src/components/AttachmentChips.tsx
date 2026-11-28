@@ -39,7 +39,7 @@ export function AttachmentChips(p: { items: Attachment[]; readsPdf: boolean; blo
     };
     const Remove = (r: { name: string; i: number }) => (
         <button class="att-x" title="Remove" aria-label={`Remove ${r.name}`} onClick={() => p.onRemove(r.i)}>
-            <X size={10} stroke-width={2.5} />
+            <X size={11} stroke-width={2.25} />
         </button>
     );
     return (
@@ -130,7 +130,7 @@ export function AttachmentChips(p: { items: Attachment[]; readsPdf: boolean; blo
                                             </Show>
                                             <Show when={pasted() && p.onToText}>
                                                 <button class="att-act" title="Put back as text" aria-label="Put back as text" onClick={() => p.onToText?.(i())}>
-                                                    <TextCursorInput size={14} />
+                                                    <TextCursorInput size={11} stroke-width={2.25} />
                                                 </button>
                                             </Show>
                                             <Remove name={f().name} i={i()} />

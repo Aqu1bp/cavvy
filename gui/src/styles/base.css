@@ -380,7 +380,7 @@ h3 {
 
 /* ---- Buttons ----
    One shape: an 8px corner (--pill). Plain (.btn, .btn.secondary): a raised surface with an outline. Primary: ink.
-   Ghost: no surface till hovered. Danger: filled red. Hover and press change at once: no transition but the press. */
+   Ghost: no surface till hovered. Danger: filled red. Hover and press fade in a blink, as the design's do. */
 
 .btn {
     display: inline-flex;
@@ -397,7 +397,7 @@ h3 {
     font-weight: 500;
     font-size: 0.929rem;
     white-space: nowrap;
-    transition: transform 80ms;
+    transition: background 0.12s, box-shadow 0.12s, color 0.12s, opacity 0.12s;
     min-width: 0;
 }
 
@@ -457,7 +457,8 @@ h3 {
     opacity: 0.8;
 }
 
-.icon-btn {
+.icon-btn,
+.hb {
     display: inline-grid;
     place-items: center;
     width: calc(28 * var(--sp));
@@ -465,6 +466,7 @@ h3 {
     border-radius: var(--radius-sm);
     color: var(--fg-2);
     flex: none;
+    transition: background 0.12s, color 0.12s;
 }
 
 .icon-btn:hover:not(:disabled),
@@ -557,16 +559,6 @@ kbd {
 }
 
 /* The square icon buttons of the title line, the sidebar and the composer. */
-.hb {
-    display: inline-grid;
-    place-items: center;
-    width: calc(28 * var(--sp));
-    height: calc(28 * var(--sp));
-    border-radius: var(--radius-sm);
-    color: var(--fg-2);
-    flex: none;
-}
-
 .hb:hover:not(:disabled),
 .hb.on,
 .hb[aria-expanded="true"] {
@@ -694,6 +686,7 @@ textarea.input {
 .select {
     padding-right: calc(28 * var(--sp));
     appearance: none;
+    transition: background 0.12s;
     font-weight: 500;
     background-image: linear-gradient(45deg, transparent 50%, var(--fg-3) 50%), linear-gradient(135deg, var(--fg-3) 50%, transparent 50%);
     background-position: calc(100% - 15 * var(--sp)) 50%, calc(100% - 10 * var(--sp)) 50%;
@@ -717,6 +710,7 @@ input:is([type="checkbox"], [type="radio"]) {
     border-radius: calc(4 * var(--sp));
     background: var(--raised) center / 100% no-repeat;
     box-shadow: inset 0 0 0 1px var(--line-strong);
+    transition: background 0.12s, box-shadow 0.12s;
 }
 
 input[type="radio"] {
@@ -762,6 +756,7 @@ input:is([type="checkbox"], [type="radio"]):focus-visible {
 }
 
 .segmented button {
+    transition: color 0.12s, background 0.12s;
     display: inline-flex;
     align-items: center;
     gap: calc(6 * var(--sp));

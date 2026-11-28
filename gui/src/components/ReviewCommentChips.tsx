@@ -1,5 +1,5 @@
 import { For, Show } from "solid-js";
-import { MessageSquare, X } from "lucide-solid";
+import { X } from "lucide-solid";
 import { linesLabel, linesPhrase, type ReviewComment } from "../lib/review-comments";
 import { basename, plural } from "../lib/format";
 
@@ -16,7 +16,6 @@ export function ReviewCommentChips(p: { items: readonly ReviewComment[]; held?: 
                     {(c) => (
                         <div class="rc-chip">
                             <button class="rc-open" title={`${c.path}, ${linesPhrase(c)}: ${c.text}`} aria-label={`Show comment on ${c.path}, ${linesPhrase(c)}, in the review`} onClick={() => p.onOpen(c)}>
-                                <MessageSquare size={13} class="rc-icon" aria-hidden="true" />
                                 <span class="rc-where mono">
                                     {basename(c.path)}:{linesLabel(c)}
                                 </span>

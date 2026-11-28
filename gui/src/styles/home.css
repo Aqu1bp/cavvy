@@ -102,6 +102,7 @@
     font-weight: 500;
     white-space: nowrap;
     color: var(--fg);
+    transition: background 0.12s;
 }
 
 .home-pick:hover,
@@ -204,6 +205,7 @@
     padding: calc(6 * var(--sp)) calc(10 * var(--sp)) calc(6 * var(--sp)) calc(16 * var(--sp));
     border-top: 1px solid var(--line);
     outline: none;
+    transition: background 0.1s;
 }
 
 .cli-row:last-child {
@@ -351,6 +353,7 @@
     border-radius: calc(5 * var(--sp));
     font-size: calc(11.5 * var(--sp));
     color: var(--fg-3);
+    transition: background 0.12s, color 0.12s;
 }
 
 .home-hints button:hover {

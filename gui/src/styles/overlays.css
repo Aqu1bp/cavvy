@@ -192,6 +192,7 @@
     height: calc(18 * var(--sp));
     border-radius: var(--round);
     background: var(--line-strong);
+    transition: background 0.14s;
 }
 
 .toggle.on {

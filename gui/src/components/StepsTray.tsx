@@ -42,11 +42,7 @@ export function StepsTray(p: { sessionId: string; view: SessionView }) {
                                 <For each={todos()}>
                                     {(t) => (
                                         <li class={t.status === "completed" ? "done" : t.status === "in_progress" ? "now" : ""}>
-                                            <span class="box" aria-label={t.status === "completed" ? "Done" : t.status === "in_progress" ? "In progress" : "To do"}>
-                                                <Show when={t.status === "completed"}>
-                                                    <Check size={9} stroke-width={3.4} />
-                                                </Show>
-                                            </span>
+                                            <span class="box" aria-label={t.status === "completed" ? "Done" : t.status === "in_progress" ? "In progress" : "To do"} />
                                             <span class="selectable">{t.status === "in_progress" && working() ? (t.activeForm ?? t.content) : t.content}</span>
                                         </li>
                                     )}
