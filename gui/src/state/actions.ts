@@ -228,7 +228,7 @@ export async function fork(id: string, at?: { index: number; text: string; turn:
     if (!at) {
         for (let i = turns.length - 1; i >= 0 && !at; i--) if (turns[i]!.status !== "running" && turns[i]!.prompt) at = forkAnchor(turns, i);
     }
-    if (!at) return toast("Nothing to fork yet: send a prompt first.", "warn");
+    if (!at) return toast("Nothing to fork yet", "warn");
     try {
         const h = await forkSession(id, at);
         toast(`Forked into “${h.view.state.title ?? "a new session"}”`, "success");
@@ -443,7 +443,7 @@ export async function setModel(ref: string, id = app.activeId, persist = true) {
     const st = id ? handleFor(id)?.view.state : undefined;
     // An idle compaction stops for a model switch.
     if (st?.busy && !st.activity?.idle) {
-        toast("Switch models once this response is done, or interrupt it first.", "warn");
+        toast("Switch models after this reply", "warn");
         return;
     }
     try {
@@ -850,9 +850,8 @@ export async function connectCli(pr: ProviderInfo, failed: (e: unknown) => void 
         failed(e);
         return false;
     }
-    const plan = pr.agentCli?.plan ?? pr.name;
-    // "Antigravity plan", not "Antigravity plan through Antigravity".
-    toast(`Using your ${plan}${plan.startsWith(pr.name) ? "" : ` through ${pr.name}`} (${r.description})`, "success");
+    // "Using your Claude subscription", under 8 words: which account it's signed in to shows in Settings → Providers.
+    toast(`Using your ${pr.agentCli?.plan ?? pr.name}`, "success");
     if (r.warning) toast(r.warning, "warn");
     await Promise.all([refreshProviders(), refreshModels(), refreshSettings()]).catch(reportError);
     return true;

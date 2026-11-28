@@ -2,7 +2,7 @@
 // along them (lib/effort.ts), and the EffortSlider control itself
 // (fixtures/gui-effort-bars.ts, real Solid reactivity in an in-memory DOM).
 import { expect, test } from "bun:test";
-import { EFFORTS, effortAt, effortKey, effortLevels, effortOf, takesEffort } from "../gui/src/lib/effort";
+import { EFFORTS, effortAt, effortBeside, effortKey, effortLevels, effortOf, takesEffort } from "../gui/src/lib/effort";
 
 const key = (k: string, mods: Partial<Record<"metaKey" | "ctrlKey" | "altKey", boolean>> = {}) => ({ key: k, metaKey: false, ctrlKey: false, altKey: false, ...mods });
 
@@ -60,6 +60,16 @@ test("the pointer: the nearest stop, clamped to the track", () => {
     expect(effortAt(10, 0, 0, 4)).toBe(0);
     expect(effortAt(10, 0, 40, 4, 20)).toBe(0);
     expect(effortAt(90, 0, 100, 1)).toBe(0);
+});
+
+test("the effort word beside the model's name, unless the name says it already", () => {
+    expect(effortBeside("Opus 5.5", "high")).toBe("high");
+    expect(effortBeside("Opus 5.5", undefined)).toBe("default");
+    // Claude Code's model "Default (recommended)" with no level set: not "Default (recommended) default".
+    expect(effortBeside("Default (recommended)", undefined)).toBeUndefined();
+    expect(effortBeside("Default (recommended)", "max")).toBe("max");
+    // A word inside another isn't the word.
+    expect(effortBeside("Maximal", "max")).toBe("max");
 });
 
 // Each runs its namesake in fixtures/gui-effort-bars.ts, in a browser-conditions

@@ -48,3 +48,27 @@ export function placeTip(r: Box, w: number, h: number, vw: number, vh: number, w
     const left = Math.min(Math.max(r.left + r.width / 2 - w / 2, PAD), Math.max(PAD, vw - PAD - w));
     return { left: Math.round(left), top: Math.round(top), side };
 }
+
+/**
+ * Keys that move focus themselves: Tab and Shift+Tab, and the arrows (with Home and End) that move it along a toolbar,
+ * a list or a menu. A focus that follows one of them, in the same moment, is the user's, and shows its tooltip; focus
+ * the app moves itself (a drawer opening on its first button, a dialog closing back to what opened it) and a click
+ * don't.
+ */
+const FOCUS_KEYS = new Set(["Tab", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"]);
+/** How soon after the key the focus has to come: in the same task (Tab's own move, a toolbar's handler) or the frame after. */
+export const FOCUS_KEY_MS = 100;
+
+export function movesFocus(key: string): boolean {
+    return FOCUS_KEYS.has(key);
+}
+
+/** Whether a focus at `now` came from a key that moves focus, last pressed at `keyAt`. */
+export function focusFromKeys(keyAt: number, now: number): boolean {
+    return now - keyAt >= 0 && now - keyAt <= FOCUS_KEY_MS;
+}
+
+/** Whether an element's box is where it was when its tooltip showed: one that moved or changed size leaves it pointing at nothing. */
+export function sameBox(a: { left: number; top: number; width: number; height: number }, b: { left: number; top: number; width: number; height: number }): boolean {
+    return Math.abs(a.left - b.left) < 0.5 && Math.abs(a.top - b.top) < 0.5 && Math.abs(a.width - b.width) < 0.5 && Math.abs(a.height - b.height) < 0.5;
+}

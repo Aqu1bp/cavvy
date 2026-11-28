@@ -56,3 +56,12 @@ export function effortAt(x: number, left: number, width: number, n: number, inse
     if (n <= 1 || span <= 0) return 0;
     return Math.max(0, Math.min(n - 1, Math.round(((x - left - inset) / span) * (n - 1))));
 }
+
+/**
+ * The effort word beside a model's name in the picker: its level ("high"), or "default" when none is set, but not a
+ * word the name already says (Claude Code's model "Default (recommended)" isn't followed by "default").
+ */
+export function effortBeside(name: string, id: EffortLevel | undefined): string | undefined {
+    const word = effortOf(id)?.id ?? "default";
+    return new RegExp(`\\b${word}\\b`, "i").test(name) ? undefined : word;
+}

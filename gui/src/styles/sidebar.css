@@ -144,13 +144,24 @@ button.search:hover {
 }
 
 .sgroup-head {
-    position: sticky;
-    top: 0;
-    z-index: 2;
     display: flex;
     align-items: center;
     height: calc(28 * var(--sp));
     padding-right: calc(4 * var(--sp));
+}
+
+/* Sticky only where an opaque colour is exactly what's behind it: Solid with no tint or scene (the window's own
+   ground, shaded as the rail is, shell.css), and the drawer (its own --bg-side). Elsewhere the desktop, a tint's
+   gradient or a scene shows through the rail, which no colour matches: there the heading scrolls with its rows. */
+:root[data-glass="solid"]:not([data-tint="ocean"], [data-tint="accent"], [data-themed="scene"]) .sgroup-head,
+[data-rail="overlay"] .sgroup-head {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: linear-gradient(var(--rail-shade), var(--rail-shade)), var(--win-tint);
+}
+
+[data-rail="overlay"] .sgroup-head {
     background: var(--bg-side);
 }
 

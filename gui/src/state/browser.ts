@@ -81,7 +81,7 @@ function changed(id: string, state: BrowserState) {
     if (!agentOpened(before, state) || shown().has(id)) return;
     setUnseen(id, true);
     // Told of where it happens, only in the session on screen: not pulled to it.
-    if (app.activeId === id) toast("The agent opened a page in the browser.", "info", { label: "Show", run: showBrowser });
+    if (app.activeId === id) toast("The agent opened a page", "info", { label: "Show", run: showBrowser });
 }
 
 rpc.onEvent((e) => {

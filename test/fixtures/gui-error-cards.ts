@@ -285,7 +285,7 @@ function providerRow(info: Record<string, any>, handler: (method: string, params
                 failed(e);
                 return false;
             }
-            toasts.push([`Using your ${pr.agentCli?.plan ?? pr.name} through ${pr.name} (${r.description})`, "success"]);
+            toasts.push([`Using your ${pr.agentCli?.plan ?? pr.name}`, "success"]);
             if (r.warning) toasts.push([r.warning, "warn"]);
             return true;
         },
@@ -340,7 +340,7 @@ test("a CLI row that can't connect says why on the row, copies the command, and 
         await settle();
         expect(has(r.row(), "err")).toBe(false);
         expect(byClass(r.root, "prov-err-line")).toHaveLength(0);
-        expect(r.toasts.at(-1)).toEqual(["Using your ChatGPT plan through Codex (Signed in with ChatGPT)", "success"]);
+        expect(r.toasts.at(-1)).toEqual(["Using your ChatGPT plan", "success"]);
         expect(r.reported).toEqual([]);
     } finally {
         r.dispose();

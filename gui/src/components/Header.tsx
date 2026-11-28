@@ -138,8 +138,8 @@ export function RailButtons() {
 
 export function Crumb(p: { children: JSX.Element; onClick?: () => void; title?: string }) {
     return (
-        <Show when={p.onClick} fallback={<span class="main-project">{p.children}</span>}>
-            <button class="main-project" title={p.title} onClick={p.onClick}>
+        <Show when={p.onClick} fallback={<span class="main-project main-crumb">{p.children}</span>}>
+            <button class="main-project main-crumb" title={p.title} onClick={p.onClick}>
                 {p.children}
             </button>
         </Show>
@@ -358,7 +358,8 @@ export function Header(p: { handle?: SessionHandle; title?: string }) {
                                 <ShieldAlert size={12} /> Untrusted
                             </span>
                         </Show>
-                        <Menu label="Session actions" class="menu" open={menuOpen()} anchor={() => moreBtn} onClose={close} align="end" width={225}>
+                        {/* 244 holds its longest items whole: Find in conversation with its keys, Open project in Finder (reveal). */}
+                        <Menu label="Session actions" class="menu" open={menuOpen()} anchor={() => moreBtn} onClose={close} align="end" width={244}>
                             <For
                                 each={[
                                     { icon: Pencil, label: "Rename", run: () => void (close(), setEditing(true)) },

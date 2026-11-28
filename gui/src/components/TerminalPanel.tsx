@@ -130,8 +130,8 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean; on?: string; 
         setTerminalOpen(true);
     };
     const loginAccount = (provider: string, accountId: string, name: string, server?: string, install?: boolean) => {
-        if (!restored()) return toast("Terminal tabs are reconnecting. Try again in a moment.");
-        if (conn() !== "open" || full()) return toast(install ? "Close a terminal, then try again" : "Connect and close a terminal before signing in", "warn");
+        if (!restored()) return toast("Terminals are reconnecting. Try again.");
+        if (conn() !== "open" || full()) return toast(install ? "Close a terminal, then try again" : "Reconnect or close a terminal first", "warn");
         const id = crypto.randomUUID();
         const tab: Tab = { id, terminal: id, cwd: app.hello?.homeDir ?? "/", number: next++, login: { provider, accountId, name, server, ...(install ? { install } : {}) } };
         terminalAsked();

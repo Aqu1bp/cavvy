@@ -1,7 +1,7 @@
 // Drawn tooltips (gui/src/components/ui/Tooltip.tsx): what they say, their keys as chips, and where they go.
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { keysOf, placeTip, splitTip, tip, TIP_DELAY, TIP_SKIP } from "../gui/src/lib/tip";
+import { FOCUS_KEY_MS, focusFromKeys, keysOf, movesFocus, placeTip, sameBox, splitTip, tip, TIP_DELAY, TIP_SKIP } from "../gui/src/lib/tip";
 
 test("a shortcut in brackets at the end becomes key chips, one per key", () => {
     expect(splitTip("Toggle the sidebar (⌘B)")).toEqual({ label: "Toggle the sidebar", keys: ["⌘", "B"] });
@@ -43,4 +43,32 @@ test("the design's timing, with one set of listeners and nothing left behind", (
     expect(source).toContain("shown.box.remove();");
     expect(source).toContain("shown.gone.disconnect();");
     expect(readFileSync(new URL("../gui/src/main.tsx", import.meta.url), "utf8")).toContain("<Tooltips />");
+});
+
+test("focus shows a tooltip only when a key moved it: Tab, Shift+Tab or an arrow, just now", () => {
+    for (const k of ["Tab", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"]) expect(movesFocus(k)).toBe(true);
+    // Keys that make the app move focus itself (a shortcut opening the drawer, Esc closing a menu) don't count.
+    for (const k of ["Escape", "Enter", " ", "b", "Meta"]) expect(movesFocus(k)).toBe(false);
+    expect(focusFromKeys(1000, 1000)).toBe(true);
+    expect(focusFromKeys(1000, 1000 + FOCUS_KEY_MS)).toBe(true);
+    // A click, or the app's own focus() later on, with no key just before.
+    expect(focusFromKeys(-Infinity, 1000)).toBe(false);
+    expect(focusFromKeys(1000, 1001 + FOCUS_KEY_MS)).toBe(false);
+    const source = readFileSync(new URL("../gui/src/components/ui/Tooltip.tsx", import.meta.url), "utf8");
+    expect(source).toContain("focusFromKeys(keyAt, performance.now())");
+    expect(source).toContain("if (movesFocus(e.key)) keyAt = performance.now();");
+});
+
+test("it hides when its element moves or changes size", () => {
+    const at = { left: 10, top: 20, width: 28, height: 28 };
+    expect(sameBox(at, { ...at })).toBe(true);
+    expect(sameBox(at, { ...at, left: 10.2 })).toBe(true);
+    expect(sameBox(at, { ...at, left: 250 })).toBe(false);
+    expect(sameBox(at, { ...at, top: 40 })).toBe(false);
+    expect(sameBox(at, { ...at, width: 20 })).toBe(false);
+    const source = readFileSync(new URL("../gui/src/components/ui/Tooltip.tsx", import.meta.url), "utf8");
+    // Watched while it shows, let go when it hides; the window resizing hides it too.
+    expect(source).toContain("shown.sized.disconnect();");
+    expect(source).toContain('window.addEventListener("resize", blur);');
+    expect(source).toContain('window.removeEventListener("resize", blur);');
 });

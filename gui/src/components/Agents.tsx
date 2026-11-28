@@ -180,7 +180,7 @@ export function AgentView(p: { handle: SessionHandle; agent: AgentRun }) {
                         </>
                     )}
                 </Show>
-                <span class="bc static current">
+                <span class="crumb-here">
                     <Bot size={14} />
                     <span class="truncate">{a().description || "Sub-agent"}</span>
                 </span>
