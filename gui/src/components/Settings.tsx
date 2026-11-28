@@ -846,12 +846,12 @@ function Providers() {
     // changes as they're changed.
     const listed = createMemo(() => [...serverList()].sort((a, b) => a.name.localeCompare(b.name)));
     onMount(() => {
-        if (machine || !app.hello?.servers) return;
+        if (!machine && !app.hello?.servers) return;
         void serversUi().then((m) => (setServers(() => m), m.refreshServerList())).catch(() => undefined);
     });
-    const withServers = () => !machine && listed().length > 0;
-    // Subscriptions are signed in on each machine: one table across them. Keys go with sync; a server's own local
-    // models are its own.
+    const withServers = () => listed().length > 0;
+    // Subscriptions are signed in on each machine: one table across them, the same in a window on any of them. Keys
+    // go with sync; a server's own local models are its own.
     return (
         <>
             <Show when={withServers()}>
@@ -861,8 +861,8 @@ function Providers() {
                     </Suspense>
                 </Section>
             </Show>
-            <ProviderSections noSubscriptions={withServers()} synced={listed().some((s) => s.syncOn)} />
-            <Show when={withServers()}>
+            <ProviderSections noSubscriptions={withServers()} synced={!machine && listed().some((s) => s.syncOn)} />
+            <Show when={!machine && withServers()}>
                 <For each={listed()}>{(s) => <ServerLocalModels name={s.name} />}</For>
             </Show>
         </>

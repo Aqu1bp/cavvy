@@ -83,8 +83,10 @@ export default function TerminalScreen(p: { tab: Tab; visible: boolean; onClose:
         opened = false;
         attach = true;
         setEnded(`${p.tab.login?.install ? "Install" : p.tab.login ? "Login" : "Shell"} exited (${code})`);
-        // A server's sign-in: the server is asked how it stands now. This machine's own: its account is.
+        // A server's sign-in: the server is asked how it stands now. This machine's own: its account is. Another
+        // machine's (the user's computer, in a window on a server): what shows it reads it again.
         if (p.tab.login?.server) terminalActions.serverSignedIn?.(p.tab.login.server);
+        else if (p.tab.login && link !== rpc) void link.call("accounts.list", { provider: p.tab.login.provider, refresh: true }).then(() => terminalActions.accountsChanged?.()).catch(reportError);
         else if (p.tab.login) void link.call("accounts.list", { provider: p.tab.login.provider, refresh: true }).then(refreshProviders).catch(reportError);
     };
     /** Disconnected from a shell that's still running: it comes back with the connection. */
