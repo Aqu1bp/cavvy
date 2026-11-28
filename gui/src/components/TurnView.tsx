@@ -669,7 +669,7 @@ function TurnViewContent(p: TurnViewProps) {
     const live = () => running() && p.last && p.state.busy;
     const writing = () => live() && p.state.activity?.label === "Writing";
     // The turn's one indicator, at its end: what's under way now (nothing while the answer streams).
-    const line = createMemo(() => (live() ? liveLine({ blocks: p.turn.blocks, activity: p.state.activity, interactions: p.state.interactions, showThinking: prefs.showThinking }) : undefined));
+    const line = createMemo(() => (live() ? liveLine({ blocks: p.turn.blocks, activity: p.state.activity, interactions: p.state.interactions, showThinking: prefs.showThinking, cwd: p.state.cwd, home: app.hello?.homeDir }) : undefined));
     const lastBlockId = () => p.turn.blocks[p.turn.blocks.length - 1]?.id;
     /** The thought being written: the live line shows it, not a row. */
     const liveThought = (b: ThinkingBlock) => line()?.kind === "think" && b.durationMs === undefined && b.id === lastBlockId();
