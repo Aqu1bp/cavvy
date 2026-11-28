@@ -266,14 +266,21 @@ interface GuiStore {
     runs?: RunRecord[];
     /** Sessions started from suggested tasks (tasks.start), by their origin key, newest first: a repeat start finds its session. */
     suggestedTasks?: { key: string; session: string; at: number }[];
-    /** A suggested task's first prompt, refused by a hook after its start was answered: back in its composer when it's opened, until something is said in it. */
-    taskDrafts?: { session: string; text: string; at: number }[];
+    /**
+     * Suggested tasks' sessions whose first prompt a hook refused after the start was answered: listed while nothing is
+     * said in them, and `text`, that prompt, put back in a window's composer until one has it (then dropped).
+     */
+    taskDrafts?: { session: string; text?: string; at: number }[];
+    /** Worktrees a suggested task's start made and then failed, by origin key, with the commit each was left at. */
+    taskWorktrees?: { key: string; path: string; branch: string; commit: string; at: number }[];
 }
 
 /** Started suggested tasks remembered (each one's session also says so, in its file). */
 const MAX_SUGGESTED_TASKS = 500;
 /** Refused first prompts kept for their sessions (GuiStore.taskDrafts). */
 const MAX_TASK_DRAFTS = 20;
+/** Failed starts' worktrees remembered (GuiStore.taskWorktrees). */
+const MAX_TASK_WORKTREES = 50;
 /** How long a suggested task's start waits past its longest UserPromptSubmit hook timeout for their verdict (startTaskOnce). */
 const TASK_VERDICT_MARGIN_MS = 3_000;
 /** And at most: a hook with no timeout set has a longer default (60 s for a command). */
@@ -1133,14 +1140,24 @@ export class Engine {
         for (const s of listAllSessions(limit, { match: (s) => arch.has(s.id) === archived && !this.decidingTasks.has(s.id) })) {
             out.set(s.id, { id: s.id, cwd: s.cwd, projectName: basename(s.cwd) || s.cwd, title: s.title, createdAt: s.createdAt, updatedAt: s.updatedAt, messages: s.messages, status: "idle", pinned: pinned.has(s.id), archived: arch.has(s.id), settled: settled.has(s.id), model: s.model, live: false, run: runs.get(s.id) });
         }
-        // A suggested task's session with only its refused prompt (in its composer): listed, though nothing's said in it.
+        // A suggested task's session with only its refused prompt (in its composer): listed, though nothing's said in it
+        // (the list is cut to `limit` below, as the rest are). One deleted since, or listed as any other now (something
+        // was said in it), is forgotten.
+        const gone: string[] = [];
         for (const d of readStore().taskDrafts ?? []) {
+            if (out.has(d.session)) gone.push(d.session);
             if (out.has(d.session) || this.runtimes.has(d.session) || arch.has(d.session) !== archived) continue;
             const file = findSessionAnywhere(d.session);
             const label = file && sessionLabel(file);
-            if (!label || !label.cwd) continue;
+            if (!label || !label.cwd) {
+                if (!file) gone.push(d.session);
+                continue;
+            }
             out.set(d.session, { id: d.session, cwd: label.cwd, projectName: basename(label.cwd) || label.cwd, title: label.title, createdAt: d.at, updatedAt: d.at, messages: 0, status: "idle", pinned: pinned.has(d.session), archived: arch.has(d.session), settled: settled.has(d.session), live: false });
         }
+        if (gone.length) updateStore((s) => {
+            s.taskDrafts = (s.taskDrafts ?? []).filter((d) => !gone.includes(d.session));
+        });
         for (const rt of this.runtimes.values()) {
             // A suggested task's session is listed while it's loaded, empty too (a refused prompt back in its composer): its card opens it.
             if (rt.guest || this.decidingTasks.has(rt.id) || (!rt.session.messageCount && !rt.busy && !rt.session.meta.suggestedBy) || arch.has(rt.id) !== archived) continue;
@@ -1915,8 +1932,8 @@ export class Engine {
     private refusedTasks = new Set<string>();
     /** Sessions a suggested task's start hasn't decided on yet (startTaskOnce): not listed, shown or notified of. */
     private decidingTasks = new Set<string>();
-    /** Worktrees a suggested task's start made and then failed, by origin key: the next start of it goes on in one still there. */
-    private taskWorktrees = new Map<string, { path: string; branch: string; commit?: string }>();
+    /** The windows each kept refused prompt was sent to (keepRefusedPrompt): each is sent it once. */
+    private taskDraftSent = new Map<string, WeakSet<EngineClient>>();
 
     /** The session a suggested task was started as here (loaded, or saved), by its origin key. */
     taskStartedFor(key: string): { sessionId: string; title: string; cwd: string } | undefined {
@@ -1938,41 +1955,63 @@ export class Engine {
      */
     private keepRefusedPrompt(rt: Runtime, prompt: string) {
         if (!rt.session.keepFile()) this.o.log?.(`suggested task ${rt.id}: couldn't keep its session on disk`);
+        // Kept as a transcript keeps what's said: redacted.
+        const text = redact(prompt);
         updateStore((s) => {
-            s.taskDrafts = [{ session: rt.id, text: prompt, at: Date.now() }, ...(s.taskDrafts ?? []).filter((d) => d.session !== rt.id)].slice(0, MAX_TASK_DRAFTS);
+            s.taskDrafts = [{ session: rt.id, text, at: Date.now() }, ...(s.taskDrafts ?? []).filter((d) => d.session !== rt.id)].slice(0, MAX_TASK_DRAFTS);
         });
-        this.draft(rt, prompt);
+        const sent = new WeakSet<EngineClient>();
+        this.taskDraftSent.set(rt.id, sent);
+        for (const c of this.clients) if (c.subs.has(rt.id)) sent.add(c);
+        this.draft(rt, text);
         this.sessionChanged(rt);
     }
 
-    /** The refused first prompt kept for `rt`, while nothing is said in it; forgotten once something is. */
-    private taskDraftOf(rt: Runtime): string | undefined {
+    /**
+     * The refused first prompt kept for `rt`, for `client` opening it: once to each window (a window reloaded is
+     * another), until a window's box has it (the window keeps it from there: session.draft) or something is said in it.
+     */
+    private taskDraftFor(rt: Runtime, client: EngineClient): string | undefined {
         const d = readStore().taskDrafts?.find((x) => x.session === rt.id);
         if (!d) return undefined;
-        if (!rt.session.messageCount) return d.text;
+        if (rt.session.messageCount) return void this.forgetTaskDraft(rt.id);
+        if (!d.text) return undefined;
+        const sent = this.taskDraftSent.get(rt.id) ?? new WeakSet<EngineClient>();
+        this.taskDraftSent.set(rt.id, sent);
+        if (sent.has(client)) return undefined;
+        sent.add(client);
+        return d.text;
+    }
+
+    /** `delivered`: a window's box has the prompt; the session stays listed (nothing's said in it yet). */
+    private forgetTaskDraft(id: string, delivered = false) {
+        this.taskDraftSent.delete(id);
+        if (!readStore().taskDrafts?.some((x) => x.session === id && (!delivered || x.text !== undefined))) return;
         updateStore((s) => {
-            s.taskDrafts = (s.taskDrafts ?? []).filter((x) => x.session !== rt.id);
+            s.taskDrafts = delivered ? (s.taskDrafts ?? []).map((x) => (x.session === id ? { session: x.session, at: x.at } : x)) : (s.taskDrafts ?? []).filter((x) => x.session !== id);
         });
-        return undefined;
     }
 
     /**
-     * The worktree an earlier failed start of `key` made, to go on in: only while it's there at the commit it was left
-     * at (no commits since), with no changes in it and no session in it (open here, closing, or held by a terminal).
-     * Otherwise forgotten, and a start makes its own.
+     * A worktree a failed start of `key` made, to go on in: the one at `path` (the window's, from that start's answer),
+     * or else the one remembered for `key` (the window lost it: a reload). Only one a start made and remembered, while
+     * it's there at the commit it was left at (no commits since), with no changes in it and no session in it (open
+     * here, closing, or held by a terminal). Otherwise forgotten, and a start makes its own.
      */
-    private async reusableTaskWorktree(key: string): Promise<string | undefined> {
-        const w = this.taskWorktrees.get(key);
+    private async reusableTaskWorktree(key: string, path?: string): Promise<string | undefined> {
+        const all = readStore().taskWorktrees ?? [];
+        const w = path ? all.find((x) => resolve(x.path) === resolve(path) || realPath(x.path) === realPath(path)) : all.find((x) => x.key === key);
         if (!w) return undefined;
         const folders = [...[...this.runtimes.values()].flatMap((r) => r.folders), ...[...this.closingIn.values()].flat(), ...heldSessionFolders()];
         const clean =
-            Boolean(w.commit) &&
             isDir(w.path) &&
             !folders.some(within(w.path)) &&
             (await headOf(w.path)) === w.commit &&
             (await runGitAsync(w.path, ["status", "--porcelain"], 10_000).catch(() => undefined).then((r) => r?.code === 0 && !r.timedOut && !r.stdout.trim()));
         if (clean) return w.path;
-        this.taskWorktrees.delete(key);
+        updateStore((s) => {
+            s.taskWorktrees = (s.taskWorktrees ?? []).filter((x) => x !== w && x.path !== w.path);
+        });
         return undefined;
     }
 
@@ -2042,18 +2081,18 @@ export class Engine {
         await this.checkTaskModel(ref, effort);
         const suggester = origin.machine ? undefined : this.runtimes.get(origin.session);
         const asked = optText(p.resume, "resume", 4096);
-        // The window may have lost the worktree an earlier failed start made (a reload while it ran): this one remembers.
-        const remembered = !asked && p.worktree === true ? await this.reusableTaskWorktree(origin.key) : undefined;
-        const resume = asked ?? remembered;
+        // The worktree the window names (from an earlier failed start's answer), held to the same checks as one this
+        // machine remembers for when the window lost it (a reload while it ran).
+        const resume = asked || p.worktree === true ? await this.reusableTaskWorktree(origin.key, asked) : undefined;
         let made: { path: string; branch: string; commit?: string } | undefined;
-        if (p.worktree === true || resume) {
+        if (p.worktree === true || asked) {
             const top = gitRoot(cwd);
             if (!top) throw new RpcError("This folder isn't in a Git repository, so it can't have a worktree.", "not_git");
             try {
                 const w = resume ? listWorktrees(cwd).find((x) => x.managed && x.exists && x.branch && (resolve(x.path) === resolve(resume) || realPath(x.path) === realPath(resume))) : undefined;
                 if (w) made = { path: w.path, branch: w.branch! };
                 else {
-                    // None asked for, or the one asked for or remembered is gone (removed, or not Cavvy's any more): a new one.
+                    // None asked for, or the one asked for or remembered is gone or can't be gone on in (see reusableTaskWorktree): a new one.
                     const r = await createWorktreeWithHooks({ path: cwd, branch: taskBranch(cwd, taskSlug(title)) }, this.o.log);
                     made = { path: r.path, branch: r.branch, commit: r.commit };
                 }
@@ -2072,7 +2111,13 @@ export class Engine {
         }
         const worktree = made ? { path: made.path, branch: made.branch } : undefined;
         // Kept until a start of it succeeds, with the commit it's at (one gone on in is at the commit it was left at).
-        if (made) this.taskWorktrees.set(origin.key, { ...made, commit: made.commit ?? (await headOf(made.path)) });
+        const commit = made && (made.commit ?? (await headOf(made.path)));
+        if (made && commit) {
+            const entry = { key: origin.key, path: made.path, branch: made.branch, commit, at: Date.now() };
+            updateStore((s) => {
+                s.taskWorktrees = [entry, ...(s.taskWorktrees ?? []).filter((x) => x.key !== origin.key && x.path !== entry.path)].slice(0, MAX_TASK_WORKTREES);
+            });
+        }
         const failed = (e: unknown, sessionId?: string, code?: string): StartTaskResult => {
             const c = code ?? (e instanceof RpcError ? e.code : undefined);
             return { sessionId, title, cwd: there, ...(worktree ? { worktree } : {}), failed: { message: redact((e as Error).message), ...(c ? { code: c } : {}), ...(c === "needs_trust" ? { folder: (e as RpcError).folder ?? there } : {}) } };
@@ -2183,7 +2228,9 @@ export class Engine {
             });
         }
         // A session is in it now: the next start of it is that session's to answer, or makes its own.
-        this.taskWorktrees.delete(origin.key);
+        if (readStore().taskWorktrees?.some((x) => x.key === origin.key)) updateStore((s) => {
+            s.taskWorktrees = (s.taskWorktrees ?? []).filter((x) => x.key !== origin.key);
+        });
         return { sessionId: next.id, title, cwd: there, ...(worktree ? { worktree } : {}) };
     }
 
@@ -3505,8 +3552,8 @@ export class Engine {
                 const since = p.since && typeof p.since === "object" ? (p.since as { epoch?: unknown; seq?: unknown }) : undefined;
                 const resumed = loaded && since && typeof since.epoch === "string" && typeof since.seq === "number" ? rt.resume(since.epoch, since.seq) : undefined;
                 if (resumed) return resumed;
-                // Opened again after it was closed (no window had it): a refused first prompt kept for it goes back in its composer.
-                const kept = loaded ? undefined : this.taskDraftOf(rt);
+                // A refused first prompt kept for it goes back in its composer, in a window that wasn't sent it yet.
+                const kept = this.taskDraftFor(rt, client);
                 if (kept !== undefined) client.send({ type: "draft", sessionId: rt.id, text: kept });
                 // Its earlier turns waited for only when what's asked for reaches them (a first open builds them after).
                 const last = typeof p.last === "number" && Number.isInteger(p.last) && p.last >= 0 ? p.last : undefined;
@@ -3629,6 +3676,8 @@ export class Engine {
             case "session.draft":
                 if (typeof p.present !== "boolean") throw new RpcError("present must be a boolean");
                 this.runtimes.get(str(p.id, "id"))?.setDrafting(p.dialog === true ? dialogOf(client) : client, p.present);
+                // A box has text: a refused prompt kept for it is the window's now (its composer keeps it), not sent again.
+                if (p.present && p.dialog !== true) this.forgetTaskDraft(str(p.id, "id"), true);
                 return null;
             case "session.setFastMode":
                 if (typeof p.enabled !== "boolean") throw new RpcError("enabled must be a boolean");
