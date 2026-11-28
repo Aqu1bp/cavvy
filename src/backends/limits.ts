@@ -168,12 +168,12 @@ function zoned(y: number, mo: number, d: number, h: number, mi: number, zone: st
 }
 
 /**
- * "Nov 24, 8pm (UTC)", "1:59pm (Europe/London)": a reset at most `within` ms from `now` (the window's length; a
+ * "Nov 24, 8pm (UTC)", "Dec 1 at 8pm (UTC)" (Claude Code 2.1.325), "1:59pm (Europe/London)": a reset at most `within` ms from `now` (the window's length; a
  * minute's slack either side), else undefined. A date without a year is the nearest such day; a time alone is the
  * next such time.
  */
 export function usageResetTime(text: string, now: number, within = 7 * 86_400_000): number | undefined {
-    const m = /^(?:([A-Za-z]{3})[a-z]*\.? (\d{1,2}),? )?(\d{1,2})(?::(\d{2}))? ?([ap])\.?m\.?\s*\(([^()]{1,64})\)$/i.exec(text.trim());
+    const m = /^(?:([A-Za-z]{3})[a-z]*\.? (\d{1,2}),? (?:at )?)?(\d{1,2})(?::(\d{2}))? ?([ap])\.?m\.?\s*\(([^()]{1,64})\)$/i.exec(text.trim());
     if (!m) return undefined;
     const [, mon, day, hour, min, ap, zone] = m;
     let h = Number(hour) % 12;

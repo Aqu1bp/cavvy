@@ -457,6 +457,9 @@ describe("Claude Code 2.1.322: windows by model, and /usage", () => {
         // A time alone that has passed today is tomorrow's; a date near the new year is the nearest one.
         expect(usageResetTime("8:30am (UTC)", now)).toBe(Date.UTC(2026, 10, 21, 8, 30));
         expect(usageResetTime("Jan 2, 9am (UTC)", Date.UTC(2026, 11, 30))).toBe(Date.UTC(2027, 0, 2, 9));
+        // As Claude Code 2.1.325 writes a date ("at", no comma): unread, every check without a turn came back empty.
+        expect(usageResetTime("Dec 1 at 8pm (UTC)", Date.UTC(2026, 10, 28))).toBe(Date.UTC(2026, 11, 1, 20));
+        expect(parseClaudeUsage("Current week (all models): 42% used · resets Dec 1 at 8pm (UTC)", Date.UTC(2026, 10, 28))?.windows).toEqual([{ id: "seven_day", label: "Weekly", usedPercent: 42, resetsAt: Date.UTC(2026, 11, 1, 20) }]);
         expect(usageResetTime("Nov 24, 1:30am (Asia/Kolkata)", now)).toBe(Date.UTC(2026, 10, 23, 20, 0));
         expect(usageResetTime("Nov 24, 8pm (Not/AZone)", now)).toBeUndefined();
         expect(usageResetTime("next Tuesday", now)).toBeUndefined();
