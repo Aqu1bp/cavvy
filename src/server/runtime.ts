@@ -1409,6 +1409,18 @@ export class Runtime {
         this.sayKept(`It didn't continue by itself: Cavvy restarted ${MAX_RESTART_RESUMES} times within an hour while it was working. Send a message to go on.`, "warn");
     }
 
+    /**
+     * A turn whose prompt went back to its composer, off the transcript (reopening the session would leave it out: its
+     * prompt wasn't kept), and what it said (why it was refused) kept with the session, shown both now and after.
+     */
+    private withdrawTurn(turnId: string) {
+        const t = this.view.turns.find((x) => x.id === turnId);
+        if (!t) return;
+        this.op({ op: "turn.remove", turnId });
+        for (const b of t.blocks) if (b.t === "notice") this.sayKept(b.text, b.level);
+        this.flush();
+    }
+
     /** A notice that's kept with the session: still there after the next restart. */
     private sayKept(text: string, level: "info" | "warn" | "error") {
         this.session.recordNotice(level, text);
@@ -4405,7 +4417,7 @@ export class Runtime {
     /** `mentionsIn`: the part of `text` the user wrote, whose @mentions attach files and MCP resources (a skill's or an MCP prompt's text is sent as written). */
     /** `goal`: a turn the goal started (src/agent/goal.ts). */
     /** `adopt`: a wake turn its agent CLI started by itself (AgentHost.wake): nothing is sent, the turn takes its events. */
-    async startTurn(text: string, opts: { display?: string; kind?: "prompt" | "command" | "wake"; attachments?: AttachedPart[]; about?: string; mentionsIn?: string; wakes?: Wake[]; goal?: boolean; adopt?: BackendWake; admitted?: { context?: string }; from?: { id: string; title: string }; /** How this prompt's run ended, said before what's queued runs; kept: whether the prompt was stored. */ ran?: (reason: TurnEndReason, kept: boolean) => void; /** Its UserPromptSubmit hooks decided (RunOptions.admission). */ admission?: (blocked?: string) => void } = {}) {
+    async startTurn(text: string, opts: { display?: string; kind?: "prompt" | "command" | "wake"; attachments?: AttachedPart[]; about?: string; mentionsIn?: string; wakes?: Wake[]; goal?: boolean; adopt?: BackendWake; admitted?: { context?: string }; from?: { id: string; title: string }; /** How this prompt's run ended, said before what's queued runs; kept: whether the prompt was stored. True back: the prompt went back to its composer, so its turn comes off the transcript once it ends (as reopening the session would have it), what it said kept with the session. */ ran?: (reason: TurnEndReason, kept: boolean) => boolean | void; /** Its UserPromptSubmit hooks decided (RunOptions.admission). */ admission?: (blocked?: string) => void } = {}) {
         // The user's own turn overtakes a pending goal check, and a paused goal picks up after it. A scheduled prompt
         // leaves a paused goal paused; the resume after a usage limit is the exception, as in Claude Code.
         // A watch's events don't either: they aren't the user's.
@@ -4480,6 +4492,8 @@ export class Runtime {
         if (opts.kind !== "wake" && !this.session.title && !this.titleAsked && this.titleTries < TITLE_TRIES && titleWorthy(about)) void this.generateTitle(about);
 
         let reason: TurnEndReason | undefined;
+        /** The prompt went back to its composer (ran): its turn comes off the transcript once it ends. */
+        let withdraw = false;
         try {
             // An agent CLI (Claude Code, Codex) has its own, with its own git status: Cavvy's is built (git read for it,
             // MCP servers waited for) once a turn goes to a model Cavvy prompts itself.
@@ -4501,7 +4515,7 @@ export class Runtime {
                 if (images.length) this.op({ op: "turn.patch", turnId: turn.id, patch: { prompt: { ...turn.prompt!, ...attachedPrompt(images) } } });
                 const before = this.session.messageCount;
                 reason = await agent.run(parts, { signal: ac.signal, display, kind: opts.kind, ...(opts.adopt ? { adopt: opts.adopt } : {}), admitted: opts.admitted, ...(opts.from ? { from: opts.from } : {}), ...(opts.admission ? { admission: opts.admission } : {}) });
-                opts.ran?.(reason, this.session.messageCount > before);
+                withdraw = opts.ran?.(reason, this.session.messageCount > before) === true;
             }
         } catch (e) {
             const message = `Unexpected error: ${redact((e as Error).message)}`;
@@ -4532,6 +4546,7 @@ export class Runtime {
             this.engine.sessionChanged(this);
             settled();
         }
+        if (withdraw && !this.closed) this.withdrawTurn(turn.id);
         const elapsed = Date.now() - this.turnStartedAt;
         const notify = () => {
             if (reason && reason !== "aborted" && (reason === "error" || elapsed >= notifyAfterMs(this.settings()))) {

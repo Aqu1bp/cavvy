@@ -346,7 +346,7 @@ describe("tasks.start", () => {
         o.taskVerdictMaxMs = 500;
         try {
             const drafts: any[] = [];
-            const watcher = { subs: new Set<string>(), send: (m: any) => m.type === "draft" && drafts.push(m) } as never;
+            const watcher = { subs: new Set<string>(), window: "win-1", send: (m: any) => m.type === "draft" && drafts.push(m) } as never;
             engine.clients.add(watcher);
             const r = (await engine.handle(watcher, "tasks.start", { cwd: folder, title: "Fix it", prompt: `Fix it. ${token}`, model: "mock:mock-opus", origin: { key: "s0#hook-slow", session: "s0", title: "x" } })) as StartTaskResult;
             const n = engine.runtimes.get(r.sessionId!)!;
@@ -378,6 +378,25 @@ describe("tasks.start", () => {
             expect(n.session.messageCount).toBe(0);
             expect(engine.runtimes.get(n.id)).toBe(n);
             expect(((await engine.handle(watcher, "sessions.list", {})) as { id: string }[]).some((x) => x.id === n.id)).toBe(true);
+            // Its transcript: not the refused prompt (it's in the box), only why, as after a restart (below).
+            const shown = (turns: any[]) => ({ prompts: turns.filter((t) => t.prompt).length, notices: turns.flatMap((t) => t.blocks).filter((b: any) => b.t === "notice").map((b: any) => b.text) });
+            await until(() => shown(n.snapshot().turns).prompts === 0);
+            expect(shown(n.snapshot().turns)).toEqual({ prompts: 0, notices: ["Prompt blocked by hook: not today"] });
+            // The window reloaded (a new connection, the same window), the session still loaded: opened, the prompt is
+            // back in its box, once each time (a reload has lost what the last one held, until a box has it).
+            const reloadGot: any[] = [];
+            for (let k = 0; k < 2; k++) {
+                const reloaded = { subs: new Set<string>(), window: "win-1", send: (m: any) => m.type === "draft" && reloadGot.push(m) } as any;
+                engine.clients.add(reloaded);
+                if (k === 0) {
+                    const snap = (await engine.handle(reloaded, "session.open", { id: n.id })) as SessionSnapshot;
+                    expect(shown(snap.turns)).toEqual({ prompts: 0, notices: ["Prompt blocked by hook: not today"] });
+                } else await engine.handle(reloaded, "session.open", { id: n.id });
+                engine.clients.delete(reloaded);
+                reloaded.subs.clear();
+            }
+            expect(reloadGot).toHaveLength(2);
+            expect(reloadGot[0]).toMatchObject({ sessionId: n.id, text: kept });
             // Closed once no window shows it, and after a restart: still listed, and the prompt goes back in its box once
             // to each window (a reload is another), until a window's box has it.
             const win = () => {
@@ -417,6 +436,7 @@ describe("tasks.start", () => {
             const b = win();
             await open(engine, b.w);
             expect(b.got).toEqual([expect.objectContaining({ sessionId: n.id, text: kept })]);
+            expect(shown(engine.runtimes.get(n.id)!.snapshot().turns)).toEqual({ prompts: 0, notices: ["Prompt blocked by hook: not today"] });
             // Its box has it now (the window keeps it): a window opening it later isn't sent it, so a cleared box stays clear.
             await engine.handle(b.w, "session.draft", { id: n.id, present: true });
             await close(engine, b.w);
