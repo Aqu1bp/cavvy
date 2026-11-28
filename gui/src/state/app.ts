@@ -4,7 +4,7 @@
 
 import { batch, createEffect, createRoot, createSignal, untrack } from "solid-js";
 import { createStore, produce, reconcile, unwrap, type SetStoreFunction } from "solid-js/store";
-import { planLimitKey, type PlanLimits } from "@shared/protocol";
+import { planLimitKey, RELAYED_SESSION_METHODS, type PlanLimits } from "@shared/protocol";
 import type { AgentRun, AgentsMore, AppUpdateInfo, GuiSettings, HelloResult, PermissionModeId, ProjectInfo, ProviderInfo, ProviderModels, ServerEvent, SessionOp, SessionResumed, SessionSnapshot, SessionSummary, WireFile } from "@shared/protocol";
 import { applyOp, fromWireLimits, fromWireState, type SessionView } from "@shared/timeline";
 import { servedKey } from "../lib/limits";
@@ -60,6 +60,9 @@ rpc.route = (method, params) => {
     const p = params as { id?: unknown; sessionId?: unknown } | undefined;
     const id = /^(session|browser|simulator)\./.test(method) && typeof p?.id === "string" ? p.id : typeof p?.sessionId === "string" ? p.sessionId : undefined;
     const link = id !== undefined ? away.get(id) : undefined;
+    // What a row offers, while that machine can't be reached: through this computer's Cavvy (OtherMachines.tsx),
+    // which does it at once and sends it there once it's back.
+    if (link && link.state !== "open" && RELAYED_SESSION_METHODS.some((m) => m === method)) return undefined;
     return link ? (link.call as (m: string, p: unknown) => Promise<unknown>)(method, params) : undefined;
 };
 /**

@@ -17,7 +17,7 @@ export interface PendingChange {
     method: (typeof QUEUED)[number];
     params: Record<string, unknown> & { id: string };
 }
-/** Changes waiting for a server that's away: only so many (the oldest go). */
+/** Changes waiting for a server that's away: only so many (past that, another isn't taken). */
 const MAX_PENDING = 1000;
 /** A change the server didn't take for a reason of this machine's (busy, slow): tried again this soon. */
 const PENDING_RETRY_MS = 5000;
@@ -36,13 +36,15 @@ function changed(s: SessionSummary, c: PendingChange): SessionSummary {
     const p = c.params;
     switch (c.method) {
         case "session.rename":
-            return typeof p.title === "string" && p.title.trim() ? { ...s, title: cut(p.title.trim(), 200) } : s;
+            // As the server stores it (cleanTitle, server/runtime.ts).
+            return typeof p.title === "string" && p.title.trim() ? { ...s, title: p.title.replace(/\s+/g, " ").trim().slice(0, 120) } : s;
         case "session.pin":
             return { ...s, pinned: p.pinned === true };
         case "session.settle":
             return { ...s, settled: p.settled === true };
         case "session.archive":
-            return { ...s, archived: p.archived === true };
+            // Archived, a snooze has nothing left to bring back (engine.ts setFlag).
+            return p.archived === true ? { ...s, archived: true, snoozedUntil: undefined } : { ...s, archived: false };
         case "session.neverSettle":
             return p.on === true ? { ...s, neverSettle: true } : { ...s, neverSettle: undefined };
         case "session.snooze":
@@ -305,12 +307,9 @@ export class MachineWatch {
         this.say(this.deleting(id) ? { remove: id } : { session: this.shown(s) });
     }
 
-    /** Done here at once, and sent to the server once it's back (or now, after those before it). */
+    /** Done here at once, and sent to the server once it's back (or now, after those before it), in the order they were made. */
     private queue(c: PendingChange) {
-        // The last word on a thing stands: an earlier one not on its way yet is let go.
-        if (c.method !== "session.delete") this.pending = this.pending.filter((x) => x === this.sending || x.method !== c.method || x.params.id !== c.params.id);
         this.pending.push(c);
-        if (this.pending.length > MAX_PENDING) this.pending.splice(this.pending[0] === this.sending ? 1 : 0, 1);
         this.savePending();
         this.reshow(c.params.id);
         void this.flush();
@@ -340,16 +339,17 @@ export class MachineWatch {
                 took = false;
             }
             this.sending = undefined;
-            this.pending = this.pending.filter((x) => x !== c);
-            this.savePending();
             const id = c.params.id;
             const s = this.sessions.get(id);
             if (took && s) {
-                // What it is there now, without waiting to hear it: the row doesn't go back and forth.
+                // What it is there now, without waiting to hear it: the row doesn't go back and forth. Written down
+                // before the change is let go, so a restart in between can't bring back what was.
                 if (c.method === "session.delete") this.sessions.delete(id);
                 else this.sessions.set(id, changed(s, c));
-                this.keepSoon();
+                this.o.kept?.write([...this.sessions.values()].map((x) => this.resting(x)));
             }
+            this.pending = this.pending.filter((x) => x !== c);
+            this.savePending();
             if (!took || c.method !== "session.delete") this.reshow(id);
         }
     }
@@ -423,6 +423,7 @@ export class MachineWatch {
         // done here now, and there once it's back. Archiving from here never removes a worktree, so there's nothing to ask first.
         const queued = QUEUED.find((m) => m === method);
         if ((queued || method === "session.archiveOffer") && this.sessions.has(id) && (!this.isConnected() || this.pending.length)) {
+            if (queued && this.pending.length >= MAX_PENDING) return Promise.reject(new Error(`${this.name} isn't connected.`));
             if (queued) this.queue({ method: queued, params: { ...params, id } });
             return Promise.resolve(null);
         }

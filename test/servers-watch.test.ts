@@ -407,18 +407,18 @@ test("what a row offers is done here while the server can't be reached, kept thr
     // Undo before it was sent: never deleted there, back in the list.
     expect(await away.call("session.restore", { id: "s3" })).toBeNull();
     expect(away.overview().sessions.map((s) => s.id)).toEqual(["s1", "s3"]);
-    // The last word stands: settled, brought back, settled again is one change; renamed too.
+    // Each change in turn: brought back, settled again, renamed (as the server keeps a title: one line).
     await away.call("session.settle", { id: "s1", settled: false });
     await away.call("session.settle", { id: "s1", settled: true });
-    await away.call("session.rename", { id: "s1", title: "renamed" });
-    expect(away.overview().sessions[0]).toMatchObject({ id: "s1", settled: true, title: "renamed" });
+    await away.call("session.rename", { id: "s1", title: "  re\n named " });
+    expect(away.overview().sessions[0]).toMatchObject({ id: "s1", settled: true, title: "re named" });
     // What needs the server still says it's away; so does a session this machine doesn't list.
     await expect(away.call("session.regenerateTitle", { id: "s1" })).rejects.toThrow("box isn't connected.");
     await expect(away.call("session.settle", { id: "nope", settled: true })).rejects.toThrow("box isn't connected.");
-    expect((pending as { method: string }[]).map((c) => c.method)).toEqual(["session.delete", "session.settle", "session.rename"]);
+    expect((pending as { method: string }[]).map((c) => c.method)).toEqual(["session.settle", "session.delete", "session.settle", "session.settle", "session.rename"]);
     away.stop();
 
-    // The next launch, and the server is back: it takes all three, in order, and the deleted session isn't shown again on the way.
+    // The next launch, and the server is back: it takes them all, in order, and the deleted session isn't shown again on the way.
     const asked: { method: string; params: any }[] = [];
     let refuse = false;
     const srv = Bun.serve({
@@ -438,15 +438,17 @@ test("what a row offers is done here while the server can't be reached, kept thr
     const back = new MachineWatch("box", { reach: async () => ({ status: "connected", url: `ws://127.0.0.1:${srv.port}/ws`, token: "t" }), changed: () => seen.push(back.overview().sessions.map((s) => s.id)), notice: () => {}, kept, pending: store });
     stops.push(() => (back.stop(), void srv.stop(true)));
     back.start();
-    await until("the changes to be sent", () => asked.length === 3 && (pending as unknown[]).length === 0);
+    await until("the changes to be sent", () => asked.length === 5 && (pending as unknown[]).length === 0);
     expect(asked).toEqual([
-        { method: "session.delete", params: { id: "s2" } },
         { method: "session.settle", params: { id: "s1", settled: true } },
-        { method: "session.rename", params: { id: "s1", title: "renamed" } },
+        { method: "session.delete", params: { id: "s2" } },
+        { method: "session.settle", params: { id: "s1", settled: false } },
+        { method: "session.settle", params: { id: "s1", settled: true } },
+        { method: "session.rename", params: { id: "s1", title: "  re\n named " } },
     ]);
     expect(seen.every((ids) => !ids.includes("s2"))).toBe(true);
     expect(back.overview().sessions.map((s) => [s.id, s.settled, s.title])).toEqual([
-        ["s1", true, "renamed"],
+        ["s1", true, "re named"],
         ["s3", false, "s3"],
     ]);
 
