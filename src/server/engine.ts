@@ -1933,7 +1933,7 @@ export class Engine {
     /** Sessions a suggested task's start hasn't decided on yet (startTaskOnce): not listed, shown or notified of. */
     private decidingTasks = new Set<string>();
     /** The windows each kept refused prompt was sent to (keepRefusedPrompt): each is sent it once. */
-    private taskDraftSent = new Map<string, WeakSet<EngineClient>>();
+    private taskDraftSent = new Map<string, { clients: WeakSet<EngineClient>; windows: Set<string> }>();
 
     /** The session a suggested task was started as here (loaded, or saved), by its origin key. */
     taskStartedFor(key: string): { sessionId: string; title: string; cwd: string } | undefined {
@@ -1960,26 +1960,33 @@ export class Engine {
         updateStore((s) => {
             s.taskDrafts = [{ session: rt.id, text, at: Date.now() }, ...(s.taskDrafts ?? []).filter((d) => d.session !== rt.id)].slice(0, MAX_TASK_DRAFTS);
         });
-        const sent = new WeakSet<EngineClient>();
+        const sent = { clients: new WeakSet<EngineClient>(), windows: new Set<string>() };
         this.taskDraftSent.set(rt.id, sent);
-        for (const c of this.clients) if (c.subs.has(rt.id)) sent.add(c);
+        for (const c of this.clients) {
+            if (!c.subs.has(rt.id)) continue;
+            sent.clients.add(c);
+            if (c.window) sent.windows.add(c.window);
+        }
         this.draft(rt, text);
         this.sessionChanged(rt);
     }
 
     /**
-     * The refused first prompt kept for `rt`, for `client` opening it: once to each window (a window reloaded is
-     * another), until a window's box has it (the window keeps it from there: session.draft) or something is said in it.
+     * The refused first prompt kept for `rt`, for `client` opening it: once to each window, until a window's box has it
+     * (the window keeps it from there: session.draft) or something is said in it. Opened afresh, a connection that
+     * wasn't sent it is (a reloaded window has lost what it held); `resumed`, a window back after its connection
+     * dropped still has what it was sent, so it's sent it only if it wasn't, on any of its connections.
      */
-    private taskDraftFor(rt: Runtime, client: EngineClient): string | undefined {
+    private taskDraftFor(rt: Runtime, client: EngineClient, resumed = false): string | undefined {
         const d = readStore().taskDrafts?.find((x) => x.session === rt.id);
         if (!d) return undefined;
         if (rt.session.messageCount) return void this.forgetTaskDraft(rt.id);
         if (!d.text) return undefined;
-        const sent = this.taskDraftSent.get(rt.id) ?? new WeakSet<EngineClient>();
+        const sent = this.taskDraftSent.get(rt.id) ?? { clients: new WeakSet<EngineClient>(), windows: new Set<string>() };
         this.taskDraftSent.set(rt.id, sent);
-        if (sent.has(client)) return undefined;
-        sent.add(client);
+        if (sent.clients.has(client) || (resumed && client.window && sent.windows.has(client.window))) return undefined;
+        sent.clients.add(client);
+        if (client.window) sent.windows.add(client.window);
         return d.text;
     }
 
@@ -1994,13 +2001,14 @@ export class Engine {
 
     /**
      * A worktree a failed start of `key` made, to go on in: the one at `path` (the window's, from that start's answer),
-     * or else the one remembered for `key` (the window lost it: a reload). Only one a start made and remembered, while
+     * or else the one remembered for `key` (the window lost it: a reload). Only one a start of this suggestion made and
+     * remembered (another's is never shared), while
      * it's there at the commit it was left at (no commits since), with no changes in it and no session in it (open
      * here, closing, or held by a terminal). Otherwise forgotten, and a start makes its own.
      */
     private async reusableTaskWorktree(key: string, path?: string): Promise<string | undefined> {
         const all = readStore().taskWorktrees ?? [];
-        const w = path ? all.find((x) => resolve(x.path) === resolve(path) || realPath(x.path) === realPath(path)) : all.find((x) => x.key === key);
+        const w = all.find((x) => x.key === key && (!path || resolve(x.path) === resolve(path) || realPath(x.path) === realPath(path)));
         if (!w) return undefined;
         const folders = [...[...this.runtimes.values()].flatMap((r) => r.folders), ...[...this.closingIn.values()].flat(), ...heldSessionFolders()];
         const clean =
@@ -3551,10 +3559,10 @@ export class Engine {
                 // Open in this window before its connection dropped: only what it missed, when that's all still here.
                 const since = p.since && typeof p.since === "object" ? (p.since as { epoch?: unknown; seq?: unknown }) : undefined;
                 const resumed = loaded && since && typeof since.epoch === "string" && typeof since.seq === "number" ? rt.resume(since.epoch, since.seq) : undefined;
-                if (resumed) return resumed;
                 // A refused first prompt kept for it goes back in its composer, in a window that wasn't sent it yet.
-                const kept = this.taskDraftFor(rt, client);
+                const kept = this.taskDraftFor(rt, client, Boolean(resumed));
                 if (kept !== undefined) client.send({ type: "draft", sessionId: rt.id, text: kept });
+                if (resumed) return resumed;
                 // Its earlier turns waited for only when what's asked for reaches them (a first open builds them after).
                 const last = typeof p.last === "number" && Number.isInteger(p.last) && p.last >= 0 ? p.last : undefined;
                 const budget = typeof p.budget === "number" && p.budget > 0 ? p.budget : undefined;

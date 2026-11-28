@@ -354,7 +354,24 @@ describe("tasks.start", () => {
             expect(r.failed).toBeUndefined();
             expect(drafts).toEqual([]);
             expect(n.busy).toBe(true);
+            // Another window has it open, and its connection drops before the refusal.
+            const away = { subs: new Set<string>(), window: "win-2", send: () => undefined } as any;
+            engine.clients.add(away);
+            const seen = (await engine.handle(away, "session.open", { id: n.id })) as SessionSnapshot;
+            engine.clients.delete(away);
+            away.subs.clear();
             await until(() => drafts.length > 0 && n.idle);
+            // Back (the same window, a new connection, with what it missed): the prompt goes in its box, once.
+            const backGot: any[] = [];
+            for (let k = 0; k < 2; k++) {
+                const back = { subs: new Set<string>(), window: "win-2", send: (m: any) => m.type === "draft" && backGot.push(m) } as any;
+                engine.clients.add(back);
+                const res = (await engine.handle(back, "session.open", { id: n.id, since: { epoch: seen.epoch, seq: seen.seq } })) as any;
+                expect(res.resumed).toBe(true);
+                engine.clients.delete(back);
+                back.subs.clear();
+            }
+            expect(backGot).toEqual([expect.objectContaining({ sessionId: n.id, text: kept })]);
             expect(drafts).toEqual([expect.objectContaining({ sessionId: n.id, text: kept })]);
             expect(readFileSync(join(iso.home, "gui.json"), "utf-8")).not.toContain(token);
             // Empty, but still there for the card to open: loaded and listed.
@@ -525,6 +542,10 @@ describe("tasks.start", () => {
             const w4 = await call<StartTaskResult>("tasks.start", { ...fifth, resume: w3.worktree!.path });
             expect(w4.worktree!.path).not.toBe(w3.worktree!.path);
             expect(engine.runtimes.get(inW3.id)).toBe(inW3);
+            // Another suggestion's start naming it: not shared, a worktree of its own.
+            const sixth = { ...start, origin: { key: "s0#hook-wt6", session: "s0", title: "x" } };
+            const w6 = await call<StartTaskResult>("tasks.start", { ...sixth, resume: w4.worktree!.path });
+            expect(w6.worktree!.path).not.toBe(w4.worktree!.path);
             // A clean one, at its commit, with no session: gone on in.
             const w5 = await call<StartTaskResult>("tasks.start", { ...fifth, resume: w4.worktree!.path });
             expect(w5.worktree).toEqual(w4.worktree);
