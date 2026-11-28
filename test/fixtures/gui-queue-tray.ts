@@ -86,7 +86,7 @@ function setup(opts: { reduced?: boolean; settle?: string; moved?: boolean | "er
     };
     const QueueTab = component(source, "QueueTab", {
         renderer: { ...solid, ...renderer },
-        CirclePause: icon, CornerDownRight: icon, GripVertical: icon, ListEnd: icon, Paperclip: icon, Pencil: icon, X: icon,
+        CornerDownRight: icon, GripVertical: icon, Paperclip: icon, Pencil: icon, Send: icon, X: icon,
         reportError: (e: unknown) => errors.push(e), rpc, toast: (m: string) => toasts.push(m),
         clampDrag, dragTarget, joiningRow, moved, movedAnnouncement, queueRow, settleMs, slotOf, stepTarget, splitComments, plural,
         matchMedia: () => ({ matches: !!opts.reduced }),
@@ -99,7 +99,7 @@ function setup(opts: { reduced?: boolean; settle?: string; moved?: boolean | "er
     const list = all(root).find((n) => n.props.role === "list")!;
     const rows = () => list.children.filter((n) => n.props.role === "listitem");
     const row = (id: number) => rows().find((r) => r.props["data-qid"] === id)!;
-    const number = (id: number) => text(all(row(id)).find((n) => n.tag === "b")!);
+    const number = (id: number) => text(all(row(id)).find((n) => String(n.props.class ?? "").startsWith("queue-n"))!);
     const transform = (id: number) => row(id).props.style?.transform;
     const cls = (id: number) => Object.entries(row(id).props.classList ?? {}).filter(([, on]) => on).map(([k]) => k);
     const status = () => text(all(root).find((n) => n.props.role === "status")!);
