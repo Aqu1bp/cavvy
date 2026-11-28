@@ -61,6 +61,7 @@ function card(o: { machine?: string; cwd?: string; start?: (pick: any) => Promis
     const picker: { props?: any } = {};
     const toggle: { props?: any } = {};
     const starts: any[] = [];
+    const folderAsks: any[] = [];
     const models = [{ ref: "mock:a", provider: "mock", id: "a", name: "A" }, { ref: "mock:b", provider: "mock", id: "b", name: "B" }];
     const icon = () => ({});
     const deps = {
@@ -75,7 +76,10 @@ function card(o: { machine?: string; cwd?: string; start?: (pick: any) => Promis
         machineOf: () => o.machine,
         modelsKnownOn: () => true,
         chooseFolder: async () => undefined,
-        setFolderPickerOpen: () => undefined,
+        setFolderPickerOpen: (ask: any) => {
+            folderAsks.push(ask);
+            ask.then(undefined);
+        },
         tildify: (path: string) => path.replace("/home/me", "~"),
         windowMachine: undefined,
         awayKey: (on: string | undefined) => (on === undefined ? undefined : on),
@@ -118,7 +122,7 @@ function card(o: { machine?: string; cwd?: string; start?: (pick: any) => Promis
     });
     const find = (pred: (n: Node) => boolean) => nodes.find(pred);
     const byClass = (c: string) => find((n) => typeof n.props.class === "string" && n.props.class.split(" ").includes(c));
-    return { nodes, picker, toggle, starts, byClass, problem: () => made.problemOf["s1#call-1"], dispose };
+    return { nodes, picker, toggle, starts, folderAsks, byClass, problem: () => made.problemOf["s1#call-1"], dispose };
 }
 
 test("it starts on the suggesting session's machine and folder, and nothing in it takes focus", () => {
@@ -171,8 +175,32 @@ test("picking another model, or turning New worktree off, clears the last Start'
         expect(c.problem()).toBeDefined();
         c.toggle.props.onChange(false);
         expect(c.problem()).toBeUndefined();
+        // Editing the prompt or the title too (a hook that refused it: its reason goes once it's edited).
+        start();
+        await Bun.sleep(0);
+        expect(c.problem()).toBeDefined();
+        c.byClass("sg-prompt")!.props.onInput({ currentTarget: { value: "It fails, edited" } });
+        expect(c.problem()).toBeUndefined();
+        start();
+        await Bun.sleep(0);
+        expect(c.problem()).toBeDefined();
+        c.byClass("sg-title")!.props.onInput({ currentTarget: { value: "Fix the flaky test, edited" } });
+        expect(c.problem()).toBeUndefined();
     } finally {
         c.dispose();
+    }
+});
+
+test("on a server, the folder picker opens at the card's folder there, or that machine's home when it has none", async () => {
+    for (const [cwd, start] of [["/srv/app", "/srv/app"], ["", "~"]] as const) {
+        const c = card({ machine: "box", cwd });
+        try {
+            c.byClass("sg-folder")!.props.onClick();
+            for (let i = 0; i < 50 && !c.folderAsks.length; i++) await Bun.sleep(1);
+            expect(c.folderAsks[0]?.start).toBe(start);
+        } finally {
+            c.dispose();
+        }
     }
 });
 

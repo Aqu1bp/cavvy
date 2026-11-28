@@ -209,9 +209,10 @@ function Pending(p: { suggestion: SuggestionState; sessionId: string; key: strin
     };
 
     const pickFolder = async () => {
-        const start = cwd() || undefined;
         const at = on();
         const k = awayKey(on());
+        // On another machine with no folder of its own yet: that machine's home (the picker's own start is this one's).
+        const start = cwd() || (k === undefined ? undefined : "~");
         const dir =
             k === undefined
                 ? await chooseFolder({ start, title: "Choose a folder" })
@@ -294,12 +295,12 @@ function Pending(p: { suggestion: SuggestionState; sessionId: string; key: strin
                     aria-label="Title"
                     value={title()}
                     spellcheck={false}
-                    onInput={(e) => (setTitle(e.currentTarget.value), keep({ title: e.currentTarget.value }))}
+                    onInput={(e) => (setTitle(e.currentTarget.value), edited(), keep({ title: e.currentTarget.value }))}
                     // Enter doesn't start it: Start is pressed.
                     onKeyDown={(e) => (e.key === "Enter" ? e.preventDefault() : leave(e))}
                 />
                 <Show when={why()}>{(w) => <div class="sg-why">{w()}</div>}</Show>
-                <textarea class="sg-prompt" aria-label="Prompt" rows={6} value={prompt()} spellcheck={false} onKeyDown={leave} onInput={(e) => (setPrompt(e.currentTarget.value), keep({ prompt: e.currentTarget.value }))} />
+                <textarea class="sg-prompt" aria-label="Prompt" rows={6} value={prompt()} spellcheck={false} onKeyDown={leave} onInput={(e) => (setPrompt(e.currentTarget.value), edited(), keep({ prompt: e.currentTarget.value }))} />
                 <div class="sg-ctl">
                     <ModelPicker
                         open={pickerOpen()}
