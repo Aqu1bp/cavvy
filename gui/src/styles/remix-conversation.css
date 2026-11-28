@@ -649,28 +649,19 @@ span.tool-target {
     pointer-events: none;
 }
 
+/* Under a finished turn: Copy, Fork and when the response came in, always there, the first glyph on the prose's left edge. */
 .turn-foot {
-    position: absolute;
-    top: 100%;
-    left: calc(-7 * var(--sp));
-    z-index: 2;
     display: flex;
+    align-items: center;
     gap: calc(2 * var(--sp));
-    height: calc(22 * var(--sp));
-    margin-top: calc(2 * var(--sp));
-    opacity: 0;
-    transition: opacity 0.12s;
-}
-
-.turn-foot-last {
-    position: static;
     margin: calc(-6 * var(--sp)) 0 calc(-6 * var(--sp)) calc(-7 * var(--sp));
 }
 
-.turn:hover .turn-foot,
-.turn-foot:focus-within,
-.turn-foot-last {
-    opacity: 1;
+.turn-time {
+    margin-left: calc(6 * var(--sp));
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
+    font-variant-numeric: tabular-nums;
 }
 
 .peer {

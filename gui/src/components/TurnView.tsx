@@ -889,16 +889,26 @@ function TurnViewContent(p: TurnViewProps) {
                                 <span class="stopped-line" />
                             </div>
                         </Show>
-                        <div class={`turn-foot ${p.last ? "turn-foot-last" : ""}`}>
+                        <Show when={reply().trim() || (p.onFork && !p.turn.archived) || p.turn.endedAt}>
+                        <div class="turn-foot" data-find-skip>
                             <Show when={reply().trim()}>
-                                <CopyButton text={reply} label="Copy response" words="Copy response" />
+                                <CopyButton text={reply} label="Copy response" />
                             </Show>
                             <Show when={p.onFork && !p.turn.archived}>
-                                <button class="copy-btn" onClick={() => p.onFork?.()}>
-                                    Fork from here
+                                <button class="icon-btn" {...tip("Fork from here")} aria-label="Fork from here" onClick={() => p.onFork?.()}>
+                                    <GitFork size={14} />
                                 </button>
                             </Show>
+                            {/* When the response came in. */}
+                            <Show when={p.turn.endedAt}>
+                                {(at) => (
+                                    <time class="turn-time" dateTime={new Date(at()).toISOString()} {...tip(new Date(at()).toLocaleString())}>
+                                        {promptTime(at())}
+                                    </time>
+                                )}
+                            </Show>
                         </div>
+                        </Show>
                     </Show>
                     <Show when={live()}>
                         <LiveLine state={line()} stop />
