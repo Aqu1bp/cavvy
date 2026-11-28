@@ -837,7 +837,6 @@
 .rv-wt-list .row {
     padding-left: calc(20 * var(--sp));
     padding-right: calc(16 * var(--sp));
-    text-align: left;
 }
 
 .rv-wt-list .row[aria-disabled="true"] {
