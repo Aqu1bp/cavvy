@@ -448,7 +448,7 @@
     white-space: nowrap;
 }
 
-.set-effort .es {
+.set-effort .effort {
     width: calc(120 * var(--sp));
 }
 

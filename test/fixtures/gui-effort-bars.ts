@@ -18,10 +18,12 @@ test("EffortSlider: the knob at the value, a dot per level, hover grows the one 
     try {
         const slider = all(root).find((n) => n.props.role === "slider")!;
         Object.assign(slider, { getBoundingClientRect: () => ({ left: 0, width: 100 }), focus() {}, setPointerCapture() {} });
-        const place = () => Number(slider.props.style["--p"]);
-        const dots = () => all(slider).find((n) => n.props.class === "es-stops")!.children;
-        const lit = () => dots().map((d: Node) => /\bon\b/.test(d.props.class)).filter(Boolean).length;
-        const hovered = () => dots().findIndex((d: Node) => /\bhov\b/.test(d.props.class));
+        // Where the knob is along the track, 0 to 1.
+        const place = () => parseFloat(all(slider).find((n) => n.props.class === "effort-thumb")!.props.style.left) / 100;
+        const dots = () => all(slider).filter((n) => n.props.class === "effort-stop");
+        const lit = () => dots().filter((d: Node) => d.props["data-on"]).length;
+        const hovered = () => dots().findIndex((d: Node) => d.props["data-hov"]);
+        const outer = () => all(root).find((n) => /^effort\b/.test(n.props.class ?? ""))!;
         const press = (k: string) => {
             const e = { ...key(k), prevented: false, preventDefault() { this.prevented = true; }, stopPropagation() {} };
             slider.props.onKeyDown(e);
@@ -34,7 +36,7 @@ test("EffortSlider: the knob at the value, a dot per level, hover grows the one 
         expect(slider.props["aria-valuetext"]).toBe("Medium");
         // Medium is the second of four stops: a third of the way along.
         expect(place()).toBeCloseTo(1 / 3);
-        expect(slider.props.class).not.toContain("unset");
+        expect(outer().props["data-unset"]).toBeUndefined();
         // A dot per level, named; those up to the knob lit.
         expect(dots().map((d: Node) => d.props.title)).toEqual(["Low", "Medium", "High", "Extra high"]);
         expect(lit()).toBe(2);
@@ -52,13 +54,13 @@ test("EffortSlider: the knob at the value, a dot per level, hover grows the one 
         // Click, then drag: it applies as it moves, once per stop; the knob is held while it does.
         pointer("onPointerDown", 60);
         expect(picked).toEqual(["high"]);
-        expect(slider.props.class).toContain("drag");
+        expect(slider.props["data-drag"]).toBe(true);
         pointer("onPointerMove", 70);
         pointer("onPointerMove", 90);
         pointer("onPointerMove", 10);
         pointer("onPointerUp", 10);
         expect(picked).toEqual(["high", "xhigh", "low"]);
-        expect(slider.props.class).not.toContain("drag");
+        expect(slider.props["data-drag"]).toBeUndefined();
         pointer("onPointerMove", 90);
         expect(picked).toEqual(["high", "xhigh", "low"]);
         expect(place()).toBe(0);
@@ -73,7 +75,7 @@ test("EffortSlider: the knob at the value, a dot per level, hover grows the one 
 
         // A value the model doesn't name (its default): an empty track, and it says so.
         setValue(undefined);
-        expect(slider.props.class).toContain("unset");
+        expect(outer().props["data-unset"]).toBe(true);
         expect(place()).toBe(0);
         expect(lit()).toBe(0);
         expect(slider.props["aria-valuenow"]).toBeUndefined();
@@ -163,8 +165,8 @@ test("the model picker's effort: a change the server refuses goes back to the le
             slider().props.onPointerUp({});
         };
         // On the button, after the model's name; and beside the name in the popover, over the slider.
-        const label = () => text(all(root).find((n) => n.props.class === "lbl pick-eff")!).replace(/ effort$/, "");
-        const inPopover = () => text(all(root).find((n) => n.props.class === "mpe-eff")!);
+        const label = () => text(all(root).filter((n) => n.props.class === "bar-dim")[0]!).replace(/ effort$/, "");
+        const inPopover = () => text(all(root).find((n) => n.props.class === "mp-current")!.children.find((n: Node) => n.props.class === "bar-dim")!);
         expect(label()).toBe("medium");
         expect(inPopover()).toBe("medium");
 
