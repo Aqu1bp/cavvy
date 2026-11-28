@@ -79,7 +79,7 @@ test("the bubble's styles: at the right, as wide as its text, its actions over t
 
 test("--bubble is a token in both themes", () => {
     const tokens = css("tokens.css");
-    // A fill laid on the window's glass, so see-through.
-    expect(decl(tokens, '[data-theme="light"]', "--bubble")).toMatch(/^rgba\(255, 255, 255, 0\.\d+\)$/);
-    expect(decl(tokens, '[data-theme="dark"]', "--bubble")).toMatch(/^rgba\(255, 255, 255, 0\.\d+\)$/);
+    // An opaque fill on the sheet, a step off it.
+    expect(decl(tokens, '[data-theme="light"]', "--bubble")).toBe("#efece6");
+    expect(decl(tokens, '[data-theme="dark"]', "--bubble")).toBe("#2a2826");
 });

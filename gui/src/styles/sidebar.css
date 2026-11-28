@@ -39,8 +39,6 @@
     padding-top: var(--win-pad);
     border-radius: 0 var(--r-card) var(--r-card) 0;
     background: var(--rail-float);
-    -webkit-backdrop-filter: blur(30px) saturate(1.6);
-    backdrop-filter: blur(30px) saturate(1.6);
     box-shadow: var(--pop-shadow);
 }
 

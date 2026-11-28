@@ -65,7 +65,7 @@
     bottom: auto;
 }
 
-/* A glass pill (the class is .glass too; this also covers a toast without it). */
+/* An ink pill (the class is .glass too: this comes later, so it wins; it also covers a toast without it). */
 .toast {
     position: relative;
     flex: none;
@@ -74,35 +74,21 @@
     align-items: center;
     gap: calc(10 * var(--sp));
     min-height: calc(36 * var(--sp));
-    max-width: min(460 * var(--sp), 100%);
-    padding: calc(4 * var(--sp)) calc(6 * var(--sp)) calc(4 * var(--sp)) calc(14 * var(--sp));
-    border-radius: calc(18 * var(--sp));
-    background: var(--ctl-strong);
-    -webkit-backdrop-filter: blur(20px) saturate(1.9);
-    backdrop-filter: blur(20px) saturate(1.9);
-    box-shadow: 0 0 0 0.5px var(--ctl-stroke), inset 0 1px 0 var(--ctl-hi), inset 0 -1px 0 var(--ctl-lo), var(--ctl-shadow);
-    color: var(--fg);
+    max-width: min(520 * var(--sp), 100%);
+    padding: calc(5 * var(--sp)) calc(6 * var(--sp)) calc(5 * var(--sp)) calc(14 * var(--sp));
+    border-radius: calc(10 * var(--sp));
+    background: var(--ink);
+    box-shadow: 0 10px 30px -6px rgba(0, 0, 0, 0.35);
+    color: var(--ink-fg);
     font-size: 0.929rem;
-    animation: toast-in 360ms var(--spring);
-}
-
-.toast::before {
-    content: "";
-    position: absolute;
-    inset: 0;
-    border-radius: inherit;
-    background: var(--sheen);
-    pointer-events: none;
-}
-
-.toast > * {
-    position: relative;
+    font-weight: 500;
+    animation: toast-in 200ms var(--ease);
 }
 
 @keyframes toast-in {
     from {
         opacity: 0;
-        transform: translateY(10px) scale(0.96);
+        transform: translateY(6px);
     }
 }
 
@@ -110,23 +96,10 @@
     animation: none;
 }
 
-@media (prefers-reduced-motion: reduce) {
-    .toast {
-        animation: none;
-    }
-}
-
 .toast > svg {
     flex: none;
-    color: var(--fg-2);
-}
-
-.toast.success > svg {
-    color: var(--ok);
-}
-
-.toast.warn > svg {
-    color: var(--warn);
+    color: var(--ink-fg);
+    opacity: 0.7;
 }
 
 /* One line (errors, which need all of theirs, are cards: ErrorCards.tsx). */
@@ -141,36 +114,30 @@
 
 .toast-count {
     flex: none;
-    color: var(--fg-3);
+    color: color-mix(in srgb, var(--ink-fg) 65%, transparent);
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
 }
 
-/* Undo, the saved file's choices: small ghost pills. */
+/* Undo, the saved file's choices: small buttons on the ink. */
 .toast .link-btn {
     flex: none;
     display: inline-flex;
     align-items: center;
-    height: calc(28 * var(--sp));
-    padding: 0 calc(12 * var(--sp));
-    border-radius: var(--pill);
-    background: var(--ctl-strong);
-    box-shadow: inset 0 0 0 0.5px var(--ctl-stroke);
-    color: var(--fg-2);
-    font-size: 0.857rem;
+    height: calc(26 * var(--sp));
+    padding: 0 calc(10 * var(--sp));
+    border-radius: calc(6 * var(--sp));
+    background: color-mix(in srgb, var(--ink-fg) 14%, transparent);
+    color: var(--ink-fg);
+    font-size: 0.929rem;
     font-weight: 600;
     text-decoration: none;
     white-space: nowrap;
-    transition: color 140ms, transform 160ms var(--ease);
 }
 
 .toast .link-btn:hover:not(:disabled) {
-    color: var(--fg);
+    background: color-mix(in srgb, var(--ink-fg) 24%, transparent);
     text-decoration: none;
-}
-
-.toast .link-btn:active:not(:disabled) {
-    transform: scale(0.96);
 }
 
 .toast .link-btn:disabled {
@@ -178,18 +145,18 @@
 }
 
 .toast .icon-btn {
-    flex: none;
-    display: inline-grid;
-    place-items: center;
     width: calc(24 * var(--sp));
     height: calc(24 * var(--sp));
-    border-radius: 50%;
-    color: var(--fg-3);
+    color: color-mix(in srgb, var(--ink-fg) 60%, transparent);
 }
 
 .toast .icon-btn:hover {
-    background: var(--hover);
-    color: var(--fg);
+    background: color-mix(in srgb, var(--ink-fg) 14%, transparent);
+    color: var(--ink-fg);
+}
+
+.toast :focus-visible {
+    outline-color: var(--ink-fg);
 }
 
 /* ---- Errors ------------------------------------------------------------
@@ -255,20 +222,19 @@
 .error-card {
     display: flex;
     align-items: flex-start;
-    gap: calc(11 * var(--sp));
-    padding: calc(13 * var(--sp)) calc(10 * var(--sp)) calc(12 * var(--sp)) calc(14 * var(--sp));
-    border-radius: calc(18 * var(--sp));
-    background-color: var(--ctl-strong);
-    background-image: linear-gradient(color-mix(in srgb, var(--danger) 7%, transparent), color-mix(in srgb, var(--danger) 3%, transparent));
-    box-shadow: 0 0 0 1px color-mix(in srgb, var(--danger) 40%, transparent), inset 0 1px 0 var(--ctl-hi), var(--ctl-shadow);
+    gap: calc(9 * var(--sp));
+    padding: calc(9 * var(--sp)) calc(8 * var(--sp)) calc(9 * var(--sp)) calc(12 * var(--sp));
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--danger) 8%, var(--sheet));
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 26%, transparent);
     color: var(--fg);
-    animation: error-rise 460ms var(--spring);
+    animation: error-rise 200ms var(--ease);
 }
 
 @keyframes error-rise {
     from {
         opacity: 0;
-        transform: translateY(12px) scale(0.98);
+        transform: translateY(6px);
     }
 }
 

@@ -427,7 +427,7 @@ function Appearance() {
                     </Row>
                 </Show>
                 <Show when={!scened()}>
-                    <Row title="Window" desc="How much of your desktop shows through the window and sidebar." changed={prefs.glass !== PREF_DEFAULTS.glass} reset={() => setPrefs("glass", PREF_DEFAULTS.glass)}>
+                    <Row title="Window" desc="How much of your desktop shows through the sidebar." changed={prefs.glass !== PREF_DEFAULTS.glass} reset={() => setPrefs("glass", PREF_DEFAULTS.glass)}>
                         <Segmented
                             size="sm"
                             label="Window"
@@ -442,7 +442,7 @@ function Appearance() {
                     </Row>
                 </Show>
                 <Show when={!prefs.themeId}>
-                    <Row title="Window tint" desc="The color of the glass behind the sidebar." changed={prefs.tint !== PREF_DEFAULTS.tint} reset={() => setPrefs("tint", PREF_DEFAULTS.tint)} class="ap-tint-row">
+                    <Row title="Window tint" desc="The sidebar's color." changed={prefs.tint !== PREF_DEFAULTS.tint} reset={() => setPrefs("tint", PREF_DEFAULTS.tint)} class="ap-tint-row">
                         <div class="ap-tiles ap-tint-tiles" role="group" aria-label="Window tint">
                             <TintTile id="clear" label="Clear" />
                             <TintTile id="ocean" label="Ocean" />

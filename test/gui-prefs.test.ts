@@ -114,7 +114,7 @@ describe("migrating saved appearance", () => {
     }
 
     test("no saved theme: the defaults (system, glass, clear tint, standard)", () => {
-        expect({ ...PREF_DEFAULTS, ...migratePrefs({ fontSize: 15 }) }).toMatchObject({ scheme: "system", glass: "glass", tint: "clear", contrast: "standard", fontSize: 15 });
+        expect({ ...PREF_DEFAULTS, ...migratePrefs({ fontSize: 15 }) }).toMatchObject({ scheme: "system", glass: "solid", tint: "clear", contrast: "standard", fontSize: 15 });
     });
 
     test("today's settings are kept as they are, and migrating twice changes nothing", () => {
@@ -165,7 +165,7 @@ describe("first paint and the app agree", () => {
                 const later = app(stored, dark, storageThrows);
                 expect(early.dataset).toEqual(later.dataset);
                 expect(early.style).toEqual(later.style);
-                expect(later.dataset).toEqual({ theme: dark ? "dark" : "light", scheme: dark ? "dark" : "light", glass: "glass", tint: "clear", contrast: "standard", density: "comfortable", motion: "quick" });
+                expect(later.dataset).toEqual({ theme: dark ? "dark" : "light", scheme: dark ? "dark" : "light", glass: "solid", tint: "clear", contrast: "standard", density: "comfortable", motion: "quick" });
             }
         });
     }
@@ -184,7 +184,7 @@ describe("the app's preferences", () => {
         expect(saved).not.toHaveProperty("theme");
         expect(saved).not.toHaveProperty("lightTheme");
         expect(saved).not.toHaveProperty("darkTheme");
-        expect(saved).toMatchObject({ scheme: "dark", contrast: "high", glass: "glass", sidebar: false });
+        expect(saved).toMatchObject({ scheme: "dark", contrast: "high", glass: "solid", sidebar: false });
         expect(later.dataset).toMatchObject({ theme: "dark", contrast: "high" });
     });
 

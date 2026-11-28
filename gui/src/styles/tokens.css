@@ -1,26 +1,26 @@
 /* Design tokens. Every colour in the app comes from here. Two palettes,
    light and dark ([data-theme], with [data-scheme] kept in sync).
 
-   The whole window is one pane of glass: macOS's own material in the app, a
-   calm gradient in a browser, with --win-tint laid over it. Nothing opaque
-   lies on it. What's on the glass:
-   1. Text and rows, straight on it: the rail, the title, the conversation.
-   2. Cards (--card, .card-surface in base.css): a faint lighter fill with a
-      hairline, for what belongs together: a run of tool calls, what you
-      said, a request, the composer. No blur: the window's material is the
-      glass, a card only lifts off it.
-   3. Wells (--well): a darker inset inside a card, for code and diffs.
-   4. What floats over everything (menus, popovers, dialogs, toasts: .glass,
-      --ctl) is the one place with a backdrop blur, as it's only there a moment.
+   The window is two opaque surfaces, as in the remix design:
+   1. The rail (the sidebar, Settings' sections) on the window's ground:
+      --win-tint, with --win-wash (Settings → Window tint) over it. Glass and
+      Tinted let the desktop show through it (macOS's material in the app, a
+      calm gradient in a browser); Solid doesn't.
+   2. The sheet beside it (--sheet-bg): the conversation, the side panel and
+      the terminal. Opaque whatever the Window setting; over a theme's scene
+      it's clear, and the scene's veil is its ground.
+   On them: cards (--card, .card-surface in base.css), a white surface with a
+   hairline, for what belongs together; wells (--well) for code and diffs;
+   and what floats for a moment (menus, popovers, dialogs, toasts: --ctl,
+   --ctl-strong), opaque, with the pop shadow. Nothing has a backdrop blur.
    The one filled control is ink (--ink): the primary button, Send.
 
-   --sheet is the window's colour as an opaque stand-in, for the few things
-   that have to cover what's under them, and for Solid.
+   --sheet is the sheet's colour, always opaque, for what must cover what's
+   under it.
 
-   Settings → Appearance adds [data-glass="glass"|"tinted"|"solid"] (how much
-   of the desktop shows through), [data-tint="clear"|"ocean"|"accent"] (the
-   colour washed over the window), [data-contrast="high"], [data-accent],
-   [data-density] and [data-motion].
+   Settings → Appearance adds [data-glass="glass"|"tinted"|"solid"],
+   [data-tint="clear"|"ocean"|"accent"], [data-contrast="high"],
+   [data-accent], [data-density] and [data-motion].
 
    Syntax colours are variables too (Shiki's css-variables theme), so code
    re-themes instantly without re-highlighting.
@@ -28,8 +28,10 @@
    Text colours are checked against WCAG AA by test/contrast.test.ts. */
 
 :root {
-    --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter Variable", "Inter", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
-    --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, "JetBrains Mono Variable", "JetBrains Mono", Consolas, monospace;
+    --font-ui: "Geist Variable", -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+    --font-mono: "Geist Mono Variable", ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    /* Headings that are a page's or a screen's title: the new session's question, Settings' page names. */
+    --font-display: "Instrument Serif", "Iowan Old Style", Georgia, serif;
     /* The mockup's names for the same stacks. */
     --font: var(--font-ui);
     --mono: var(--font-mono);
@@ -44,21 +46,24 @@
        hairlines and shadows. */
     --sp: calc(1px * var(--font-scale));
 
-    /* Shape rule: cards 14px, wells and rows 10px, every control is a full pill. */
+    /* Type: the UI's text is 13 at text size 14 (body, base.css), the conversation's 14.5, code 12.5. */
+    --chat-size: 1.036rem;
+    --code-size: 0.893rem;
+
+    /* Shape: cards 10, wells and rows 8, controls 8 (--pill, the name from when they were full pills), menus 10,
+       dialogs 12. --round is a full capsule: switches, bars, counts. */
     --r-window: 16px;
     --r-sheet: 12px;
-    --r-card: calc(14 * var(--sp));
-    --r-well: calc(10 * var(--sp));
-    --r-row: calc(9 * var(--sp));
-    --pill: 999px;
+    --r-card: calc(10 * var(--sp));
+    --r-well: calc(8 * var(--sp));
+    --r-row: calc(8 * var(--sp));
+    --pill: calc(8 * var(--sp));
+    --round: 999px;
 
-    --radius-xs: calc(6 * var(--sp));
-    --radius-sm: calc(8 * var(--sp));
-    --radius-md: calc(10 * var(--sp));
-    --radius-lg: calc(14 * var(--sp));
-    --radius-xl: calc(18 * var(--sp));
-    --radius-2xl: calc(22 * var(--sp));
-    --radius-card: calc(14 * var(--sp));
+    --radius-sm: calc(6 * var(--sp));
+    --radius-md: calc(8 * var(--sp));
+    --radius-lg: calc(12 * var(--sp));
+    --radius-2xl: calc(12 * var(--sp));
 
     --gutter: 8px;
     --sidebar-w: 260px;
@@ -72,12 +77,13 @@
        traffic lights (desktop/src-tauri/tauri.conf.json, trafficLightPosition),
        the rail's two buttons and the title bar all sit on it. Fixed: the
        lights don't move with the density, so a shorter title bar keeps it too. */
-    --top-line: 34px;
+    --top-line: 26px;
     --row-h: calc(34 * var(--sp));
     --gap: 1;
 
-    --ease: cubic-bezier(0.22, 1, 0.36, 1);
-    --spring: cubic-bezier(0.34, 1.3, 0.5, 1);
+    --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+    /* Was an overshoot; the design's motion is one plain ease. */
+    --spring: var(--ease);
     /* Panels moving and resizing (Settings → Panel animations). */
     --dur: 380ms;
     --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
@@ -142,210 +148,224 @@
 :root,
 [data-theme="light"] {
     color-scheme: light;
-    --win-tint: rgba(244, 244, 246, 0.8);
-    --win-stroke: rgba(0, 0, 0, 0.22);
-    --win-hi: rgba(255, 255, 255, 0.7);
+    /* The rail's ground: the design's #f4f2ee, over the desktop as much as Settings → Window lets it show. */
+    --win-tint: rgba(244, 242, 238, 0.8);
     /* A browser has no desktop behind it: this stands in for one. */
     --backdrop:
         radial-gradient(60% 55% at 15% 10%, #f3dccb 0%, transparent 62%),
         radial-gradient(55% 60% at 88% 18%, #d3dff3 0%, transparent 64%),
         radial-gradient(70% 60% at 60% 100%, #e9d6d9 0%, transparent 66%),
         linear-gradient(160deg, #efe6df, #d9e1ee);
+    /* A theme without a scene shades its rail off its sheet (src/themes/palette.ts); this palette's rail has its own colour. */
+    --rail-shade: transparent;
 
-    --sheet: #f3f3f5; /* the window's colour, opaque: only where something must cover what's under it */
-    --sheet-2: rgba(20, 22, 30, 0.05); /* a quiet fill on the glass: chips, fields, a hovered group */
-    --card: rgba(255, 255, 255, 0.6);
-    --card-stroke: rgba(20, 22, 30, 0.08);
-    --card-hi: rgba(255, 255, 255, 0.7);
-    --card-shadow: 0 1px 2px rgba(20, 22, 30, 0.04);
-    --well: rgba(255, 255, 255, 0.7); /* code and diffs, inset in a card */
-    --well-solid: #fbfbfc; /* the same, where it must cover what scrolls under it (a diff's sticky gutter) */
-    --well-stroke: rgba(20, 22, 30, 0.07);
-    --bubble: rgba(255, 255, 255, 0.68); /* what you said, at the right of the conversation */
+    --sheet: #fdfcfa; /* the sheet, opaque */
+    --sheet-bg: var(--sheet); /* the sheet as drawn: clear over a theme's scene */
+    --sheet-2: rgba(29, 28, 26, 0.05); /* a quiet fill: chips, fields, a hovered group */
+    --card: #ffffff;
+    --card-stroke: #e7e3dc;
+    --card-hi: transparent;
+    --card-shadow: 0 1px 2px rgba(29, 28, 26, 0.05);
+    --well: #f7f5f1; /* code and diffs */
+    --well-solid: #f7f5f1; /* the same, where it must cover what scrolls under it (a diff's sticky gutter) */
+    --well-stroke: #ece8e1;
+    --bubble: #efece6; /* what you said */
     --insp-bg: transparent;
-    --term-bg: rgba(255, 255, 255, 0.36);
-    --group: rgba(255, 255, 255, 0.5);
+    --term-bg: transparent;
+    --group: #ffffff;
     --seg-on: #ffffff;
-    --raised: rgba(255, 255, 255, 0.7); /* a piece raised off the glass: the segmented control's thumb, usage cards */
+    --raised: #ffffff; /* a control or piece raised off a surface: a secondary button, a segment's thumb */
     --sheet-shadow: none;
 
-    --ink: #1c1c1f; /* the one filled control: the primary button, Send */
-    --ink-fg: #ffffff;
-    --ink-hover: #36363b;
+    --ink: #1d1c1a; /* the one filled control: the primary button, Send */
+    --ink-fg: #fdfcfa;
+    --ink-hover: #34322e;
 
-    --fg: #17181b;
-    --fg-2: #3f4147;
-    --fg-3: #50535a;
-    --fg-4: #a3a6ad; /* glyphs and rules only: too faint for text */
-    --line: rgba(15, 18, 30, 0.09);
-    --line-strong: rgba(15, 18, 30, 0.17); /* control outlines, rings' tracks */
-    --hover: rgba(15, 18, 30, 0.05);
-    --press: rgba(15, 18, 30, 0.09);
+    --fg: #1d1c1a;
+    --fg-2: #56524c;
+    --fg-3: #5f5b54; /* the design's #8a857c, darkened for AA over every Window and tint */
+    --fg-4: #b0aba2; /* glyphs and rules only: too faint for text */
+    --line: #e7e3dc;
+    --line-strong: #d3cdc3; /* control outlines, rings' tracks */
+    --hover: rgba(29, 28, 26, 0.07);
+    --press: rgba(29, 28, 26, 0.11);
 
-    --ctl: rgba(250, 250, 252, 0.78);
-    --ctl-strong: rgba(250, 250, 252, 0.92);
-    --ctl-stroke: rgba(15, 18, 30, 0.1);
-    --ctl-hi: rgba(255, 255, 255, 0.95);
-    --ctl-lo: rgba(255, 255, 255, 0.35);
-    --ctl-shadow: 0 1px 1px rgba(15, 18, 30, 0.04), 0 10px 28px -10px rgba(15, 18, 30, 0.22);
-    --pop-shadow: 0 0 0 0.5px rgba(15, 18, 30, 0.12), 0 18px 48px -12px rgba(15, 18, 30, 0.3);
+    --ctl: #ffffff;
+    --ctl-strong: #ffffff;
+    --ctl-stroke: rgba(29, 28, 26, 0.07);
+    --ctl-hi: transparent;
+    --ctl-lo: transparent;
+    --ctl-shadow: 0 1px 2px rgba(29, 28, 26, 0.04), 0 6px 20px -8px rgba(29, 28, 26, 0.12);
+    --pop-shadow: 0 0 0 1px rgba(29, 28, 26, 0.07), 0 8px 28px -6px rgba(29, 28, 26, 0.18), 0 2px 6px rgba(29, 28, 26, 0.06);
     --sheen: none;
+    --overlay: rgba(29, 28, 26, 0.32);
 
     --rail-fg: var(--fg);
     --rail-fg-2: var(--fg-2);
-    --rail-sel: rgba(255, 255, 255, 0.66);
-    --rail-sel-stroke: rgba(20, 22, 30, 0.06);
-    --rail-hover: var(--hover);
-    --rail-float: rgba(244, 244, 246, 0.86);
+    --rail-sel: #ffffff;
+    --rail-sel-stroke: rgba(29, 28, 26, 0.06);
+    --rail-hover: rgba(29, 28, 26, 0.06);
+    --rail-float: #f4f2ee;
 
-    --accent: #2a6bff; /* mockup #2b6cff, nudged for AA under white */
+    --accent: #2f55e8;
     --accent-ink: #ffffff;
 
-    --ok: #0b5a30;
+    --ok: #146137;
     /* A session at work, as a word: fixed whatever accent is picked. */
-    --working: #1d4fc4;
-    --warn: #734300;
-    --warn-bg: rgba(255, 179, 64, 0.16);
-    --danger: #9b1c16;
+    --working: #2444c4;
+    --warn: #7b4700;
+    --warn-bg: rgba(217, 138, 11, 0.14);
+    --danger: #a02419;
     /* Usage sources (data colours, not the accent): fixed whatever accent is picked, and checked for
        colour-blind separation as a set in each scheme (all pairs ΔE ≥ 9.2 light, 9.4 dark). */
     --src-claude: #eb6834;
     --src-codex: #2a78d6;
     --src-api: #1baf7a;
-    --add-bg: #e7f6ec;
-    --add-bg-strong: #c9ecd4;
-    --add-fg: #11602f;
-    --del-bg: #fdeeee;
-    --del-bg-strong: #f6d0ce;
-    --del-fg: #9c2622;
-    --find: rgba(255, 196, 0, 0.35);
-    --find-cur: rgba(255, 150, 0, 0.7);
+    --add-bg: #e3f4e9;
+    --add-bg-strong: #d2ecdb;
+    --add-fg: #146137;
+    --del-bg: #fdeae7;
+    --del-bg-strong: #f8d6d1;
+    --del-fg: #a2251a;
+    --find: rgba(217, 138, 11, 0.3);
+    --find-cur: rgba(217, 138, 11, 0.62);
 
-    --syn-keyword: #c2185b;
-    --syn-string: #0b5a2b;
-    --syn-function: #5b3fd0;
-    --syn-comment: #6a6e76; /* mockup #6b7078, nudged for AA */
-    --syn-type: #0b5fb0;
+    --syn-keyword: #a32e8c;
+    --syn-string: #1c7a4a;
+    --syn-function: #2448cf;
+    --syn-comment: #6f6a62; /* the design's #979187, darkened for AA */
+    --syn-type: #0b7480;
 
     --plan: #7c4dff;
     --steer: #7c4dff; /* a message steered into a running turn */
     --auto: #7b3e00;
     --shell: #055b52;
-    --stop: #e5484d;
-    --shadow-sm: 0 1px 2px rgba(15, 18, 30, 0.05);
-    --scrollbar: rgba(15, 18, 30, 0.16);
+    --stop: #c7372a;
+    --shadow-sm: 0 1px 2px rgba(29, 28, 26, 0.05);
+    --scrollbar: rgba(29, 28, 26, 0.18);
 }
 
 /* ---- Dark ------------------------------------------------------------- */
 [data-theme="dark"] {
     color-scheme: dark;
-    --win-tint: rgba(27, 26, 28, 0.76);
-    --win-stroke: rgba(0, 0, 0, 0.6);
-    --win-hi: rgba(255, 255, 255, 0.14);
+    --win-tint: rgba(18, 17, 16, 0.8);
     --backdrop:
         radial-gradient(60% 55% at 15% 10%, #6b4a36 0%, transparent 62%),
         radial-gradient(55% 60% at 88% 18%, #2c3f5e 0%, transparent 64%),
         radial-gradient(70% 60% at 60% 100%, #5a3d36 0%, transparent 66%),
         linear-gradient(160deg, #4a3a30, #20242c);
+    --rail-shade: transparent;
 
-    --sheet: #252426;
-    --sheet-2: rgba(255, 255, 255, 0.06);
-    --card: rgba(255, 255, 255, 0.065);
-    --card-stroke: rgba(255, 255, 255, 0.075);
-    --card-hi: rgba(255, 255, 255, 0.06);
-    --card-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
-    --well: rgba(0, 0, 0, 0.26);
-    --well-solid: #1a191b;
-    --well-stroke: rgba(255, 255, 255, 0.04);
-    --bubble: rgba(255, 255, 255, 0.09);
+    --sheet: #181716;
+    --sheet-bg: var(--sheet);
+    --sheet-2: rgba(237, 235, 231, 0.05);
+    --card: #211f1e;
+    --card-stroke: #2b2927;
+    --card-hi: transparent;
+    --card-shadow: none;
+    --well: #1e1d1b;
+    --well-solid: #1e1d1b;
+    --well-stroke: #2b2927;
+    --bubble: #2a2826;
     --insp-bg: transparent;
-    --term-bg: rgba(0, 0, 0, 0.2);
-    --group: rgba(255, 255, 255, 0.05);
-    --seg-on: rgba(255, 255, 255, 0.16);
-    --raised: rgba(255, 255, 255, 0.05);
+    --term-bg: transparent;
+    --group: #211f1e;
+    --seg-on: #393633;
+    --raised: #2c2a28;
     --sheet-shadow: none;
 
-    --ink: #f5f5f7;
-    --ink-fg: #1a1a1c;
+    --ink: #edebe7;
+    --ink-fg: #181716;
     --ink-hover: #ffffff;
 
-    --fg: #f3f3f5;
-    --fg-2: #d3d5da;
-    --fg-3: #c2c4ca;
-    --fg-4: #74777d; /* glyphs and rules only: too faint for text */
-    --line: rgba(255, 255, 255, 0.08);
-    --line-strong: rgba(255, 255, 255, 0.15);
-    --hover: rgba(255, 255, 255, 0.06);
-    --press: rgba(255, 255, 255, 0.1);
+    --fg: #edebe7;
+    --fg-2: #b5b0a8;
+    --fg-3: #a7a39c; /* the design's #86817a, lightened for AA over every Window and tint */
+    --fg-4: #5f5b55; /* glyphs and rules only: too faint for text */
+    --line: #2b2927;
+    --line-strong: #3d3a37;
+    --hover: rgba(237, 235, 231, 0.07);
+    --press: rgba(237, 235, 231, 0.11);
 
-    --ctl: rgba(48, 47, 50, 0.76);
-    --ctl-strong: rgba(50, 49, 53, 0.92);
-    --ctl-stroke: rgba(255, 255, 255, 0.1);
-    --ctl-hi: rgba(255, 255, 255, 0.1);
-    --ctl-lo: rgba(255, 255, 255, 0.02);
-    --ctl-shadow: 0 1px 1px rgba(0, 0, 0, 0.3), 0 14px 32px -10px rgba(0, 0, 0, 0.55);
-    --pop-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.12), 0 24px 56px -12px rgba(0, 0, 0, 0.6);
+    --ctl: #211f1e;
+    --ctl-strong: #211f1e;
+    --ctl-stroke: rgba(255, 255, 255, 0.08);
+    --ctl-hi: transparent;
+    --ctl-lo: transparent;
+    --ctl-shadow: 0 0 0 1px rgba(255, 255, 255, 0.02), 0 8px 24px -8px rgba(0, 0, 0, 0.5);
+    --pop-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 12px 32px -6px rgba(0, 0, 0, 0.6), 0 2px 8px rgba(0, 0, 0, 0.4);
     --sheen: none;
+    --overlay: rgba(0, 0, 0, 0.55);
 
     --rail-fg: var(--fg);
     --rail-fg-2: var(--fg-2);
-    --rail-sel: rgba(255, 255, 255, 0.1);
-    --rail-sel-stroke: rgba(255, 255, 255, 0.05);
-    --rail-hover: var(--hover);
-    --rail-float: rgba(40, 39, 42, 0.88);
+    --rail-sel: rgba(237, 235, 231, 0.09);
+    --rail-sel-stroke: transparent;
+    --rail-hover: rgba(237, 235, 231, 0.06);
+    --rail-float: #121110;
 
-    --accent: #2a6bff; /* mockup #2b6cff, nudged for AA under white */
-    --accent-ink: #ffffff;
+    --accent: #7b95ff;
+    --accent-ink: #10142a;
 
-    --ok: #74de9d;
-    --working: #8eaefc;
-    --warn: #ffc15c;
-    --warn-bg: rgba(255, 179, 64, 0.13);
-    --danger: #ffb0aa;
+    --ok: #52c48c;
+    --working: #a6b7ff;
+    --warn: #f0b04a;
+    --warn-bg: rgba(240, 176, 74, 0.13);
+    --danger: #ff8372;
     --src-claude: #d95926;
     --src-codex: #3987e5;
     --src-api: #199e70;
-    --add-bg: rgba(46, 160, 67, 0.15);
-    --add-bg-strong: rgba(46, 160, 67, 0.32);
-    --add-fg: #82dd9d;
-    --del-bg: rgba(248, 81, 73, 0.14);
-    --del-bg-strong: rgba(248, 81, 73, 0.3);
-    --del-fg: #ffb1ab;
-    --find: rgba(255, 196, 0, 0.28);
-    --find-cur: rgba(255, 150, 0, 0.46);
+    --add-bg: #172b20;
+    --add-bg-strong: #1c3627;
+    --add-fg: #6fd3a0;
+    --del-bg: #33191a;
+    --del-bg-strong: #40201f;
+    --del-fg: #ff9384;
+    --find: rgba(240, 176, 74, 0.26);
+    --find-cur: rgba(240, 176, 74, 0.4);
 
-    --syn-keyword: #ff8cbc;
-    --syn-string: #8fe0a6;
-    --syn-function: #b9a3ff;
-    --syn-comment: #a6aab1;
-    --syn-type: #6cb6ff;
+    --syn-keyword: #e391d8;
+    --syn-string: #84d6a7;
+    --syn-function: #94a9ff;
+    --syn-comment: #98928a; /* the design's #7a756e, lightened for AA */
+    --syn-type: #68ccd6;
 
     --plan: #a78bfa;
     --steer: #a78bfa;
     --auto: #f0a24a;
     --shell: #5eead4;
-    --stop: #ef4444;
+    --stop: #ff7b69;
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
-    --scrollbar: rgba(255, 255, 255, 0.12);
+    --scrollbar: rgba(255, 255, 255, 0.16);
 }
 
 /* ---- Window (Settings → Appearance) -----------------------------------
-   Tinted lets less of the desktop through; solid none (base.css also drops
-   every backdrop-filter). Cards and wells stay as they are: they're laid
-   over whatever the window is. */
+   How much of the desktop shows through the rail: Glass the most, Tinted a
+   little, Solid none. The sheet, cards and what floats stay opaque. Over
+   the see-through rail the quietest text is a step stronger, to stay
+   readable whatever the desktop shows. */
+[data-glass="glass"][data-theme="light"] {
+    --fg-3: #58554e;
+}
+
+[data-glass="glass"][data-theme="dark"] {
+    --fg-3: #aaa69f;
+}
+
 [data-glass="tinted"][data-theme="light"] {
-    --win-tint: rgba(243, 243, 245, 0.92);
+    --win-tint: rgba(239, 238, 235, 0.94);
 }
 
 [data-glass="tinted"][data-theme="dark"] {
-    --win-tint: rgba(29, 28, 30, 0.92);
+    --win-tint: rgba(25, 24, 23, 0.94);
 }
 
-[data-glass="solid"] {
-    --win-tint: var(--sheet);
-    --ctl: var(--sheet);
-    --ctl-strong: var(--sheet);
-    --rail-float: var(--sheet);
+[data-glass="solid"][data-theme="light"] {
+    --win-tint: #f4f2ee;
+}
+
+[data-glass="solid"][data-theme="dark"] {
+    --win-tint: #121110;
 }
 
 /* ---- Window tint (Settings → Appearance) ------------------------------
@@ -380,11 +400,11 @@
 
 [data-tint="ocean"][data-theme="light"],
 [data-theme="light"] [data-tint="ocean"] {
-    --wash-1: rgba(171, 245, 240, 0.14);
-    --wash-2: rgba(181, 217, 252, 0.14);
-    --wash-3: rgba(155, 194, 252, 0.14);
-    --wash-top: rgba(223, 243, 252, 0.14);
-    --wash-end: rgba(180, 206, 252, 0.14);
+    --wash-1: rgba(171, 245, 240, 0.09);
+    --wash-2: rgba(181, 217, 252, 0.09);
+    --wash-3: rgba(155, 194, 252, 0.09);
+    --wash-top: rgba(223, 243, 252, 0.09);
+    --wash-end: rgba(180, 206, 252, 0.09);
     --tint-backdrop:
         radial-gradient(55% 60% at 80% 10%, #7fe0d6 0%, transparent 60%),
         radial-gradient(60% 60% at 10% 30%, #7aa8ff 0%, transparent 60%),
@@ -394,11 +414,11 @@
 
 [data-tint="ocean"][data-theme="dark"],
 [data-theme="dark"] [data-tint="ocean"] {
-    --wash-1: rgba(13, 56, 56, 0.75);
-    --wash-2: rgba(13, 35, 82, 0.75);
-    --wash-3: rgba(13, 32, 83, 0.75);
-    --wash-top: rgba(13, 27, 36, 0.75);
-    --wash-end: rgba(14, 19, 34, 0.75);
+    --wash-1: rgba(13, 56, 56, 0.5);
+    --wash-2: rgba(13, 35, 82, 0.5);
+    --wash-3: rgba(13, 32, 83, 0.5);
+    --wash-top: rgba(13, 27, 36, 0.5);
+    --wash-end: rgba(14, 19, 34, 0.5);
     --tint-backdrop:
         radial-gradient(55% 60% at 80% 10%, #0f5a57 0%, transparent 60%),
         radial-gradient(60% 60% at 10% 30%, #17336e 0%, transparent 60%),
@@ -410,11 +430,11 @@
    most of it, the ground the least. */
 [data-tint="accent"][data-theme="light"],
 [data-theme="light"] [data-tint="accent"] {
-    --wash-1: color-mix(in srgb, color-mix(in srgb, var(--accent) 18%, #f6f8fc) 14%, transparent);
-    --wash-2: color-mix(in srgb, color-mix(in srgb, var(--accent) 24%, #f6f8fc) 14%, transparent);
-    --wash-3: color-mix(in srgb, color-mix(in srgb, var(--accent) 30%, #f6f8fc) 14%, transparent);
-    --wash-top: color-mix(in srgb, color-mix(in srgb, var(--accent) 10%, #f6f8fc) 14%, transparent);
-    --wash-end: color-mix(in srgb, color-mix(in srgb, var(--accent) 22%, #f6f8fc) 14%, transparent);
+    --wash-1: color-mix(in srgb, color-mix(in srgb, var(--accent) 18%, #f6f8fc) 9%, transparent);
+    --wash-2: color-mix(in srgb, color-mix(in srgb, var(--accent) 24%, #f6f8fc) 9%, transparent);
+    --wash-3: color-mix(in srgb, color-mix(in srgb, var(--accent) 30%, #f6f8fc) 9%, transparent);
+    --wash-top: color-mix(in srgb, color-mix(in srgb, var(--accent) 10%, #f6f8fc) 9%, transparent);
+    --wash-end: color-mix(in srgb, color-mix(in srgb, var(--accent) 22%, #f6f8fc) 9%, transparent);
     --tint-backdrop: linear-gradient(180deg, color-mix(in srgb, var(--accent) 20%, #f6f8fc), color-mix(in srgb, var(--accent) 45%, #f6f8fc));
 }
 
@@ -430,61 +450,65 @@
 
 /* ---- Contrast (Settings → Appearance): stronger text and edges -------- */
 [data-contrast="high"][data-theme="light"] {
-    --fg-3: #3f4248;
-    --line: rgba(15, 18, 30, 0.2);
-    --card-stroke: rgba(15, 18, 30, 0.2);
+    --fg-2: #3f3c37;
+    --fg-3: #4a463f;
+    --line: #cfc9bf;
+    --line-strong: #a39d92;
+    --card-stroke: #cfc9bf;
 }
 
 [data-contrast="high"][data-theme="dark"] {
-    --fg-3: #d2d4da;
-    --line: rgba(255, 255, 255, 0.18);
-    --card-stroke: rgba(255, 255, 255, 0.2);
+    --fg-2: #d2cdc5;
+    --fg-3: #c2bdb5;
+    --line: #47443f;
+    --line-strong: #6c6862;
+    --card-stroke: #47443f;
 }
 
 /* ---- Accents ----------------------------------------------------------
-   Blue is the mockup's, and the default (no data-accent). The other eight
-   keep the app's light and dark values. */
-[data-scheme="light"][data-accent="blue"] { --accent: #2a6bff; }
+   Blue is the design's, and the default (no data-accent). The others are the
+   design's where white reads on them, else darkened until it does. */
+[data-scheme="light"][data-accent="blue"] { --accent: #2f55e8; }
 [data-scheme="light"][data-accent="indigo"] { --accent: #4f46e5; }
 [data-scheme="light"][data-accent="violet"] { --accent: #7c3aed; }
 [data-scheme="light"][data-accent="pink"] { --accent: #c8236c; }
 [data-scheme="light"][data-accent="red"] { --accent: #cd2424; }
 [data-scheme="light"][data-accent="orange"] { --accent: #b8450a; }
-[data-scheme="light"][data-accent="green"] { --accent: #117a37; }
+[data-scheme="light"][data-accent="green"] { --accent: #17703f; }
 [data-scheme="light"][data-accent="teal"] { --accent: #0a776e; }
-[data-scheme="light"][data-accent="graphite"] { --accent: #3f3f46; }
+[data-scheme="light"][data-accent="graphite"] { --accent: #55524c; }
 [data-scheme="light"][data-accent] { --accent-ink: #ffffff; }
 
-[data-scheme="dark"][data-accent="blue"] { --accent: #2a6bff; }
-[data-scheme="dark"][data-accent="indigo"] { --accent: #8b8cf8; }
-[data-scheme="dark"][data-accent="violet"] { --accent: #b18cff; }
-[data-scheme="dark"][data-accent="pink"] { --accent: #f472b6; }
-[data-scheme="dark"][data-accent="red"] { --accent: #f87171; }
-[data-scheme="dark"][data-accent="orange"] { --accent: #fb923c; }
-[data-scheme="dark"][data-accent="green"] { --accent: #4ade80; }
-[data-scheme="dark"][data-accent="teal"] { --accent: #2dd4bf; }
-[data-scheme="dark"][data-accent="graphite"] { --accent: #d4d4d8; }
-[data-scheme="dark"][data-accent] { --accent-ink: #0b0b10; }
-/* After the rule above, so blue keeps the default's white ink. */
-[data-scheme="dark"][data-accent="blue"] { --accent-ink: #ffffff; }
+[data-scheme="dark"][data-accent="blue"] { --accent: #7b95ff; }
+[data-scheme="dark"][data-accent="indigo"] { --accent: #8f8bff; }
+[data-scheme="dark"][data-accent="violet"] { --accent: #a98bff; }
+[data-scheme="dark"][data-accent="pink"] { --accent: #ff7fae; }
+[data-scheme="dark"][data-accent="red"] { --accent: #ff7b69; }
+[data-scheme="dark"][data-accent="orange"] { --accent: #f59e4b; }
+[data-scheme="dark"][data-accent="green"] { --accent: #52c48c; }
+[data-scheme="dark"][data-accent="teal"] { --accent: #45c4c4; }
+[data-scheme="dark"][data-accent="graphite"] { --accent: #b5b0a8; }
+[data-scheme="dark"][data-accent] { --accent-ink: #10142a; }
 
 /* Derived from whichever accent is showing. Accent-coloured text leans
    toward --fg, so it reads on the sheet; hover darkens the fill. */
 :root {
-    --accent-text: color-mix(in srgb, var(--accent) 68%, var(--fg));
+    --accent-text: color-mix(in srgb, var(--accent) 74%, var(--fg));
     --accent-hover: color-mix(in srgb, var(--accent) 88%, #000);
-    --accent-soft: color-mix(in srgb, var(--accent) 12%, transparent);
-    --accent-softer: color-mix(in srgb, var(--accent) 7%, transparent);
+    --accent-soft: color-mix(in srgb, var(--accent) 10%, transparent);
+    --accent-softer: color-mix(in srgb, var(--accent) 6%, transparent);
     --accent-border: color-mix(in srgb, var(--accent) 40%, transparent);
-    --ring: 0 0 0 3px color-mix(in srgb, var(--accent) 28%, transparent);
+    --ring: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
     --warn-soft: color-mix(in srgb, var(--warn) 12%, transparent);
-    --danger-soft: color-mix(in srgb, var(--danger) 11%, transparent);
-    --ok-soft: color-mix(in srgb, var(--ok) 12%, transparent);
+    --danger-soft: color-mix(in srgb, var(--danger) 10%, transparent);
+    --ok-soft: color-mix(in srgb, var(--ok) 11%, transparent);
     --plan-soft: color-mix(in srgb, var(--plan) 12%, transparent);
     --auto-soft: color-mix(in srgb, var(--auto) 12%, transparent);
 }
 
-/* The default blue is a mid tone: as text on dark glass it needs more of --fg. */
+/* In dark, accent text and a hovered fill go lighter, not darker. */
 [data-theme="dark"] {
-    --accent-text: color-mix(in srgb, var(--accent) 40%, var(--fg));
+    --accent-text: color-mix(in srgb, var(--accent) 70%, var(--fg));
+    --accent-hover: color-mix(in srgb, var(--accent) 85%, #fff);
+    --accent-soft: color-mix(in srgb, var(--accent) 12%, transparent);
 }

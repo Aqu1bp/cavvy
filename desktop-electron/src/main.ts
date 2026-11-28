@@ -256,8 +256,8 @@ function createWindow() {
         show: false,
         title: "Cavvy",
         titleBarStyle: "hidden",
-        // The lights' centre on the GUI's --top-line (34px), as the Tauri shell puts them.
-        trafficLightPosition: { x: 18, y: 27 },
+        // The lights' centre on the GUI's --top-line (26px), as the Tauri shell puts them.
+        trafficLightPosition: { x: 18, y: 19 },
         transparent: true,
         backgroundColor: "#00000000",
         // Liquid Glass where macOS has it (added below; Electron's vibrancy would cover it), else the sidebar

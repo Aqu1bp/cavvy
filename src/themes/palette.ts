@@ -92,6 +92,10 @@ export function palette(look: Look, scheme: Scheme, o: PaletteOptions = {}): Pal
         "--backdrop": `linear-gradient(${toHex(B)}, ${toHex(B)})`,
         "--win-hi": dark ? rgba(T, 0.14) : rgba(WHITE, 0.7),
         "--sheet": toHex(B),
+        // The sheet is the theme's colour, opaque, and the rail a shade off it (tokens.css); over a scene both are clear,
+        // and the scene's veil is their ground.
+        "--sheet-bg": scened ? "transparent" : toHex(B),
+        "--rail-shade": scened ? "transparent" : dark ? rgba(BLACK, 0.22) : ink(0.045),
         "--sheet-2": ink(dark ? 0.06 : 0.05),
         "--card": rgba(lift, dark ? 0.07 : 0.6),
         "--card-stroke": ink(o.high ? 0.2 : dark ? 0.08 : 0.08),
@@ -115,14 +119,15 @@ export function palette(look: Look, scheme: Scheme, o: PaletteOptions = {}): Pal
         "--line-strong": ink(dark ? 0.16 : 0.18),
         "--hover": ink(dark ? 0.06 : 0.05),
         "--press": ink(dark ? 0.1 : 0.09),
-        "--ctl": rgba(mix(B, lift, dark ? 0.9 : 0.75), dark ? 0.8 : 0.8),
-        "--ctl-strong": rgba(mix(B, lift, dark ? 0.9 : 0.75), 0.94),
+        // What floats is opaque: nothing is blurred behind it.
+        "--ctl": toHex(mix(B, lift, dark ? 0.935 : 0.4)),
+        "--ctl-strong": toHex(mix(B, lift, dark ? 0.935 : 0.4)),
         "--ctl-stroke": ink(0.1),
         "--ctl-hi": dark ? rgba(T, 0.1) : rgba(WHITE, 0.95),
         "--ctl-lo": dark ? rgba(T, 0.02) : rgba(WHITE, 0.35),
         "--rail-sel": dark ? rgba(T, 0.1) : rgba(WHITE, 0.66),
         "--rail-sel-stroke": ink(dark ? 0.05 : 0.06),
-        "--rail-float": rgba(B, 0.9),
+        "--rail-float": toHex(dark ? mix(B, BLACK, 0.78) : mix(B, T, 0.955)),
         "--scrollbar": ink(dark ? 0.14 : 0.16),
     };
     const text: Rgb[] = [T, fg2, fg3];
