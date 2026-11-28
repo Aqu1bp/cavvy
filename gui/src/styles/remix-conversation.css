@@ -151,11 +151,6 @@
     font-family: var(--font-mono);
 }
 
-:where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .badge-fail {
-    background: var(--red-soft);
-    color: var(--red);
-}
-
 /* ---------- tags ---------- */
 
 :where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .tag {
@@ -225,7 +220,6 @@
 
 .bubble code,
 .md :not(pre) > code,
-.approval-reason code,
 .errcard-detail code {
     padding: calc(1.5 * var(--sp)) calc(5 * var(--sp));
     border-radius: calc(5 * var(--sp));
@@ -308,23 +302,6 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-}
-
-.tools-spinner {
-    color: var(--accent);
-}
-
-.tools-live {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.tools-live-target {
-    font-family: var(--font-mono);
-    font-size: calc(12 * var(--sp));
-    color: var(--text-2);
 }
 
 .tools-count {
@@ -418,42 +395,6 @@ span.tool-target {
     overflow: hidden;
 }
 
-.tool-card-head {
-    display: flex;
-    align-items: center;
-    gap: calc(10 * var(--sp));
-    min-height: calc(32 * var(--sp));
-    padding: 0 calc(12 * var(--sp));
-    border-bottom: 1px solid var(--line);
-    background: var(--code-head);
-    font-size: calc(12 * var(--sp));
-}
-
-.tool-card-head .path {
-    flex: 0 1 auto;
-}
-
-.tool-card-head .link-btn {
-    margin-left: auto;
-}
-
-.tool-card-meta {
-    margin-left: auto;
-    color: var(--text-3);
-    font-size: calc(11.5 * var(--sp));
-    white-space: nowrap;
-}
-
-.tool-note {
-    padding: calc(2 * var(--sp)) 0 calc(2 * var(--sp)) calc(2 * var(--sp));
-    color: var(--text-3);
-    font-size: calc(12.5 * var(--sp));
-}
-
-.tool-note-inset {
-    padding: calc(10 * var(--sp)) calc(12 * var(--sp));
-}
-
 .matches {
     display: flex;
     flex-direction: column;
@@ -471,19 +412,6 @@ span.tool-target {
     white-space: nowrap;
 }
 
-.match-loc {
-    flex: none;
-    color: var(--text);
-}
-
-.match-line {
-    color: var(--text-3);
-}
-
-.match-text {
-    color: var(--text-2);
-}
-
 /* ---------- terminal ---------- */
 
 :where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .term {
@@ -493,29 +421,6 @@ span.tool-target {
     overflow: hidden;
     font-family: var(--font-mono);
     font-size: calc(12.5 * var(--sp));
-}
-
-.term-cmd {
-    display: flex;
-    align-items: flex-start;
-    gap: calc(9 * var(--sp));
-    padding: calc(8 * var(--sp)) calc(6 * var(--sp)) calc(8 * var(--sp)) calc(12 * var(--sp));
-    line-height: calc(22 * var(--sp));
-}
-
-.term-cmd code {
-    flex: 1;
-    min-width: 0;
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-    font-weight: 500;
-}
-
-.term-prompt {
-    flex: none;
-    color: var(--green);
-    font-weight: 600;
-    user-select: none;
 }
 
 .term-out {
@@ -530,27 +435,6 @@ span.tool-target {
     white-space: pre;
     outline-offset: -2px;
 }
-
-.term-muted {
-    color: var(--text-3);
-    font-style: italic;
-}
-
-.term-foot {
-    display: flex;
-    gap: calc(14 * var(--sp));
-    padding: calc(5 * var(--sp)) calc(12 * var(--sp));
-    border-top: 1px solid var(--line);
-    background: var(--code-head);
-    color: var(--text-3);
-    font-size: calc(11.5 * var(--sp));
-}
-
-.term-foot[data-fail] > span:first-child {
-    color: var(--red);
-    font-weight: 500;
-}
-
 
 /* ---------- error, stopped, working ---------- */
 
@@ -572,16 +456,6 @@ span.tool-target {
     color: var(--red);
     font-size: calc(12.5 * var(--sp));
     font-weight: 600;
-}
-
-.errcard-tag {
-    margin-left: auto;
-    padding: calc(2 * var(--sp)) calc(8 * var(--sp));
-    border-radius: calc(999 * var(--sp));
-    background: var(--fill-2);
-    color: var(--text-2);
-    font-size: calc(11.5 * var(--sp));
-    font-weight: 500;
 }
 
 .errcard-what {
@@ -696,40 +570,9 @@ span.tool-target {
     font-size: calc(12 * var(--sp));
 }
 
-
-/* ---------- jump to latest ---------- */
-
-:where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .jump {
-    position: absolute;
-    left: 50%;
-    bottom: calc(14 * var(--sp));
-    display: inline-flex;
-    align-items: center;
-    gap: calc(6 * var(--sp));
-    height: calc(30 * var(--sp));
-    padding: 0 calc(12 * var(--sp)) 0 calc(10 * var(--sp));
-    border-radius: calc(999 * var(--sp));
-    background: var(--surface);
-    box-shadow: var(--shadow-pop);
-    color: var(--text);
-    font-size: calc(12.5 * var(--sp));
-    font-weight: 500;
-    opacity: 0;
-    transform: translate(-50%, 8px);
-    pointer-events: none;
-    transition: opacity 0.16s, transform 0.16s var(--ease);
-}
-
-.jump-show {
-    opacity: 1;
-    transform: translate(-50%, 0);
-    pointer-events: auto;
-}
-
-:where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .jump:hover {
-    background: var(--fill-1);
-}
-
+/* ---------- jump to latest ----------
+   Cavvy's pill (transcript.css .jump): over the composer, which lies over the conversation, and clear of a floating
+   panel; it comes in as it's put in the page. Its look is the design's (below). */
 
 /* Conversation blocks added on top of the base's (.bubble, .md, .tools, .tool-row, .term, .diff, .errcard). */
 
@@ -785,23 +628,6 @@ span.tool-target {
     justify-content: flex-end;
     gap: calc(6 * var(--sp));
     max-width: 82%;
-}
-
-.msg-image {
-    width: calc(148 * var(--sp));
-    height: calc(96 * var(--sp));
-    border-radius: var(--radius-m);
-    overflow: hidden;
-    box-shadow: inset 0 0 0 1px var(--line);
-    background: var(--fill-1);
-}
-
-.msg-image img {
-    display: block;
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-    box-shadow: inset 0 0 0 1px var(--line);
 }
 
 .msg-files {
@@ -930,12 +756,6 @@ span.tool-target {
     font-weight: 500;
 }
 
-.peer-text {
-    font-size: var(--chat-size);
-    line-height: 1.55;
-    white-space: pre-wrap;
-}
-
 .wake {
     display: flex;
     align-items: center;
@@ -993,37 +813,6 @@ span.tool-target {
     color: var(--amber);
 }
 
-.tools-diag {
-    min-width: 0;
-    max-width: calc(300 * var(--sp));
-    height: calc(20 * var(--sp));
-    padding: 0 calc(7 * var(--sp));
-    border-radius: calc(5 * var(--sp));
-    background: var(--amber-soft);
-    color: var(--amber);
-    font-size: calc(11.5 * var(--sp));
-    line-height: calc(20 * var(--sp));
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.tools-thumb {
-    flex: none;
-    width: calc(34 * var(--sp));
-    height: calc(22 * var(--sp));
-    border-radius: calc(4 * var(--sp));
-    overflow: hidden;
-    box-shadow: 0 0 0 1px var(--line-strong);
-}
-
-.tools-thumb img {
-    display: block;
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-}
-
 .tool-target-plain {
     color: var(--text-2);
     font-size: calc(13 * var(--sp));
@@ -1053,14 +842,6 @@ span.tool-target {
     color: var(--text-3);
 }
 
-.tool-card-head .open-editor {
-    margin-right: calc(-6 * var(--sp));
-}
-
-.tool-card-head .link-btn + .open-editor {
-    margin-left: 0;
-}
-
 .tsec + .tsec,
 :where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .diff + .tsec {
     border-top: 1px solid var(--line);
@@ -1075,12 +856,6 @@ span.tool-target {
     color: var(--text-3);
     font-size: calc(11.5 * var(--sp));
     font-weight: 500;
-}
-
-.tsec-text {
-    padding-top: 0;
-    color: var(--text);
-    font-size: calc(13 * var(--sp));
 }
 
 .cmd-text {
@@ -1099,11 +874,6 @@ span.tool-target {
     max-height: calc(300 * var(--sp));
 }
 
-.cmd-more {
-    display: block;
-    padding: 0 calc(12 * var(--sp)) calc(6 * var(--sp));
-}
-
 .cmd-foot {
     display: flex;
     align-items: center;
@@ -1115,11 +885,6 @@ span.tool-target {
     color: var(--text-3);
     font-family: var(--font-ui);
     font-size: calc(11.5 * var(--sp));
-}
-
-.cmd-stop {
-    margin-left: auto;
-    height: calc(22 * var(--sp));
 }
 
 :where(.convo-wrap, .dock, .br-float, .rw, .viewer, .agentview) .pill {
@@ -1142,45 +907,10 @@ span.tool-target {
     color: var(--red);
 }
 
-.diag {
-    display: flex;
-    align-items: flex-start;
-    gap: calc(7 * var(--sp));
-    color: var(--amber);
-}
-
-.diag svg {
-    flex: none;
-    margin-top: calc(3 * var(--sp));
-}
-
-.weblist,
 .todos {
     display: flex;
     flex-direction: column;
     padding: calc(6 * var(--sp)) calc(4 * var(--sp));
-}
-
-.weblist li {
-    display: flex;
-    align-items: baseline;
-    gap: calc(12 * var(--sp));
-    padding: calc(3 * var(--sp)) calc(8 * var(--sp));
-    font-size: calc(12.5 * var(--sp));
-}
-
-.weblist-title {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.weblist-url {
-    flex: none;
-    margin-left: auto;
-    color: var(--text-3);
-    font-size: calc(11.5 * var(--sp));
 }
 
 .shot {
@@ -1189,10 +919,6 @@ span.tool-target {
     border-radius: calc(9 * var(--sp));
     overflow: hidden;
     box-shadow: inset 0 0 0 1px var(--line);
-}
-
-.shot-phone {
-    width: calc(150 * var(--sp));
 }
 
 .shot img {
@@ -1499,10 +1225,6 @@ span.tool-target {
     color: var(--red);
 }
 
-.notice-dim {
-    color: var(--text-3);
-}
-
 .notice-detail {
     margin: calc(4 * var(--sp)) 0 calc(4 * var(--sp)) 1px;
     padding-left: calc(12 * var(--sp));
@@ -1551,11 +1273,6 @@ span.tool-target {
 
 .errcard-limit .errcard-head {
     color: var(--amber);
-}
-
-.resolved-icon {
-    width: calc(16 * var(--sp));
-    height: calc(16 * var(--sp));
 }
 
 /* ---------- rules ---------- */
@@ -1705,25 +1422,6 @@ span.tool-target {
     color: var(--text);
 }
 
-.chg-places {
-    border-top: 1px solid var(--line);
-    padding: calc(4 * var(--sp)) 0;
-}
-
-.chg-place {
-    display: flex;
-    align-items: center;
-    gap: calc(8 * var(--sp));
-    height: calc(28 * var(--sp));
-    padding: 0 calc(14 * var(--sp));
-    font-size: calc(12 * var(--sp));
-}
-
-.chg-place-icon {
-    flex: none;
-    color: var(--glyph-3);
-}
-
 .chg-note {
     display: flex;
     align-items: center;
@@ -1763,24 +1461,6 @@ span.tool-target {
     margin: 0 calc(5 * var(--sp)) 0 calc(4 * var(--sp));
     border-radius: 50%;
     background: var(--amber-strong);
-}
-
-.live-more {
-    display: inline-flex;
-    padding: calc(3 * var(--sp));
-    border-radius: calc(4 * var(--sp));
-}
-
-.live-more:hover {
-    background: var(--fill-2);
-}
-
-.live-out {
-    margin-top: calc(6 * var(--sp));
-    border-top: 0;
-    border-radius: var(--radius-m);
-    background: var(--code-bg);
-    box-shadow: inset 0 0 0 1px var(--line);
 }
 
 /* ---------- top of the column ---------- */
@@ -1998,18 +1678,6 @@ span.tool-target {
 .md-image img {
     display: block;
     width: 100%;
-}
-
-/* A session working out of sight recedes a little. */
-
-.tsec-toggle {
-    width: 100%;
-    justify-content: flex-start;
-    gap: calc(6 * var(--sp));
-}
-
-.tsec-toggle:hover {
-    color: var(--text);
 }
 
 /* Request cards above the message box. One look for all six kinds; amber edge, red for danger. */
@@ -2335,27 +2003,6 @@ span.tool-target {
     line-height: 1.6;
 }
 
-.si-term-line {
-    display: flex;
-    align-items: center;
-    gap: calc(8 * var(--sp));
-}
-
-.si-term-prompt {
-    color: var(--green);
-    font-weight: 600;
-}
-
-.si-term-input {
-    flex: 1;
-    min-width: 0;
-    border: 0;
-    background: none;
-    outline: none;
-    padding: 0;
-    font-size: calc(12 * var(--sp));
-}
-
 /* confirm */
 
 .dock-facts {
@@ -2636,7 +2283,6 @@ pre.si-term:focus-visible {
     font-size: calc(12.5 * var(--sp));
 }
 
-
 /* The design's notes (its kit.css), which the dialog's warnings are. */
 :where(.rw) .note {
     display: flex;
@@ -2719,7 +2365,6 @@ pre.si-term:focus-visible {
     padding: calc(14 * var(--sp)) calc(20 * var(--sp));
 }
 
-
 /* ---------- sub-agent view ---------- */
 
 .agentview {
@@ -2735,28 +2380,6 @@ pre.si-term:focus-visible {
     color: var(--text-3);
     font-size: calc(12.5 * var(--sp));
     white-space: nowrap;
-}
-
-.crumb-link {
-    min-width: 0;
-    padding: calc(2 * var(--sp)) calc(5 * var(--sp));
-    margin: 0 calc(-5 * var(--sp));
-    border-radius: var(--radius-s);
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.crumb-link:hover {
-    background: var(--fill-1);
-    color: var(--text);
-}
-
-.crumb-here {
-    display: inline-flex;
-    align-items: center;
-    gap: calc(8 * var(--sp));
-    color: var(--text);
-    font-weight: 500;
 }
 
 .agentview-note {
@@ -2843,7 +2466,6 @@ pre.si-term:focus-visible {
     background: var(--fill-2);
 }
 
-
 /* ---------- floating browser ---------- */
 
 /* Cavvy's view holds the card and, astride its edges, the grips that resize it (browser.css): the design's card is
@@ -2902,7 +2524,6 @@ pre.si-term:focus-visible {
 .br-float-page:focus-visible {
     outline-offset: -2px;
 }
-
 
 /* ---- the design's one-shot entrances (its base.css) ---- */
 

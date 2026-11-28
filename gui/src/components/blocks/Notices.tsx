@@ -5,7 +5,7 @@
 // that), here is how it's drawn.
 
 import { createEffect, createMemo, createSignal, For, Index, Match, on, onCleanup, onMount, Show, Switch, type JSX } from "solid-js";
-import { AlertCircle, AlertTriangle, BellRing, Check, ChevronRight, CircleCheck, CircleStop, CircleX, Copy, ExternalLink, Goal, Hourglass, Info } from "lucide-solid";
+import { AlertCircle, AlertTriangle, BellRing, ChevronRight, CircleStop, ExternalLink, Hourglass, Info } from "lucide-solid";
 import { stoppedTasksTip, switchMeaning, switchWord, type AccountInfo, type NoticeBlock, type SessionState, type StoppedTask } from "@shared/protocol";
 import { codeRuns, COMPACTED_LABEL, errorParts, isLatestLimitCard, noticeKind, untilLabel, waitingResume, warnParts } from "../../lib/notices";
 import { limitAlternatives, until } from "../../lib/limits";
@@ -72,11 +72,23 @@ function InfoLine(p: { block: NoticeBlock; leaving?: boolean; row?: boolean }) {
                     toggle();
                 }}
             >
-                <span class={`ic ${p.block.source ? "logo" : ""}`} title={p.block.source ? cliName(p.block.source) : undefined}>
-                    <Show when={p.block.source} fallback={p.block.wake ? <BellRing size={13} aria-hidden="true" /> : <GoalOrInfo mark={mark()} />}>
-                        {(s) => <ProviderIcon id={s()} size={13} />}
-                    </Show>
-                </span>
+                {/* A goal's check: the design's mark in words (◎ checking, ✓ met, ✗ not met). */}
+                <Show
+                    when={!p.block.source && !p.block.wake && mark()}
+                    fallback={
+                        <span class={`ic ${p.block.source ? "logo" : ""}`} title={p.block.source ? cliName(p.block.source) : undefined}>
+                            <Show when={p.block.source} fallback={p.block.wake ? <BellRing size={13} aria-hidden="true" /> : <Info size={13} />}>
+                                {(s) => <ProviderIcon id={s()} size={13} />}
+                            </Show>
+                        </span>
+                    }
+                >
+                    {(m) => (
+                        <span class="notice-verdict" data-verdict={m() === "✓" ? "met" : m() === "✗" ? "unmet" : "checking"} aria-hidden="true">
+                            {m()}
+                        </span>
+                    )}
+                </Show>
                 <span class="tx" ref={tx}>
                     <Runs text={text()} />
                 </span>
@@ -90,14 +102,6 @@ function InfoLine(p: { block: NoticeBlock; leaving?: boolean; row?: boolean }) {
                 </p>
             </Show>
         </div>
-    );
-}
-
-function GoalOrInfo(p: { mark?: string }) {
-    return (
-        <Show when={p.mark} fallback={<Info size={14} />}>
-            {(m) => (m() === "◎" ? <Goal size={14} /> : m() === "✓" ? <CircleCheck size={14} /> : <CircleX size={14} />)}
-        </Show>
     );
 }
 

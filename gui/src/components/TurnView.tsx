@@ -1,6 +1,6 @@
 import { RenderBoundary } from "./ui/ErrorBoundary";
 import { createComputed, createEffect, createMemo, createResource, createSignal, For, Index, Match, on, onCleanup, Show, Switch, untrack } from "solid-js";
-import { AlertCircle, AlertTriangle, ArrowUpRight, BellRing, ChevronRight, Clock, CornerDownRight, Folder, FolderGit2, MessageSquareText, Square, ExternalLink, SquareArrowOutUpRight, SquareTerminal } from "lucide-solid";
+import { AlertTriangle, ArrowUpRight, BellRing, ChevronRight, Clock, CornerDownRight, Folder, FolderGit2, MessageSquareText, Square, ExternalLink, SquareTerminal } from "lucide-solid";
 import type { AgentRun, Block, CompactBlock, FileDiff as Diff, ImportedBlock, NoticeBlock, PeerBlock, SessionState, ShellBlock, TextBlock, ThinkingBlock, Turn, TurnPlace } from "@shared/protocol";
 import { basename, firstChangedLine, plural, promptTime, shortPrompt, stripAnsi, tildify } from "../lib/format";
 import { cardShape, incompleteLine, PLACES_SHOWN, placeRows, placesTotal, WHO_NAMED, workers, type OwnPlace } from "../lib/turn-places";
