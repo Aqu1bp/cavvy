@@ -1,8 +1,8 @@
 /* ---- Rail: the sessions --------------------------------------------------
-   The remix design's sidebar (sidebar.css and rail.css there), on Cavvy's
-   markup: the top line with the traffic lights, New session and Search, the
-   list (heads and rows side by side, so the list can hold its order), the
-   servers out of reach, the footer. No row animates on its own. */
+   The remix design's sidebar.css and rail.css, as they are: the rail's rules
+   cascaded into one, px that sit with text as calc(N * var(--sp)), icons on
+   --glyph-3. Cavvy's frame stays (the shell draws the rail's ground and sizes
+   it), and Cavvy's extras are in the same pattern. No row animates on its own. */
 
 .sidebar {
     /* The rail's width: it fills .win-rail's track (shell.css), which keeps it while the column opens and closes. */
@@ -13,7 +13,7 @@
     position: relative;
     min-height: 0;
     min-width: 0;
-    color: var(--rail-fg);
+    color: var(--text);
     user-select: none;
     -webkit-user-select: none;
 }
@@ -22,20 +22,15 @@
 [data-rail="overlay"] .sidebar {
     padding-top: var(--win-pad);
     border-radius: 0 var(--r-card) var(--r-card) 0;
-    background: var(--rail-float);
-    box-shadow: var(--pop-shadow);
+    background: var(--bg-side);
+    box-shadow: var(--shadow-pop);
 }
 
-.sidebar .hb:hover:not(:disabled),
-.sidebar .hb[aria-expanded="true"] {
-    background: var(--hover);
-    color: var(--rail-fg);
-}
-
-/* On the window's top line (--top-line, tokens.css) with the traffic lights and the title bar. */
+/* .sidebar-top: on the window's top line (--top-line) with the traffic lights, 52px at rest. */
 .side-top {
     display: flex;
     align-items: center;
+    justify-content: flex-start;
     gap: 2px;
     height: calc(2 * (var(--top-line) - var(--win-pad, 8px)));
     padding: 0 8px 0 18px;
@@ -70,9 +65,9 @@
     gap: calc(8 * var(--sp));
     height: calc(34 * var(--sp));
     padding: 0 calc(8 * var(--sp)) 0 calc(10 * var(--sp));
-    border-radius: var(--r-row);
-    background: var(--raised);
-    box-shadow: var(--card-shadow), 0 0 0 1px var(--ctl-stroke);
+    border-radius: var(--radius-m);
+    background: var(--surface);
+    box-shadow: var(--shadow-card);
     font-weight: 500;
     transition: background 0.12s;
 }
@@ -82,7 +77,15 @@
 }
 
 .new-session:hover {
-    background: color-mix(in srgb, var(--raised) 94%, var(--fg));
+    background: var(--fill-1);
+}
+
+[data-theme="dark"] .new-session {
+    background: var(--fill-2);
+}
+
+[data-theme="dark"] .new-session:hover {
+    background: var(--fill-3);
 }
 
 .search {
@@ -92,61 +95,64 @@
     width: 100%;
     height: calc(32 * var(--sp));
     padding: 0 calc(8 * var(--sp)) 0 calc(10 * var(--sp));
-    border-radius: var(--r-row);
-    background: var(--rail-hover);
+    border-radius: var(--radius-m);
+    background: color-mix(in srgb, var(--fill-2) 70%, transparent);
+    cursor: pointer;
     text-align: left;
     transition: box-shadow 0.12s, background 0.12s;
 }
 
-.search:hover {
-    background: var(--hover);
+.search:focus-within {
+    background: var(--surface);
+    box-shadow: inset 0 0 0 1px var(--focus), 0 0 0 3px color-mix(in srgb, var(--focus) 18%, transparent);
 }
 
-.search-icon,
-.search-label {
+button.search:hover {
+    background: var(--fill-2);
+}
+
+.search-icon {
     flex: none;
-    color: var(--fg-3);
+    color: var(--glyph-3);
 }
 
 .search-label {
     flex: 1;
-}
-
-.kbd-group {
-    display: inline-flex;
-    gap: calc(2 * var(--sp));
-    flex: none;
+    color: var(--text-3);
 }
 
 /* ---- The list ------------------------------------------------------------ */
 
-.side-list {
+.sidebar-list {
     flex: 1;
     min-height: 0;
-    display: flex;
-    flex-direction: column;
     overflow-y: auto;
     padding: 0 calc(6 * var(--sp)) calc(12 * var(--sp));
     scrollbar-gutter: stable;
+    /* Cavvy: Snoozed and Settled sit at the list's foot, under a gap that takes the room left (.settled-gap). */
+    display: flex;
+    flex-direction: column;
 }
 
-.side-list > * {
-    flex: none;
+.settled-gap {
+    flex: 1 0 0;
 }
 
-/* ---- Heads: Needs you, a day, a project, Snoozed, Settled, Archived ------ */
+/* ---- Groups ------------------------------------------------------------- */
+
+.sgroup + .sgroup {
+    margin-top: calc(6 * var(--sp));
+}
 
 .sgroup-head {
+    position: sticky;
+    top: 0;
+    z-index: 2;
     display: flex;
     align-items: center;
     height: calc(28 * var(--sp));
-    margin-top: calc(6 * var(--sp));
     padding-right: calc(4 * var(--sp));
-}
-
-.sgroup-head:first-child,
-.needs-g:first-child > .sgroup-head {
-    margin-top: 0;
+    background: var(--bg-side);
 }
 
 .sgroup-toggle {
@@ -157,14 +163,14 @@
     min-width: 0;
     height: calc(24 * var(--sp));
     padding: 0 calc(8 * var(--sp)) 0 calc(6 * var(--sp));
-    border-radius: calc(6 * var(--sp));
-    color: var(--fg-3);
-    font-size: 0.857rem;
+    border-radius: var(--radius-s);
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
     font-weight: 500;
 }
 
 .sgroup-toggle:hover {
-    color: var(--rail-fg);
+    color: var(--text);
 }
 
 .sgroup-static {
@@ -173,7 +179,16 @@
 }
 
 .sgroup-static:hover {
-    color: var(--fg-3);
+    color: var(--text-3);
+}
+
+/* Icons keep the design's own grey (--glyph-3); the words take the AA one. */
+.sgroup-toggle > svg {
+    color: var(--glyph-3);
+}
+
+.sgroup-toggle:hover > svg {
+    color: inherit;
 }
 
 .sgroup-chevron {
@@ -181,7 +196,7 @@
     transition: transform 0.14s var(--ease);
 }
 
-.sgroup-toggle[aria-expanded="true"] > .sgroup-chevron {
+.sgroup-chevron[data-open] {
     transform: rotate(90deg);
 }
 
@@ -190,111 +205,99 @@
     margin: 0 -0.5px;
 }
 
-.sgroup-label {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
 .sgroup-label-project {
     font-family: var(--font-mono);
-    font-size: 0.821rem;
+    font-size: calc(11.5 * var(--sp));
     letter-spacing: -0.01em;
-    color: var(--fg-2);
+    color: var(--text-2);
 }
 
 .sgroup-machine {
-    color: var(--fg-3);
-    font-size: 0.821rem;
+    color: var(--text-3);
+    font-size: calc(11.5 * var(--sp));
     white-space: nowrap;
 }
 
 .sgroup-machine::before {
     content: "· ";
-    color: var(--fg-4);
+    color: var(--text-4);
 }
 
 .sgroup-count {
+    color: var(--text-4);
     font-variant-numeric: tabular-nums;
-    color: var(--fg-3);
 }
 
 .sgroup-toggle .dot {
     margin-left: 1px;
 }
 
-/* The amber of the needs-you dots: brighter than --warn, which is set for text. */
-.sidebar .dot.warn,
-.status-dot {
-    background: color-mix(in srgb, var(--warn) 55%, #f5a623);
+.sgroup-add {
+    color: var(--glyph-3);
 }
 
 .sgroup-needs .sgroup-label {
-    color: var(--warn);
+    color: var(--amber);
 }
 
-.sgroup-head .btn.sm {
-    height: calc(22 * var(--sp));
+.sgroup-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
 }
 
 .sgroup-more {
     align-self: flex-start;
     margin: calc(2 * var(--sp)) 0 calc(2 * var(--sp)) calc(34 * var(--sp));
     padding: calc(3 * var(--sp)) 0;
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
     border-radius: calc(4 * var(--sp));
-    color: var(--fg-3);
-    font-size: 0.857rem;
 }
 
 .sgroup-more:hover {
-    color: var(--rail-fg);
+    color: var(--text);
 }
 
-/* Snoozed and Settled sit at the foot of the list: the gap above takes what room is left. */
-.settled-gap {
-    flex: 1 0 0;
-}
-
-.settled-gap + .sgroup-settled,
-.sgroup-archived:not(:first-child) {
-    margin-top: calc(10 * var(--sp));
+.sgroup-settled {
+    margin-top: calc(10 * var(--sp)) !important;
     padding-top: calc(6 * var(--sp));
     border-top: 1px solid var(--line);
-    box-sizing: content-box;
 }
 
-.sgroup-archived:not(:first-child) {
-    margin-top: calc(12 * var(--sp));
+.sgroup-head .btn-sm {
+    height: calc(22 * var(--sp));
 }
 
-/* ---- A session ----------------------------------------------------------- */
+/* ---- Rows ---------------------------------------------------------------- */
 
 .srow {
     position: relative;
     display: flex;
     align-items: center;
-    margin-bottom: 1px;
-    border-radius: var(--r-row);
+    border-radius: var(--radius-m);
     transition: background 0.1s;
 }
 
 .srow:hover,
-.srow.menu-open {
-    background: var(--rail-hover);
+.srow[data-menu-open] {
+    background: color-mix(in srgb, var(--fill-2) 75%, transparent);
 }
 
-/* The open one: raised off the rail. */
-.srow.cur {
-    background: var(--rail-sel);
-    box-shadow: var(--card-shadow), 0 0 0 1px var(--rail-sel-stroke);
+.srow[data-selected] {
+    background: var(--fill-2);
 }
 
-/* In a split, the one beside the open one. */
-.srow.beside {
-    background: var(--sheet-2);
+[data-theme="light"] .srow[data-selected] {
+    background: var(--surface);
+    box-shadow: var(--shadow-card);
 }
 
-.srow.picked {
+.srow[data-beside] {
+    background: color-mix(in srgb, var(--fill-2) 60%, transparent);
+}
+
+.srow[data-picked] {
     background: var(--accent-soft);
     box-shadow: none;
 }
@@ -306,7 +309,7 @@
     flex: 1;
     min-width: 0;
     padding: calc(7 * var(--sp)) calc(10 * var(--sp)) calc(7 * var(--sp)) calc(9 * var(--sp));
-    border-radius: var(--r-row);
+    border-radius: var(--radius-m);
     text-align: left;
 }
 
@@ -331,13 +334,19 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    color: var(--text);
     font-weight: 450;
     line-height: calc(18 * var(--sp));
 }
 
-.srow.cur .srow-title,
-.srow.unread .srow-title {
+.srow[data-selected] .srow-title,
+.srow[data-unread] .srow-title {
     font-weight: 550;
+}
+
+/* A session working out of sight recedes a little. */
+.srow[data-receding] .srow-title {
+    color: var(--text-2);
 }
 
 .srow-sub {
@@ -345,8 +354,8 @@
     align-items: center;
     gap: calc(6 * var(--sp));
     min-width: 0;
-    color: var(--fg-3);
-    font-size: 0.857rem;
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
     line-height: calc(16 * var(--sp));
     white-space: nowrap;
 }
@@ -357,130 +366,88 @@
 }
 
 .srow-provider {
-    flex: none;
+    color: var(--glyph-3);
     filter: grayscale(1);
     opacity: 0.8;
 }
 
 .srow-ask {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    color: var(--warn);
+    color: var(--amber);
     font-weight: 500;
 }
 
-/* When, or how it's doing when that's news (RowEnd's word, by its tone). */
 .srow-meta {
     display: inline-flex;
     align-items: center;
     gap: calc(4 * var(--sp));
     flex: none;
-    color: var(--fg-3);
-    font-size: 0.821rem;
+    color: var(--text-3);
+    font-size: calc(11.5 * var(--sp));
     font-variant-numeric: tabular-nums;
     line-height: calc(18 * var(--sp));
 }
 
-.srow-meta .working {
+.srow-meta[data-tone="working"] {
     color: var(--accent-text);
 }
 
-.srow-meta .done {
-    color: var(--ok);
+.srow-meta[data-tone="done"] {
+    color: var(--green);
     font-weight: 500;
 }
 
-.srow-meta .stopped {
-    color: var(--danger);
+.srow-meta[data-tone="failed"] {
+    color: var(--red);
     font-weight: 500;
 }
 
-.srow-meta .waiting {
-    color: var(--warn);
+.srow-meta[data-tone="needs"] {
+    color: var(--amber);
 }
 
 .srow-pin {
     align-self: center;
-    color: var(--fg-4);
+    color: var(--text-4);
 }
 
-/* Archive and More, at the top line's end while you point at the row: the time gives way, and keeps their room. */
+/* Hover actions sit over the age, on the row's own ground. */
 .srow-actions {
     position: absolute;
     top: calc(4 * var(--sp));
     right: calc(4 * var(--sp));
     display: none;
     gap: 1px;
+    border-radius: var(--radius-s);
+    background: var(--fill-2);
+    box-shadow: -10px 0 8px -2px var(--fill-2);
 }
 
-.srow:is(:hover, .menu-open, :focus-within) .srow-actions {
+.srow:hover .srow-actions,
+.srow[data-menu-open] .srow-actions,
+.srow-actions:focus-within {
     display: flex;
 }
 
-.srow:not(.needs-row):is(:hover, .menu-open, :focus-within) .srow-meta {
+.srow:hover .srow-meta,
+.srow[data-menu-open] .srow-meta,
+.srow:has(.srow-actions:focus-within) .srow-meta {
     visibility: hidden;
-    min-width: calc(48 * var(--sp));
 }
 
-/* Snoozed: when it wakes stays in sight, beside More (Pin is in its menu). */
-.srow.snz:is(:hover, .menu-open, :focus-within) .srow-meta {
+/* Cavvy: snoozed, when it wakes stays in sight beside More (Pin is in its menu). */
+.srow[data-snoozed]:is(:hover, [data-menu-open], :has(.srow-actions:focus-within)) .srow-meta {
     visibility: visible;
-    min-width: 0;
-    padding-right: calc(26 * var(--sp));
+    margin-right: calc(24 * var(--sp));
 }
 
-.srow-slim .srow-actions {
-    top: 50%;
-    transform: translateY(-50%);
+[data-theme="light"] .srow[data-selected] .srow-actions {
+    background: var(--surface);
+    box-shadow: -10px 0 8px -2px var(--surface);
 }
 
-.srow-rename {
-    width: 100%;
-    height: calc(22 * var(--sp));
-    margin: calc(-2 * var(--sp)) 0 calc(-2 * var(--sp)) calc(-5 * var(--sp));
-    padding: 0 calc(4 * var(--sp));
-    border: 0;
-    border-radius: calc(4 * var(--sp));
-    background: var(--card);
-    box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
-    outline: none;
-    font: inherit;
-    font-weight: 500;
-}
-
-/* A row being renamed: the field over its title line. */
-.srow-rename-at {
-    position: absolute;
-    top: calc(5 * var(--sp));
-    left: calc(39 * var(--sp));
-    right: calc(10 * var(--sp));
-}
-
-.srow.renaming :is(.srow-title, .srow-meta, .srow-actions) {
-    visibility: hidden;
-}
-
-.srow-slim .srow-main {
-    padding-top: calc(5 * var(--sp));
-    padding-bottom: calc(5 * var(--sp));
-}
-
-.srow-slim .srow-title {
-    color: var(--fg-2);
-}
-
-.srow-slim .status-icon[data-status] {
-    color: var(--fg-4);
-}
-
-.srow-machine {
-    flex: none;
-    padding: 0 calc(5 * var(--sp));
-    border-radius: calc(4 * var(--sp));
-    background: var(--hover);
-    color: var(--fg-3);
-    font-size: 0.786rem;
-    line-height: calc(16 * var(--sp));
+.srow[data-picked] .srow-actions {
+    background: var(--accent-soft);
+    box-shadow: -10px 0 8px -2px var(--accent-soft);
 }
 
 .srow-pick {
@@ -492,11 +459,61 @@
     height: calc(14 * var(--sp));
     margin: calc(2 * var(--sp)) 1px;
     border-radius: calc(4 * var(--sp));
-    background: var(--accent);
-    color: var(--accent-ink);
+    box-shadow: inset 0 0 0 1px var(--line-strong);
+    color: var(--on-accent);
 }
 
-/* ---- How it's doing: the glyph at a row's start (still) ------------------ */
+.srow-pick[data-on] {
+    background: var(--accent);
+    box-shadow: none;
+}
+
+.srow-slim .srow-main {
+    padding-top: calc(5 * var(--sp));
+    padding-bottom: calc(5 * var(--sp));
+}
+
+.srow-slim .srow-title {
+    color: var(--text-2);
+}
+
+.srow-machine {
+    flex: none;
+    padding: 0 calc(5 * var(--sp));
+    border-radius: calc(4 * var(--sp));
+    background: var(--fill-2);
+    color: var(--text-3);
+    font-size: calc(11 * var(--sp));
+    line-height: calc(16 * var(--sp));
+}
+
+.srow-rename {
+    width: 100%;
+    height: calc(22 * var(--sp));
+    margin: calc(-2 * var(--sp)) 0 calc(-2 * var(--sp)) calc(-5 * var(--sp));
+    padding: 0 calc(4 * var(--sp));
+    border: 0;
+    border-radius: calc(4 * var(--sp));
+    background: var(--surface);
+    box-shadow: inset 0 0 0 1px var(--focus), 0 0 0 3px color-mix(in srgb, var(--focus) 18%, transparent);
+    outline: none;
+    font-weight: 500;
+}
+
+.srow-main:has(.srow-rename) {
+    padding-right: calc(9 * var(--sp));
+    align-items: center;
+}
+
+/* High contrast: the open row keeps an outline (the selected wrapper, while its button takes the focus). */
+@media (forced-colors: active) {
+    .srow[data-selected] {
+        outline: 1px solid SelectedItem;
+        outline-offset: -1px;
+    }
+}
+
+/* ---- Status -------------------------------------------------------------- */
 
 .status-icon {
     display: inline-flex;
@@ -512,36 +529,44 @@
 }
 
 .status-icon[data-status="done"] {
-    color: var(--ok);
+    color: var(--green);
 }
 
 .status-icon[data-status="failed"] {
-    color: var(--danger);
+    color: var(--red);
 }
 
 .status-icon[data-status="stopped"] {
-    color: var(--fg-3);
+    color: var(--glyph-3);
 }
 
-.status-dot,
+/* The dot that says a session waits: solid, no halo. */
+.status-dot {
+    width: calc(8 * var(--sp));
+    height: calc(8 * var(--sp));
+    border-radius: 50%;
+    background: var(--amber-strong);
+}
+
 .status-unread {
     width: calc(8 * var(--sp));
     height: calc(8 * var(--sp));
     border-radius: 50%;
-}
-
-.status-unread {
-    background: var(--ok);
+    background: var(--green);
 }
 
 .status-idle {
     width: calc(10 * var(--sp));
     height: calc(10 * var(--sp));
     border-radius: 50%;
-    border: 1.5px dashed var(--fg-4);
+    border: 1.5px dashed var(--text-4);
 }
 
-/* ---- A run: one prompt's sessions, a row per model ------------------------ */
+.srow-slim .status-icon {
+    color: var(--text-4);
+}
+
+/* ---- A compare run -------------------------------------------------------- */
 
 .srun {
     display: flex;
@@ -555,14 +580,19 @@
     gap: calc(7 * var(--sp));
     height: calc(28 * var(--sp));
     padding: 0 calc(10 * var(--sp));
-    border-radius: var(--r-row);
-    color: var(--fg-2);
+    border-radius: var(--radius-m);
+    color: var(--text-2);
+}
+
+.srun-head:hover {
+    background: color-mix(in srgb, var(--fill-2) 75%, transparent);
+    color: var(--text);
 }
 
 .srun-icon {
     flex: none;
     margin: 0 1px;
-    color: var(--fg-3);
+    color: var(--glyph-3);
 }
 
 .srun-label {
@@ -591,8 +621,8 @@
     align-items: center;
     gap: calc(10 * var(--sp));
     padding: calc(48 * var(--sp)) calc(20 * var(--sp));
-    color: var(--fg-3);
-    font-size: 0.893rem;
+    color: var(--text-3);
+    font-size: calc(12.5 * var(--sp));
 }
 
 .selbar {
@@ -602,20 +632,23 @@
     flex: none;
     margin: 0 calc(8 * var(--sp)) calc(8 * var(--sp));
     padding: calc(4 * var(--sp)) calc(4 * var(--sp)) calc(4 * var(--sp)) calc(10 * var(--sp));
-    border-radius: var(--r-row);
-    background: var(--raised);
-    box-shadow: var(--pop-shadow);
+    border-radius: var(--radius-m);
+    background: var(--surface);
+    box-shadow: var(--shadow-pop);
+}
+
+[data-theme="dark"] .selbar {
+    background: var(--fill-2);
 }
 
 .selbar-count {
-    flex: 1;
-    font-size: 0.893rem;
+    font-size: calc(12.5 * var(--sp));
     font-weight: 500;
     white-space: nowrap;
 }
 
-.selbar .hb[data-danger] {
-    color: var(--danger);
+.selbar .icon-btn[data-danger] {
+    color: var(--red);
 }
 
 .sidebar-foot {
@@ -628,39 +661,49 @@
     flex: none;
 }
 
-/* The plans' usage: a ring per plan around its mark, then the figure; amber near a limit, red at it. Short of room
-   the % signs go first, then plans fold into "+N" (PlanFooter.tsx). */
+/* The plans' usage: a ring per plan around its mark, then the figure. Cavvy: short of room the % signs go first,
+   then plans fold into "+N" (PlanFooter.tsx). */
 .plans {
     position: relative;
     display: flex;
     align-items: center;
     gap: calc(10 * var(--sp));
-    flex: 0 1 auto;
     min-width: 0;
     height: calc(30 * var(--sp));
-    margin-right: auto;
     padding: 0 calc(8 * var(--sp)) 0 calc(6 * var(--sp));
-    border-radius: calc(6 * var(--sp));
+    border-radius: var(--radius-s);
     overflow: hidden;
     transition: background 0.12s;
 }
 
 .plans:hover,
 .plans[aria-expanded="true"] {
-    background: var(--hover);
+    background: var(--fill-2);
 }
 
 .plans.tight {
     gap: calc(7 * var(--sp));
 }
 
+.plans.tight .plan-pct small {
+    display: none;
+}
+
+.plan-pct small {
+    font-size: inherit;
+}
+
 .plan-chip {
     display: inline-flex;
     align-items: center;
     gap: calc(6 * var(--sp));
-    flex: none;
-    font-size: 0.857rem;
+    min-width: 0;
+    font-size: calc(12 * var(--sp));
     white-space: nowrap;
+}
+
+.plan-chip.dim {
+    color: var(--text-3);
 }
 
 .plan-chip[hidden] {
@@ -671,95 +714,71 @@
     opacity: 0.55;
 }
 
-.plan-chip.more {
-    padding: 0 calc(5 * var(--sp));
-    border-radius: calc(4 * var(--sp));
-    background: var(--hover);
-    color: var(--fg-2);
-}
-
-/* Nothing folded: kept only to be measured, out of the row and unseen. */
-.plan-chip.more.measure {
+/* Nothing folded: "+N" kept only to be measured, out of the row and unseen. */
+.plan-chip.measure {
     position: absolute;
     visibility: hidden;
 }
 
 .plan-pct {
-    color: var(--fg-2);
+    color: var(--text-2);
     font-weight: 500;
-    font-variant-numeric: tabular-nums;
-}
-
-.plan-pct small {
-    font-size: inherit;
-}
-
-.plans.tight .plan-pct small {
-    display: none;
 }
 
 .plan-pct[data-tone="amber"],
-.pu-w.warn b {
-    color: var(--warn);
+.plan-value[data-tone="amber"] {
+    color: var(--amber);
 }
 
 .plan-pct[data-tone="red"],
-.pu-w.danger b {
-    color: var(--danger);
+.plan-value[data-tone="red"] {
+    color: var(--red);
 }
 
 .plan-reset {
-    color: var(--fg-3);
-    font-weight: 400;
+    color: var(--text-3);
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .ring {
     position: relative;
-    display: inline-grid;
-    place-items: center;
+    display: inline-flex;
     flex: none;
-    width: calc(20 * var(--sp));
-    height: calc(20 * var(--sp));
-    color: var(--fg-2);
+    color: var(--text-2);
 }
 
-.ring > svg:first-child {
+.ring > svg {
     position: absolute;
     inset: 0;
-    width: 100%;
-    height: 100%;
-    fill: none;
-    stroke-width: 1.5;
-}
-
-.ring > :is(.provider-icon, .provider-mono) {
-    width: calc(12 * var(--sp));
-    height: calc(12 * var(--sp));
 }
 
 .ring-track {
-    stroke: var(--press);
+    stroke: var(--fill-3);
 }
 
 .ring-value {
-    stroke: var(--fg-2);
-    stroke-linecap: round;
+    stroke: var(--text-2);
 }
 
-.ring[data-tone="amber"] .ring-value,
-.pu-w.warn .pu-bar i {
-    stroke: var(--warn);
-    background: var(--warn);
+.ring[data-tone="amber"] .ring-value {
+    stroke: var(--amber-strong);
 }
 
-.ring[data-tone="red"] .ring-value,
-.pu-w.danger .pu-bar i {
-    stroke: var(--danger);
-    background: var(--danger);
+.ring[data-tone="red"] .ring-value {
+    stroke: var(--red);
 }
 
-/* The detail (the mock's plan card): every plan, each window with its bar and how full it is, when it resets. */
-.popover.plans-card {
+.ring-inner {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 100%;
+}
+
+/* The card the plans open: every plan, each window with its bar and when it resets. */
+.popover.plan-card {
     width: calc(300 * var(--sp));
     padding: calc(12 * var(--sp)) calc(14 * var(--sp));
 }
@@ -769,103 +788,80 @@
     font-weight: 600;
 }
 
-.pu-plan {
-    display: grid;
-    grid-template-columns: minmax(calc(52 * var(--sp)), max-content) minmax(0, 1fr) calc(34 * var(--sp));
-    column-gap: calc(10 * var(--sp));
-    margin-bottom: calc(12 * var(--sp));
+.plan-empty {
+    padding: calc(4 * var(--sp)) 0 calc(10 * var(--sp));
+    color: var(--text-3);
+    font-size: calc(12.5 * var(--sp));
+}
+
+.plan-block {
     padding-bottom: calc(12 * var(--sp));
+    margin-bottom: calc(12 * var(--sp));
     border-bottom: 1px solid var(--line);
 }
 
-.pu-plan > :is(.pu-h, .pu-w.none, .pu-note) {
-    grid-column: 1 / -1;
-}
-
-.pu-h {
+.plan-head {
     display: flex;
     align-items: center;
     gap: calc(7 * var(--sp));
-    min-width: 0;
     margin-bottom: calc(6 * var(--sp));
+}
+
+.plan-name {
     font-weight: 500;
 }
 
-.pu-asof {
+.plan-card .plan-asof {
     margin-left: auto;
-    flex: none;
-    color: var(--fg-3);
-    font-size: 0.821rem;
     font-weight: 400;
+    color: var(--text-3);
+    font-size: calc(11.5 * var(--sp));
 }
 
-.pu-note {
+.plan-card .plan-note {
     margin: calc(-2 * var(--sp)) 0 calc(6 * var(--sp)) calc(21 * var(--sp));
-    color: var(--fg-3);
-    font-size: 0.857rem;
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
 }
 
-.pu-w {
+.plan-card .plan-row {
     display: grid;
-    grid-column: 1 / -1;
-    grid-template-columns: subgrid;
+    grid-template-columns: calc(52 * var(--sp)) 1fr calc(34 * var(--sp));
     align-items: center;
+    column-gap: calc(10 * var(--sp));
     padding: calc(3 * var(--sp)) 0 calc(3 * var(--sp)) calc(21 * var(--sp));
-    font-size: 0.857rem;
-    color: var(--fg-2);
+    font-size: calc(12 * var(--sp));
 }
 
-.pu-w.none {
-    display: block;
-    padding: calc(4 * var(--sp)) 0 calc(10 * var(--sp));
-    color: var(--fg-3);
-    font-size: 0.893rem;
+.plan-label {
+    color: var(--text-2);
 }
 
-.pu-bar {
-    position: relative;
-    height: calc(4 * var(--sp));
-    border-radius: calc(2 * var(--sp));
-    background: var(--hover);
-    overflow: hidden;
-}
-
-.pu-bar i {
-    position: absolute;
-    inset: 0 auto 0 0;
-    border-radius: inherit;
-    background: var(--fg-2);
-}
-
-.pu-w b {
+.plan-value {
     text-align: right;
     font-weight: 500;
-    font-variant-numeric: tabular-nums;
 }
 
-.pu-r {
+.plan-resets {
     grid-column: 2 / 4;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: var(--fg-3);
-    font-size: 0.821rem;
+    color: var(--text-3);
+    font-size: calc(11.5 * var(--sp));
 }
 
 .plan-link {
     display: inline-block;
 }
 
-/* Beside Settings while there's an update: the icon in the accent; a ring as it downloads; red when it failed. */
-.sidebar-foot .upd-btn {
+/* Beside Settings while there's an update (UpdateButton.tsx): the accent when ready, red when it failed. */
+.update-btn[data-state="ready"] {
     color: var(--accent-text);
 }
 
-.sidebar-foot .upd-btn.failed {
-    color: var(--danger);
+.update-btn[data-state="failed"] {
+    color: var(--red);
 }
 
-.sidebar-foot .upd-btn.busy:hover {
+.update-btn[data-state="busy"]:hover {
     background: none;
     cursor: default;
 }
@@ -883,11 +879,11 @@
 .sidebar.settings-nav .set-back {
     display: flex;
     align-items: center;
-    gap: var(--lead-gap);
+    gap: calc(8 * var(--sp));
     width: 100%;
     height: calc(32 * var(--sp));
     margin-bottom: calc(10 * var(--sp));
-    padding: 0 var(--row-pad);
+    padding: 0 calc(8 * var(--sp));
     border-radius: var(--r-row);
     background: none;
     color: var(--rail-fg);
@@ -920,10 +916,10 @@
 .sidebar.settings-nav .navi {
     display: flex;
     align-items: center;
-    gap: var(--lead-gap);
+    gap: calc(8 * var(--sp));
     width: 100%;
     height: calc(32 * var(--sp));
-    padding: 0 var(--row-pad);
+    padding: 0 calc(8 * var(--sp));
     border-radius: var(--r-row);
     background: none;
     color: var(--rail-fg);

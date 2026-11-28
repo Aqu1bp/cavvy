@@ -153,8 +153,8 @@ function MoreItems(p: { id: string; close: () => void }) {
             <KeepItem id={p.id} close={p.close} />
             <Show when={s()}>
                 {(s) => (
-                    <button role="menuitem" class="menu-item compact" title={s().cwd} onClick={() => (p.close(), newSession(s().cwd, s()))}>
-                        <Plus size={14} /> <span class="truncate">New session in {s().projectName}</span>
+                    <button role="menuitem" class="menu-item" title={s().cwd} onClick={() => (p.close(), newSession(s().cwd, s()))}>
+                        <Plus size={14} /><span class="menu-item-name">New session in {s().projectName}</span>
                     </button>
                 )}
             </Show>
@@ -169,34 +169,34 @@ function BulkItems(p: { plan: BulkPlan; close: () => void; clear: () => void }) 
     const n = (ids: readonly string[]) => sessionCount(ids.length);
     return (
         <>
-            <div class="menu-head">{plan.delete.length} selected</div>
+            <div class="menu-label">{plan.delete.length} selected</div>
             <Show when={plan.settle.length}>
-                <button role="menuitem" class="menu-item compact" onClick={() => (p.close(), void settleSessions(plan.settle, true))}>
-                    <CheckCheck size={14} /> Settle {n(plan.settle)}
+                <button role="menuitem" class="menu-item" onClick={() => (p.close(), void settleSessions(plan.settle, true))}>
+                    <CheckCheck size={14} /><span class="menu-item-name">Settle {n(plan.settle)}</span>
                 </button>
             </Show>
             <Show when={plan.unsettle.length}>
-                <button role="menuitem" class="menu-item compact" onClick={() => (p.close(), void settleSessions(plan.unsettle, false))}>
-                    <Undo2 size={14} /> Back in play
+                <button role="menuitem" class="menu-item" onClick={() => (p.close(), void settleSessions(plan.unsettle, false))}>
+                    <Undo2 size={14} /><span class="menu-item-name">Back in play</span>
                 </button>
             </Show>
             <SnoozeItems ids={plan.delete} close={p.close} />
             <Show when={plan.archive.length}>
-                <button role="menuitem" class="menu-item compact" onClick={() => (p.close(), void archiveSessions(plan.archive, true))}>
-                    <Archive size={14} /> Archive {n(plan.archive)}
+                <button role="menuitem" class="menu-item" onClick={() => (p.close(), void archiveSessions(plan.archive, true))}>
+                    <Archive size={14} /><span class="menu-item-name">Archive {n(plan.archive)}</span>
                 </button>
             </Show>
             <Show when={plan.restore.length}>
-                <button role="menuitem" class="menu-item compact" onClick={() => (p.close(), void archiveSessions(plan.restore, false))}>
-                    <ArchiveRestore size={14} /> Restore {n(plan.restore)}
+                <button role="menuitem" class="menu-item" onClick={() => (p.close(), void archiveSessions(plan.restore, false))}>
+                    <ArchiveRestore size={14} /><span class="menu-item-name">Restore {n(plan.restore)}</span>
                 </button>
             </Show>
-            <button role="menuitem" class="menu-item compact" onClick={() => (p.close(), p.clear())}>
-                <X size={14} /> Clear selection
+            <button role="menuitem" class="menu-item" onClick={() => (p.close(), p.clear())}>
+                <X size={14} /><span class="menu-item-name">Clear selection</span>
             </button>
             <div class="menu-sep" />
-            <button role="menuitem" class="menu-item compact danger" onClick={() => (p.close(), void deleteSessions(plan.delete))}>
-                <Trash2 size={14} /> Delete {n(plan.delete)}
+            <button role="menuitem" class="menu-item" data-danger onClick={() => (p.close(), void deleteSessions(plan.delete))}>
+                <Trash2 size={14} /><span class="menu-item-name">Delete {n(plan.delete)}</span>
             </button>
         </>
     );
@@ -204,8 +204,8 @@ function BulkItems(p: { plan: BulkPlan; close: () => void; clear: () => void }) 
 
 function TitleItem(p: { id: string; close: () => void }) {
     return (
-        <button role="menuitem" class="menu-item compact" onClick={() => (p.close(), void regenerateTitle(p.id))}>
-            <Sparkles size={14} /> Regenerate title
+        <button role="menuitem" class="menu-item" onClick={() => (p.close(), void regenerateTitle(p.id))}>
+            <Sparkles size={14} /><span class="menu-item-name">Regenerate title</span>
         </button>
     );
 }
@@ -215,11 +215,9 @@ function KeepItem(p: { id: string; close: () => void }) {
     const s = () => summary(p.id);
     return (
         <Show when={s() && !s()!.archived}>
-            <button role="menuitemcheckbox" aria-checked={Boolean(s()!.neverSettle)} class="menu-item compact" onClick={() => (p.close(), void neverSettle(p.id, !s()!.neverSettle))}>
-                <Anchor size={14} /> Never auto-settle
-                <Show when={s()!.neverSettle}>
-                    <Check size={14} class="menu-check" />
-                </Show>
+            <button role="menuitemcheckbox" aria-checked={Boolean(s()!.neverSettle)} class="menu-item" onClick={() => (p.close(), void neverSettle(p.id, !s()!.neverSettle))}>
+                <Anchor size={14} /><span class="menu-item-name">Never auto-settle</span>
+                <span class="menu-check"><Show when={s()!.neverSettle}><Check size={14} /></Show></span>
             </button>
         </Show>
     );
@@ -237,8 +235,8 @@ function SnoozeItems(p: { ids: readonly string[]; close: () => void }) {
     return (
         <>
             <Show when={snoozed()}>
-                <button role="menuitem" class="menu-item compact" onClick={() => (p.close(), void wakeSessions(p.ids))}>
-                    <AlarmClockOff size={14} /> Wake now
+                <button role="menuitem" class="menu-item" onClick={() => (p.close(), void wakeSessions(p.ids))}>
+                    <AlarmClockOff size={14} /><span class="menu-item-name">Wake now</span>
                 </button>
             </Show>
             <Show when={snoozable()}>
@@ -246,15 +244,15 @@ function SnoozeItems(p: { ids: readonly string[]; close: () => void }) {
                     {/* The times as of its opening. */}
                     <For each={snoozeChoices(Date.now())}>
                         {(c) => (
-                            <button role="menuitem" class="menu-item compact snz-opt" onClick={() => choose(c.at)}>
-                                <span>{c.label}</span>
-                                <span class="menu-hint">{c.hint}</span>
+                            <button role="menuitem" class="menu-item snz-opt" onClick={() => choose(c.at)}>
+                                <span class="menu-item-name">{c.label}</span>
+                                <span class="menu-item-note">{c.hint}</span>
                             </button>
                         )}
                     </For>
                     <div class="menu-sep" />
-                    <button role="menuitem" class="menu-item compact snz-opt" onClick={() => (p.close(), askCustom(p.ids))}>
-                        Custom…
+                    <button role="menuitem" class="menu-item snz-opt" onClick={() => (p.close(), askCustom(p.ids))}>
+                        <span class="menu-item-name">Custom…</span>
                     </button>
                 </Submenu>
             </Show>

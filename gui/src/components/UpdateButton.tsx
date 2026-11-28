@@ -20,7 +20,7 @@ export function UpdateButton() {
         <>
             <Show when={rail()}>
                 {(r) => (
-                    <button class={`hb lg upd-btn ${r().state}`} title={r().label} aria-label={r().label} aria-disabled={r().state === "busy" || update.pending() || undefined} onClick={update.request}>
+                    <button class="icon-btn update-btn" data-state={r().state} title={r().label} aria-label={r().label} aria-busy={r().state === "busy" || undefined} aria-disabled={r().state === "busy" || update.pending() || undefined} onClick={update.request}>
                         {r().state === "busy" ? (r().progress !== undefined ? <ProgressRing share={r().progress!} /> : <Spinner size={15} />) : <Download size={16} />}
                     </button>
                 )}
