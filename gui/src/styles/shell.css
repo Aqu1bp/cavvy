@@ -439,7 +439,7 @@
     gap: 2px;
 }
 
-[data-lead] .insp-t,
+[data-lead] .inspector-head,
 [data-lead] .rv-h,
 [data-lead] .br-bar,
 [data-lead] .sim-bar {
@@ -467,6 +467,7 @@
     bottom: 0;
     width: 1px;
     background: var(--accent);
+    box-shadow: 0 0 0 0.5px var(--accent);
     opacity: 0;
     transition: opacity 150ms;
 }

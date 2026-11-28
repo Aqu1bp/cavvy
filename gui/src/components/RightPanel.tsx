@@ -21,7 +21,7 @@ import { workingBranch } from "../lib/worktree-work";
 import { agentRows, backgroundOf, commandRows, rowLive, type WorkRow } from "../lib/background";
 import { tabName, type Change, type InspectorPane } from "../lib/inspector";
 import { Menu } from "./ui/Menu";
-import { Blank, uncleared, WorkList } from "./BackgroundTasks";
+import { uncleared } from "../lib/background-cleared";
 import { Transcript } from "./Transcript";
 import { Composer } from "./Composer";
 import { browserUnseen, loadBrowserState } from "../state/browser";
@@ -38,7 +38,7 @@ function WorkspaceButton(p: { handle: SessionHandle }) {
             <button ref={btn} class="rail-tab" data-state={menu() ? "open" : undefined} aria-label="Workspace actions" aria-haspopup="menu" aria-expanded={menu()} data-tip="Workspace" data-tip-side="left" onClick={() => setMenu(!menu())}>
                 <FolderGit2 size={16} />
             </button>
-            <Menu label="Workspace actions" open={menu()} anchor={() => btn} onClose={close} placement="top" align="end" width={244}>
+            <Menu label="Workspace actions" open={menu()} anchor={() => btn} onClose={close} placement="top" align="end" width={280}>
                 <div class="ws-head" title={tildify(st().cwd, app.hello?.homeDir)}>
                     <span class="ws-name truncate">{st().projectName}</span>
                     <Show when={st().branch}>
@@ -123,16 +123,8 @@ const openChanges = (c: FolderChanges, path?: string, token?: string) => openRev
 /** Each view's name, at the head of its pane. */
 const TITLES: Record<InspectorPane, string> = { changes: "Changes", agents: "Agents", commands: "Commands", sidechat: "Side chat", browser: "Browser", simulator: "Simulator" };
 
-/** The Agents tab: every sub-agent once, and tasks given to other models. */
-function AgentsPane(p: { handle: SessionHandle; rows: WorkRow[] }) {
-    return (
-        <Show when={p.rows.length || p.handle.view.agentsMore} fallback={<Blank title="No agents yet" />}>
-            <div class="bg">
-                <WorkList handle={p.handle} tab="agents" rows={p.rows} />
-            </div>
-        </Show>
-    );
-}
+/** The Agents tab (BackgroundTasks.tsx), loaded when it's first shown, as the other panes are. */
+const AgentsPane = lazy(() => import("./BackgroundTasks").then((m) => ({ default: m.AgentsPane })));
 
 /** The Commands tab (CommandsPane), loaded when it's first shown. */
 const CommandsPane = lazy(() => import("./CommandsPane"));

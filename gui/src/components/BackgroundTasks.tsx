@@ -18,14 +18,17 @@ import { now } from "../lib/clock";
 import { ConfirmDialog } from "./ui/ConfirmDialog";
 import { AgentMark } from "./ui/AgentMark";
 import { agentStep } from "../lib/agent-marks";
+import { cleared, setCleared } from "../lib/background-cleared";
 
-/** Rows cleared from a session's Finished folds, by clearKey: the server keeps no list of sub-agents to clear. */
-const [cleared, setCleared] = createSignal<Record<string, readonly string[]>>({});
-
-/** A tab's rows without those cleared from its fold (running ones always show). */
-export function uncleared(sessionId: string, rows: WorkRow[]): WorkRow[] {
-    const gone = new Set(cleared()[sessionId] ?? []);
-    return gone.size ? rows.filter((r) => rowLive(r) || !gone.has(clearKey(r))) : rows;
+/** The Agents tab: every sub-agent once, and tasks given to other models. Loaded when the panel first shows it. */
+export function AgentsPane(p: { handle: SessionHandle; rows: WorkRow[] }) {
+    return (
+        <Show when={p.rows.length || p.handle.view.agentsMore} fallback={<Blank title="No agents yet" />}>
+            <div class="bg">
+                <WorkList handle={p.handle} tab="agents" rows={p.rows} />
+            </div>
+        </Show>
+    );
 }
 
 /** What a pane shows with nothing in it: one quiet line (the design's Empty). */

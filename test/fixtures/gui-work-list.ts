@@ -4,17 +4,19 @@ import { createSignal } from "../../gui/node_modules/solid-js/dist/solid.js";
 import { all, component, node, renderer, text } from "../helpers/gui-render";
 import * as background from "../../gui/src/lib/background";
 import { agentStep } from "../../gui/src/lib/agent-marks";
+import { cleared, setCleared } from "../../gui/src/lib/background-cleared";
 
 // The Agents tab's list (BackgroundTasks.tsx WorkList) with its real reactive grouping and keyed rows.
 /** Sessions whose sub-agents' list the fold asked for (loadAgentList). */
 const listAsked: string[] = [];
 const source = readFileSync(new URL("../../gui/src/components/BackgroundTasks.tsx", import.meta.url), "utf8");
-const list = source.slice(source.indexOf("/** Rows cleared from"), source.indexOf("/** In the composer"));
+const list = source.slice(source.indexOf("/** The Agents tab:"), source.indexOf("/** In the composer"));
 const icon = () => node("icon");
 const WorkList = component(list, "WorkList", {
     ...background,
     Bot: icon, ChevronRight: icon, Radar: icon, SquareTerminal: icon, Square: icon, Workflow: icon,
     AgentMark: icon,
+    cleared, setCleared,
     agentStep,
     ConfirmDialog: () => node("dialog"),
     app: { providers: [] },

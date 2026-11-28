@@ -109,7 +109,8 @@ test("a stop's toast says what stopped and what couldn't be", () => {
 
 test("the side panel lists background work in its Agents and Commands tabs, and the composer has no count of it", () => {
     const panel = readFileSync(new URL("../gui/src/components/RightPanel.tsx", import.meta.url), "utf8");
-    expect(panel).toContain('<WorkList handle={p.handle} tab="agents" rows={p.rows} />');
+    expect(panel).toContain('import("./BackgroundTasks")');
+    expect(readFileSync(new URL("../gui/src/components/BackgroundTasks.tsx", import.meta.url), "utf8")).toContain('<WorkList handle={p.handle} tab="agents" rows={p.rows} />');
     // The Commands tab, loaded when it's first shown.
     expect(panel).toContain('import("./CommandsPane")');
     expect(readFileSync(new URL("../gui/src/components/CommandsPane.tsx", import.meta.url), "utf8")).toContain('<WorkList handle={p.handle} tab="commands" rows={p.rows} />');
@@ -135,6 +136,7 @@ function renderList(tasks: BackgroundTaskInfo[], agents: AgentRun[] = [], tab: W
     const state = { backgroundTasks: tasks, shells: [] as never[], model: { provider: "claude-code" } };
     const List = componentCode("WorkList", {
         createSignal: (initial: unknown) => [() => initial, (v: unknown) => void sets.push(v)],
+        cleared: () => ({}), setCleared: () => {},
         createMemo: (f: () => unknown) => f,
         createEffect: (f: () => unknown) => void f(),
         loadAgentList: async () => {},
