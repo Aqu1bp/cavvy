@@ -2189,8 +2189,8 @@ export class Engine {
             let runEnded!: (untouched: boolean) => void;
             const ended = new Promise<boolean>((r) => (runEnded = r));
             // Said as its own run ends, before anything queued after it runs.
-            const ran = (reason: TurnEndReason, kept: boolean) => {
-                if (reason !== "blocked" || kept) return;
+            const ran = (reason: TurnEndReason, kept: boolean): boolean => {
+                if (reason !== "blocked" || kept) return false;
                 this.refusedTasks.add(next.id);
                 updateStore((s) => {
                     s.suggestedTasks = (s.suggestedTasks ?? []).filter((t) => t.session !== next.id);
@@ -2198,6 +2198,8 @@ export class Engine {
                 // Nothing kept, queued (the user's) or to be delivered (another session's message, a watch's event).
                 if (waiting) runEnded(next.session.messageCount === 0 && !next.queuedCount && !next.toolState.wakes?.size);
                 else this.keepRefusedPrompt(next, prompt);
+                // Its turn comes off the transcript: the prompt is in the composer, the reason kept with the session.
+                return true;
             };
             let decided!: () => void;
             const decision = new Promise<void>((r) => (decided = r));
