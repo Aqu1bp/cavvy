@@ -3,13 +3,12 @@
 // branch stays, ignored files are listed first), plus a check that every
 // commit is on a remote branch; the server checks it all again.
 
-import { createSignal, onCleanup, Show } from "solid-js";
-import { AlertTriangle, Info } from "lucide-solid";
+import { createSignal, For, onCleanup, Show } from "solid-js";
 import { tildify } from "../lib/format";
 import { app, rpc } from "../state/app";
 import { archivedWithWorktree } from "../state/actions";
 import { archiveRequest, setArchiveRequest } from "../state/ui";
-import { errorOf, IgnoredFiles, type FormError } from "./WorktreeDialogs";
+import { errorOf, type FormError } from "./WorktreeDialogs";
 import { Dialog } from "./ui/Dialog";
 import { Spinner } from "./ui/bits";
 
@@ -63,30 +62,82 @@ function ArchiveWorktree(p: { id: string; title: string; offer: NonNullable<Retu
     };
 
     return (
-        <Dialog open onClose={close} title="Archive this session?" subtitle={`“${p.title}”`} width={520}>
-            <p class="wt-confirm">
-                It works in worktree <span class="mono">{tildify(w.path, app.hello?.homeDir)}</span>
+        <Dialog
+            open
+            onClose={close}
+            title="Archive this session?"
+            subtitle={`“${p.title}”`}
+            width={480}
+            footer={[
+                <button class="btn btn-ghost dlg-foot-left" disabled={busy()} onClick={close}>
+                    Cancel
+                </button>,
+                <Show when={p.offer.removable}>
+                    <Show
+                        when={ignored()}
+                        fallback={
+                            <button class="btn btn-danger" disabled={busy()} onClick={() => void remove()}>
+                                {busy() ? <Spinner size={12} /> : "Archive and remove worktree"}
+                            </button>
+                        }
+                    >
+                        {(i) => (
+                            <button class="btn btn-danger" disabled={busy()} onClick={() => void remove(i().confirm)}>
+                                {busy() ? <Spinner size={12} /> : "Delete them and remove"}
+                            </button>
+                        )}
+                    </Show>
+                </Show>,
+                <button class="btn btn-primary" autofocus disabled={busy()} onClick={() => void archiveOnly()}>
+                    Archive only
+                </button>,
+            ]}
+        >
+            <dl class="facts">
+                <dt>Worktree</dt>
+                {/* From the worktrees' folder on, as the picker names it; the whole path on hover. */}
+                <dd class="mono" title={tildify(w.path, app.hello?.homeDir)}>{tildify(w.path, app.hello?.homeDir).replace(/^.*\/\.claude\/worktrees\//, ".claude/worktrees/")}</dd>
                 <Show when={w.branch}>
-                    {" "}on branch <span class="mono">{w.branch}</span>
+                    <dt>Branch</dt>
+                    <dd>
+                        <span class="mono">{w.branch}</span>
+                        <span class="dim"> · kept</span>
+                    </dd>
                 </Show>
-                .
-            </p>
-            <Show when={!p.offer.removable && p.offer.reason}>
-                <div class="plan-note-box">
-                    <Info size={14} />
-                    <span>The worktree will be kept: {p.offer.reason}</span>
-                </div>
+            </dl>
+            <Show
+                when={!p.offer.removable && p.offer.reason}
+                fallback={
+                    <Show
+                        when={ignored()}
+                        fallback={<p class="dlg-text">Removing the worktree can't be undone; one with uncommitted changes is kept.</p>}
+                    >
+                        {(i) => (
+                            <div class="note" data-tone="amber">
+                                <div class="note-body">
+                                    Removing the worktree deletes its ignored files:
+                                    <ul class="arc-ignored">
+                                        <For each={i().names}>{(n) => <li class="mono">{n}</li>}</For>
+                                        <Show when={i().total > i().names.length}>
+                                            <li>and {i().total - i().names.length} more</li>
+                                        </Show>
+                                    </ul>
+                                </div>
+                            </div>
+                        )}
+                    </Show>
+                }
+            >
+                {(reason) => (
+                    <div class="note">
+                        <div class="note-body">{reason()}</div>
+                    </div>
+                )}
             </Show>
-            <p class="muted small">
-                The branch is kept.
-                <Show when={p.offer.removable}> Removing the worktree can't be undone; one with uncommitted changes is kept.</Show>
-            </p>
-            <Show when={ignored()}>{(i) => <IgnoredFiles names={i().names} total={i().total} />}</Show>
             <Show when={error()}>
                 {(m) => (
-                    <div class="rw-confirm">
-                        <AlertTriangle size={14} />
-                        <span>{m().message}</span>
+                    <div class="note" data-tone="red" role="alert">
+                        <div class="note-body">{m().message}</div>
                         <Show when={m().code === "needs_trust"}>
                             <button class="btn btn-sm" disabled={busy()} onClick={() => void remove(ignored()?.confirm, m().folder ?? w.path)}>
                                 Trust and remove
@@ -95,31 +146,6 @@ function ArchiveWorktree(p: { id: string; title: string; offer: NonNullable<Retu
                     </div>
                 )}
             </Show>
-            <div class="dialog-actions">
-                <button class="btn btn-ghost" disabled={busy()} onClick={close}>
-                    Cancel
-                </button>
-                <span class="grow" />
-                <Show when={p.offer.removable}>
-                    <Show
-                        when={ignored()}
-                        fallback={
-                            <button class="btn btn-danger-solid" disabled={busy()} onClick={() => void remove()}>
-                                {busy() ? <Spinner size={12} /> : "Archive and remove worktree"}
-                            </button>
-                        }
-                    >
-                        {(i) => (
-                            <button class="btn btn-danger-solid" disabled={busy()} onClick={() => void remove(i().confirm)}>
-                                {busy() ? <Spinner size={12} /> : "Delete them and remove"}
-                            </button>
-                        )}
-                    </Show>
-                </Show>
-                <button class="btn btn-primary" autofocus disabled={busy()} onClick={() => void archiveOnly()}>
-                    Archive only
-                </button>
-            </div>
         </Dialog>
     );
 }

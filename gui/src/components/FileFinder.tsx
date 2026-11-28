@@ -5,7 +5,7 @@
 // line 12. Search in project: text in the session's folder, by file, with the line each match is on. On a row,
 // Enter opens the file viewer, ⌥Enter the editor, ⌘Enter adds the file to the message as an @-mention.
 
-import { batch, createEffect, createMemo, createRoot, createSignal, For, on, onCleanup, Show } from "solid-js";
+import { batch, createEffect, createMemo, createRoot, createSignal, For, on, onCleanup, Show, type JSX } from "solid-js";
 import { render } from "solid-js/web";
 import { CaseSensitive, File, Regex, Search, WholeWord } from "lucide-solid";
 import type { ProjectSearchResult, SearchHit } from "@shared/protocol";
@@ -17,8 +17,9 @@ import { dirOf, nameOf } from "../lib/inspector";
 import { addToChat, altKey, viewFile, withLine } from "../lib/file-view";
 import { isMod, mod } from "../lib/platform";
 import { Dialog } from "./ui/Dialog";
+import { tip } from "../lib/tip";
 import { Spinner } from "./ui/bits";
-import "../styles/files.css";
+import "../styles/finder.css";
 
 /** Which is open, if either. */
 const [finderOpen, setFinderOpen] = createSignal<"files" | "search">();
@@ -211,7 +212,7 @@ function FileFinder() {
             e.preventDefault();
             if (!n) return;
             setSel((s) => (s + (e.key === "ArrowDown" ? 1 : -1) + n) % n);
-            requestAnimationFrame(() => list?.querySelector(".pal-row.sel")?.scrollIntoView({ block: "nearest" }));
+            requestAnimationFrame(() => list?.querySelector(".pal-row[data-active]")?.scrollIntoView({ block: "nearest" }));
         } else if (e.key === "Enter") {
             e.preventDefault();
             if (busy()) enterWaits = howOf(e);
@@ -228,16 +229,30 @@ function FileFinder() {
         return (r.timedOut ? `${n} · timed out` : n) + skipped;
     };
     const Toggle = (p: { on: boolean; set: (v: boolean) => void; name: string; key: string; icon: typeof Regex }) => (
-        <button class="ff-tog" aria-pressed={p.on} aria-label={p.name} title={`${p.name} (${altKey}${p.key})`} onClick={() => (p.set(!p.on), input?.focus())}>
-            <p.icon size={16} />
+        <button class="icon-btn ff-tog" aria-pressed={p.on} aria-label={p.name} {...tip(p.name, `${altKey.replace("+", "")}+${p.key}`)} onClick={() => (p.set(!p.on), input?.focus())}>
+            <p.icon size={15} />
+        </button>
+    );
+
+    const Option = (q: { i: number; class?: string; children: JSX.Element }) => (
+        <button
+            role="option"
+            aria-selected={sel() === q.i}
+            data-active={sel() === q.i || undefined}
+            class={`pal-row ${q.class ?? ""}`}
+            onMouseMove={() => setSel(q.i)}
+            onClick={(e) => run(q.i, howOf(e))}
+        >
+            {q.children}
         </button>
     );
 
     return (
-        <Dialog open={Boolean(mode())} onClose={close} bare top width={mode() === "search" ? 760 : 620} class="palette finder">
-            <div class="pal-in">
-                <Show when={mode() === "files"} fallback={<Search size={17} class="pal-search" />}>
-                    <File size={17} class="pal-search" />
+        <Dialog open={Boolean(mode())} onClose={close} bare top width={mode() === "search" ? 760 : 620} class="palette finder" labelledBy="finder-h">
+            <h2 id="finder-h" class="sr-only">{mode() === "files" ? "Go to file" : "Search in project"}</h2>
+            <div class="pal-input">
+                <Show when={mode() === "files"} fallback={<Search size={15} class="pal-input-icon" />}>
+                    <File size={15} class="pal-input-icon" />
                 </Show>
                 <input
                     ref={input}
@@ -251,53 +266,41 @@ function FileFinder() {
                     autocomplete="off"
                 />
                 <Show when={busy()}>
-                    <Spinner size={13} class="muted" />
+                    <Spinner size={12} />
                 </Show>
                 <Show when={mode() === "search"}>
                     <Toggle on={caseSensitive()} set={setCase} name="Match case" key="C" icon={CaseSensitive} />
                     <Toggle on={wholeWord()} set={setWord} name="Whole word" key="W" icon={WholeWord} />
                     <Toggle on={regex()} set={setRegex} name="Regular expression" key="R" icon={Regex} />
                 </Show>
+                <span class="kbd-group" aria-hidden="true"><kbd class="kbd">esc</kbd></span>
             </div>
-            <Show when={error()}>
-                <div class="ff-err selectable" role="alert">{error()}</div>
-            </Show>
-            <Show when={mode() === "search" && summary()}>
-                <div class="ff-sum" role="status">{summary()}</div>
-            </Show>
             <div class="pal-list" ref={list} role="listbox" aria-label={mode() === "files" ? "Files" : "Results"}>
                 <Show
                     when={mode() === "files"}
                     fallback={
-                        <For each={found()?.files ?? []}>
+                        <For each={found()?.files ?? []} fallback={<Show when={!busy() && !error() && found()}><div class="pal-empty">{summary()}</div></Show>}>
                             {(f) => {
                                 // The rows' index: the file's hits follow the rows of the files before it.
                                 const first = createMemo(() => rows().findIndex((r) => r.path === f.path));
                                 return (
-                                    <>
-                                        <div class="pal-h ff-file" title={f.path}>
+                                    <div class="pal-group">
+                                        <div class="pal-head ff-file" title={f.path}>
                                             <span class="ff-name">{nameOf(f.path)}</span>
-                                            <span class="ff-dir">{dirOf(f.path)}</span>
-                                            <span class="grow" />
+                                            <span class="pal-meta">{dirOf(f.path)}</span>
                                             <span class="ff-count">{f.hits.length}{f.more ? "+" : ""}</span>
                                         </div>
                                         <For each={f.hits}>
                                             {(hit, i) => (
-                                                <button
-                                                    role="option"
-                                                    aria-selected={sel() === first() + i()}
-                                                    class={`pal-row ff-hit ${sel() === first() + i() ? "sel" : ""}`}
-                                                    onMouseMove={() => setSel(first() + i())}
-                                                    onClick={(e) => run(first() + i(), howOf(e))}
-                                                >
+                                                <Option i={first() + i()} class="ff-hit">
                                                     <span class="ff-ln">{hit.line}</span>
-                                                    <span class="ff-pre">
+                                                    <span class="pal-label ff-pre">
                                                         <Preview hit={hit} />
                                                     </span>
-                                                </button>
+                                                </Option>
                                             )}
                                         </For>
-                                    </>
+                                    </div>
                                 );
                             }}
                         </For>
@@ -305,27 +308,30 @@ function FileFinder() {
                 >
                     <For each={rows()} fallback={<Show when={!busy() && !error()}><div class="pal-empty">No matching files</div></Show>}>
                         {(r, i) => (
-                            <button role="option" aria-selected={sel() === i()} class={`pal-row two ${sel() === i() ? "sel" : ""}`} onMouseMove={() => setSel(i())} onClick={(e) => run(i(), howOf(e))}>
-                                <span class="pal-ic">
-                                    <File size={15} />
-                                </span>
-                                <span class="pal-text">
-                                    <span class="pal-l">{nameOf(r.path)}</span>
-                                    <Show when={dirOf(r.path)}>
-                                        <span class="pal-d">{dirOf(r.path)}</span>
-                                    </Show>
-                                </span>
-                            </button>
+                            <Option i={i()}>
+                                <span class="pal-label">{nameOf(r.path)}</span>
+                                <Show when={dirOf(r.path)}>
+                                    <span class="pal-meta">{dirOf(r.path)}</span>
+                                </Show>
+                            </Option>
                         )}
                     </For>
                 </Show>
             </div>
+            <Show when={error()}>
+                <div class="pal-foot selectable" data-tone="error" role="alert"><span class="pal-foot-text">{error()}</span></div>
+            </Show>
             <Show when={rows().length}>
-                <div class="ff-keys" aria-hidden="true">
-                    <span><kbd>↵</kbd> Open</span>
-                    <span><kbd>{altKey}↵</kbd> Open in editor</span>
-                    <span><kbd>{mod}{mod === "⌘" ? "" : "+"}↵</kbd> Add to chat</span>
-                    <Show when={mode() === "files"}><span><kbd>:</kbd> Go to line</span></Show>
+                <div class="pal-foot">
+                    <Show when={mode() === "search" && summary()}>
+                        <span class="pal-foot-text truncate" role="status">{summary()}</span>
+                    </Show>
+                    <span class="ff-keys" aria-hidden="true">
+                        <span><kbd class="kbd">↵</kbd> Open</span>
+                        <span><span class="kbd-group"><kbd class="kbd">{altKey.replace("+", "")}</kbd><kbd class="kbd">↵</kbd></span> Open in editor</span>
+                        <span><span class="kbd-group"><kbd class="kbd">{mod}</kbd><kbd class="kbd">↵</kbd></span> Add to chat</span>
+                        <Show when={mode() === "files"}><span><kbd class="kbd">:</kbd> Go to line</span></Show>
+                    </span>
                 </div>
             </Show>
         </Dialog>

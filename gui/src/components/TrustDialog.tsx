@@ -1,6 +1,7 @@
-import { createResource, createUniqueId, Show } from "solid-js";
-import { ShieldAlert } from "lucide-solid";
+import { createResource, For, Show } from "solid-js";
+import { ShieldQuestion } from "lucide-solid";
 import { machine } from "../lib/platform";
+import { tildify } from "../lib/format";
 import { app, reportError, rpc, setTrustRequest, trustRequest } from "../state/app";
 import { trustAndContinue } from "../state/actions";
 import { Dialog } from "./ui/Dialog";
@@ -16,7 +17,6 @@ export function TrustDialog() {
                 return undefined;
             }),
     );
-    const titleId = createUniqueId();
     const forMcp = () => trustRequest()?.purpose === "mcp-approval";
     // Trusting it is the only way on: declining changes nothing.
     const upgrade = () => forMcp() || trustRequest()?.purpose === "agent";
@@ -32,28 +32,44 @@ export function TrustDialog() {
             reportError(e);
         }
     };
+    /** The configuration that can run commands there, when it has some (none while it's only asked to approve). */
+    const files = () => (upgrade() ? [] : info()?.needsTrust ?? []);
+    const where = () => (trustRequest()?.on ?? machine) || "this computer";
     return (
-        <Dialog open={Boolean(trustRequest())} onClose={cancel} bare labelledBy={titleId} width={500}>
-            <div class="trust-dialog">
-                <ShieldAlert size={28} class="tone-warn" />
-                <h2 id={titleId}>Do you trust the files in this folder?</h2>
-                <div class="mono small trust-path">{trustRequest()?.path}</div>
-                <Show when={forMcp()}>
-                    <p class="muted">Trust it to approve its MCP servers.</p>
+        <Dialog
+            open={Boolean(trustRequest())}
+            onClose={cancel}
+            title="Do you trust the files in this folder?"
+            subtitle={<span class="mono trust-path">{tildify(trustRequest()?.path ?? "", app.hello?.homeDir)}</span>}
+            icon={<ShieldQuestion size={18} />}
+            width={460}
+            class="trust"
+            footer={[
+                <button class="btn" onClick={() => (upgrade() ? cancel() : void decide(false))}>
+                    {upgrade() ? "Cancel" : "Ignore its configuration"}
+                </button>,
+                <button class="btn btn-primary" autofocus onClick={() => void decide(true)}>
+                    Trust this folder
+                </button>,
+            ]}
+        >
+            <p class="dlg-text">
+                <Show
+                    when={files().length}
+                    fallback={forMcp() ? "Trust it to approve its MCP servers." : trustRequest()?.purpose === "agent" && trustRequest()?.reason ? trustRequest()!.reason : `Configuration added to it later can run commands on ${where()} without asking.`}
+                >
+                    Its configuration (
+                    <For each={files()}>
+                        {(f, i) => (
+                            <span>
+                                {i() > 0 && ", "}
+                                <code>{f}</code>
+                            </span>
+                        )}
+                    </For>
+                    ) can run commands on {where()} without asking.
                 </Show>
-                <Show when={trustRequest()?.purpose === "agent" && trustRequest()?.reason}>{(reason) => <p class="muted">{reason()}</p>}</Show>
-                <Show when={!upgrade() && info()?.needsTrust.length}>
-                    <p class="muted">Its configuration ({info()!.needsTrust.join(", ")}) can run commands on {(trustRequest()?.on ?? machine) || "this computer"} and let the agent act without asking.</p>
-                </Show>
-                <div class="trust-actions">
-                    <button class="btn" onClick={() => upgrade() ? cancel() : void decide(false)}>
-                        {upgrade() ? "Cancel" : "Ignore its configuration"}
-                    </button>
-                    <button class="btn btn-primary" onClick={() => void decide(true)}>
-                        Trust this folder
-                    </button>
-                </div>
-            </div>
+            </p>
         </Dialog>
     );
 }

@@ -4,8 +4,9 @@
 // Marketplaces is where catalogs are added. Every change goes through the server, which reloads each open
 // folder's settings, commands and MCP servers.
 
-import { createMemo, createSignal, For, Match, onMount, Show, Switch } from "solid-js";
-import { Activity, Briefcase, CodeXml, Database, Download, Ellipsis, ExternalLink, FlaskConical, Folder, GraduationCap, Info, Palette, Puzzle, RefreshCw, Rocket, Search, Shield, Store, Trash2, X } from "lucide-solid";
+import { createMemo, createSignal, For, Match, onMount, Show, Switch, type JSX } from "solid-js";
+import { Activity, Briefcase, CodeXml, Database, Ellipsis, ExternalLink, FlaskConical, GraduationCap, Palette, Puzzle, RefreshCw, Rocket, RotateCw, Search, Shield, Trash2, X } from "lucide-solid";
+import "../styles/plugins.css";
 import type { PluginActionParams, PluginInfo, PluginMarketplaceInfo, PluginScope, PluginsInfo } from "@shared/protocol";
 import { app, awayMachine, awayUnopened, linkFor, machineOf, reportError, rpc, toast } from "../state/app";
 import { machine as windowMachine, os } from "../lib/platform";
@@ -29,7 +30,7 @@ const SCOPES: { value: PluginScope; label: string; title: (project?: string) => 
     { value: "project", label: "This project", title: (p) => `Shared with everyone in ${p ?? "the project"}` },
     { value: "local", label: "Just me, here", title: (p) => `Only you, only in ${p ?? "this project"}` },
 ];
-const SCOPE_DONE: Record<PluginScope, string> = { user: "for you", project: "for this project", local: "for you, here" };
+const SCOPE_DONE: Record<PluginScope, string> = { user: "for me", project: "for this project", local: "just for me, here" };
 
 export function countsText(c: NonNullable<PluginInfo["installed"]>["counts"]): string {
     const parts: string[] = [];
@@ -65,19 +66,34 @@ function logoFor(owner: string): Promise<string | undefined> {
     return hit;
 }
 
-/** A plugin's mark: its maker's logo when it has one, else its category's icon on the category's tint. */
-function PluginMark(p: { plugin: PluginInfo; markets: PluginMarketplaceInfo[]; size: number }) {
+/** A plugin's mark: its maker's logo when it has one, else its category's icon. */
+function PluginMark(p: { plugin: PluginInfo; markets: PluginMarketplaceInfo[] }) {
     const cat = () => categoryOf(p.plugin.category);
     const [logo, setLogo] = createSignal<string>();
     const owner = logoOwner(p.plugin, p.markets);
     if (owner) void logoFor(owner).then(setLogo);
     const Icon = ICONS[cat().icon];
     return (
-        <span class={`pg-mark ${logo() ? "logo" : ""}`} style={{ "--h": cat().hue, width: `calc(${p.size} * var(--sp))`, height: `calc(${p.size} * var(--sp))` }} aria-hidden="true">
-            <Show when={logo()} fallback={<Icon size={Math.round(p.size * 0.5)} stroke-width={1.75} />}>
+        <span class={`plugin-mark ${logo() ? "plugin-logo" : ""}`} aria-hidden="true">
+            <Show when={logo()} fallback={<Icon size={16} />}>
                 {(src) => <img src={src()} alt="" />}
             </Show>
         </span>
+    );
+}
+
+/** What a card shows when it has nothing: one line, and the way on when there is one. */
+function Blank(p: { title: string; busy?: boolean; children?: JSX.Element }) {
+    return (
+        <div class="card plugins-card">
+            <div class="blank">
+                <Show when={p.busy}>
+                    <Spinner size={14} class="blank-spinner" />
+                </Show>
+                <p class="blank-title">{p.title}</p>
+                {p.children}
+            </div>
+        </div>
     );
 }
 
@@ -205,92 +221,92 @@ export function Plugins() {
         });
     };
 
-    const empty = (icon: typeof Puzzle, title: string, body?: string, actions?: () => any) => {
-        const Icon = icon;
-        return (
-            <div class="pg-empty">
-                <span class="pg-eic">
-                    <Icon size={20} />
-                </span>
-                <b>{title}</b>
-                <Show when={body}>
-                    <p>{body}</p>
-                </Show>
-                <Show when={actions}>
-                    <div class="pg-eact">{actions!()}</div>
-                </Show>
-            </div>
-        );
+    const busyRow = (pl: PluginInfo) => {
+        const b = busy();
+        return b === `update:${pl.id}` ? "Updating…" : b === `uninstall:${pl.id}` ? "Uninstalling…" : b === `toggle:${pl.id}` ? (pl.enabled ? "Turning off…" : "Turning on…") : undefined;
     };
+    const showSearch = () => view() !== "marketplaces" && !loading() && Boolean(info());
 
     return (
-        <div class="plg">
+        <div class="plugins">
             <ConfirmDialog open={Boolean(confirm())} onClose={() => setConfirm(undefined)} title={confirm()?.title ?? ""} confirmLabel={confirm()?.label ?? "OK"} onConfirm={() => confirm()?.run()}>
                 {confirm()?.body}
             </ConfirmDialog>
             <Show when={details()} keyed>
                 {(d) => <PluginDetails plugin={d.pl} markets={markets()} on={where() || windowMachine} project={project()} projectScopes={projectScopes()} busy={busy()} onClose={() => setDetails(undefined)} install={(scope) => install(d.pl, scope, () => details() === d && setDetails(undefined))} />}
             </Show>
-            <Show when={servers().length}>
-                <div class="pg-bar">
-                    <Segmented label="Machine" size="sm" value={where()} onChange={pick} options={[{ value: "", label: os === "macos" ? "This Mac" : "This computer" }, ...servers().map((s) => ({ value: s, label: s }))]} />
+            <Show when={servers().length || showSearch()}>
+                <div class="plugins-bar">
+                    <Show when={servers().length}>
+                        <Segmented label="Machine" value={where()} onChange={pick} options={[{ value: "", label: os === "macos" ? "This Mac" : "This computer" }, ...servers().map((s) => ({ value: s, label: s }))]} />
+                    </Show>
+                    <span class="grow" />
+                    <Show when={showSearch()}>
+                        <label class="plugins-search">
+                            <Search size={14} />
+                            <input ref={searchEl} aria-label="Search plugins" placeholder="Search plugins" value={query()} onInput={(e) => setQuery(e.currentTarget.value)} spellcheck={false} autocomplete="off" />
+                            <Show when={query()}>
+                                <button class="search-clear" aria-label="Clear search" onClick={() => (setQuery(""), searchEl?.focus())}>
+                                    <X size={13} />
+                                </button>
+                            </Show>
+                        </label>
+                    </Show>
                 </div>
             </Show>
-            <div class="pg-bar">
+            <div class="plugins-tabs">
                 <Segmented
                     label="Show"
-                    size="sm"
                     value={view()}
                     onChange={show}
                     options={[
-                        { value: "installed", label: <>Installed <Show when={!loading() && info()}><span class="plg-n">{installed().length}</span></Show></> },
-                        { value: "discover", label: <>Discover <Show when={!loading() && info()}><span class="plg-n">{available().length}</span></Show></> },
-                        { value: "marketplaces", label: <>Marketplaces <Show when={!loading() && info()}><span class="plg-n">{markets().length}</span></Show></> },
+                        { value: "installed", label: <>Installed<Show when={!loading() && info()}> {installed().length}</Show></> },
+                        { value: "discover", label: <>Discover<Show when={!loading() && info()}> {available().length}</Show></> },
+                        { value: "marketplaces", label: <>Marketplaces<Show when={!loading() && info()}> {markets().length}</Show></> },
                     ]}
                 />
                 <span class="grow" />
-                <Show when={view() !== "marketplaces" && !loading() && info()}>
-                    <label class="pg-search">
-                        <Search size={14} />
-                        <input ref={searchEl} aria-label="Search plugins" placeholder={view() === "installed" ? "Search installed plugins" : `Search ${plural(available().length, "plugin")}`} value={query()} onInput={(e) => setQuery(e.currentTarget.value)} spellcheck={false} autocomplete="off" />
-                        <Show when={query()}>
-                            <button class="hb sm" title="Clear" aria-label="Clear search" onClick={() => (setQuery(""), searchEl?.focus())}>
-                                <X size={13} />
-                            </button>
-                        </Show>
-                    </label>
+                <Show when={view() === "installed" && !loading() && installed().some((p) => p.installed && !p.orphaned)}>
+                    <button class="btn btn-sm" disabled={Boolean(busy())} data-tip="Refresh marketplaces and fetch newer versions" onClick={() => void act("update:all", { action: "update" })}>
+                        {busy() === "update:all" ? <Spinner size={12} /> : <RotateCw size={12} />}
+                        {busy() === "update:all" ? "Checking…" : "Check for updates"}
+                    </button>
                 </Show>
             </div>
-            <Show when={!loading()} fallback={<div class="pg-load" role="status"><Spinner size={14} /> Reading your marketplaces…</div>}>
+            <Show when={!loading()} fallback={<div role="status"><Blank title="Reading your marketplaces…" busy /></div>}>
                 <Switch>
                     {/* The list didn't come (the machine didn't answer): not an empty one, which would offer to add a marketplace there. */}
                     <Match when={!info()}>
-                        {empty(Puzzle, where() || windowMachine ? `Couldn't load ${where() || windowMachine}'s plugins` : "Couldn't load plugins", undefined, () => (
+                        <Blank title={where() || windowMachine ? `Couldn't load ${where() || windowMachine}'s plugins` : "Couldn't load plugins"}>
                             <button class="btn btn-sm" onClick={() => (setLoading(true), void load())}>
                                 Try again
                             </button>
-                        ))}
+                        </Blank>
                     </Match>
                     <Match when={view() === "marketplaces"}>
-                        <div class="pg-add">
-                            <label>
-                                <Store size={15} />
-                                <input ref={sourceEl} aria-label="Marketplace source" placeholder="owner/repo, git URL, folder or marketplace.json" value={source()} onInput={(e) => setSource(e.currentTarget.value)} onKeyDown={(e) => e.key === "Enter" && addMarketplace()} spellcheck={false} autocomplete="off" />
-                            </label>
-                            <button class="btn btn-primary btn-sm" disabled={!source().trim() || Boolean(busy())} onClick={() => addMarketplace()}>
-                                {busy() === "market:add" && source().trim() ? <Spinner size={12} /> : "Add marketplace"}
-                            </button>
+                        <div class="paste">
+                            <div class="paste-line">
+                                <input class="input mono" ref={sourceEl} aria-label="Marketplace source" placeholder="owner/repo, git URL, folder or marketplace.json" value={source()} onInput={(e) => setSource(e.currentTarget.value)} onKeyDown={(e) => e.key === "Enter" && addMarketplace()} spellcheck={false} autocomplete="off" />
+                                <button class="btn" disabled={!source().trim() || Boolean(busy())} onClick={() => addMarketplace()}>
+                                    <Show when={busy() === "market:add" && source().trim()}>
+                                        <Spinner size={13} />
+                                    </Show>
+                                    Add marketplace
+                                </button>
+                            </div>
                         </div>
                         <Show
                             when={markets().length}
-                            fallback={empty(Store, "No marketplaces yet", "Add one above, or start with Anthropic's official catalog.", () => (
-                                <button class="btn btn-sm" disabled={Boolean(busy())} onClick={() => addMarketplace(SUGGESTED)}>
-                                    {busy() === "market:add" ? <Spinner size={12} /> : `Add ${SUGGESTED}`}
-                                </button>
-                            ))}
+                            fallback={
+                                <Blank title="No marketplaces yet">
+                                    <p class="plugins-blank-sub">Add one above, or start with Anthropic's official catalog.</p>
+                                    <button class="btn btn-sm" disabled={Boolean(busy())} onClick={() => addMarketplace(SUGGESTED)}>
+                                        {busy() === "market:add" ? <Spinner size={12} /> : `Add ${SUGGESTED}`}
+                                    </button>
+                                </Blank>
+                            }
                         >
-                            <div class="set-h pg-h">Added</div>
-                            <div class="pg-list">
+                            <div class="card plugins-card">
                                 <For each={markets()}>{(m) => <MarketRow m={m} busy={busy()} act={act} installed={installed()} confirm={setConfirm} />}</For>
                             </div>
                         </Show>
@@ -298,29 +314,30 @@ export function Plugins() {
                     <Match when={view() === "discover"}>
                         <Show
                             when={markets().length}
-                            fallback={empty(Store, "No marketplaces yet", "A marketplace is a catalog of plugins.", () => (
-                                <>
-                                    <button class="btn btn-primary btn-sm" disabled={Boolean(busy())} onClick={() => addMarketplace(SUGGESTED)}>
-                                        {busy() === "market:add" ? <Spinner size={12} /> : "Add Anthropic's marketplace"}
-                                    </button>
-                                    <button class="btn btn-ghost btn-sm" onClick={() => show("marketplaces")}>
-                                        Add another
-                                    </button>
-                                </>
-                            ))}
+                            fallback={
+                                <Blank title="No marketplaces yet">
+                                    <p class="plugins-blank-sub">A marketplace is a catalog of plugins.</p>
+                                    <span class="plugins-blank-actions">
+                                        <button class="btn btn-sm" disabled={Boolean(busy())} onClick={() => addMarketplace(SUGGESTED)}>
+                                            {busy() === "market:add" ? <Spinner size={12} /> : "Add Anthropic’s marketplace"}
+                                        </button>
+                                        <button class="btn btn-ghost btn-sm" onClick={() => show("marketplaces")}>
+                                            Add another
+                                        </button>
+                                    </span>
+                                </Blank>
+                            }
                         >
-                            <Show when={available().length} fallback={empty(Puzzle, "Everything is installed")}>
+                            <Show when={available().length} fallback={<Blank title="Everything here is installed" />}>
                                 <Show when={categories().length > 1}>
-                                    <div class="pg-cats" role="group" aria-label="Category">
-                                        <button class={!category() ? "on" : ""} aria-pressed={!category()} onClick={() => setCategory(undefined)}>
-                                            All<span>{available().filter(match).length}</span>
+                                    <div class="chips" role="radiogroup" aria-label="Category">
+                                        <button class="chip" role="radio" aria-checked={!category()} onClick={() => setCategory(undefined)}>
+                                            All <span class="chip-n num">{available().filter(match).length}</span>
                                         </button>
                                         <For each={categories().filter((c) => c.n || c.name === category())}>
                                             {(c) => (
-                                                <button class={category() === c.name ? "on" : ""} aria-pressed={category() === c.name} onClick={() => setCategory(category() === c.name ? undefined : c.name)}>
-                                                    <i style={{ "--h": c.hue }} />
-                                                    {c.name}
-                                                    <span>{c.n}</span>
+                                                <button class="chip" role="radio" aria-checked={category() === c.name} onClick={() => setCategory(category() === c.name ? undefined : c.name)}>
+                                                    {c.name} <span class="chip-n num">{c.n}</span>
                                                 </button>
                                             )}
                                         </For>
@@ -328,54 +345,53 @@ export function Plugins() {
                                 </Show>
                                 <Show
                                     when={discovered().length}
-                                    fallback={empty(Search, query().trim() ? `No plugins match “${query().trim()}”` : `Nothing in ${category()}`, category() ? undefined : "Try a shorter word, or a category.", category() ? () => (
-                                        <button class="btn btn-ghost btn-sm" onClick={() => setCategory(undefined)}>
-                                            Search all categories
-                                        </button>
-                                    ) : undefined)}
+                                    fallback={
+                                        <Blank title={query().trim() ? `No plugins match “${query().trim()}”.` : `Nothing in ${category()}`}>
+                                            <Show when={category()}>
+                                                <button class="btn btn-sm" onClick={() => setCategory(undefined)}>
+                                                    Search all categories
+                                                </button>
+                                            </Show>
+                                        </Blank>
+                                    }
                                 >
-                                    <div class="pg-grid">
+                                    <div class="plugin-grid">
                                         <For each={discovered()}>{(pl) => <PluginCard plugin={pl} markets={markets()} busy={busy()} open={() => setDetails({ pl })} install={() => void install(pl)} />}</For>
                                     </div>
                                 </Show>
-                                <p class="set-note pg-note">Plugins can run commands on {where() || "this computer"}, so install only from people you trust.</p>
+                                <p class="plugins-foot">Plugins can run commands on {where() || "this computer"}, so install only from people you trust.</p>
                             </Show>
                         </Show>
                     </Match>
                     <Match when={!installed().length}>
-                        {available().length
-                            ? empty(Puzzle, "No plugins installed", `${plural(available().length, "plugin")} ready to install.`, () => (
-                                  <button class="btn btn-primary btn-sm" onClick={() => show("discover")}>
-                                      Browse plugins
-                                  </button>
-                              ))
-                            : empty(Puzzle, "No plugins installed", undefined, () => (
-                                  <button class="btn btn-primary btn-sm" onClick={() => show("marketplaces")}>
-                                      Add a marketplace
-                                  </button>
-                              ))}
+                        <Blank title="No plugins installed">
+                            <Show
+                                when={available().length}
+                                fallback={
+                                    <button class="btn btn-sm" onClick={() => show("marketplaces")}>
+                                        Add a marketplace
+                                    </button>
+                                }
+                            >
+                                <button class="btn btn-sm" onClick={() => show("discover")}>
+                                    Discover plugins
+                                </button>
+                            </Show>
+                        </Blank>
                     </Match>
-                    <Match when={!installedShown().length}>{empty(Search, `No installed plugins match “${query().trim()}”`)}</Match>
+                    <Match when={!installedShown().length}>
+                        <Blank title={`No plugins match “${query().trim()}”.`} />
+                    </Match>
                     <Match when={true}>
-                        <p class="pg-scope">
-                            <Folder size={14} />
-                            <Show when={info()?.cwd} fallback={<span>Open a project to turn plugins on for just that project.</span>}>
-                                <span>
-                                    On and off apply to <b>{project()}</b>
-                                    <Show when={!info()?.trusted}> (not trusted yet)</Show>.
-                                </span>
+                        <div class="card plugins-card">
+                            <For each={installedShown()}>{(pl) => <PluginRow plugin={pl} markets={markets()} busy={busy()} working={busyRow(pl)} act={act} confirm={setConfirm} details={() => setDetails({ pl })} sameName={installed().some((x) => x !== pl && x.name === pl.name)} />}</For>
+                        </div>
+                        <p class="plugins-foot">
+                            <Show when={info()?.cwd} fallback="Open a project to turn plugins on for just that project.">
+                                On and off apply to {project()}
+                                <Show when={!info()?.trusted}> (not trusted yet)</Show>
                             </Show>
                         </p>
-                        <div class="pg-list">
-                            <For each={installedShown()}>{(pl) => <PluginRow plugin={pl} markets={markets()} busy={busy()} act={act} confirm={setConfirm} details={() => setDetails({ pl })} sameName={installed().some((x) => x !== pl && x.name === pl.name)} />}</For>
-                        </div>
-                        <Show when={installed().some((p) => p.installed && !p.orphaned)}>
-                            <div class="pg-after">
-                                <button class="btn btn-ghost btn-sm" disabled={Boolean(busy())} title="Refresh marketplaces and fetch newer versions" onClick={() => void act("update:all", { action: "update" })}>
-                                    {busy() === "update:all" ? <Spinner size={12} /> : <RefreshCw size={13} />} Check for updates
-                                </button>
-                            </div>
-                        </Show>
                     </Match>
                 </Switch>
             </Show>
@@ -383,39 +399,36 @@ export function Plugins() {
     );
 }
 
-/** A plugin in Discover: the whole card opens its details; Install installs it for you, everywhere. */
+/** A plugin in Discover: its mark and name open its details; Install installs it for you, everywhere. */
 function PluginCard(p: { plugin: PluginInfo; markets: PluginMarketplaceInfo[]; busy?: string; open: () => void; install: () => void }) {
     const pl = () => p.plugin;
     const cat = () => categoryOf(pl().category);
     const installing = () => p.busy === `install:${pl().id}`;
     return (
-        // Not a button holding a button: the name opens the details, and its hit area covers the card (CSS).
-        <article class="pg-card">
-            <div class="pg-top">
-                <PluginMark plugin={pl()} markets={p.markets} size={36} />
-                <div class="pg-id">
-                    <button class="pg-open" aria-label={`${pl().name}, ${cat().name}. Details`} onClick={p.open}>
-                        {pl().name}
-                    </button>
-                    <span>{pl().author ?? pl().marketplace}</span>
-                </div>
-            </div>
-            <p>{pl().description ?? "No description."}</p>
-            <div class="pg-foot">
-                <span class="pg-cat">
-                    <i style={{ "--h": cat().hue }} />
-                    {cat().name}
+        <article class="card plugin-card">
+            <button class="plugin-card-main" aria-label={`${pl().name}, ${cat().name}. Details`} onClick={p.open}>
+                <PluginMark plugin={pl()} markets={p.markets} />
+                <span class="row-text">
+                    <span class="row-title mono">{pl().name}</span>
+                    <span class="row-sub">{pl().author ?? pl().marketplace}</span>
                 </span>
-                <button
-                    class="btn btn-ghost btn-sm pg-install"
-                    disabled={Boolean(p.busy)}
-                    title="Install for you, in every project"
-                    aria-label={`Install ${pl().name}`}
-                    onClick={() => p.install()}
+            </button>
+            <p class="plugin-summary">{pl().description ?? "No description."}</p>
+            <div class="plugin-card-foot">
+                <span class="row-sub">{cat().name}</span>
+                <Show
+                    when={!installing()}
+                    fallback={
+                        <span class="prow-busy">
+                            <Spinner size={13} />
+                            Installing…
+                        </span>
+                    }
                 >
-                    {installing() ? <Spinner size={12} /> : <Download size={13} />}
-                    {installing() ? "Installing" : "Install"}
-                </button>
+                    <button class="btn btn-sm" disabled={Boolean(p.busy)} data-tip="Install for you, in every project" aria-label={`Install ${pl().name}`} onClick={() => p.install()}>
+                        Install
+                    </button>
+                </Show>
             </div>
         </article>
     );
@@ -440,67 +453,63 @@ function PluginDetails(p: { plugin: PluginInfo; markets: PluginMarketplaceInfo[]
         group?.querySelector<HTMLElement>(`[data-scope="${next.value}"]`)?.focus();
     };
     return (
-        <Dialog open onClose={p.onClose} bare labelledBy="pg-dlg-title" width={480} class="pg-dlg">
-            <div class="pg-top">
-                <PluginMark plugin={pl} markets={p.markets} size={48} />
-                <div class="pg-id">
-                    <h3 id="pg-dlg-title">{pl.name}</h3>
-                    <span>{[pl.author, pl.version ? `version ${pl.version}` : undefined].filter(Boolean).join(", ") || pl.marketplace}</span>
-                </div>
-            </div>
+        <Dialog
+            open
+            onClose={p.onClose}
+            title={`Install ${pl.name}?`}
+            subtitle={[pl.author, pl.version].filter(Boolean).join(" · ") || pl.marketplace}
+            icon={<PluginMark plugin={pl} markets={p.markets} />}
+            width={440}
+            class="plugin-dlg"
+            footer={
+                <>
+                    <button class="btn" onClick={p.onClose}>
+                        Cancel
+                    </button>
+                    <button class="btn btn-primary" disabled={Boolean(p.busy)} onClick={() => void p.install(scope())}>
+                        <Show when={installing()}>
+                            <Spinner size={13} />
+                        </Show>
+                        {installing() ? "Installing…" : `Install ${SCOPE_DONE[scope()]}`}
+                    </button>
+                </>
+            }
+        >
             <Show when={pl.description}>
-                <p class="pg-full">{pl.description}</p>
+                <p class="dlg-text">{pl.description}</p>
             </Show>
-            <div class="pg-facts">
-                <span>
-                    <i style={{ "--h": cat.hue }} />
-                    {cat.name}
-                </span>
-                <span>
-                    <Store size={13} />
-                    {pl.marketplace}
-                </span>
+            <p class="dlg-text dim plugin-facts">
+                {cat.name} · {pl.marketplace}
                 <Show when={pl.homepage}>
                     {(url) => (
-                        <a href={url()} onClick={(e) => (e.preventDefault(), void openExternal(url()))}>
-                            <ExternalLink size={13} />
-                            Homepage
-                        </a>
+                        <>
+                            {" · "}
+                            <a class="link-btn" href={url()} onClick={(e) => (e.preventDefault(), void openExternal(url()))}>
+                                Homepage
+                            </a>
+                        </>
                     )}
                 </Show>
-            </div>
-            <div class="pg-sh" id="pg-scope-label">
-                Install for
-            </div>
-            <div class="pg-scs" role="radiogroup" aria-labelledby="pg-scope-label" ref={group} onKeyDown={move}>
+            </p>
+            <div class="option-list" role="radiogroup" aria-label="Install for" ref={group} onKeyDown={move}>
                 <For each={scopes()}>
                     {(s) => (
-                        <button class={`pg-sc ${scope() === s.value ? "on" : ""}`} data-scope={s.value} role="radio" aria-checked={scope() === s.value} tabIndex={scope() === s.value ? 0 : -1} onClick={() => setScope(s.value)}>
-                            <span class="rd" />
-                            <span>
-                                <b>{s.label}</b>
-                                <span>{s.title(p.project)}</span>
+                        <button class="option" data-scope={s.value} role="radio" aria-checked={scope() === s.value} tabIndex={scope() === s.value ? 0 : -1} onClick={() => setScope(s.value)}>
+                            <span class="radio-dot" />
+                            <span class="option-text">
+                                <span class="option-title">{s.label}</span>
+                                <span class="option-sub">{s.title(p.project)}</span>
                             </span>
                         </button>
                     )}
                 </For>
             </div>
             <Show when={!p.projectScopes}>
-                <p class="pg-sub">{p.project ? `Trust ${p.project} to install for just that project.` : "Open a project to install for just that project."}</p>
+                <p class="dlg-text dim">{p.project ? `Trust ${p.project} to install for just that project.` : "Open a project to install for just that project."}</p>
             </Show>
-            <p class="pg-warn">
-                <Info size={13} />
-                It can run commands on {p.on || "this computer"}.
-            </p>
-            <div class="dialog-actions">
-                <span class="grow" />
-                <button class="btn btn-ghost" onClick={p.onClose}>
-                    Cancel
-                </button>
-                <button class="btn btn-primary" disabled={Boolean(p.busy)} onClick={() => void p.install(scope())}>
-                    {installing() ? <Spinner size={13} /> : <Download size={14} />}
-                    {installing() ? "Installing" : `Install ${SCOPE_DONE[scope()]}`}
-                </button>
+            <div class="note" data-tone="amber">
+                <Shield size={14} />
+                <span class="note-body">It can run commands on {p.on || "this computer"}.</span>
             </div>
         </Dialog>
     );
@@ -519,7 +528,7 @@ function uninstallText(pl: PluginInfo): string {
     return here && pl.scopes.user !== undefined ? "It's removed from this project and from your own settings." : here ? "It's removed from this project." : "It's removed from your own settings.";
 }
 
-function PluginRow(p: { plugin: PluginInfo; markets: PluginMarketplaceInfo[]; busy?: string; act: Act; confirm: (c: Confirm) => void; details: () => void; sameName?: boolean }) {
+function PluginRow(p: { plugin: PluginInfo; markets: PluginMarketplaceInfo[]; busy?: string; working?: string; act: Act; confirm: (c: Confirm) => void; details: () => void; sameName?: boolean }) {
     let more: HTMLButtonElement | undefined;
     const [menu, setMenu] = createSignal(false);
     const pl = () => p.plugin;
@@ -529,49 +538,58 @@ function PluginRow(p: { plugin: PluginInfo; markets: PluginMarketplaceInfo[]; bu
         run();
     };
     return (
-        <div class={`pg-row ${pl().installed && !pl().enabled ? "off" : ""}`}>
-            <PluginMark plugin={pl()} markets={p.markets} size={32} />
-            <div class="pg-rmain">
-                <div class="pg-rname">
-                    <b class="truncate" title={`${pl().name}, from ${pl().marketplace}`}>{pl().name}</b>
-                    <Show when={pl().installed?.version ?? pl().version}>{(v) => <span class="pg-ver">{v()}</span>}</Show>
+        <div class="row plugin-row">
+            <PluginMark plugin={pl()} markets={p.markets} />
+            <div class="row-text">
+                <span class="prow-name">
+                    <span class="row-title mono" data-tip={`${pl().name}, from ${pl().marketplace}`}>{pl().name}</span>
+                    <Show when={pl().installed?.version ?? pl().version}>{(v) => <span class="plugin-version num">{v()}</span>}</Show>
                     <Show when={p.sameName}>
-                        <span class="pg-ver">{pl().marketplace}</span>
+                        <span class="tag">{pl().marketplace}</span>
                     </Show>
                     <Show when={pl().missing}>
-                        <span class="pg-prob">Not installed</span>
+                        <span class="tag" data-tone="amber">Not installed</span>
                     </Show>
                     <Show when={pl().orphaned}>
-                        <span class="pg-ver" title="Its marketplace doesn't list it any more">no longer listed</span>
+                        <span class="tag" data-tip="Its marketplace doesn't list it any more">no longer listed</span>
                     </Show>
                     <Show when={pl().errors.length}>
-                        <span class="pg-prob" title={pl().errors.join("\n")}>
-                            <Info size={12} />
+                        <span class="tag" data-tone="red" data-tip={pl().errors.join("\n")}>
                             {plural(pl().errors.length, "problem")}
                         </span>
                     </Show>
-                </div>
-                <Show when={pl().installed} fallback={<div class="pg-rmeta">Turned on in settings, but not installed on this computer.</div>}>
+                </span>
+                <Show when={pl().installed} fallback={<span class="row-sub">Turned on in settings, but not installed on this computer.</span>}>
                     {(i) => (
-                        <div class="pg-rmeta">
-                            {countsText(i().counts) || "Nothing loads from it"}. {whereText(pl())}.
-                        </div>
+                        <span class="row-sub">
+                            {countsText(i().counts) || "Nothing loads from it"} · {whereText(pl())}
+                        </span>
                     )}
                 </Show>
-                <For each={pl().errors.slice(0, 3)}>{(e) => <div class="pg-rprob">{e}</div>}</For>
+                <For each={pl().errors.slice(0, 3)}>{(e) => <span class="row-sub plugin-problem">{e}</span>}</For>
             </div>
             <Show
-                when={pl().installed}
+                when={!p.working}
                 fallback={
-                    <button class="btn btn-sm" disabled={Boolean(p.busy)} onClick={p.details}>
-                        <Download size={13} /> Install…
-                    </button>
+                    <span class="prow-busy">
+                        <Spinner size={13} />
+                        {p.working}
+                    </span>
                 }
             >
-                <Toggle label={`${pl().name} on${pl().enabled ? "" : " (off now)"}`} checked={pl().enabled} onChange={(on) => void p.act(key("toggle"), { action: on ? "enable" : "disable", id: pl().id })} />
+                <Show
+                    when={pl().installed}
+                    fallback={
+                        <button class="btn btn-sm" disabled={Boolean(p.busy)} onClick={p.details}>
+                            Install…
+                        </button>
+                    }
+                >
+                    <Toggle label={`${pl().name} on${pl().enabled ? "" : " (off now)"}`} checked={pl().enabled} onChange={(on) => void p.act(key("toggle"), { action: on ? "enable" : "disable", id: pl().id })} />
+                </Show>
             </Show>
-            <button ref={more} class="hb sm" aria-label={`More for ${pl().name}`} title="More" aria-haspopup="menu" aria-expanded={menu()} onClick={() => setMenu(!menu())}>
-                {p.busy === key("update") || p.busy === key("uninstall") ? <Spinner size={12} /> : <Ellipsis size={16} />}
+            <button ref={more} class="icon-btn icon-btn-sm" aria-label={`More for ${pl().name}`} aria-haspopup="menu" aria-expanded={menu()} data-state={menu() ? "open" : undefined} onClick={() => setMenu(!menu())}>
+                <Ellipsis size={14} />
             </button>
             <Menu open={menu()} anchor={() => more} onClose={() => setMenu(false)} label={`${pl().name} (${pl().marketplace}) actions`} width={200} align="end">
                 <Show when={pl().installed && !pl().orphaned}>
@@ -592,6 +610,7 @@ function PluginRow(p: { plugin: PluginInfo; markets: PluginMarketplaceInfo[]; bu
                 <button
                     class="menu-item danger"
                     role="menuitem"
+                    data-danger=""
                     disabled={Boolean(p.busy)}
                     onClick={() =>
                         choose(() =>
@@ -616,37 +635,43 @@ function MarketRow(p: { m: PluginMarketplaceInfo; busy?: string; act: Act; insta
     const local = () => m().kind === "directory" || m().kind === "file";
     const updated = () => (m().lastUpdated ? Date.parse(m().lastUpdated!) : NaN);
     return (
-        <div class="pg-row">
-            <span class="pg-mark mk" aria-hidden="true">
-                <Store size={16} />
-            </span>
-            <div class="pg-rmain">
-                <div class="pg-rname">
-                    <b class="truncate">{m().name}</b>
-                    <span class="pg-ver">{plural(m().plugins, "plugin")}</span>
-                    <Show when={m().error}>
-                        <span class="pg-prob err">Can't read</span>
-                    </Show>
-                </div>
-                <div class="pg-rmeta">
-                    <code>{local() ? tildify(m().source) : m().source}</code>
-                    <Show when={!Number.isNaN(updated())}>, updated {ago(updated()) === "now" ? "just now" : `${ago(updated())} ago`}</Show>
-                </div>
+        <div class="row plugin-row">
+            <div class="row-text">
+                <Show when={m().error} fallback={<span class="row-title mono">{m().name}</span>}>
+                    <span class="prow-name">
+                        <span class="row-title mono">{m().name}</span>
+                        <span class="tag" data-tone="red">Can't read</span>
+                    </span>
+                </Show>
+                <span class="row-sub">
+                    <span class="mono">{local() ? tildify(m().source) : m().source}</span> · {plural(m().plugins, "plugin")}
+                    <Show when={!Number.isNaN(updated())}> · updated {ago(updated()) === "now" ? "just now" : `${ago(updated())} ago`}</Show>
+                </span>
                 <Show when={m().description}>
-                    <div class="pg-rmeta">{m().description}</div>
+                    <span class="row-sub">{m().description}</span>
                 </Show>
                 <Show when={m().error}>
-                    <div class="pg-rprob err">{m().error}</div>
+                    <span class="row-sub plugin-problem">{m().error}</span>
                 </Show>
-                <For each={m().warnings.slice(0, 3)}>{(w) => <div class="pg-rprob">{w}</div>}</For>
+                <For each={m().warnings.slice(0, 3)}>{(w) => <span class="row-sub plugin-warning">{w}</span>}</For>
             </div>
-            <button class="hb sm" disabled={Boolean(p.busy)} title={local() ? "Read again" : "Fetch the latest catalog"} aria-label={`Update ${m().name}`} onClick={() => void p.act(`market:update:${m().name}`, { action: "marketplaceUpdate", name: m().name })}>
-                {p.busy === `market:update:${m().name}` ? <Spinner size={12} /> : <RefreshCw size={15} />}
-            </button>
+            <Show
+                when={p.busy !== `market:update:${m().name}`}
+                fallback={
+                    <span class="prow-busy">
+                        <Spinner size={13} />
+                        Updating…
+                    </span>
+                }
+            >
+                <button class="icon-btn icon-btn-sm" disabled={Boolean(p.busy)} data-tip={local() ? "Read again" : "Fetch the latest catalog"} aria-label={`Update ${m().name}`} onClick={() => void p.act(`market:update:${m().name}`, { action: "marketplaceUpdate", name: m().name })}>
+                    <RotateCw size={13} />
+                </button>
+            </Show>
             <button
-                class="hb sm"
+                class="icon-btn icon-btn-sm"
                 disabled={Boolean(p.busy)}
-                title="Remove"
+                data-tip="Remove"
                 aria-label={`Remove ${m().name}`}
                 onClick={() => {
                     const from = p.installed.filter((pl) => pl.marketplace === m().name && pl.installed);
@@ -658,7 +683,7 @@ function MarketRow(p: { m: PluginMarketplaceInfo; busy?: string; act: Act; insta
                     });
                 }}
             >
-                <X size={15} />
+                <X size={13} />
             </button>
         </div>
     );

@@ -72,7 +72,7 @@ test("a menu of the covered session opened while Settings is up (a shortcut, say
         settingsTab: tab, usePane: () => ({ parked: () => false }), document: doc, window: doc, requestAnimationFrame() {}, mountMenu: () => () => {}, placePopover: () => undefined, sp: (n: number) => n,
         renderer: { ...solid, ...renderer, Portal: (p: any) => p.children },
     });
-    const covered = { closest: (sel: string) => (sel.includes(".settings-page") ? null : covered) };
+    const covered = { closest: (sel: string) => (sel.includes(".settings-sheet") ? null : covered) };
     const root = node("root");
     const dispose = renderer.render(() => Popover({ get open() { return open(); }, onClose: () => { closes++; setOpen(false); }, anchor: () => covered, children: "menu" }), root);
     try {

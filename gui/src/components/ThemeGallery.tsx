@@ -3,10 +3,9 @@
 // an agent for a new one.
 
 import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show, type JSX } from "solid-js";
-import { Moon, Plus, Sun } from "lucide-solid";
+import { Check, Plus, TriangleAlert } from "lucide-solid";
 import { BUILTINS } from "../../../src/themes/builtin";
 import { lookFor, onlyScheme, STAGE, type Look, type Scheme, type Theme } from "../../../src/themes/format";
-import { palette } from "../../../src/themes/palette";
 import { alignOnStart, gridOf, layerAnimation, restPose, sceneFrames, transformOf } from "../lib/theme-motion";
 import { app, homeCwdAfter, homeOn, reportError, setApp, toast } from "../state/app";
 import { refreshThemes, themeRpc } from "../state/theme-events";
@@ -142,24 +141,33 @@ function Picture(p: { look: Look; width: number; moving: boolean }): JSX.Element
     );
 }
 
-/** The window in miniature: the rail and a few lines of conversation, in the look's own colours. */
-function Face(p: { look?: Look; scheme: Scheme; moving: boolean }): JSX.Element {
-    const vars = createMemo(() => (p.look ? palette(p.look, p.scheme).vars : undefined));
+/**
+ * The window in miniature, in the look's own colours (its background, text and accent): the rail, a few lines of
+ * conversation and the composer; a scene over it, held still until it's pointed at.
+ */
+function Art(p: { look?: Look; scheme: Scheme; moving: boolean }): JSX.Element {
+    const vars = () => (p.look ? { "--p-bg": p.look.colors.background, "--p-text": p.look.colors.text, ...(p.look.colors.accent ? { "--p-accent": p.look.colors.accent } : {}) } : {});
     return (
-        // With no look it's the app's own (its data-theme gives it that scheme's tokens, over a theme's on <html>).
-        <span class="tg-face" data-theme={p.look ? undefined : p.scheme} style={vars() ?? {}}>
+        <span class="tile-art" data-kind={p.scheme} data-themed={p.look ? "" : undefined} style={vars()} aria-hidden="true">
+            <span class="tile-art-side">
+                <i />
+                <i />
+                <i />
+            </span>
+            <span class="tile-art-main">
+                <i class="tile-art-bubble" />
+                <i />
+                <i />
+                <i class="tile-art-input" />
+            </span>
             {/* Made again for another look (a scheme switched): its still and its moving layers come from the same one. */}
             <Show when={p.look?.layers?.length ? p.look : undefined} keyed>
-                {(look) => <Picture look={look} width={136} moving={p.moving} />}
+                {(look) => (
+                    <span class="tile-art-scene">
+                        <Picture look={look} width={150} moving={p.moving} />
+                    </span>
+                )}
             </Show>
-            <span class="tg-ui">
-                <i />
-                <u>
-                    <b />
-                    <b />
-                    <s />
-                </u>
-            </span>
         </span>
     );
 }
@@ -170,29 +178,27 @@ function Tile(p: { id?: string; name: string; theme?: Theme; problem?: string; o
     const shown = createMemo(() => (p.theme ? lookFor(p.theme, chosenScheme()) : undefined));
     const only = () => (p.theme ? onlyScheme(p.theme) : undefined);
     return (
-        <div class="tg-tile" data-id={p.id} classList={{ on: on(), broken: Boolean(p.problem) }} onPointerEnter={() => setHover(true)} onPointerLeave={() => setHover(false)}>
+        <div class={`tile ${p.problem ? "tile-broken" : ""}`} data-id={p.id} data-selected={on() ? "" : undefined} data-tip={p.problem} onPointerEnter={() => setHover(true)} onPointerLeave={() => setHover(false)}>
             {/* A broken one can't be picked but can be reached, by pointer and keyboard alike, to read what's wrong. */}
-            <button class="tg-pick" aria-pressed={on()} aria-disabled={p.problem ? true : undefined} title={p.problem} onClick={() => !p.problem && applyTheme(p.id)}>
-                <span class="tg-pv">
-                    <Face look={shown()?.look} scheme={shown()?.scheme ?? chosenScheme()} moving={hover() && prefs.themeMotion} />
-                </span>
-                {/* Beside the name, not on the picture: anywhere on it, it lands on some scene's moon or characters. */}
-                <span class="tg-label">
-                    <span class="tg-name">{p.name}</span>
-                    <Show when={only()}>
-                        <span class="tg-kind" title={only() === "dark" ? "Dark only" : "Light only"}>
-                            {only() === "dark" ? <Moon size={12} /> : <Sun size={12} />}
+            <button class="tile-main" role="radio" aria-checked={on()} aria-disabled={p.problem ? true : undefined} onClick={() => !p.problem && applyTheme(p.id)}>
+                <Art look={shown()?.look} scheme={shown()?.scheme ?? chosenScheme()} moving={hover() && prefs.themeMotion} />
+                <span class="tile-foot">
+                    <span class="tile-name">{p.name}</span>
+                    <Show when={p.problem} fallback={<Show when={only()}><span class="tag">{only() === "dark" ? "Dark only" : "Light only"}</span></Show>}>
+                        <span class="tag" data-tone="red">
+                            <TriangleAlert size={10} />
+                            Has an error
                         </span>
                     </Show>
+                    <Show when={on()}>
+                        <Check size={14} class="tile-check" />
+                    </Show>
                 </span>
-                <Show when={p.problem}>
-                    <span class="tg-err">Has an error</span>
-                </Show>
             </button>
             <Show when={p.onDelete}>
-                <button class="tg-del" aria-label={`Delete ${p.name}`} title="Delete" onClick={() => p.onDelete?.()}>
+                <button class="tile-delete" aria-label={`Delete ${p.name}`} data-tip={`Delete ${p.name}`} onClick={() => p.onDelete?.()}>
                     {/* Lucide's X, drawn here: the icon from lucide-solid would be a chunk of its own that the window's first load fetches. */}
-                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                         <path d="M18 6 6 18M6 6l12 12" />
                     </svg>
                 </button>
@@ -247,34 +253,36 @@ export function ThemeGallery(): JSX.Element {
         });
     });
     return (
-        <div class="tg-grid" role="group" aria-label="Theme">
+        <div class="set-item set-item-stack set-item-gallery">
+            <div class="tiles" role="radiogroup" aria-label="Theme">
                 <Tile name="None" />
                 <For each={BUILTINS}>{(b) => <Tile id={b.id} name={b.name} theme={builtinTheme(b.id)} />}</For>
                 <For each={userThemes()}>{(e) => <Tile id={e.id} name={e.theme?.name ?? themeName(e.id)} theme={e.theme ?? keptTheme(e.id)} problem={e.problems?.[0]} own onDelete={() => void remove(e.id, e.theme?.name ?? themeName(e.id))} />}</For>
                 {/* A session on a server has no theme tools: themes are made in this Mac's own sessions. */}
                 <Show when={!machine}>
-                    <div class="tg-tile">
-                        <button
-                            class="tg-pick tg-make"
-                            onClick={() => {
-                                setSettingsTab(undefined);
-                                // On this Mac, in one of its folders, whatever machine the session or Home on screen is on: its
-                                // sessions have the theme tools.
-                                const shown = app.activeId !== undefined || homeOn() !== undefined;
-                                const cwd = app.activeId !== undefined ? homeCwdAfter(app.activeId) : shown ? (app.projects[0]?.path ?? app.hello?.startCwd) : undefined;
-                                newSession(cwd, {});
-                                // No project here yet: none is shown, not another machine's folder.
-                                if (shown && !cwd) setApp("homeCwd", undefined);
-                                requestAnimationFrame(() => askAtHome());
-                            }}
-                        >
-                            <span class="tg-pv">
-                                <Plus size={18} />
-                            </span>
-                            <span class="tg-name">Make one</span>
-                        </button>
-                    </div>
+                    <button
+                        class="tile tile-make"
+                        onClick={() => {
+                            setSettingsTab(undefined);
+                            // On this Mac, in one of its folders, whatever machine the session or Home on screen is on: its
+                            // sessions have the theme tools.
+                            const shown = app.activeId !== undefined || homeOn() !== undefined;
+                            const cwd = app.activeId !== undefined ? homeCwdAfter(app.activeId) : shown ? (app.projects[0]?.path ?? app.hello?.startCwd) : undefined;
+                            newSession(cwd, {});
+                            // No project here yet: none is shown, not another machine's folder.
+                            if (shown && !cwd) setApp("homeCwd", undefined);
+                            requestAnimationFrame(() => askAtHome());
+                        }}
+                    >
+                        <span class="tile-make-art">
+                            <Plus size={18} />
+                        </span>
+                        <span class="tile-foot">
+                            <span class="tile-name">Make one</span>
+                        </span>
+                    </button>
                 </Show>
+            </div>
         </div>
     );
 }

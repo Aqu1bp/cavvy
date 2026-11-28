@@ -26,7 +26,6 @@ function mount(answer: (method: string, params: any) => Promise<any>, there: () 
     const RecentlyDeleted = component(source, "RecentlyDeleted", {
         Dialog,
         Spinner: () => null,
-        ArchiveRestore: () => null,
         deletedOpen: open,
         setDeletedOpen: setOpen,
         ago: (ms: number) => (ms === 1 ? "now" : "5m"),
@@ -37,7 +36,7 @@ function mount(answer: (method: string, params: any) => Promise<any>, there: () 
     });
     const root = node("root");
     const dispose = renderer.render(() => RecentlyDeleted(), root);
-    return { root, dispose, open, setOpen, calls, rows: () => byClass(root, "deleted-row") };
+    return { root, dispose, open, setOpen, calls, rows: () => byClass(root, "row") };
 }
 
 test("opening it lists the trash, newest first, with where and when; nothing deleted says so", async () => {
@@ -48,8 +47,8 @@ test("opening it lists the trash, newest first, with where and when; nothing del
         d.setOpen(true);
         expect(d.calls.rpc).toEqual([["sessions.trash", {}]]);
         await settle();
-        expect(d.rows().map((r) => text(byClass(r, "deleted-title")[0]!))).toEqual(["Add a dark theme", "Why does the login test fail"]);
-        expect(d.rows().map((r) => text(byClass(r, "deleted-meta")[0]!))).toEqual(["acme · Deleted 5m ago", "Deleted just now"]);
+        expect(d.rows().map((r) => text(byClass(r, "row-title")[0]!))).toEqual(["Add a dark theme", "Why does the login test fail"]);
+        expect(d.rows().map((r) => text(byClass(r, "row-sub")[0]!))).toEqual(["acme · Deleted 5m ago", "Deleted just now"]);
         expect(d.rows().map((r) => button(r, "Restore") !== undefined)).toEqual([true, true]);
         // Opened again, it asks again.
         list = [];
@@ -58,7 +57,7 @@ test("opening it lists the trash, newest first, with where and when; nothing del
         await settle();
         expect(d.calls.rpc).toHaveLength(2);
         expect(d.rows()).toHaveLength(0);
-        expect(text(byClass(d.root, "deleted-empty")[0]!)).toBe("Nothing deleted in the past week.");
+        expect(text(byClass(d.root, "blank")[0]!)).toBe("Nothing deleted in the past week.");
     } finally {
         d.dispose();
     }
@@ -78,14 +77,14 @@ test("Restore puts it back and offers Open, which closes the dialog and opens it
         await settle();
         button(d.rows()[1]!, "Restore")!.props.onClick();
         expect(d.calls.rpc.at(-1)).toEqual(["session.restore", { id: "a" }]);
-        // One at a time: every Restore waits while one runs.
-        expect(d.rows().map((r) => button(r, "Restore")!.props.disabled)).toEqual([true, true]);
+        // One at a time: every Restore waits while one runs (the one restoring shows a spinner in its place).
+        expect(d.rows().map((r) => byClass(r, "rd-btn")[0]!.props.disabled)).toEqual([true, true]);
         release();
         await settle();
         await settle();
         const back = d.rows()[1]!;
         expect(has(back, "back")).toBe(true);
-        expect(text(byClass(back, "deleted-meta")[0]!)).toBe("Restored");
+        expect(text(byClass(back, "row-sub")[0]!)).toBe("Restored");
         expect(button(d.rows()[0]!, "Restore")!.props.disabled).toBe(false);
         button(back, "Open")!.props.onClick();
         expect(d.open()).toBe(false);
@@ -113,10 +112,10 @@ test("what was deleted on a server is listed with this machine's, says where, an
         d.setOpen(true);
         await settle();
         // This machine has none, and the servers haven't said: not "Nothing deleted" yet.
-        expect(byClass(d.root, "deleted-empty").map(text)).toEqual([""]);
+        expect(byClass(d.root, "blank").map(text)).toEqual([""]);
         servers([{ id: "b1", title: "On the server", projectName: "app", deletedAt: 5, machine: "box" }]);
         await settle();
-        expect(d.rows().map((r) => text(byClass(r, "deleted-meta")[0]!))).toEqual(["box · app · Deleted 5m ago"]);
+        expect(d.rows().map((r) => text(byClass(r, "row-sub")[0]!))).toEqual(["box · app · Deleted 5m ago"]);
         button(d.rows()[0]!, "Restore")!.props.onClick();
         await settle();
         expect(d.calls.rpc.at(-1)).toEqual(["servers.relay", { name: "box", method: "session.restore", params: { id: "b1" } }]);
@@ -132,7 +131,7 @@ test("a server that didn't say what's deleted there is named, not taken for none
     try {
         d.setOpen(true);
         await settle();
-        expect(byClass(d.root, "deleted-empty").map(text)).toEqual(["Not shown: box."]);
+        expect(byClass(d.root, "blank").map(text)).toEqual(["Not shown: box."]);
     } finally {
         d.dispose();
     }

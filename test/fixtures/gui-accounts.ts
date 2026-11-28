@@ -45,8 +45,9 @@ function fixture(initial = [defaultAccount], provider = "claude-code", extra: { 
         useProvidersAt: () => ({ link: { call }, refresh: refreshProviders, changed: async () => {} }),
         terminalActions: { loginAccount: (...args: any[]) => logins.push(args) },
         Menu: (p: any) => { menus.push(p); return solid.createMemo(() => p.open ? p.children : null); },
-        Dialog: (p: any) => solid.createMemo(() => p.open ? p.children : null),
-        MoreHorizontal: () => null, Check: () => null, ChevronRight: () => null, ExternalLink: () => null, Info: () => null, ProviderIcon: () => null, Spinner: () => node("spinner"),
+        // Its title, line, body and buttons: what the user reads and presses in it.
+        Dialog: (p: any) => solid.createMemo(() => p.open ? [p.subtitle, p.children, p.footer] : null),
+        Ellipsis: () => null, Check: () => null, ChevronRight: () => null, ExternalLink: () => null, Info: () => null, ProviderIcon: () => null, Spinner: () => node("spinner"),
         openExternal: (url: string) => opened.push(url),
         addAccountFor, setAddAccountFor, requestAnimationFrame: () => 0,
     });
@@ -116,8 +117,8 @@ test("a connected provider shows its plan, a status dot and its one account's em
         expect(f.calls[0]).toEqual({ method: "accounts.list", params: { provider: "claude-code", refresh: true } });
         expect(f.nodes().find((n) => n.props.class === "tag")).toBeDefined();
         expect(text(f.nodes().find((n) => n.props.class === "tag")!)).toBe("Max");
-        expect(f.nodes().find((n) => n.props.class === "cli-dot")?.props["aria-label"]).toBe("Signed in");
-        expect(text(f.nodes().find((n) => n.props.class?.startsWith("prov-sub"))!)).toBe("me@example.test");
+        expect(f.nodes().find((n) => n.props.class === "dot")?.props["aria-label"]).toBe("Signed in");
+        expect(text(f.nodes().find((n) => n.props.class?.startsWith("row-sub"))!)).toBe("me@example.test");
         f.button("Claude Code actions").props.onClick();
         expect(f.nodes().filter((n) => n.props.role === "menuitem").map((n) => text(n))).toEqual(["Add account…", "Sign in again", "Environment variables…", "Add another Claude Code…", "Refresh status", "Learn more…", "Turn off…"]);
         f.button("Turn off…").props.onClick();
@@ -147,7 +148,7 @@ test("the dot waits for a sign-in that was checked, and a signed-out account has
     const unchecked = fixture([{ ...defaultAccount }], "codex", { info: { configured: true } });
     const out = fixture([{ ...defaultAccount, signedIn: false }], "codex", { info: { configured: true } });
     try {
-        expect(unchecked.nodes().some((n) => n.props.class === "cli-dot")).toBe(false);
+        expect(unchecked.nodes().some((n) => n.props.class === "dot")).toBe(false);
         expect(text(unchecked.root)).not.toContain("Not signed in");
         // Not in a menu: the row's own button.
         expect(out.menus.some((m) => m.open)).toBe(false);
@@ -156,11 +157,11 @@ test("the dot waits for a sign-in that was checked, and a signed-out account has
     } finally { unchecked.dispose(); out.dispose(); }
 });
 
-test("a connected provider whose one account is signed out says so instead of the dot", () => {
+test("a connected provider whose one account is signed out says so, its dot red, not green", () => {
     const f = fixture([{ ...defaultAccount, signedIn: false }], "codex", { info: { configured: true } });
     try {
         expect(text(f.root)).toContain("Not signed in");
-        expect(f.nodes().some((n) => n.props.class === "cli-dot")).toBe(false);
+        expect(f.nodes().filter((n) => n.props.class === "dot").map((n) => [n.props["data-tone"], n.props["aria-label"]])).toEqual([["red", "Not signed in"]]);
     } finally { f.dispose(); }
 });
 
@@ -271,8 +272,8 @@ test("two accounts list as rows: identity, sign in again, make default, rename a
         const rows = () => f.nodes().filter((n) => n.props.role === "listitem");
         expect(rows()).toHaveLength(2);
         const row = (label: string) => rows().find((n) => text(n).includes(label))!;
-        // The email first, then the account's name and plan; the default has a check.
-        expect(text(row("person@example.test"))).toBe("person@example.testPersonal · Pro");
+        // The account's name, its email, then its plan; the default has a check.
+        expect(text(row("person@example.test"))).toBe("Personalperson@example.testPro");
         const isDefault = (r: Node) => all(r).some((n) => n.props["aria-label"] === "Default");
         expect(isDefault(row("Default"))).toBe(true);
         expect(isDefault(row("person@example.test"))).toBe(false);
@@ -361,7 +362,7 @@ test("an account that doesn't share all of Default's setup has an info mark sayi
     const f = fixture([defaultAccount, { ...personal, sharing }]);
     try {
         expect(text(f.root)).not.toContain("Not all shared");
-        const marks = f.nodes().filter((n) => n.props.class === "account-sharing");
+        const marks = f.nodes().filter((n) => n.props.class?.split(" ").includes("account-sharing"));
         expect(marks).toHaveLength(1);
         expect(marks[0]!.props.title).toBe(`Some of your Claude Code setup isn't shared with this account.\n\n${sharing}`);
         expect(marks[0]!.props["aria-label"]).toBe(marks[0]!.props.title);

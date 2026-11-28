@@ -691,7 +691,7 @@ svg.lucide {
     pointer-events: none;
 }
 
-.app.electron :is(button, a, input, textarea, select, summary, label, video, audio, iframe, [role], [contenteditable]:not([contenteditable="false"]), [tabindex]:not([tabindex="-1"]), [draggable="true"], [data-window-drag="off"]):not(.transcript *):not(:is(.side-list, .insp-body, .set-in > :not(.set-top)) *):not([data-settings="on"] .header *),
+.app.electron :is(button, a, input, textarea, select, summary, label, video, audio, iframe, [role], [contenteditable]:not([contenteditable="false"]), [tabindex]:not([tabindex="-1"]), [draggable="true"], [data-window-drag="off"]):not(.transcript *):not(:is(.side-list, .insp-body, .settings-main) *):not([data-settings="on"] .header *),
 .app.electron .insp-body,
 .app.electron .br-host-tab.shown {
     -webkit-app-region: no-drag;

@@ -11,7 +11,7 @@ const read = (path: string) => readFileSync(resolve(import.meta.dir, "..", path)
 test("what only passes under the drag strip unseen cuts no hole in it", () => {
     const rule = /\.app\.electron :is\(button[^{]*\{[^}]*no-drag/.exec(read("gui/src/styles/base.css"))?.[0] ?? "";
     // Scrolled content: the sidebar's list, the side panel's and the diff reader's body, a Settings page under its bar.
-    expect(rule).toContain(":not(:is(.side-list, .insp-body, .set-in > :not(.set-top)) *)");
+    expect(rule).toContain(":not(:is(.side-list, .insp-body, .settings-main) *)");
     // Covered: the title bar under Settings.
     expect(rule).toContain(':not([data-settings="on"] .header *)');
 });
@@ -21,8 +21,8 @@ test("the drag strip's rule names those parts as their components do", () => {
     expect(read("gui/src/components/RightPanel.tsx")).toContain('class="inspector-body insp-body"');
     expect(read("gui/src/components/ReviewPane.tsx")).toContain('class="insp-body rv-body"');
     const settings = read("gui/src/components/Settings.tsx");
-    expect(settings).toContain('<div class="set-in">');
-    expect(settings).toContain('<div class="set-top">');
+    expect(settings).toContain('<div ref={page} class="settings-main" tabIndex={-1}>');
+    expect(settings).toContain('<header class="main-head settings-top">');
     expect(read("gui/src/App.tsx")).toContain('data-settings={settingsTab() ? "on" : "off"}');
 });
 
@@ -33,7 +33,7 @@ test("at a small text size, what shows in the strip from under a shorter bar sti
     expect(css).toMatch(/:not\(\[data-settings="on"\] \.header \*\),\n\.app\.electron \.insp-body,\n\.app\.electron \.br-host-tab\.shown \{\s*-webkit-app-region: no-drag;/);
     expect(read("gui/src/components/ReviewPane.tsx")).toContain('class="insp-body rv-body"');
     // Settings' bar is kept as tall as the title bar it covers, which the strip never ends below.
-    expect(/\n\.set-top \{[^}]*\n    min-height: var\(--header-h\);/.test(read("gui/src/styles/settings.css"))).toBe(true);
+    expect(/\n\.settings-top \{[^}]*\n    min-height: var\(--header-h\);/.test(read("gui/src/styles/settings.css"))).toBe(true);
     // The strip itself keeps its height: capped to the shorter bars, the title bar's last 7px stopped moving the window.
     expect(/\.app\.electron::before \{[^}]*max-height/.test(css)).toBe(false);
 });

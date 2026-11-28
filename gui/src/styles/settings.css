@@ -1,1071 +1,955 @@
-/* ---- Settings: a page, with its sections where the sidebar was ----------- */
+/*
+ * Settings: a full page (the design's settings.css). The nav stands where the sidebar was; the page is the sheet.
+ * Rows live in cards (kit.css .card); headings sit in a left column beside them.
+ */
 
-.set-back-wrap {
-    padding: 0 calc(8 * var(--sp));
-}
+/* ---------- chrome ---------- */
 
-.set-back {
-    display: flex;
-    align-items: center;
-    gap: calc(10 * var(--sp));
-    width: 100%;
-    height: calc(32 * var(--sp));
-    padding: 0 calc(10 * var(--sp));
-    border-radius: calc(8 * var(--sp));
-    font-size: 0.964rem;
-    font-weight: 500;
-    color: var(--fg-2);
-}
-
-.set-back:hover {
-    background: var(--hover);
-    color: var(--fg);
-}
-
-.set-back kbd {
-    margin-left: auto;
-    background: none;
-    color: var(--fg-3);
-}
-
-.set-tabs {
+.settings-side {
     display: flex;
     flex-direction: column;
-    gap: 1px;
-    padding: calc(10 * var(--sp)) calc(8 * var(--sp)) 0;
+    transition: none;
 }
 
-.navi {
+
+.settings-back {
     display: flex;
     align-items: center;
-    gap: calc(10 * var(--sp));
-    width: 100%;
-    height: calc(34 * var(--sp));
-    padding: 0 calc(10 * var(--sp));
-    border-radius: calc(8 * var(--sp));
-    font-size: 0.964rem;
-    font-weight: 500;
-    color: var(--fg-2);
-}
-
-.navi:hover {
-    background: var(--hover);
-    color: var(--fg);
-}
-
-.navi.on {
-    background: var(--rail-sel);
-    color: var(--fg);
-}
-
-/* ---- MCP servers dialog ---- */
-
-/* Lines up with the icon column of the rows above. */
-
-/* ---- Settings pages -------------------------------------------------------
-   A column on the window's glass, sections named on its left where there's room;
-   a header that stays while the page scrolls; settings in grouped cards: title
-   and description on the left, the control on the right. */
-
-.settings-page {
-    flex: 1;
-    min-height: 0;
-    overflow-y: auto;
-}
-
-/* Opening Settings: the page fades and rises in, 280ms whatever
-   Settings → Panel animations says. It mounts once per opening, so switching
-   sections doesn't replay it; closing is instant. (The session kept under it
-   isn't drawn while it's covered: shell.css.) */
-.settings-page > .set-in {
-    animation: settings-in 280ms var(--ease);
-}
-
-@keyframes settings-in {
-    from {
-        opacity: 0;
-        transform: translateY(4px);
-    }
-}
-
-@media (prefers-reduced-motion: reduce) {
-    .settings-page > .set-in {
-        animation: none;
-    }
-}
-
-.set-in {
-    container: settings / inline-size;
-    max-width: calc(1000 * var(--sp));
-    margin: 0 auto;
-    padding: 0 calc(28 * var(--sp)) calc(60 * var(--sp));
-}
-
-.set-top {
-    position: sticky;
-    top: 0;
-    z-index: 2;
-    display: flex;
-    align-items: center;
-    gap: calc(10 * var(--sp));
-    height: calc(58 * var(--sp));
-    /* No shorter than the title bar it covers, at any text size: what scrolls under it is no hole in the window's
-       drag strip (base.css), which ends no lower than that bar does. */
-    min-height: var(--header-h);
-    padding-top: calc(12 * var(--sp));
-    margin-bottom: calc(10 * var(--sp));
-}
-
-/* What scrolls under the heading goes soft behind it: there's no ground on the glass to hide it under. Its own
-   layer, so the blur's lower edge can fade without the heading fading with it. */
-.set-top::before {
-    content: "";
-    position: absolute;
-    inset: 0 calc(-28 * var(--sp)) calc(-10 * var(--sp));
-    z-index: -1;
-    -webkit-backdrop-filter: blur(22px);
-    backdrop-filter: blur(22px);
-    /* Faded at the sides too, over the column's padding: it can't reach the page's edges without scrolling sideways,
-       and a hard edge shows where the blur stops. */
-    mask-image: linear-gradient(#000 70%, transparent), linear-gradient(90deg, transparent, #000 calc(28 * var(--sp)), #000 calc(100% - 28 * var(--sp)), transparent);
-    mask-composite: intersect;
-    pointer-events: none;
-}
-
-.set-top h2 {
-    flex: 1;
-    min-width: 0;
-    margin: 0;
-    font-size: 1.429rem;
-    font-weight: 650;
-    letter-spacing: -0.02em;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.set-t-all {
-    display: none;
-}
-
-.set-close {
-    display: inline-grid;
-    place-items: center;
-    width: calc(28 * var(--sp));
-    height: calc(28 * var(--sp));
+    gap: calc(8 * var(--sp));
     flex: none;
-    border-radius: var(--pill);
-    color: var(--fg-2);
-    transition: background 140ms, color 140ms, transform 160ms var(--ease);
+    height: calc(30 * var(--sp));
+    margin: calc(2 * var(--sp)) calc(10 * var(--sp)) 0;
+    padding: 0 calc(8 * var(--sp));
+    border-radius: var(--radius-s);
+    color: var(--text-2);
+    font-weight: 500;
+    transition: background 0.12s, color 0.12s;
 }
 
-.set-close:hover {
-    background: var(--hover);
-    color: var(--fg);
+.settings-back > span:first-of-type {
+    flex: 1;
 }
 
-.set-close:active {
-    transform: scale(0.94);
-    background: var(--press);
+.settings-back:hover {
+    background: var(--fill-2);
+    color: var(--text);
 }
 
-/* Sections as pills, for when there's no sidebar showing their list. */
-.set-pills {
+.settings-side .settings-title {
+    margin: calc(20 * var(--sp)) 0 calc(12 * var(--sp));
+    padding: 0 calc(18 * var(--sp));
+}
+
+.settings-side .settings-tabs {
+    padding: 0 calc(10 * var(--sp));
+}
+
+/* The page in the main column (App.tsx .settings-host): its bar, then what scrolls. */
+.settings-sheet {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+/* The design's .main-head, on Cavvy's frame: as tall as the title bar it covers, which the window's drag strip
+      (base.css) never ends below, so nothing that scrolls passes under the strip. */
+.settings-top {
+    height: var(--header-h);
+    min-height: var(--header-h);
+    padding: 0 calc(12 * var(--sp)) 0 calc(20 * var(--sp));
+}
+
+.settings-top-lead,
+.settings-pills {
     display: none;
-    gap: calc(4 * var(--sp));
-    margin: calc(-6 * var(--sp)) 0 calc(16 * var(--sp));
+}
+
+/* No sidebar (hidden, or a drawer below 900px): the window buttons and the way back move into the bar, which says
+      Settings, and the sections show as pills under it (the design's narrow window). */
+.settings-sheet.rail-off .settings-top {
+    padding-left: calc(18 * var(--sp));
+}
+
+.settings-sheet.traffic.rail-off .settings-top {
+    padding-left: calc(92px - var(--win-pad, 8px));
+}
+
+.settings-sheet.rail-off .settings-top-lead {
+    display: flex;
+    align-items: center;
+    gap: calc(12 * var(--sp));
+    margin-right: calc(4 * var(--sp));
+}
+
+.settings-sheet.rail-off .settings-pills {
+    display: flex;
+    gap: calc(6 * var(--sp));
+    flex: none;
+    padding: calc(10 * var(--sp)) calc(22 * var(--sp));
+    border-bottom: 1px solid var(--line);
     overflow-x: auto;
     scrollbar-width: none;
 }
 
-.set-pills::-webkit-scrollbar {
+.set-t-all,
+.settings-sheet.rail-off .set-t-tab {
     display: none;
 }
 
-.set-pills button {
-    flex: none;
-    height: calc(28 * var(--sp));
-    padding: 0 calc(12 * var(--sp));
-    border-radius: var(--pill);
-    color: var(--fg-3);
-    font-weight: 500;
-    white-space: nowrap;
-}
-
-.set-pills button:hover:not(.on) {
-    color: var(--fg-2);
-}
-
-.set-pills button.on {
-    background: var(--sheet-2);
-    color: var(--fg);
-}
-
-/* No sidebar (hidden, or a drawer below 900px): the header drops below the
-   window controls, says Settings, and the sections show as pills under it. */
-.settings-page.rail-off .set-top {
-    height: calc(88 * var(--sp));
-    padding-top: calc(44 * var(--sp));
-}
-
-.settings-page.rail-off .set-pills {
-    display: flex;
-}
-
-.settings-page.rail-off .set-t-tab {
-    display: none;
-}
-
-.settings-page.rail-off .set-t-all {
+.settings-sheet.rail-off .set-t-all {
     display: inline;
 }
 
 @media (max-width: 899px) {
-    .settings-page .set-top {
-        height: calc(88 * var(--sp));
-        padding-top: calc(44 * var(--sp));
+    .settings-sheet .settings-top {
+        padding-left: calc(18 * var(--sp));
     }
 
-    .settings-page .set-pills {
+    .settings-sheet.traffic .settings-top {
+        padding-left: calc(92px - var(--win-pad, 8px));
+    }
+
+    .settings-sheet .settings-top-lead {
         display: flex;
+        align-items: center;
+        gap: calc(12 * var(--sp));
+        margin-right: calc(4 * var(--sp));
     }
 
-    .settings-page .set-t-tab {
+    .settings-sheet .settings-pills {
+        display: flex;
+        gap: calc(6 * var(--sp));
+        flex: none;
+        padding: calc(10 * var(--sp)) calc(22 * var(--sp));
+        border-bottom: 1px solid var(--line);
+        overflow-x: auto;
+        scrollbar-width: none;
+    }
+
+    .settings-sheet .set-t-tab {
         display: none;
     }
 
-    .settings-page .set-t-all {
+    .settings-sheet .set-t-all {
         display: inline;
     }
 }
 
-.set-h {
+
+
+
+
+/* The design's .chip (its settings.css), here only: Cavvy's own .chip is the design's .tag (base.css). */
+.settings-pills .chip {
+    display: inline-flex;
+    align-items: center;
+    flex: none;
+    max-width: none;
+    height: calc(24 * var(--sp));
+    padding: 0 calc(9 * var(--sp));
+    border-radius: var(--radius-s);
+    background: none;
+    box-shadow: inset 0 0 0 1px var(--line-strong);
+    color: var(--text-2);
+    font-size: calc(12 * var(--sp));
+    font-weight: 500;
+    transition: background 0.12s, color 0.12s;
+}
+
+.settings-pills .chip:hover {
+    background: var(--fill-1);
+    color: var(--text);
+}
+
+.settings-pills .chip[aria-current="page"] {
+    background: var(--ink);
+    box-shadow: none;
+    color: var(--on-ink);
+}
+
+.settings-top-title {
+    font-size: calc(14 * var(--sp));
+    font-weight: 600;
+    letter-spacing: -0.01em;
+}
+
+
+
+
+
+
+.settings-main {
+    flex: 1;
+    min-height: 0;
+    container: settings / inline-size;
+    overflow-y: auto;
+    scrollbar-gutter: stable;
+    outline: none;
+    animation: fade-in 0.14s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .settings-main {
+        animation: none;
+    }
+}
+
+.settings-page {
+    display: flex;
+    flex-direction: column;
+    gap: calc(28 * var(--sp));
+    max-width: calc(1010 * var(--sp));
+    padding: calc(26 * var(--sp)) calc(22 * var(--sp)) calc(56 * var(--sp));
+}
+
+
+.settings-title {
+    margin: 0 0 calc(14 * var(--sp));
+    padding: 0 calc(10 * var(--sp));
+    font-family: var(--font-display);
+    font-size: calc(26 * var(--sp));
+    font-weight: 400;
+    line-height: 1.1;
+}
+
+.settings-tabs {
+    display: flex;
+    flex-direction: column;
+    gap: calc(2 * var(--sp));
+}
+
+.settings-tab {
     display: flex;
     align-items: center;
-    gap: calc(6 * var(--sp));
-    margin: calc(20 * var(--sp)) calc(4 * var(--sp)) calc(7 * var(--sp));
-    font-size: 0.857rem;
+    gap: calc(9 * var(--sp));
+    height: calc(32 * var(--sp));
+    padding: 0 calc(10 * var(--sp));
+    border-radius: var(--radius-m);
+    color: var(--text-2);
+    font-weight: 500;
+    transition: background 0.1s, color 0.1s;
+}
+
+.settings-tab:hover {
+    background: color-mix(in srgb, var(--fill-2) 70%, transparent);
+    color: var(--text);
+}
+
+.settings-tab[aria-current="page"] {
+    background: var(--fill-2);
+    color: var(--text);
+}
+
+[data-theme="light"] .settings-tab[aria-current="page"] {
+    background: var(--surface);
+    box-shadow: var(--shadow-card);
+}
+
+/* ---------- sections and rows ---------- */
+
+.set-h {
+    font-size: calc(13 * var(--sp));
     font-weight: 600;
-    color: var(--fg-3);
 }
 
-/* A page's first heading starts at the top. */
-.set-body > .set-h:first-child,
-.set-body > :first-child > .set-h:first-child {
-    margin-top: 0;
+.set-section {
+    display: grid;
+    grid-template-columns: calc(220 * var(--sp)) minmax(0, calc(720 * var(--sp)));
+    column-gap: calc(24 * var(--sp));
+    align-items: start;
 }
 
-/* Narrow, each section's name over its settings; a section is no box of its own. */
-.set-sec {
-    display: contents;
+.set-section-head {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: calc(3 * var(--sp));
+    padding-top: calc(11 * var(--sp));
 }
 
-.set-sec + .set-sec > .set-group:first-child {
-    margin-top: calc(12 * var(--sp));
+.set-section-head .segmented {
+    margin-top: calc(8 * var(--sp));
 }
 
-/* A section's line under its name: narrow, between the name and the card; with room, under the name on the left. */
-.set-hd {
-    display: contents;
-}
-
-.set-cap {
-    margin: calc(-3 * var(--sp)) calc(4 * var(--sp)) calc(8 * var(--sp));
-    font-size: 0.786rem;
+.set-sub {
+    color: var(--text-3);
+    font-size: calc(12.5 * var(--sp));
     line-height: 1.45;
-    color: var(--fg-3);
 }
 
-.set-cap code {
-    font-size: 0.95em;
+.set-section-body {
+    display: flex;
+    flex-direction: column;
+    gap: calc(10 * var(--sp));
+    min-width: 0;
 }
 
-/* With room, each section's name in a column on the left and its settings beside it (Appearance's sections too),
-   so the page uses the sheet's width. A page with no sections of its own (Plugins, Usage) takes both columns. */
-@container settings (min-width: 800px) {
-    .set-body {
-        display: grid;
-        grid-template-columns: calc(200 * var(--sp)) minmax(0, 1fr);
-        column-gap: calc(28 * var(--sp));
-        align-items: start;
-    }
-
-    .set-body > * {
-        grid-column: 2;
-    }
-
-    .set-body > * + * {
-        margin-top: calc(12 * var(--sp));
-    }
-
-    .set-body > :is(.plg, .usage-view) {
-        grid-column: 1 / -1;
-    }
-
-    .set-body > :is(.set-sec, .ap) {
-        grid-column: 1 / -1;
-        display: grid;
-        grid-template-columns: subgrid;
-        align-items: start;
-    }
-
-    .set-body > :is(.set-sec, .ap) > :not(.set-h, .set-hd) {
-        grid-column: 2;
-    }
-
-    .set-body > :is(.set-sec, .ap) > .set-hd {
-        display: block;
-        grid-column: 1;
-    }
-
-    .set-body > :is(.set-sec, .ap) > .set-hd > .set-cap {
-        margin: calc(4 * var(--sp)) 0 0;
-    }
-
-    .set-body > :is(.set-sec, .ap) > .set-h,
-    .set-body > :is(.set-sec, .ap) > .set-hd > .set-h {
-        grid-column: 1;
-        margin: 0;
-        padding-top: calc(13 * var(--sp));
-        font-size: 0.929rem;
-        color: var(--fg-2);
-    }
-
-    .set-body > .set-sec + .set-sec > .set-group:first-child {
-        margin-top: 0;
-    }
-
-    .set-body > .set-sec:has(> :is(.set-h, .set-hd)):not(:first-child),
-    .set-body > .ap > .set-h:not(:first-child),
-    .set-body > .ap > .set-h:not(:first-child) + * {
-        margin-top: calc(28 * var(--sp));
-    }
-}
-
-.set-group {
-    border-radius: var(--r-card);
-    background: var(--group);
-    box-shadow: inset 0 0 0 0.5px var(--line);
+.set-card {
     overflow: hidden;
 }
 
-.set-group + .set-group {
-    margin-top: calc(12 * var(--sp));
-}
-
-.set-row {
+.set-item {
     display: flex;
     align-items: center;
-    gap: calc(16 * var(--sp));
+    gap: calc(10 * var(--sp));
     min-height: calc(46 * var(--sp));
-    padding: calc(9 * var(--sp)) calc(14 * var(--sp));
+    padding: calc(7 * var(--sp)) calc(12 * var(--sp)) calc(7 * var(--sp)) calc(14 * var(--sp));
 }
 
-/* A row with no description under its title (About's details, say) needs less height. */
-.set-row:not(:has(.set-desc)) {
-    min-height: calc(40 * var(--sp));
+.set-item + .set-item,
+.set-card > * + .set-item,
+.set-card > .pgroup + .pgroup,
+.set-card > .row + .pgroup,
+.set-card > .pgroup + .row {
+    border-top: 1px solid var(--line);
 }
 
-.set-row + .set-row {
-    border-top: 0.5px solid var(--line);
-}
-
-.set-lab {
+.set-item-text {
+    display: flex;
+    flex-direction: column;
+    gap: calc(1 * var(--sp));
     flex: 1;
     min-width: 0;
 }
 
-.set-title {
+.set-item-title {
     font-weight: 500;
 }
 
-.set-desc {
-    margin-top: calc(2 * var(--sp));
-    font-size: 0.857rem;
+.set-item-title[data-tone="red"] {
+    color: var(--red);
+}
+
+.set-item-sub {
+    color: var(--text-3);
+    font-size: calc(12.5 * var(--sp));
     line-height: 1.4;
-    color: var(--fg-3);
-    overflow-wrap: anywhere;
 }
 
-.set-desc code,
-.set-note code {
-    font-size: 0.9em;
-}
-
-.set-ctl {
+.set-item-control {
     display: flex;
     align-items: center;
-    justify-content: flex-end;
+    gap: calc(8 * var(--sp));
     flex: none;
-    max-width: 60%;
-    min-width: 0;
 }
 
 .set-reset {
-    display: grid;
-    place-items: center;
-    width: calc(24 * var(--sp));
-    height: calc(24 * var(--sp));
-    flex: none;
-    margin-left: calc(-8 * var(--sp));
+    color: var(--text-3);
+    animation: fade-in 0.14s;
 }
 
-/* With nothing to reset, the control keeps the row's edge like its neighbours.
-   (Appearance keeps the column on every row, so its controls line up.) */
-.set-group:not(.ap-group) .set-reset:empty {
-    display: none;
+.set-item-stack {
+    flex-direction: column;
+    align-items: stretch;
 }
 
-.set-val {
-    color: var(--fg-3);
-    font: 0.857rem var(--font-mono);
-    text-align: right;
-    overflow-wrap: anywhere;
-    user-select: text;
-    -webkit-user-select: text;
+.set-item .select {
+    justify-content: space-between;
 }
 
-.set-note {
-    margin: calc(10 * var(--sp)) calc(4 * var(--sp)) 0;
-    font-size: 0.857rem;
-    line-height: 1.5;
-    color: var(--fg-3);
-}
+/* ---------- stepper, slider ---------- */
 
-/* Reasoning effort: the level's name, then the composer's bars, smaller (mockup .set-effort). */
-.set-effort {
-    display: inline-flex;
-    align-items: center;
-    gap: calc(12 * var(--sp));
-    flex: none;
-}
-
-.set-effort-l {
-    min-width: calc(70 * var(--sp));
-    text-align: right;
-    font-weight: 500;
-    color: var(--fg);
-    white-space: nowrap;
-}
-
-.set-effort .effort {
-    width: calc(120 * var(--sp));
-}
-
-/* A native select drawn as a small raised button, with a glyph before its value. */
-.selbtn {
-    position: relative;
+.stepper {
     display: inline-flex;
     align-items: center;
     flex: none;
-    min-width: 0;
-    max-width: calc(260 * var(--sp));
-}
-
-.selbtn .select {
     height: calc(28 * var(--sp));
-    max-width: calc(260 * var(--sp));
-    padding: 0 calc(26 * var(--sp)) 0 calc(10 * var(--sp));
-    border: 0;
-    border-radius: calc(8 * var(--sp));
-    background-color: var(--sheet);
-    box-shadow: 0 0 0 0.5px var(--line), 0 1px 2px var(--line);
-    color: var(--fg);
-    font-size: 0.929rem;
-    font-weight: 500;
-    text-overflow: ellipsis;
-    transition: box-shadow 140ms;
+    border-radius: var(--radius-s);
+    background: var(--surface);
+    box-shadow: inset 0 0 0 1px var(--line-strong);
 }
 
-.selbtn.has-ic .select {
-    padding-left: calc(32 * var(--sp));
-}
-
-.selbtn .select:hover {
-    box-shadow: 0 0 0 0.5px var(--fg-4), 0 1px 2px var(--line);
-}
-
-.selbtn .select:focus,
-.selbtn .select:focus-visible {
-    border: 0;
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
-}
-
-.selbtn .select {
-    background-image: none;
-}
-
-.selbtn-chev {
-    position: absolute;
-    right: calc(8 * var(--sp));
-    top: 50%;
-    transform: translateY(-50%);
-    color: var(--fg-3);
-    pointer-events: none;
-}
-
-.selbtn-ic {
-    position: absolute;
-    left: calc(10 * var(--sp));
-    top: 50%;
-    display: grid;
-    place-items: center;
-    transform: translateY(-50%);
-    color: var(--fg-2);
-    pointer-events: none;
-}
-
-/* ---- Settings → Providers ------------------------------------------- */
-
-.keyin {
-    display: flex;
-    gap: calc(8 * var(--sp));
-    padding: calc(12 * var(--sp)) calc(14 * var(--sp));
-}
-
-.settings-page .keyin .input,
-.settings-page .prov-add .input {
-    flex: 1;
-    min-width: 0;
-    height: calc(30 * var(--sp));
-    border-radius: calc(8 * var(--sp));
-    font: 0.857rem var(--font-mono);
-}
-
-.prov-group {
-    overflow: visible;
-}
-
-.prov + .prov {
-    border-top: 0.5px solid var(--line);
-}
-
-.prov-line {
-    display: flex;
+.stepper-btn {
+    display: inline-flex;
     align-items: center;
-    gap: calc(12 * var(--sp));
-    min-height: calc(52 * var(--sp));
-    padding: calc(11 * var(--sp)) calc(14 * var(--sp));
-}
-
-/* Its own tile already: a provider's initial needs no second one inside. */
-.prov-logo .provider-mono {
-    background: none;
-}
-
-.prov-logo {
-    display: grid;
-    place-items: center;
+    justify-content: center;
     width: calc(28 * var(--sp));
     height: calc(28 * var(--sp));
-    flex: none;
-    border-radius: calc(8 * var(--sp));
-    background: var(--sheet);
-    box-shadow: 0 0 0 0.5px var(--line);
-    color: var(--fg);
+    border-radius: var(--radius-s);
+    color: var(--text-2);
+    transition: background 0.12s, color 0.12s;
 }
 
-.prov-lab {
-    flex: 1;
-    min-width: 0;
+.stepper-btn:hover:not(:disabled) {
+    background: var(--fill-1);
+    color: var(--text);
 }
 
-.prov-name {
-    display: flex;
-    align-items: center;
-    gap: calc(8 * var(--sp));
-    min-width: 0;
+.stepper-btn:disabled {
+    opacity: 0.35;
+}
+
+.stepper-value {
+    min-width: calc(30 * var(--sp));
+    text-align: center;
     font-weight: 500;
 }
 
-.prov-sub {
-    margin-top: 1px;
-    font-size: 0.857rem;
-    color: var(--fg-3);
-}
-
-.prov-key {
-    font: 0.821rem var(--font-mono);
-    color: var(--fg-3);
-}
-
-.prov-end {
+.stopslider {
     display: flex;
     align-items: center;
-    justify-content: flex-end;
-    flex-wrap: wrap;
-    gap: calc(8 * var(--sp));
-    flex: none;
-    max-width: 55%;
+    gap: calc(12 * var(--sp));
 }
 
-.settings-page .tag {
-    padding: calc(2 * var(--sp)) calc(6 * var(--sp));
-    border-radius: var(--pill);
-    background: var(--hover);
-    color: var(--fg-3);
-    font-size: 0.75rem;
-    font-weight: 600;
+.stopslider-label {
+    color: var(--text-2);
+    font-size: calc(12.5 * var(--sp));
     white-space: nowrap;
 }
 
-.settings-page .tag.ok {
-    color: var(--ok);
-    background: color-mix(in srgb, var(--ok) 12%, transparent);
-}
-
-.prov-add {
-    display: flex;
-    gap: calc(8 * var(--sp));
-    padding: 0 calc(14 * var(--sp)) calc(12 * var(--sp)) calc(54 * var(--sp));
-}
-
-/* The marketplace field on the Plugins page: a field in a rounded group. */
-/* ---- Settings → Shortcuts ------------------------------------------- */
-
-/* Several bindings for one action sit apart; a sequence's strokes closer. */
-.sc-keys {
-    display: inline-flex;
-    flex-wrap: wrap;
-    justify-content: flex-end;
-    align-items: center;
-    gap: calc(6 * var(--sp)) calc(12 * var(--sp));
-}
-
-/* Key caps: 12.5px, raised a little off the group. */
-.sc-keys kbd {
-    height: auto;
-    min-width: calc(24 * var(--sp));
-    padding: calc(4 * var(--sp)) calc(8 * var(--sp));
-    border-radius: calc(6 * var(--sp));
-    background: var(--sheet);
-    box-shadow: 0 0 0 0.5px var(--line), 0 1px 0 var(--line);
-    color: var(--fg-2);
-    font-size: 0.893rem;
-    text-align: center;
-}
-
-.sc-seq {
-    display: inline-flex;
-    align-items: center;
-    gap: calc(5 * var(--sp));
-}
-
-.sc-then,
-.sc-none {
-    font-size: 0.786rem;
-    color: var(--fg-3);
-}
-
-.sc-custom {
-    padding: calc(2 * var(--sp)) calc(7 * var(--sp));
-    border-radius: var(--pill);
-    font-size: 0.75rem;
-    font-weight: 600;
-    color: var(--accent);
-    background: color-mix(in srgb, var(--accent) 12%, transparent);
-}
-
-.sc-file-actions {
-    display: inline-flex;
-    flex-wrap: wrap;
-    justify-content: flex-end;
-    gap: calc(6 * var(--sp));
-}
-
-.sc-issues {
-    margin-top: calc(12 * var(--sp));
-    padding: calc(10 * var(--sp)) calc(12 * var(--sp));
-    border-radius: calc(12 * var(--sp));
-    background: var(--warn-bg);
-    box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--warn) 40%, transparent);
-    font-size: 0.857rem;
-    line-height: 1.5;
-}
-
-.sc-issues-title {
-    display: flex;
-    align-items: center;
-    gap: calc(6 * var(--sp));
-    font-weight: 600;
-    color: var(--warn);
-}
-
-.sc-issues ul {
-    margin: calc(6 * var(--sp)) 0 0;
-    padding-left: calc(20 * var(--sp));
-}
-
-.sc-issues li {
-    overflow-wrap: anywhere;
-}
-
-.sc-level {
-    font-weight: 600;
-}
-
-.sc-issues li.error .sc-level {
-    color: var(--danger);
-}
-
-/* Narrow: tighter margins; a row's control drops under its text when they don't fit side by side. */
-:where(.main[data-narrow~="520"], .stage-pane[data-narrow~="520"]) {
-    .set-in {
-        padding: 0 calc(16 * var(--sp)) calc(50 * var(--sp));
-    }
-
-    .set-row,
-    .prov-line {
-        flex-wrap: wrap;
-    }
-
-    .set-ctl,
-    .prov-end {
-        max-width: 100%;
-    }
-
-    .prov-add {
-        padding-left: calc(14 * var(--sp));
-    }
-}
-
-
-/* ---- Appearance ---------------------------------------------------------
-   Settings → Appearance, from the mockup's Settings rules: grouped rounded
-   lists, scheme tiles with a picture of the window, accent swatches,
-   segmented controls, a text-size stepper with a preview. */
-
-.ap > .set-h {
-    margin: calc(24 * var(--sp)) calc(4 * var(--sp)) calc(8 * var(--sp));
-    padding: 0;
-    font-size: 0.857rem;
-    font-weight: 600;
-    color: var(--fg-3);
-}
-
-.ap-group {
-    background: var(--group);
-    border-radius: var(--r-card);
-    box-shadow: inset 0 0 0 0.5px var(--line);
-    overflow: hidden;
-}
-
-.ap-group > .set-row {
-    min-height: calc(52 * var(--sp));
-    padding: calc(12 * var(--sp)) calc(8 * var(--sp)) calc(12 * var(--sp)) calc(14 * var(--sp));
-    gap: calc(12 * var(--sp));
-    border-bottom: 0;
-}
-
-.ap-group > .set-row + .set-row {
-    border-top: 0.5px solid var(--line);
-}
-
-.ap-group .set-title {
-    font-size: 0.929rem;
-    font-weight: 500;
-    color: var(--fg);
-}
-
-.ap-group .set-desc {
-    margin-top: calc(2 * var(--sp));
-    font-size: 0.857rem;
-    line-height: 1.4;
-    color: var(--fg-3);
-}
-
-/* Picture tiles: the window tints. */
-.ap-tiles {
-    display: flex;
-    gap: calc(12 * var(--sp));
-    padding: calc(14 * var(--sp));
-}
-
-.ap-tile {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: calc(8 * var(--sp));
-    font-size: 0.929rem;
-    font-weight: 500;
-    color: var(--fg-2);
-}
-
-.ap-tile.on {
-    color: var(--fg);
-}
-
-.ap-pv {
+.stopslider-track {
     position: relative;
-    width: calc(112 * var(--sp));
-    height: calc(72 * var(--sp));
+    width: calc(132 * var(--sp));
+    height: calc(20 * var(--sp));
     border-radius: calc(10 * var(--sp));
-    overflow: hidden;
-    box-shadow: 0 0 0 0.5px var(--line);
-    transition: box-shadow 200ms;
+    cursor: pointer;
+    touch-action: none;
 }
 
-.ap-tile:hover:not(.on) .ap-pv {
-    box-shadow: 0 0 0 0.5px var(--fg-4);
-}
-
-.ap-tile.on .ap-pv {
-    box-shadow: 0 0 0 2px var(--accent);
-}
-
-/* A small picture of the window. */
-.ap-face {
+.stopslider-track::before {
+    content: "";
     position: absolute;
-    inset: 0;
-    display: grid;
-    grid-template-columns: 30% 1fr;
-    gap: calc(4 * var(--sp));
-    padding: calc(5 * var(--sp));
-    background: var(--backdrop);
+    left: calc(7 * var(--sp));
+    right: calc(7 * var(--sp));
+    top: calc(8 * var(--sp));
+    height: calc(4 * var(--sp));
+    border-radius: calc(2 * var(--sp));
+    background: var(--fill-3);
 }
 
-.ap-face i,
-.ap-face u {
-    display: block;
-    border-radius: calc(5 * var(--sp));
+.stopslider-fill {
+    position: absolute;
+    left: 0;
+    top: calc(8 * var(--sp));
+    height: calc(4 * var(--sp));
+    border-radius: calc(2 * var(--sp));
+    background: var(--accent);
+    transition: width 0.14s var(--ease);
 }
 
-.ap-face i {
-    background: var(--rail-sel);
+.stopslider-stop {
+    position: absolute;
+    top: calc(8.5 * var(--sp));
+    width: calc(3 * var(--sp));
+    height: calc(3 * var(--sp));
+    margin-left: calc(-1.5 * var(--sp));
+    border-radius: 50%;
+    background: var(--text-4);
 }
 
-.ap-face u {
-    background: var(--sheet);
+.stopslider-stop[data-on] {
+    background: color-mix(in srgb, var(--on-accent) 70%, transparent);
 }
 
-/* Window tint: Clear, Ocean, Accent. Each face is the window as tokens.css
-   draws it (the tint over the window tint over the backdrop), smaller tiles
-   than the scheme's as they sit in a row. */
-.ap-tint-tiles {
-    gap: calc(10 * var(--sp));
-    padding: 0;
+.stopslider-thumb {
+    position: absolute;
+    top: calc(3 * var(--sp));
+    width: calc(14 * var(--sp));
+    height: calc(14 * var(--sp));
+    margin-left: calc(-7 * var(--sp));
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.14), 0 1px 3px rgba(0, 0, 0, 0.22);
+    transition: left 0.14s var(--ease);
 }
 
-.ap-tint-tiles .ap-pv {
-    width: calc(76 * var(--sp));
-    height: calc(50 * var(--sp));
-    border-radius: calc(8 * var(--sp));
-}
 
-.ap-face.ap-tint {
-    padding: calc(4 * var(--sp));
-    gap: calc(3 * var(--sp));
-    background: var(--win-wash), linear-gradient(var(--win-tint), var(--win-tint)), var(--tint-backdrop);
-}
-
-.ap-face.ap-tint i,
-.ap-face.ap-tint u {
-    border-radius: calc(4 * var(--sp));
-}
-
-/* The rail is the tint itself, with one selected row on it. */
-.ap-face.ap-tint i {
-    background: linear-gradient(var(--rail-sel), var(--rail-sel)) 0 5px / 100% 7px no-repeat;
-}
-
-/* Accent. */
-.ap-swatches {
+.swatches {
     display: flex;
-    flex-wrap: wrap;
-    justify-content: flex-end;
-    gap: calc(8 * var(--sp));
+    gap: calc(7 * var(--sp));
 }
 
-.ap-swatches button {
+.swatch {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     width: calc(20 * var(--sp));
     height: calc(20 * var(--sp));
     border-radius: 50%;
-    flex: none;
-    box-shadow: inset 0 0 0 1px var(--line);
+    background: var(--swatch);
+    color: #fff;
+    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12);
+    transition: box-shadow 0.12s;
 }
 
-.ap-swatches button.on {
-    outline: 2px solid var(--fg);
-    outline-offset: 2px;
+.swatch[aria-checked="true"] {
+    box-shadow: 0 0 0 2px var(--surface), 0 0 0 3.5px var(--swatch);
 }
 
-/* Window, Contrast, Density, Chat width, Panel animations: the kit's segmented control (kit.css), as the design has them. */
+[data-theme="dark"] .swatch[aria-checked="true"] {
+    box-shadow: 0 0 0 2px var(--fill-1), 0 0 0 3.5px var(--swatch);
+}
 
-/* Text size. */
-.ap-stepper {
-    display: inline-flex;
+.tints {
+    display: flex;
+    gap: calc(8 * var(--sp));
+}
+
+.tint {
+    display: flex;
+    flex-direction: column;
+    gap: calc(4 * var(--sp));
     align-items: center;
-    gap: calc(2 * var(--sp));
-    padding: calc(2 * var(--sp));
-    border-radius: var(--pill);
-    background: var(--sheet);
-    box-shadow: 0 0 0 0.5px var(--line);
-}
-
-.ap-stepper .hb {
-    border-radius: var(--pill);
-}
-
-.ap-stepper .num {
-    min-width: calc(44 * var(--sp));
-    text-align: center;
-    font-variant-numeric: tabular-nums;
+    padding: calc(4 * var(--sp)) calc(4 * var(--sp)) calc(3 * var(--sp));
+    border-radius: calc(7 * var(--sp));
+    color: var(--text-2);
+    font-size: calc(11.5 * var(--sp));
     font-weight: 500;
+    box-shadow: inset 0 0 0 1px transparent;
+    transition: box-shadow 0.12s, color 0.12s;
 }
 
-/* Reads at the chosen size: 1rem is the text size. */
-.ap-preview {
-    padding: calc(14 * var(--sp));
-    font-size: 1rem;
-    line-height: 1.6;
-    color: var(--fg);
-    user-select: text;
-    -webkit-user-select: text;
+.tint:hover {
+    color: var(--text);
 }
 
-.ap-preview code {
-    font-family: var(--font-mono);
-    font-size: 0.86em;
-    padding: 1px calc(5 * var(--sp));
-    border-radius: calc(5 * var(--sp));
-    background: var(--sheet-2);
+.tint[aria-checked="true"] {
+    color: var(--text);
+    box-shadow: inset 0 0 0 1.5px var(--accent);
 }
 
-:where(.main[data-narrow~="520"], .stage-pane[data-narrow~="520"]) {
-    .ap-tiles {
-        flex-wrap: wrap;
-    }
-
-    .ap-pv {
-        width: calc(88 * var(--sp));
-        height: calc(58 * var(--sp));
-    }
+.tint-art {
+    width: calc(58 * var(--sp));
+    height: calc(30 * var(--sp));
+    border-radius: calc(4 * var(--sp));
+    box-shadow: inset 0 0 0 1px rgba(128, 128, 128, 0.26);
 }
 
-/* ---- About: updates from main (Settings.tsx Updates) ------------------- */
+.tint[data-tint="clear"] .tint-art {
+    background: linear-gradient(120deg, #c9d4ff, #ffd9bd 55%, #e0cdfb);
+}
 
-/* While it builds, the line it last printed: one line, the build's own words. */
-.upd-row.running .set-desc {
-    font-family: var(--font-mono);
-    font-size: 0.786rem;
+.tint[data-tint="ocean"] .tint-art {
+    background: linear-gradient(120deg, #9fd0f2, #a8e2dc 55%, #b4c4f8);
+}
+
+.tint[data-tint="accent"] .tint-art {
+    background: linear-gradient(120deg, color-mix(in srgb, var(--accent) 60%, #fff), color-mix(in srgb, var(--accent) 22%, #fff));
+}
+
+[data-theme="dark"] .tint[data-tint="clear"] .tint-art {
+    background: linear-gradient(120deg, #2a3a78, #6a3a22 55%, #46307a);
+}
+
+[data-theme="dark"] .tint[data-tint="ocean"] .tint-art {
+    background: linear-gradient(120deg, #1c4a6c, #17504c 55%, #2a3a78);
+}
+
+[data-theme="dark"] .tint[data-tint="accent"] .tint-art {
+    background: linear-gradient(120deg, color-mix(in srgb, var(--accent) 60%, #000), color-mix(in srgb, var(--accent) 24%, #000));
+}
+
+.set-preview {
+    min-height: calc(48 * var(--sp));
+    background: var(--fill-1);
+}
+
+/* The design's panels.css .text-sample: a line at the conversation's text size. */
+.text-sample {
+    min-width: 0;
+    color: var(--text-2);
+    font-size: var(--chat-size);
+    line-height: 1.4;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
 }
 
-/* Check now, and Update & restart beside it when there's one. */
-.upd-row .set-ctl {
-    gap: calc(6 * var(--sp));
+.text-sample code {
+    padding: calc(1.5 * var(--sp)) calc(5 * var(--sp));
+    border-radius: calc(5 * var(--sp));
+    background: color-mix(in srgb, var(--text) 8%, transparent);
+    font-size: 0.875em;
 }
 
-.upd-row .btn svg {
-    margin-right: calc(2 * var(--sp));
+.set-preview .text-sample {
+    color: var(--text);
 }
 
-.upd-spin {
-    color: var(--fg-3);
-}
+/* ---------- providers ---------- */
 
-.upd-warn {
-    display: flex;
-    align-items: center;
-    gap: calc(6 * var(--sp));
-    margin-top: calc(-4 * var(--sp));
-    padding: 0 calc(14 * var(--sp)) calc(12 * var(--sp));
-    font-size: 0.821rem;
-    color: var(--warn);
-}
-
-.upd-changes {
-    margin: 0;
-    padding: calc(10 * var(--sp)) calc(14 * var(--sp)) calc(12 * var(--sp));
-    list-style: none;
-    border-top: 0.5px solid var(--line);
-}
-
-.upd-changes li {
-    display: flex;
-    align-items: baseline;
-    gap: calc(10 * var(--sp));
-    min-width: 0;
-    padding: calc(3 * var(--sp)) 0;
-    font-size: 0.857rem;
-    color: var(--fg-2);
-}
-
-.upd-changes code {
-    flex: none;
-    font: 0.786rem var(--font-mono);
-    color: var(--fg-3);
-}
-
-.upd-changes .upd-more {
-    padding-left: calc(62 * var(--sp));
-    color: var(--fg-3);
-}
-
-.upd-error {
-    display: flex;
-    align-items: flex-start;
-    gap: calc(8 * var(--sp));
-    padding: calc(10 * var(--sp)) calc(14 * var(--sp));
-    border-top: 0.5px solid var(--line);
-    font-size: 0.857rem;
-    line-height: 1.4;
-    color: var(--danger);
-    overflow-wrap: anywhere;
-}
-
-.upd-error > svg {
-    flex: none;
-    margin-top: calc(2 * var(--sp));
-}
-
-.upd-error > span {
-    flex: 1;
-    min-width: 0;
-}
-
-.upd-error .btn {
-    flex: none;
-    margin-top: calc(-3 * var(--sp));
-}
-
-/* About: the app's mark, its name and version, over its updates. */
-.ab-hero {
-    display: flex;
-    align-items: center;
-    gap: calc(12 * var(--sp));
-    padding: calc(14 * var(--sp));
-}
-
-.ab-hero + .set-row {
-    border-top: 0.5px solid var(--line);
-}
-
-.ab-name {
+.paste {
     display: flex;
     flex-direction: column;
+    gap: calc(6 * var(--sp));
 }
 
-.ab-name b {
-    font-size: 1.071rem;
+.paste-line {
+    display: flex;
+    gap: calc(8 * var(--sp));
+}
+
+.paste-line .input {
+    flex: 1;
+}
+
+.paste-note {
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
+}
+
+.paste-note code {
+    font-size: calc(11.5 * var(--sp));
+    color: var(--text-2);
+}
+
+.paste-error {
+    color: var(--red);
+}
+
+.prow {
+    min-height: calc(46 * var(--sp));
+}
+
+.prow-icon {
+    color: var(--text);
+}
+
+.prow-name {
+    display: flex;
+    align-items: center;
+    gap: calc(7 * var(--sp));
+    min-width: 0;
+}
+
+.prow-status {
+    display: flex;
+    align-items: center;
+    gap: calc(6 * var(--sp));
+}
+
+.prow-problem {
+    color: var(--red);
+}
+
+.prow-actions {
+    display: flex;
+    align-items: center;
+    gap: calc(6 * var(--sp));
+    flex: none;
+}
+
+.prow-add {
+    display: flex;
+    align-items: center;
+    gap: calc(6 * var(--sp));
+    flex: none;
+}
+
+.prow-add .input {
+    width: calc(220 * var(--sp));
+}
+
+.prow-slot {
+    flex: none;
+    width: calc(24 * var(--sp));
+}
+
+.prow-busy {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(6 * var(--sp));
+    flex: none;
+    height: calc(26 * var(--sp));
+    padding: 0 calc(4 * var(--sp));
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
+}
+
+a.btn {
+    text-decoration: none;
+}
+
+.accounts {
+    display: flex;
+    flex-direction: column;
+    margin: 0 calc(12 * var(--sp)) calc(10 * var(--sp)) calc(42 * var(--sp));
+    border-radius: var(--radius-m);
+    box-shadow: inset 0 0 0 1px var(--line);
+    background: var(--bg);
+}
+
+.account {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    min-height: calc(34 * var(--sp));
+    padding: 0 calc(5 * var(--sp)) 0 calc(8 * var(--sp));
+}
+
+.account + .account {
+    border-top: 1px solid var(--line);
+}
+
+.account-check {
+    display: inline-flex;
+    flex: none;
+    width: calc(14 * var(--sp));
+    color: var(--accent);
+}
+
+.account-name {
+    flex: none;
+    font-weight: 500;
+}
+
+.account-email {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-3);
+    font-size: calc(12.5 * var(--sp));
+}
+
+.account-info {
+    display: inline-flex;
+    flex: none;
+    padding: calc(2 * var(--sp));
+    border-radius: calc(4 * var(--sp));
+    color: var(--text-3);
+    cursor: default;
+}
+
+.dlg-form {
+    display: flex;
+    flex-direction: column;
+    gap: calc(12 * var(--sp));
+}
+
+
+/* ---------- shortcuts ---------- */
+
+/* A list of keys (the design's panels.css .keys). */
+.keys {
+    border-radius: calc(10 * var(--sp));
+    box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.keys-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-height: calc(36 * var(--sp));
+    padding: 0 calc(12 * var(--sp)) 0 calc(14 * var(--sp));
+}
+
+.keys-row + .keys-row {
+    border-top: 1px solid var(--line);
+}
+
+.keys-row .kbd {
+    min-width: calc(22 * var(--sp));
+    height: calc(22 * var(--sp));
+    font-size: calc(12 * var(--sp));
+    color: var(--text-2);
+}
+
+.settings-page .keys {
+    background: var(--surface);
+}
+
+[data-theme="dark"] .settings-page .keys {
+    background: var(--fill-1);
+}
+
+.keys-row dt {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+}
+
+.keys-row dd {
+    display: flex;
+    align-items: center;
+    gap: calc(6 * var(--sp));
+}
+
+.keys-or {
+    color: var(--text-4);
+    font-size: calc(11.5 * var(--sp));
+}
+
+.keys-none {
+    color: var(--text-3);
+    font-size: calc(12.5 * var(--sp));
+}
+
+.keys-problems {
+    max-width: calc(964 * var(--sp));
+}
+
+.keys-problems-title {
     font-weight: 600;
 }
 
-.ab-name span {
-    font-size: 0.857rem;
-    color: var(--fg-3);
+.keys-problems ul {
+    margin-top: calc(2 * var(--sp));
+    color: var(--text-2);
 }
 
-/* Shortcuts: the keybindings file's path as its row's title. */
-.sc-file .set-title {
-    font: 0.857rem var(--font-mono);
-    overflow-wrap: anywhere;
+.row.keys-file {
+    gap: calc(8 * var(--sp));
 }
 
-/* A value in words (macOS, Connected), not a path or a number. */
-.set-val.plain {
-    font: inherit;
-    font-size: 0.929rem;
+.keys-file .link-btn {
+    margin-right: calc(4 * var(--sp));
+}
+
+/* ---------- about ---------- */
+
+.about-head {
+    display: flex;
+    align-items: center;
+    gap: calc(14 * var(--sp));
+    padding-left: calc(244 * var(--sp));
+}
+
+.about-name {
+    font-size: calc(20 * var(--sp));
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    line-height: 1.2;
+}
+
+.about-version {
+    color: var(--text-3);
+}
+
+.about-spinner {
+    color: var(--text-3);
+}
+
+.about-warning {
+    min-height: calc(36 * var(--sp));
+    gap: calc(8 * var(--sp));
+    background: var(--amber-soft);
+    color: var(--amber);
+    font-size: calc(12.5 * var(--sp));
+}
+
+.about-log {
+    margin: 0;
+    padding: calc(10 * var(--sp)) calc(14 * var(--sp));
+    border-top: 1px solid var(--line);
+    background: var(--code-bg);
+    color: var(--text-2);
+    font-size: calc(12 * var(--sp));
+    line-height: 1.55;
+    overflow-x: auto;
+    outline-offset: -2px;
+}
+
+.about-commits {
+    gap: calc(6 * var(--sp));
+    padding-top: calc(10 * var(--sp));
+    padding-bottom: calc(10 * var(--sp));
+}
+
+.about-commits-title {
+    color: var(--text-2);
+    font-size: calc(12 * var(--sp));
+    font-weight: 500;
+}
+
+.about-commits ul {
+    display: flex;
+    flex-direction: column;
+    gap: calc(4 * var(--sp));
+}
+
+.about-commits li {
+    display: flex;
+    gap: calc(10 * var(--sp));
+    min-width: 0;
+    font-size: calc(12.5 * var(--sp));
+}
+
+.about-commits li code {
+    flex: none;
+    color: var(--text-3);
+    font-size: calc(11.5 * var(--sp));
+    line-height: calc(19 * var(--sp));
+}
+
+.about-commits li span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.about-commits .link-btn {
+    align-self: flex-start;
+}
+
+.about-details dd {
+    color: var(--text-2);
+}
+
+.about-details dd.mono {
+    font-size: calc(12 * var(--sp));
+}
+
+
+/* ---------- a narrow window: headings go above their rows ---------- */
+
+@container settings (max-width: 940px) {
+    .set-section {
+        grid-template-columns: minmax(0, calc(720 * var(--sp)));
+        row-gap: calc(8 * var(--sp));
+    }
+
+    .set-section-head {
+        padding-top: 0;
+    }
+
+    .about-head {
+        padding-left: 0;
+    }
+
+    .settings-page > .errs {
+        margin-left: 0;
+    }
+}
+
+.settings-page .segmented[data-disabled] {
+    opacity: 0.55;
+}
+
+.settings-page .segmented[data-disabled] .segmented-item {
+    cursor: default;
+}
+
+/* ---------- what Cavvy has beyond the design, in its pattern ---------- */
+
+/* The design's base resets these; Cavvy's doesn't. */
+:where(.settings-sheet, .settings-side) :where(h1, h2, h3, p, ul, dl, dd) {
+    margin: 0;
+    padding: 0;
+}
+
+:where(.settings-page) :where(ul) {
+    list-style: none;
+}
+
+/* A failed update, or the error of a check: the warning row in red. */
+.about-warning[data-tone="red"] {
+    background: var(--red-soft);
+    color: var(--red);
+}
+
+/* While it builds, the line it last printed: one line, the build's own words. */
+.about-updating .set-item-sub {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.keys-level {
+    font-weight: 600;
+}
+
+.keys-problems li.error .keys-level {
+    color: var(--red);
 }

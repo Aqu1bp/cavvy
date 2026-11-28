@@ -231,7 +231,7 @@
 
 .error-card-text code,
 .prov-err-msg code,
-.prov.err .prov-sub code {
+.prov.err .row-sub code {
     padding: 1px calc(5 * var(--sp));
     border-radius: calc(5 * var(--sp));
     background: var(--hover);
@@ -312,7 +312,7 @@
     }
 }
 
-.prov.err .prov-sub {
+.prov.err .row-sub {
     color: var(--fg-2);
     overflow-wrap: anywhere;
 }
