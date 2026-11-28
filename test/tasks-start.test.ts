@@ -409,6 +409,19 @@ describe("tasks.start", () => {
             const busy = await call<StartTaskResult>("tasks.start", other);
             expect(busy.worktree!.path).not.toBe(dirty.worktree!.path);
             expect(engine.runtimes.get(open.id)).toBe(open);
+            // Nor once its branch has commits of its own since: a new one is made, the commit left where it is.
+            const third = { ...start, origin: { key: "s0#hook-wt3", session: "s0", title: "x" } };
+            const left = await call<StartTaskResult>("tasks.start", third);
+            writeFileSync(join(left.worktree!.path, "NOTES.md"), "mine\n");
+            git(left.worktree!.path, "add", ".");
+            git(left.worktree!.path, "commit", "-qm", "the user's");
+            const committed = git(left.worktree!.path, "rev-parse", "HEAD");
+            const after = await call<StartTaskResult>("tasks.start", third);
+            expect(after.worktree!.path).not.toBe(left.worktree!.path);
+            expect(git(left.worktree!.path, "rev-parse", "HEAD")).toBe(committed);
+            // A clean one at the commit it was left at is still gone on in.
+            const kept = await call<StartTaskResult>("tasks.start", third);
+            expect(kept.worktree).toEqual(after.worktree);
         } finally {
             writeFileSync(settings, was);
         }
