@@ -513,12 +513,7 @@
     top: calc(var(--bar-h) + 42 * var(--sp));
 }
 
-/* Pressed: a step darker, as the design's controls are. */
-.btn:active:not(:disabled) {
-    background: var(--press);
-}
-
-.btn.primary:active:not(:disabled),
+/* Pressed: a step darker, as the design's controls are (buttons: kit.css). */
 .send:active:not(:disabled) {
     background: var(--ink-hover);
 }

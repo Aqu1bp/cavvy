@@ -71,19 +71,9 @@
     color: var(--fg-3);
 }
 
-.menu-item,
-.menu-item.compact {
-    display: flex;
-    align-items: center;
-    gap: calc(9 * var(--sp));
-    width: 100%;
-    min-height: calc(30 * var(--sp));
-    padding: calc(5 * var(--sp)) calc(9 * var(--sp));
-    border-radius: calc(6 * var(--sp));
+/* The item is kit.css's; a button for one starts its words at the left. */
+.menu-item {
     text-align: left;
-    color: var(--fg);
-    font-size: 0.929rem;
-    font-weight: 400;
     min-width: 0;
 }
 
@@ -98,31 +88,8 @@
     color: var(--fg-2);
 }
 
-.menu-item.danger,
 .menu-item.danger svg {
     color: var(--danger);
-}
-
-.menu-item:hover:not(:disabled):not([aria-disabled="true"]),
-.menu-item:focus-visible:not(:disabled),
-.menu-item.sel,
-.menu-item.current,
-.menu-item.on,
-.menu-sub[aria-expanded="true"] {
-    background: var(--hover);
-}
-
-.menu-item.danger:is(:hover, .sel):not(:disabled) {
-    background: var(--danger-soft);
-}
-
-.menu-item:focus-visible {
-    outline: none;
-}
-
-.menu-item:disabled,
-.menu-item[aria-disabled="true"] {
-    opacity: 0.45;
 }
 
 .menu-text {
@@ -168,12 +135,6 @@
 
 .popover.submenu[data-side="left"] {
     transform-origin: top right;
-}
-
-.menu-sep {
-    height: 1px;
-    margin: calc(5 * var(--sp)) calc(-5 * var(--sp));
-    background: var(--line);
 }
 
 .menu-note {
@@ -226,36 +187,9 @@
     transform: translateX(calc(14 * var(--sp)));
 }
 
-/* Segmented: a track with the chosen segment raised on it. */
-.segmented {
-    display: inline-flex;
-    gap: 0;
-    padding: calc(2 * var(--sp));
-    border-radius: var(--pill);
-    background: var(--hover);
-}
-
+/* Segmented: kit.css's, on Cavvy's buttons with .on. */
 .segmented button {
-    height: calc(26 * var(--sp));
-    padding: 0 calc(12 * var(--sp));
-    border-radius: calc(6 * var(--sp));
-    font-size: 0.929rem;
-    font-weight: 500;
-    color: var(--fg-2);
     justify-content: center;
-}
-
-.segmented.seg-sm button {
-    height: calc(22 * var(--sp));
-    padding: 0 calc(9 * var(--sp));
-    font-size: 0.857rem;
-    border-radius: calc(5 * var(--sp));
-}
-
-.segmented button.on {
-    background: var(--seg-on);
-    color: var(--fg);
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1), 0 0 0 0.5px rgba(0, 0, 0, 0.06);
 }
 
 /* Not available here: its tooltip says why. */

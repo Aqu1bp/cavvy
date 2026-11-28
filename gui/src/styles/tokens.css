@@ -551,6 +551,8 @@
     --radius-l: var(--radius-lg);
     --radius-xl: calc(16 * var(--sp));
     --chat-width: var(--column-w);
+    --diff-add-text: var(--add-fg);
+    --diff-del-text: var(--del-fg);
     --fill-1: #f1eeea;
     --fill-2: #e9e5df;
     --fill-3: #ddd8d0;
