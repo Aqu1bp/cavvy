@@ -2640,7 +2640,15 @@ button.att-card:hover {
     border-bottom: 0.5px solid var(--line);
 }
 
-/* The filters: one row of words that scrolls sideways, faded at an edge with more past it. */
+/* The filters and the arrows at their edges. */
+.mp-fwrap {
+    position: relative;
+    display: flex;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+/* The filters: one row of words that scrolls sideways, faded at an edge with more past it, where an arrow shows it. */
 .mp-filters {
     display: flex;
     flex: 1 1 auto;
@@ -2656,16 +2664,42 @@ button.att-card:hover {
     display: none;
 }
 
+/* Clear under the arrow, then fading in. */
 .mp-filters.more-r {
-    mask-image: linear-gradient(90deg, #000 calc(100% - 36px), transparent);
+    mask-image: linear-gradient(90deg, #000 calc(100% - 52px), transparent calc(100% - 22px));
 }
 
 .mp-filters.more-l {
-    mask-image: linear-gradient(90deg, transparent, #000 36px);
+    mask-image: linear-gradient(90deg, transparent 22px, #000 52px);
 }
 
 .mp-filters.more-l.more-r {
-    mask-image: linear-gradient(90deg, transparent, #000 36px, #000 calc(100% - 36px), transparent);
+    mask-image: linear-gradient(90deg, transparent 22px, #000 52px, #000 calc(100% - 52px), transparent calc(100% - 22px));
+}
+
+.mp-more {
+    position: absolute;
+    top: calc(5 * var(--sp));
+    display: grid;
+    place-items: center;
+    width: calc(20 * var(--sp));
+    height: calc(20 * var(--sp));
+    border-radius: 50%;
+    background: var(--sheet-2);
+    color: var(--fg-2);
+    transition: color var(--dur-fast);
+}
+
+.mp-more.l {
+    left: 0;
+}
+
+.mp-more.r {
+    right: 0;
+}
+
+.mp-more:hover {
+    color: var(--fg);
 }
 
 .mp-f {

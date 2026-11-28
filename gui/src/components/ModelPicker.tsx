@@ -679,9 +679,10 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                         </button>
                     </div>
                     {/* Whose models are listed: the favourites or one provider's, as plain words, in one row that scrolls sideways
-                        (a swipe or a wheel), faded at an edge with more past it; a name is whole on hover. At the row's end, the
-                        listed provider's account, where it's a subscription with accounts. */}
+                        (a swipe, a wheel, or the arrow at an edge with more past it); a name is whole on hover. At the row's end,
+                        the listed provider's account, where it's a subscription with accounts. */}
                     <div class="mp-bar">
+                        <div class="mp-fwrap">
                         <div
                             class={`mp-filters ${edges()}`}
                             ref={filtersEl}
@@ -713,6 +714,21 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                                     </button>
                                 )}
                             </For>
+                        </div>
+                        <For each={[-1, 1] as const}>
+                            {(dir) => (
+                                <Show when={edges().includes(dir < 0 ? "more-l" : "more-r")}>
+                                    <button
+                                        class={`mp-more ${dir < 0 ? "l" : "r"}`}
+                                        tabIndex={-1}
+                                        aria-label={dir < 0 ? "Earlier providers" : "More providers"}
+                                        onClick={() => filtersEl?.scrollBy({ left: dir * Math.max(80, filtersEl.clientWidth - 60), behavior: "smooth" })}
+                                    >
+                                        {dir < 0 ? <ChevronLeft size={13} /> : <ChevronRight size={13} />}
+                                    </button>
+                                </Show>
+                            )}
+                        </For>
                         </div>
                         {/* Rebuilt only when the list changes, so the accounts list (and focus in it) survives an update. */}
                         <Show when={acctProvider()} keyed>

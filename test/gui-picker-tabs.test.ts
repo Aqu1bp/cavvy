@@ -17,7 +17,7 @@ const THREE = ["Claude Code", "Codex"];
 const FOUR = ["Claude Code", "Claude Code · OpenRouter", "Mock (demo)"];
 const page = (account: boolean, names = THREE) => `<!doctype html><style>:root{--sp:1px}body{margin:0;font:14px system-ui,sans-serif}${css}</style>
 <div class="popover mp" style="width:340px"><div class="mp-bar">
-  <div class="mp-filters" role="tablist">${tab("Favorites")}${names.map((n, i) => tab(n, i === 0)).join("")}</div>
+  <div class="mp-fwrap"><div class="mp-filters" role="tablist">${tab("Favorites")}${names.map((n, i) => tab(n, i === 0)).join("")}</div></div>
   ${account ? `<span class="mp-acct"><button class="mp-acct-btn"><span class="truncate">Default</span><svg class="chev" width="12" height="12"></svg></button></span>` : ""}
 </div></div>`;
 
