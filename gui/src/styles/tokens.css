@@ -571,3 +571,36 @@
     --code-head: #242220;
     --shadow-card: 0 0 0 1px rgba(255, 255, 255, 0.06);
 }
+
+/* ---- More of the design's token names, for the conversation (styles/remix-conversation.css) ----
+   Diffs and code take Cavvy's colours. The green wash is the design's own, as its other washes are. Under a
+   theme, the design's fills and glyph grey give way to the theme's own tokens. */
+:root {
+    --diff-add: var(--add-bg);
+    --diff-add-gutter: var(--add-bg-strong);
+    --diff-add-text: var(--add-fg);
+    --diff-del: var(--del-bg);
+    --diff-del-gutter: var(--del-bg-strong);
+    --diff-del-text: var(--del-fg);
+    --hl-keyword: var(--syn-keyword);
+    --hl-string: var(--syn-string);
+    --hl-function: var(--syn-function);
+    --hl-comment: var(--syn-comment);
+    --hl-type: var(--syn-type);
+    --green-soft: #e4f3ea;
+}
+
+[data-theme="dark"] {
+    --green-soft: #17301f;
+}
+
+[data-themed] {
+    --glyph-3: var(--fg-3);
+    --fill-1: var(--hover);
+    --fill-2: var(--press);
+    --fill-3: var(--press);
+    --code-head: var(--well-head);
+    --green-soft: var(--ok-soft);
+    --amber-soft: var(--warn-bg);
+    --red-soft: var(--danger-soft);
+}

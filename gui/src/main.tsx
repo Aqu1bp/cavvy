@@ -25,6 +25,7 @@ import "./styles/requests.css";
 import "./styles/plan.css";
 import "./styles/overlays.css";
 import "./styles/markdown.css";
+import "./styles/remix-conversation.css";
 import "./styles/theme.css";
 import "./state/prefs";
 import { start } from "./state/app";

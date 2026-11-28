@@ -48,7 +48,7 @@ import { openAgents, openInEditor, openReview, stopBackground } from "../../stat
 import { findReveal, setViewedImage } from "../../state/ui";
 import { imagesReady, toolImage, toolThumb } from "../../state/images";
 import { CopyButton, Shine, Spinner } from "../ui/bits";
-import { AgentMark, ProviderStack } from "../ui/AgentMark";
+import { AgentMark } from "../ui/AgentMark";
 import { CodeBlock } from "./CodeBlock";
 import { Counts, DiffView } from "./DiffView";
 import { Markdown } from "./Markdown";
@@ -186,7 +186,9 @@ export function WorkRun(p: { items: Item[]; /** The turn's live line says what's
     // The line, once a step is done. The rows, while it's open; and before any step is done, whatever there is to
     // show (a thought, a call with no live line), with no card around it. One place for the rows either way, so a
     // row drawn before its run had a line is the same row after.
-    const lined = createMemo(() => done().length > 0);
+    // Sub-agents alone have their own line ("2 sub-agents · 1 working · 1 done"): no second one over it.
+    const onlyAgents = createMemo(() => tools().length > 0 && tools().every((t) => t.agent) && p.items.every((it) => it.kind === "activity"));
+    const lined = createMemo(() => done().length > 0 && !onlyAgents());
     // What its calls looked at (an image read, a screenshot): at the line's far right, the viewer a click away.
     const looked = createMemo(() => done().flatMap((t) => (t.imageKeys ?? []).map((_, index) => ({ tool: t, index }))).slice(0, 3));
     /** Its one step is an image read, and the image is all there is to see: the line opens the viewer, not a card. */
@@ -510,7 +512,6 @@ export function SubAgentsRow(p: { runs: AgentRun[] }) {
         <Show when={p.runs.length > 1} fallback={<div class="subagents single"><div class="agl"><Show when={p.runs[0]} keyed>{(a) => <AgentRow a={a} providerOf={providerOf} />}</Show></div></div>}>
             <div class="subagents">
                 <button class="ag-head" aria-expanded={open()} onClick={() => setOpen(!open())}>
-                    <ProviderStack providers={p.runs.map(providerOf)} />
                     <span class="ag-sum">{[plural(p.runs.length, "sub-agent"), ...counts()].join(" · ")}</span>
                     <span class="ag-time num">{span()}</span>
                     <ChevronRight size={13} class="chev" />
