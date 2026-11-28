@@ -37,7 +37,7 @@ const KEY: [file: string, selector: string, property: string, at14: string][] = 
     ["transcript.css", ".code-body", "padding", "12px 14px"],
     ["overlays.css", ".pal-row", "min-height", "32px"],
     ["kit.css", ".toast", "padding", "8px 8px 8px 14px"],
-    ["terminal.css", ".terminal-tab", "height", "28px"],
+    ["terminal.css", ".terminal-tab", "height", "26px"],
     ["tokens.css", ":root", "--radius-sm", "6px"],
 ];
 
@@ -116,7 +116,7 @@ const FRAME_RULES: Record<string, RegExp> = {
     // The title bar over a session stops short of its scrollbar (its padding is the bar's, less the scrollbar's width).
     "shell.css": /^(\[data-inspmode="(float|fill)"\] \.insp|(\.app\.electron )?\.insp-resizer|\[data-lead\] \.(insp-lead|inspector-head|rv-h|br-bar|sim-bar)|\.stage-pane > \.header)$/,
     "sidebar.css": /^(\.side-top( \.hb)?|\.resize-handle(\.left)?)$/,
-    "terminal.css": /^(\.terminal-resize|\.app\.tauri\.os-macos(\.rail-off|\[data-rail="overlay"\]) \.terminal-panel\.max \.terminal-toolbar)$/,
+    "terminal.css": /^(\.terminal-resizer(::after)?|\.app\.tauri\.os-macos(\.rail-off|\[data-rail="overlay"\]) \.terminal-panel\.max \.terminal-bar)$/,
     "overlays.css": /^\.find-bar\.glass$/,
     // A theme's stage: 1600 × 1000 units, the coordinates its layers are placed in, scaled whole to cover the window
     // or a tile (--tb-scale, the tile's own scale). No text sits on it.

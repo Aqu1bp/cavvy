@@ -2,7 +2,7 @@
 // (TerminalPanel): the emulator was a quarter of what the window loaded before anything showed.
 
 import { createEffect, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
-import { ClipboardPaste, Copy, Eraser, MessageSquarePlus, RotateCw, TextSelect } from "lucide-solid";
+import { ClipboardPaste, Copy, Eraser, MessageSquarePlus, TextSelect } from "lucide-solid";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
@@ -26,10 +26,11 @@ import { terminalTakesKeys, terminalUsed } from "../lib/terminal-keys";
 import { setupTickets, signInTabs, type Tab } from "../lib/terminal-tabs";
 
 /** `link`: the connection to the machine its shell runs on, and `conn` its state (the window's own, unless given). */
-export default function TerminalScreen(p: { tab: Tab; visible: boolean; onClose: (terminal: string) => void; onRestart: (terminal: string, previous?: string) => Promise<void>; link?: Rpc; conn?: () => ConnectionState }) {
+export default function TerminalScreen(p: { tab: Tab; visible: boolean; onEnded?: (ended: boolean) => void; onClose: (terminal: string) => void; onRestart: (terminal: string, previous?: string) => Promise<void>; link?: Rpc; conn?: () => ConnectionState }) {
     const link = p.link ?? rpc;
     const conn = () => (p.conn ? p.conn() : app.conn);
     let container!: HTMLDivElement;
+    let tipAt!: HTMLSpanElement;
     let term: Terminal;
     let fit: FitAddon;
     let disposed = false;
@@ -290,7 +291,7 @@ export default function TerminalScreen(p: { tab: Tab; visible: boolean; onClose:
     ];
 
     onMount(() => {
-        term = new Terminal({ fontFamily: '"Geist Mono Variable", ui-monospace, monospace', fontSize: terminalFontSize(prefs.fontSize), cursorBlink: true, scrollback: 5000, allowProposedApi: false, allowTransparency: true });
+        term = new Terminal({ fontFamily: '"Geist Mono Variable", ui-monospace, monospace', fontSize: terminalFontSize(prefs.fontSize), lineHeight: 1.25, cursorBlink: true, scrollback: 5000, allowProposedApi: false, allowTransparency: true });
         fit = new FitAddon();
         term.loadAddon(fit);
         term.open(container);
@@ -299,8 +300,17 @@ export default function TerminalScreen(p: { tab: Tab; visible: boolean; onClose:
             exists: (paths) => (elsewhere ? Promise.resolve(paths.map(() => null)) : rpc.call("fs.exists", { ...scope(), paths })),
             openUrl: (url) => void openUrl(url),
             openFile: (path, line, col) => void openInEditor(path, line, { col, ...scope() }),
-            hint: (l, on) => {
-                container.title = !on ? "" : l.kind === "path" ? "Open in editor" : session() && isLocalUrl(l.url) && browserState(session()!)?.status !== "unavailable" ? "Open in the Browser pane" : "Open in your browser";
+            // The link's tooltip, drawn as the app's are (ui/Tooltip): on a mark at the pointer, which the tooltips find
+            // by its data-tip as they would one pointed at.
+            hint: (l, on, at) => {
+                tipAt.dispatchEvent(new PointerEvent("pointerout", { bubbles: true, pointerType: "mouse" }));
+                delete tipAt.dataset.tip;
+                if (!on || !at) return;
+                const box = tipAt.parentElement!.getBoundingClientRect();
+                tipAt.style.left = `${at.clientX - box.left}px`;
+                tipAt.style.top = `${at.clientY - box.top - 8}px`;
+                tipAt.dataset.tip = l.kind === "path" ? "Open in editor" : session() && isLocalUrl(l.url) && browserState(session()!)?.status !== "unavailable" ? "Open in the Browser pane" : "Open in your browser";
+                tipAt.dispatchEvent(new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse" }));
             },
         }));
         const theme = () => {
@@ -352,7 +362,7 @@ export default function TerminalScreen(p: { tab: Tab; visible: boolean; onClose:
                 setAway(false);
                 early.take();
                 forgetDrawn();
-                setEnded("This terminal moved to another window. Restart to start a new one here.");
+                setEnded("This terminal moved to another window.");
             }
         });
         const stateOff = link.onState((state) => {
@@ -384,7 +394,9 @@ export default function TerminalScreen(p: { tab: Tab; visible: boolean; onClose:
     createEffect(() => { if (p.visible) requestAnimationFrame(() => { if (!disposed && term) { fitNow(); takeKeys(); } }); });
     // Settings → Appearance → Text size: the cells follow it, and the shell gets the new size.
     createEffect(on(() => prefs.fontSize, (size) => { if (term && !disposed) { term.options.fontSize = terminalFontSize(size); fitNow(true); } }, { defer: true }));
-    return <div class="terminal-screen" style={{ display: p.visible ? "flex" : "none" }}>
+    createEffect(() => p.onEnded?.(!!ended() || away()));
+    return <div class="tty terminal-screen" style={{ display: p.visible ? "flex" : "none" }}>
+        <span class="tty-tip" ref={tipAt} aria-hidden="true" />
         <div class="terminal-emulator" ref={container} on:keydown={used} on:pointerdown={used} on:wheel={used} on:focusout={used} onContextMenu={contextMenu} />
         <Menu label="Terminal actions" open={!!menuAt()} point={menuAt()} anchor={() => container} returnFocus={() => term.textarea} onClose={closeMenu} width={200}>
             <For each={menuItems()}>{(it) => (
@@ -393,13 +405,13 @@ export default function TerminalScreen(p: { tab: Tab; visible: boolean; onClose:
                 </button>
             )}</For>
         </Menu>
-        <Show when={loginOutputLost()}><div class="terminal-message">
+        <Show when={loginOutputLost()}><div class="tty-ended">
             <span>Login output isn't kept. Restart login for a new sign-in prompt.</span>
-            <Show when={!away() && !ended()}><button class="btn btn-sm" disabled={conn() !== "open" || restarting()} onClick={restart}><RotateCw size={12} /> Restart login</button></Show>
+            <Show when={!away() && !ended()}><button class="btn btn-sm" disabled={conn() !== "open" || restarting()} onClick={restart}>Restart login</button></Show>
         </div></Show>
-        <Show when={away() || ended()}><div class="terminal-message">
+        <Show when={away() || ended()}><div class="tty-ended">
             <span>{away() ? "Disconnected. The process stays on the server and reconnects here." : ended()}</span>
-            <Show when={!away()}><button class="btn btn-sm" disabled={conn() !== "open" || restarting()} onClick={restart}><RotateCw size={12} /> {p.tab.login?.install ? "Run again" : p.tab.login ? "Restart login" : "Restart shell"}</button></Show>
+            <Show when={!away()}><button class="btn btn-sm" disabled={conn() !== "open" || restarting()} onClick={restart}>{p.tab.login?.install ? "Run again" : p.tab.login ? "Restart login" : "Restart shell"}</button></Show>
         </div></Show>
     </div>;
 }

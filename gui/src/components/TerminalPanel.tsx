@@ -1,5 +1,5 @@
 import { batch, createEffect, createMemo, createSignal, For, lazy, on, onCleanup, Show, untrack } from "solid-js";
-import { ChevronDown, Maximize2, Minimize2, Play, Plus, TerminalIcon, X } from "lucide-solid";
+import { ChevronDown, KeyRound, Maximize2, Minimize2, Play, Plus, X } from "lucide-solid";
 import "../styles/terminal.css";
 import { app, connOn, reportError, rpc, toast } from "../state/app";
 import { RpcError, type Rpc } from "../lib/rpc";
@@ -242,41 +242,51 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean; on?: string; 
         target.addEventListener("pointermove", move);
         target.addEventListener("lostpointercapture", end);
     };
+    // A tab whose shell has ended (or is away): its name is dimmed, as the design has it.
+    const [endedTabs, setEndedTabs] = createSignal<Record<string, boolean>>({});
+    const tabLabel = (tab: Tab) => (tab.login ? (tab.login.install ? tab.login.name : `Sign in · ${tab.login.name}`) : tab.script ? (tab.script.setup?.label ?? tab.script.name) : undefined);
+    const canAdd = () => restored() && conn() === "open" && !full();
     return (
-        <section ref={panel} class={`terminal-panel ${terminalMax() ? "max" : ""} ${dragging() ? "dragging" : ""}`} classList={{ held: !!panelHold() }} aria-label="Terminal panel"
+        <section ref={panel} class={`terminal terminal-panel ${terminalMax() ? "max" : ""} ${dragging() ? "dragging" : ""}`} classList={{ held: !!panelHold() }} aria-label="Terminal panel"
             style={{ display: visible() ? "flex" : "none", width: panelHold() && `${panelHold()!.sheetWidth}px`, height: panelHold() && `${panelHold()!.terminal}px` }}>
-            <div class="terminal-resize" role="separator" aria-label="Resize terminal" aria-orientation="horizontal" tabIndex={0} onPointerDown={resize}
+            <div class="terminal-resizer" role="separator" aria-label="Resize terminal" aria-orientation="horizontal" tabIndex={0} data-dragging={dragging() || undefined} onPointerDown={resize}
                 onKeyDown={(e) => { if (e.key === "ArrowUp" || e.key === "ArrowDown") { e.preventDefault(); setTerminalMax(false); setHeight((panel?.offsetHeight ?? prefs.terminalHeight) + (e.key === "ArrowUp" ? 24 : -24)); } }} />
-            <div class="terminal-toolbar">
+            <header class="terminal-bar">
                 <div class="terminal-tabs" role="tablist" aria-label="Terminals">
-                    <For each={currentTabs()}>{(tab) => <div class={`terminal-tab ${active()?.id === tab.id ? "on" : ""}`}>
-                        <button role="tab" aria-selected={active()?.id === tab.id} onClick={() => { terminalAsked(); setSelected(tab.id); }} title={tab.script?.setup ? `Setup script “${tab.script.name}” in ${tab.cwd}: ${tab.script.setup.command}` : tab.script ? `Script “${tab.script.name}” in ${tab.cwd}` : tab.cwd}>{tab.script ? <Play size={11} class="terminal-tab-icon" /> : <TerminalIcon size={13} class="terminal-tab-icon" />}{tab.login ? (tab.login.install ? tab.login.name : `Sign in · ${tab.login.name}`) : tab.script ? (tab.script.setup?.label ?? tab.script.name) : `${basename(tab.cwd)} ${tab.number}`}</button>
-                        <button class="hb sm terminal-tab-x" title="Close terminal and stop its shell" aria-label={tab.script ? `Close terminal ${tab.script.setup?.label ?? tab.script.name}` : `Close terminal ${tab.number}`} onClick={() => close(tab)}><X size={12} /></button>
+                    <For each={currentTabs()}>{(tab) => <div class="terminal-tab" role="presentation" data-active={active()?.id === tab.id || undefined} data-ended={endedTabs()[tab.id] || undefined}>
+                        <button role="tab" class="terminal-tab-main" aria-selected={active()?.id === tab.id} onClick={() => { terminalAsked(); setSelected(tab.id); }} title={tab.script?.setup ? `Setup script “${tab.script.name}” in ${tab.cwd}: ${tab.script.setup.command}` : tab.script ? `Script “${tab.script.name}” in ${tab.cwd}` : tab.cwd}>
+                            {tab.script ? <Play size={11} fill="currentColor" stroke-width={0} /> : tab.login && !tab.login.install ? <KeyRound size={12} /> : undefined}
+                            <span class="truncate">{tabLabel(tab) ?? basename(tab.cwd)}</span>
+                            {tabLabel(tab) ? undefined : <span class="terminal-tab-n">{tab.number}</span>}
+                        </button>
+                        <button class="terminal-tab-close" title="Close terminal and stop its shell" aria-label={tab.script ? `Close terminal ${tab.script.setup?.label ?? tab.script.name}` : `Close terminal ${tab.number}`} onClick={() => close(tab)}><X size={12} /></button>
                     </div>}</For>
+                    <button class="icon-btn icon-btn-sm terminal-new" title={full() ? `${MAX_TABS} terminals are open in this window` : "New terminal"} aria-label="New terminal" aria-disabled={!canAdd() || undefined} data-disabled={!canAdd() || undefined} onClick={() => canAdd() && add()}><Plus size={14} /></button>
                 </div>
-                <button class="hb sm" title={full() ? `${MAX_TABS} terminals are open in this window` : "New terminal"} aria-label="New terminal" disabled={!restored() || conn() !== "open" || full()} onClick={add}><Plus size={15} /></button>
-                <span class="terminal-cwd truncate" title={p.cwd}>{tildify(p.cwd ?? "", app.hello?.homeDir)}</span>
-                <button class="hb sm" title={terminalMax() ? "Restore" : "Maximize"} aria-label={terminalMax() ? "Restore terminal size" : "Maximize terminal"} aria-pressed={terminalMax()} onClick={() => setTerminalMax(!terminalMax())}>{terminalMax() ? <Minimize2 size={14} /> : <Maximize2 size={14} />}</button>
-                <button class="hb sm" title={withShortcut("Hide terminal", "app:toggleTerminal")} aria-label="Hide terminal" onClick={() => setTerminalOpen(false)}><ChevronDown size={15} /></button>
-            </div>
-            <Show when={!currentTabs().length}>
-                <div class="terminal-message">
-                    <span>{full() ? `${MAX_TABS} terminals are open in other projects. Close one to open a terminal here.` : conn() !== "open" ? "Not connected to Cavvy server." : "No terminal in this project."}</span>
-                    <Show when={!full()}><button class="btn btn-sm" disabled={!restored() || conn() !== "open"} onClick={add}><Plus size={12} /> New terminal</button></Show>
-                </div>
-            </Show>
-            {/* `shown` worked out once, owned by the tab: `visible={a() && b()}` makes a memo each time it's read, and the
-                screen reads it from resize frames and after awaits, where nothing owns it: each was kept for good. */}
-            <For each={tabs()}>{(tab) => { const shown = createMemo(() => visible() && active()?.id === tab.id); return <TerminalScreen tab={tab} visible={shown()} link={link} conn={conn} onClose={(terminal) => { if (tab.closing) closes.close(terminal); }} onRestart={async (terminal, previous) => {
-                if (previous) {
-                    try { await link.call("terminal.close", { id: previous }); }
-                    catch (e) {
-                        if (e instanceof RpcError && e.code === "disconnected") closes.close(previous);
-                        if (!(e instanceof RpcError && e.code === "terminal_not_open")) throw e;
+                <span class="terminal-cwd mono" title={p.cwd}>{tildify(p.cwd ?? "", app.hello?.homeDir)}</span>
+                <button class="icon-btn icon-btn-sm" title={terminalMax() ? "Restore" : "Maximize"} aria-label={terminalMax() ? "Restore terminal size" : "Maximize terminal"} aria-pressed={terminalMax()} onClick={() => setTerminalMax(!terminalMax())}>{terminalMax() ? <Minimize2 size={13} /> : <Maximize2 size={13} />}</button>
+                <button class="icon-btn icon-btn-sm" title={withShortcut("Hide terminal", "app:toggleTerminal")} aria-label="Hide terminal" onClick={() => setTerminalOpen(false)}><ChevronDown size={14} /></button>
+            </header>
+            <div class="terminal-body">
+                <Show when={!currentTabs().length}>
+                    <div class="blank">
+                        <p class="blank-title">{full() ? `${MAX_TABS} terminals are open in other projects. Close one to open one here.` : conn() !== "open" ? "Not connected to Cavvy server." : "No terminal in this project."}</p>
+                        <Show when={!full() && conn() === "open"}><button class="btn btn-sm" disabled={!restored()} onClick={add}><Plus size={13} /> New terminal</button></Show>
+                    </div>
+                </Show>
+                {/* `shown` worked out once, owned by the tab: `visible={a() && b()}` makes a memo each time it's read, and the
+                    screen reads it from resize frames and after awaits, where nothing owns it: each was kept for good. */}
+                <For each={tabs()}>{(tab) => { const shown = createMemo(() => visible() && active()?.id === tab.id); return <TerminalScreen tab={tab} visible={shown()} link={link} conn={conn} onEnded={(e) => setEndedTabs((all) => ({ ...all, [tab.id]: e }))} onClose={(terminal) => { if (tab.closing) closes.close(terminal); }} onRestart={async (terminal, previous) => {
+                    if (previous) {
+                        try { await link.call("terminal.close", { id: previous }); }
+                        catch (e) {
+                            if (e instanceof RpcError && e.code === "disconnected") closes.close(previous);
+                            if (!(e instanceof RpcError && e.code === "terminal_not_open")) throw e;
+                        }
                     }
-                }
-                tab.terminal = terminal; save();
-            }} />; }}</For>
+                    tab.terminal = terminal; save();
+                }} />; }}</For>
+            </div>
         </section>
     );
 }

@@ -182,7 +182,7 @@ function mounted(name: "TerminalPanel" | "TerminalScreen", opts: { conn?: string
         terminalOpen: panelOpen, setTerminalOpen: setPanelOpen, terminalActions: {}, prefs: { terminalHeight: 200, fontSize: 14 }, terminalFontSize, setPrefs: opts.setPrefs ?? (() => {}),
         setTerminalDrag: opts.setTerminalDrag ?? (() => {}), frameDrag: (o: Parameters<typeof frameDrag>[0]) => frameDrag({ ...o, frames: opts.frames ?? fakeFrames() }),
         basename: (v: string) => v, tildify: (v: string) => v, withShortcut: (label: string) => label, terminalKey: opts.terminalKey ?? (() => "shell"), quitsApp: opts.quitsApp ?? (() => false), toast() {}, reportError() {}, refreshProviders() {}, setSettingsTab() {}, setupObscured: () => false, trustRequest: () => undefined,
-        Play: noop, Plus: noop, RotateCw: noop, TerminalIcon: noop, X: noop, ChevronDown: noop, Maximize2: noop, Minimize2: noop,
+        Play: noop, Plus: noop, RotateCw: noop, TerminalIcon: noop, X: noop, ChevronDown: noop, PanelBottomClose: noop, KeyRound: noop, Maximize2: noop, Minimize2: noop,
         terminalMax: () => false, setTerminalMax() {}, setTerminalShown() {}, shellLayout: () => ({ terminal: { most: 560 } }), panelHold: opts.panelHold ?? (() => undefined), Terminal: Emulator,
         FitAddon: class { fit() { const t = terminals.at(-1)!; t.cols = fitted.cols; t.rows = fitted.rows; } },
         ResizeObserver: class { constructor(private cb: () => void) {} observe() { resizes.add(this.cb); } disconnect() { resizes.delete(this.cb); } }, MutationObserver: class { observe() {} disconnect() {} },
@@ -222,7 +222,7 @@ test("dragging the terminal's edge shows its height once a frame, within its bou
     const shown: (number | undefined)[] = [];
     const m = mounted("TerminalPanel", { setPrefs: (key, value) => saved.push([key, value]), setTerminalDrag: (h) => shown.push(h), frames });
     try {
-        const handle = m.nodes.find((n) => n.props.class === "terminal-resize")!;
+        const handle = m.nodes.find((n) => n.props.class === "terminal-resizer")!;
         const listeners: Record<string, ((e: any) => void) | undefined> = {};
         const target = { setPointerCapture() {}, addEventListener: (type: string, fn: any) => (listeners[type] = fn), removeEventListener: (type: string, fn: any) => listeners[type] === fn && delete listeners[type] };
         // From 260 (the panel's height when it has none to measure).
