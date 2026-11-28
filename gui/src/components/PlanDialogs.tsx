@@ -5,7 +5,6 @@
 // next to the field it's about.
 
 import { createResource, createSignal, For, Match, onCleanup, Show, Switch } from "solid-js";
-import { AlertTriangle, Copy, FolderGit2, Save } from "lucide-solid";
 import { IMPLEMENT_MODES, type ImplementMode, type ImplementPlanResult, type PlanInfo } from "@shared/protocol";
 import { RpcError } from "../lib/rpc";
 import { basename, tildify } from "../lib/format";
@@ -17,6 +16,8 @@ import { errorOf, type FormError } from "./WorktreeDialogs";
 import { Markdown } from "./blocks/Markdown";
 import { Dialog } from "./ui/Dialog";
 import { Spinner } from "./ui/bits";
+import { tip } from "../lib/tip";
+import "../styles/plan-dialogs.css";
 
 export const MODE_CHOICES: Record<ImplementMode, { label: string; hint: string }> = {
     acceptEdits: { label: "Auto-accept edits", hint: "Edits files without asking; asks before commands" },
@@ -50,10 +51,9 @@ function PlanDialog(p: { sessionId: string; planId?: string; kind: "view" | "sav
             when={!info.error && info()}
             fallback={
                 <Dialog open onClose={close} title="Plan" width={480}>
-                    <Show when={info.error} fallback={<Spinner size={16} />}>
-                        <div class="rw-confirm">
-                            <AlertTriangle size={14} />
-                            <span>{info.error instanceof Error ? info.error.message : String(info.error)}</span>
+                    <Show when={info.error} fallback={<div class="blank"><Spinner size={14} class="blank-spinner" /></div>}>
+                        <div class="note" data-tone="red">
+                            <span class="note-body">{info.error instanceof Error ? info.error.message : String(info.error)}</span>
                         </div>
                     </Show>
                 </Dialog>
@@ -81,24 +81,30 @@ function PlanDialog(p: { sessionId: string; planId?: string; kind: "view" | "sav
 
 function ViewPlan(p: { info: PlanInfo; onClose: () => void; onSave: () => void; onWorktree: () => void }) {
     return (
-        <Dialog open onClose={p.onClose} title={p.info.title || "Plan"} subtitle={p.info.pending ? "Waiting for your review" : "Presented earlier in this session"} width={680}>
-            <div class="plan-body plan-dialog-body">
-                <Markdown text={p.info.plan} />
-            </div>
-            <div class="dialog-actions">
-                <button class="btn btn-ghost" onClick={() => void copyText(p.info.plan).then((ok) => ok && toast("Copied the plan", "success"))}>
-                    <Copy size={14} /> Copy
-                </button>
-                <span class="grow" />
+        <Dialog
+            open
+            onClose={p.onClose}
+            title={p.info.title || "Plan"}
+            subtitle={p.info.pending ? "Waiting for your review" : "Presented earlier in this session"}
+            width={680}
+            class="plan-view"
+            footer={[
+                <button class="btn dlg-foot-left" onClick={() => void copyText(p.info.plan).then((ok) => ok && toast("Copied the plan", "success"))}>
+                    Copy
+                </button>,
                 <button class="btn" onClick={p.onSave}>
-                    <Save size={14} /> Save plan…
-                </button>
-                <button class="btn btn-primary" disabled={!p.info.git} title={p.info.notGit} onClick={p.onWorktree}>
-                    <FolderGit2 size={14} /> Implement in a new worktree…
-                </button>
-            </div>
+                    Save plan…
+                </button>,
+                <button class="btn btn-primary" disabled={!p.info.git} {...(p.info.notGit ? tip(p.info.notGit) : {})} onClick={p.onWorktree}>
+                    Implement in a new worktree…
+                </button>,
+            ]}
+        >
+            <Markdown text={p.info.plan} />
             <Show when={p.info.notGit}>
-                <p class="muted small plan-note">{p.info.notGit}</p>
+                <div class="note">
+                    <div class="note-body">{p.info.notGit}</div>
+                </div>
             </Show>
         </Dialog>
     );
@@ -144,59 +150,52 @@ function SavePlan(p: { sessionId: string; info: PlanInfo; busy: boolean; setBusy
             p.setBusy(false);
         }
     };
+    const formId = "plan-save-form";
+    const replacing = () => Boolean(exists()) && exists() === path().trim();
     return (
-        <Dialog open onClose={p.onClose} title="Save plan" subtitle="As a Markdown file" width={560}>
+        <Dialog
+            open
+            onClose={p.onClose}
+            title="Save plan"
+            subtitle="As a Markdown file"
+            width={500}
+            footer={[
+                <button type="button" class="btn" disabled={p.busy} onClick={p.onClose}>
+                    Cancel
+                </button>,
+                <button type="submit" form={formId} class={replacing() ? "btn btn-danger-solid" : "btn btn-primary"} disabled={p.busy || !path().trim()}>
+                    {p.busy ? <Spinner size={12} /> : replacing() ? "Replace" : "Save"}
+                </button>,
+            ]}
+        >
             <form
-                class="wt-form"
+                id={formId}
+                class="form-stack"
                 onSubmit={(e) => {
                     e.preventDefault();
                     void save();
                 }}
             >
-                <label class="wt-field">
-                    <span class="wt-label">File</span>
-                    <input class="input mono" autofocus spellcheck={false} autocomplete="off" maxLength={4096} disabled={p.busy} value={path()} onInput={(e) => edit(e.currentTarget.value)} aria-invalid={Boolean(error())} />
-                    <span class="wt-hint">
-                        <button type="button" class="link-btn" disabled={p.busy} onClick={() => edit(inHome())}>
-                            Cavvy home
-                        </button>{" "}
-                        (never touches the repository) ·{" "}
-                        <button type="button" class="link-btn" disabled={p.busy} onClick={() => edit(inProject())}>
-                            This project
-                        </button>{" "}
-                        (to commit with it) ·{" "}
-                        <button type="button" class="link-btn" disabled={p.busy} onClick={() => void choose()}>
-                            Choose a folder…
-                        </button>
-                    </span>
-                    <span class="wt-hint">Only in {home(p.info.cwd)} or {home(p.info.home)}; a name ending in .md.</span>
-                    <Show when={error()}>{(m) => <span class="wt-error">{m().message}</span>}</Show>
-                </label>
-                <Show when={exists()}>
-                    <div class="rw-confirm">
-                        <AlertTriangle size={14} />
-                        <span>
-                            <span class="mono">{home(exists()!)}</span> already exists. Replace it with the plan?
-                        </span>
-                    </div>
-                </Show>
-                <div class="dialog-actions">
-                    <span class="grow" />
-                    <button type="button" class="btn btn-ghost" disabled={p.busy} onClick={p.onClose}>
-                        Cancel
-                    </button>
+                <label class="field">
+                    <span class="field-label">File</span>
+                    <input class="input mono" autofocus spellcheck={false} autocomplete="off" maxLength={4096} disabled={p.busy} value={path()} onInput={(e) => edit(e.currentTarget.value)} aria-invalid={Boolean(error() || replacing())} />
                     <Show
-                        when={exists() === path().trim() && exists()}
-                        fallback={
-                            <button type="submit" class="btn btn-primary" disabled={p.busy || !path().trim()}>
-                                {p.busy ? <Spinner size={12} /> : "Save"}
-                            </button>
-                        }
+                        when={error() ?? (replacing() ? { message: "That file exists." } : undefined)}
+                        fallback={<span class="field-hint">Only in {home(p.info.cwd)} or {home(p.info.home)}; a name ending in .md.</span>}
                     >
-                        <button type="submit" class="btn btn-danger-solid" disabled={p.busy}>
-                            {p.busy ? <Spinner size={12} /> : "Replace"}
-                        </button>
+                        {(m) => <span class="field-hint field-error">{m().message}</span>}
                     </Show>
+                </label>
+                <div class="plan-quick">
+                    <button type="button" class="btn btn-sm" disabled={p.busy} {...tip("Never touches the repository")} onClick={() => edit(inHome())}>
+                        Cavvy home
+                    </button>
+                    <button type="button" class="btn btn-sm" disabled={p.busy} {...tip("To commit with it")} onClick={() => edit(inProject())}>
+                        This project
+                    </button>
+                    <button type="button" class="btn btn-sm" disabled={p.busy} onClick={() => void choose()}>
+                        Choose a folder…
+                    </button>
                 </div>
             </form>
         </Dialog>
@@ -247,109 +246,112 @@ function ImplementPlan(p: { sessionId: string; info: PlanInfo; busy: boolean; se
         }
     };
 
+    const formId = "plan-implement-form";
     return (
-        <Dialog open onClose={p.onClose} title="Implement in a new worktree" subtitle="A new branch, folder and session for the plan" width={560}>
+        <Dialog
+            open
+            onClose={p.onClose}
+            title="Implement in a new worktree"
+            subtitle={p.info.pending ? "This session stops here, still in plan mode." : "A new branch, folder and session for the plan."}
+            width={480}
+            footer={[
+                <Show when={p.busy}>
+                    <span class="dlg-foot-note plan-busy">
+                        <Spinner size={12} />
+                        Checking out files…
+                    </span>
+                </Show>,
+                <button type="button" class="btn" disabled={p.busy} onClick={p.onClose}>
+                    {made() ? "Close" : "Cancel"}
+                </button>,
+                <Switch
+                    fallback={
+                        <button type="submit" form={formId} class="btn btn-primary" disabled={p.busy || !branch().trim()}>
+                            {made() ? "Start the session" : "Create and start"}
+                        </button>
+                    }
+                >
+                    <Match when={made()?.sessionId}>
+                        {(id) => (
+                            <button
+                                type="button"
+                                class="btn btn-primary"
+                                onClick={() => {
+                                    p.onClose();
+                                    void activate(id());
+                                }}
+                            >
+                                Open the session
+                            </button>
+                        )}
+                    </Match>
+                    <Match when={error()?.code === "needs_trust"}>
+                        <button type="button" class="btn btn-primary" disabled={p.busy} onClick={() => void start(error()?.folder ?? p.info.cwd)}>
+                            Trust and continue
+                        </button>
+                    </Match>
+                    <Match when={made()?.failed?.code === "needs_trust"}>
+                        <button type="submit" form={formId} class="btn btn-primary" disabled={p.busy}>
+                            Trust and continue
+                        </button>
+                    </Match>
+                </Switch>,
+            ]}
+        >
             <form
-                class="wt-form"
+                id={formId}
+                class="form-stack"
                 onSubmit={(e) => {
                     e.preventDefault();
                     void start(made()?.failed?.code === "needs_trust" ? made()!.failed!.folder : undefined);
                 }}
             >
-                <label class="wt-field">
-                    <span class="wt-label">Branch name</span>
-                    <input class="input mono" autofocus spellcheck={false} autocomplete="off" maxLength={200} disabled={p.busy || Boolean(made())} value={branch()} onInput={(e) => setBranch(e.currentTarget.value)} aria-invalid={Boolean(errorFor("branch"))} />
-                    <span class="wt-path mono" title={target()}>
-                        {target()}
-                    </span>
-                    <Show when={errorFor("branch") ?? errorFor("location")}>{(m) => <span class="wt-error">{m()}</span>}</Show>
+                <label class="field">
+                    <span class="field-label">Branch name</span>
+                    <input class="input mono" autofocus spellcheck={false} autocomplete="off" placeholder="feature/my-change" maxLength={200} disabled={p.busy || Boolean(made())} value={branch()} onInput={(e) => setBranch(e.currentTarget.value)} aria-invalid={Boolean(errorFor("branch"))} />
+                    <Show when={errorFor("branch") ?? errorFor("location")} fallback={<span class="field-hint mono" title={target()}>{target()}</span>}>
+                        {(m) => <span class="field-hint field-error">{m()}</span>}
+                    </Show>
                 </label>
-                <label class="wt-field">
-                    <span class="wt-label">Base</span>
+                <label class="field">
+                    <span class="field-label">Base</span>
                     <input class="input mono" spellcheck={false} autocomplete="off" placeholder="HEAD" maxLength={200} disabled={p.busy || Boolean(made())} value={base()} onInput={(e) => setBase(e.currentTarget.value)} aria-invalid={Boolean(errorFor("base"))} />
-                    <span class="wt-hint">Uncommitted changes in {home(p.info.cwd)} don't come along.</span>
-                    <Show when={errorFor("base")}>{(m) => <span class="wt-error">{m()}</span>}</Show>
+                    <Show when={errorFor("base")} fallback={<span class="field-hint">Uncommitted changes in {home(p.info.cwd)} don't come along.</span>}>
+                        {(m) => <span class="field-hint field-error">{m()}</span>}
+                    </Show>
                 </label>
-                <div class="wt-field" role="radiogroup" aria-label="Permission mode for the new session">
-                    <span class="wt-label">The new session</span>
-                    <div class="plan-modes">
+                <div class="field">
+                    <span class="field-label" id="plan-mode-label">
+                        The new session
+                    </span>
+                    <div class="option-list" role="radiogroup" aria-labelledby="plan-mode-label">
                         <For each={[...IMPLEMENT_MODES]}>
                             {(m) => (
-                                <label class={`plan-mode ${mode() === m ? "on" : ""}`} title={MODE_CHOICES[m].hint}>
-                                    <input type="radio" name="plan-mode" value={m} checked={mode() === m} disabled={p.busy} onChange={() => setMode(m)} />
-                                    {MODE_CHOICES[m].label}
-                                </label>
+                                <button type="button" role="radio" aria-checked={mode() === m} class="option plan-option" disabled={p.busy} data-tip={MODE_CHOICES[m].hint} onClick={() => setMode(m)}>
+                                    <span class="radio-dot" />
+                                    <span class="option-title">{MODE_CHOICES[m].label}</span>
+                                </button>
                             )}
                         </For>
                     </div>
                 </div>
-                <Show when={p.info.pending}>
-                    <p class="muted small plan-note">This session stops here, still in plan mode.</p>
-                </Show>
                 <Show when={made()?.failed}>
                     {(f) => (
-                        <div class="rw-confirm wt-ignored">
-                            <AlertTriangle size={14} />
-                            <div>
-                                <div>
-                                    Created worktree <span class="mono">{home(made()!.path)}</span> on branch <span class="mono">{made()!.branch}</span>, but {made()!.sessionId ? "its session didn't get the plan" : "the session couldn't start"}: {f().message}
-                                </div>
-                                <div>
-                                    The worktree is kept. {made()!.sessionId ? "Open its session and send the plan again." : "Start again to use it, or remove it from the worktree picker."}
-                                </div>
+                        <div class="note" data-tone="red" role="alert">
+                            <div class="note-body">
+                                Created worktree <span class="mono">{home(made()!.path)}</span> on branch <span class="mono">{made()!.branch}</span>, but {made()!.sessionId ? "its session didn't get the plan" : "the session couldn't start"}: {f().message}{" "}
+                                The worktree is kept. {made()!.sessionId ? "Open its session and send the plan again." : "Start again to use it, or remove it from the worktree picker."}
                             </div>
                         </div>
                     )}
                 </Show>
                 <Show when={errorFor("general")}>
                     {(m) => (
-                        <div class="rw-confirm">
-                            <AlertTriangle size={14} />
-                            <span>{m()}</span>
+                        <div class="note" data-tone="red" role="alert">
+                            <div class="note-body">{m()}</div>
                         </div>
                     )}
                 </Show>
-                <div class="dialog-actions">
-                    <Show when={p.busy}>
-                        <span class="muted small">Checking out files…</span>
-                    </Show>
-                    <span class="grow" />
-                    <button type="button" class="btn btn-ghost" disabled={p.busy} onClick={p.onClose}>
-                        {made() ? "Close" : "Cancel"}
-                    </button>
-                    <Switch
-                        fallback={
-                            <button type="submit" class="btn btn-primary" disabled={p.busy || !branch().trim()}>
-                                {p.busy ? <Spinner size={12} /> : made() ? "Start the session" : "Create and start"}
-                            </button>
-                        }
-                    >
-                        <Match when={made()?.sessionId}>
-                            {(id) => (
-                                <button
-                                    type="button"
-                                    class="btn btn-primary"
-                                    onClick={() => {
-                                        p.onClose();
-                                        void activate(id());
-                                    }}
-                                >
-                                    Open the session
-                                </button>
-                            )}
-                        </Match>
-                        <Match when={error()?.code === "needs_trust"}>
-                            <button type="button" class="btn btn-primary" disabled={p.busy} onClick={() => void start(error()?.folder ?? p.info.cwd)}>
-                                {p.busy ? <Spinner size={12} /> : "Trust and continue"}
-                            </button>
-                        </Match>
-                        <Match when={made()?.failed?.code === "needs_trust"}>
-                            <button type="submit" class="btn btn-primary" disabled={p.busy}>
-                                {p.busy ? <Spinner size={12} /> : "Trust and continue"}
-                            </button>
-                        </Match>
-                    </Switch>
-                </div>
             </form>
         </Dialog>
     );
