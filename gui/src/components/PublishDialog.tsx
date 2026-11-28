@@ -27,6 +27,18 @@ export function publishError(message: string, code?: string): { text?: string; r
     return code === "git" ? { raw: message } : { text: message };
 }
 
+/** Where the remote is, as a person reads it: host and path, without a scheme, a sign-in or ".git". */
+export function remoteAt(url?: string): string | undefined {
+    if (!url) return undefined;
+    try {
+        const u = new URL(url);
+        if (u.protocol !== "file:") return `${u.host}${u.pathname.replace(/\.git$/, "")}`;
+    } catch {
+        // scp-like (git@host:org/repo.git) or a path
+    }
+    return url.replace(/^file:\/\//, "").replace(/^[^@/]*@/, "").replace(/\.git$/, "");
+}
+
 export function PublishDialog(p: { id?: string; onClose: () => void; onPublished: (pr?: GitPrInfo) => void }) {
     const [view, setView] = createSignal<GitPublishInfo>();
     const [title, setTitle] = createSignal("");
@@ -167,7 +179,7 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
         </label>
     );
     // Without the GitHub CLI, signed out of it, or on the base branch, it can only push: titled for that.
-    const heading = () => (view() && !prs() ? `Push ${view()!.branch}?` : "Push and open a pull request?");
+    const heading = () => (view() && !prs() ? `Push ${view()!.branch}?` : !view() && error() ? "Push?" : "Push and open a pull request?");
     return (
         <Dialog open={Boolean(p.id)} onClose={close} title={heading()} width={500} footer={actions()}>
             <Show when={!loading()} fallback={<Spinner class="blank-spinner" />}>
@@ -184,6 +196,14 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
                                     <dt>To</dt>
                                     <dd class="mono push-remote">{v().remote}/{v().target}</dd>
                                 </div>
+                                <Show when={remoteAt(v().destination)}>
+                                    {(at) => (
+                                        <div>
+                                            <dt>Remote</dt>
+                                            <dd class="mono push-remote">{at()}</dd>
+                                        </div>
+                                    )}
+                                </Show>
                                 <Show when={(!v().hasUpstream && v().ahead == null) || (v().ahead != null && v().behind != null)}>
                                     <div>
                                         <dt>Commits</dt>
