@@ -46,12 +46,15 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
         planAsked.set(key, Date.now());
         void checkLimits(p.sessionId, [plan]);
     };
-    window.addEventListener("focus", backAtWindow);
-    document.addEventListener("visibilitychange", backAtWindow);
-    onCleanup(() => {
-        window.removeEventListener("focus", backAtWindow);
-        document.removeEventListener("visibilitychange", backAtWindow);
-    });
+    // Only in a window: a render with none (a test's) has nothing to come back to.
+    if (typeof window !== "undefined") {
+        window.addEventListener("focus", backAtWindow);
+        document.addEventListener("visibilitychange", backAtWindow);
+        onCleanup(() => {
+            window.removeEventListener("focus", backAtWindow);
+            document.removeEventListener("visibilitychange", backAtWindow);
+        });
+    }
     // What stops this session's turns: the plan's limit, or a model's (Fable's) that covers its model. Another
     // model's limit says nothing here.
     // The model by the one its CLI served (this session's, else last on this account), or listed it as for this
