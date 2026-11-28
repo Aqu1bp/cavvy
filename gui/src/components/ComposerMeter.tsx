@@ -66,7 +66,7 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
             await rpc.call("session.setAccount", { id: p.sessionId, provider: selectedProvider, accountId: id });
             close();
             // On credits the turn didn't stop: there's nothing to send again.
-            toast(stop()?.credits ? "Account switched. Your next message uses it." : "Account switched. Send your message again.", "info");
+            toast(stop()?.credits ? "Account switched" : "Account switched. Send again.", "info");
         } catch (error) { reportError(error); }
         finally { setSwitching(false); }
     }
@@ -88,17 +88,17 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
         return st && `${st.window ? `${limitName(st.window)} limit reached` : "Limit reached"}${st.credits ? ", using credits" : ""}${st.resets ? `, resets ${st.resets}` : ""}`;
     };
     const label = () => [
-        view().pct === undefined ? "Context window: size not known yet" : `Context: ${Math.round(view().pct! * 100)}% used`,
+        view().pct === undefined ? "Context: size unknown" : `Context: ${Math.round(view().pct! * 100)}% used`,
         stopWords() && `${name()}: ${stopWords()}`,
     ].filter(Boolean).join(". ");
     const cli = () => Boolean(providerInfo()?.agentCli);
     const autoOff = () => !cli() && app.settings.autoCompact === false;
     /** Where "full" comes from, on the numbers' tooltip. */
     const fullWhy = () => {
-        const v = view(), whole = v.window ? ` The model holds up to ${tokens(v.window)}.` : "";
-        if (autoOff()) return `Automatic compaction is off, so this is the model's whole window.`;
-        if (cli()) return v.early ? `${providerInfo()?.name ?? "The CLI"} compacts at ${tokens(v.full!)}, your auto-compact setting.${whole}` : `${providerInfo()?.name ?? "The CLI"} decides when to compact.${whole}`;
-        return `Compacts on its own at ${tokens(v.full!)}, leaving room for the answer.${whole}`;
+        const v = view(), whole = v.window ? ` Holds ${tokens(v.window)}.` : "";
+        if (autoOff()) return `Auto-compact is off.${whole}`;
+        if (cli()) return v.early ? `${providerInfo()?.name ?? "The CLI"} compacts at ${tokens(v.full!)}.${whole}` : `${providerInfo()?.name ?? "The CLI"} decides when to compact.${whole}`;
+        return `Compacts at ${tokens(v.full!)}.${whole}`;
     };
     const busy = () => !state() || Boolean(state()?.busy && !state()?.activity?.idle);
     const near = createMemo(() => (p.home ? nearLimit(meter(), model()) : undefined));
@@ -140,7 +140,6 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
                     <Show when={near()}>
                         {(n) => (
                             <span class="ctx-limit" role="status" aria-label={`${name()}: ${n().pct}% of ${n().window ?? "plan"} limit${n().resets ? `, resets ${n().resets}` : ""}`} title={n().resets ? `Resets ${n().resets}` : undefined}>
-                                <Gauge size={14} stroke-width={2} aria-hidden="true" />
                                 <b class="num" aria-hidden="true">{n().pct}%</b>
                                 <span class="lbl" aria-hidden="true">of {n().window ?? "plan"} limit</span>
                             </span>
@@ -150,7 +149,6 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
             >
                 {(st) => (
                     <span class="ctx-limit" role="status" aria-label={`${name()}: ${stopWords()}`} title={st().resets ? `Resets ${st().resets}` : undefined}>
-                        <Gauge size={14} stroke-width={2} aria-hidden="true" />
                         <b aria-hidden="true">{st().window ? limitName(st().window!) : "Plan"}</b>
                         <span class="lbl" aria-hidden="true">limit reached</span>
                     </span>
@@ -192,7 +190,7 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
                                 <Show when={p.sessionId}>
                                     <div class="cx-switches">
                                         <Show when={checking()}><span class="plan-account-hint" role="status">Checking accounts…</span></Show>
-                                        <For each={alternatives()}>{(a) => <button class="cbtn" disabled={busy() || switching()} onClick={() => void switchTo(a.id)} title="Send your message again after switching">Use {a.name} account</button>}</For>
+                                        <For each={alternatives()}>{(a) => <button class="cbtn" disabled={busy() || switching()} onClick={() => void switchTo(a.id)} title="Then send again">Use {a.name} account</button>}</For>
                                     </div>
                                 </Show>
                             </div>

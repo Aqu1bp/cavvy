@@ -41,10 +41,9 @@ test("a second launch that raises the window marks it shown, so neither the page
 
 test("Home's entrance is short, and doesn't play when Home was drawn before the window came up", () => {
     const rules = parseRules(readFileSync(join(root, "gui/src/styles/home.css"), "utf8"));
-    // The question, the composer, its drawer and the terminal list. The cards before the first message rise as
-    // request cards do: they come once the folder has been looked at.
-    const entrance = rules.filter((r) => /^home-(in|drawer) /.test(r.decls.get("animation") ?? ""));
-    expect(entrance.map((r) => r.selectors.join()).sort()).toEqual([".cli-sessions", ".composer-strip", ".home-composer", ".home-q"]);
+    // The cards, together. The composer is at the column's foot, where a session has it: it doesn't enter.
+    const entrance = rules.filter((r) => /^home-in /.test(r.decls.get("animation") ?? ""));
+    expect(entrance.map((r) => r.selectors.join()).sort()).toEqual([".home-stack"]);
     for (const r of entrance) {
         // Its duration, then its delay if it has one.
         const [duration, delay = 0] = [...r.decls.get("animation")!.matchAll(/\b(\d+)ms\b/g)].map((m) => Number(m[1]));
@@ -52,8 +51,8 @@ test("Home's entrance is short, and doesn't play when Home was drawn before the 
     }
     const instant = rules.find((r) => r.selectors.some((s) => s.startsWith(".home.instant")));
     expect(instant?.decls.get("animation")).toBe("none");
-    // One :is() list (which the parser splits at its commas) naming every element that enters.
-    const named = instant!.selectors.join(",").replace(/^\.home\.instant :is\(|\)$/g, "").split(",").map((s) => s.trim());
+    // Naming every element that enters.
+    const named = instant!.selectors.join(",").replace(/^\.home\.instant (:is\()?|\)$/g, "").split(",").map((s) => s.trim());
     expect(named.sort()).toEqual(entrance.flatMap((r) => r.selectors).sort());
 });
 
@@ -63,15 +62,15 @@ test("Home drawn before the window is shown is marked to skip its entrance; one 
     const Home = componentCode("Home", {
         node, createSignal: (v: unknown) => [() => v, stub], createResource: () => [() => ({ needsTrust: [], git: false }), { refetch: stub }], For: stub, Show: stub, onCleanup: stub, onMount: stub,
         React: { Fragment: "Fragment" },
-        ChevronDown: stub, Folder: stub, FolderGit2: stub, FolderOpen: stub, KeyRound: stub, Plug: stub, ShieldAlert: stub, Shield: stub,
-        app: { conn: "open", homeCwd: "/project", providers: [], projects: [], models: [] }, refreshProjects: stub, reportError: stub, rpc: {}, rpcFor: () => ({}), homeOn: () => undefined, chooseProject: stub, homeProjects: () => [], noModel: () => false, createEffect: (fn: () => void) => fn(), machine: undefined, serversUi: stub, connectCli: stub, openProject: stub, trustAndContinue: stub, homeJumped: () => false, inspect: stub, inspectedBefore: () => undefined, forgetInspected: stub,
+        ChevronDown: stub, FolderGit2: stub, motionMs: () => 0, FolderOpen: stub, KeyRound: stub, Plug: stub, ShieldAlert: stub, Shield: stub,
+        app: { conn: "open", homeCwd: "/project", providers: [], projects: [], models: [] }, refreshProjects: stub, reportError: stub, rpc: {}, rpcFor: () => ({}), homeOn: () => undefined, chooseProject: stub, homeProjects: () => [], noModel: () => false, createEffect: (fn: () => void) => fn(), machine: undefined, isElectron: false, serversUi: stub, connectCli: stub, openProject: stub, trustAndContinue: stub, homeJumped: () => false, inspect: stub, inspectedBefore: () => undefined, forgetInspected: stub,
         requestComposerFocus: stub, setSettingsTab: stub, columnHeight: () => "800px", shellLayout: () => ({ column: { h: 800 } }), sp: (n: number) => n,
         ago: stub, basename: (p: string) => p, tildify: (p: string) => p, now: stub, isWindowShown: () => shown,
         CliSessions: stub, Composer: stub, ErrorCards: stub, Menu: stub, ProviderIcon: stub, WorktreePicker: stub,
     }) as () => { tag: string; props: { class: string; classList?: Record<string, boolean> } };
     const atLaunch = Home();
     expect(atLaunch.props.class).toBe("home");
-    expect(atLaunch.props.classList).toEqual({ instant: true, glide: false, "home-jumped": false });
+    expect(atLaunch.props.classList).toEqual({ instant: true, "home-jumped": false });
     shown = true;
-    expect(Home().props.classList).toEqual({ instant: false, glide: false, "home-jumped": false });
+    expect(Home().props.classList).toEqual({ instant: false, "home-jumped": false });
 });

@@ -129,7 +129,7 @@ export function AttachmentChips(p: { items: Attachment[]; readsPdf: boolean; blo
                                                 </button>
                                             </Show>
                                             <Show when={pasted() && p.onToText}>
-                                                <button class="att-act" title="Put it back in the box as text" aria-label="Put the pasted text back in the box" onClick={() => p.onToText?.(i())}>
+                                                <button class="att-act" title="Put back as text" aria-label="Put back as text" onClick={() => p.onToText?.(i())}>
                                                     <TextCursorInput size={14} />
                                                 </button>
                                             </Show>

@@ -13,7 +13,7 @@ const dialogs = () => import("./WorktreeDialogs");
 const NewWorktreeDialog = lazy(() => dialogs().then((m) => ({ default: m.NewWorktreeDialog })));
 const RemoveWorktreeDialog = lazy(() => dialogs().then((m) => ({ default: m.RemoveWorktreeDialog })));
 
-/** Home's branch control, in the strip under the composer: the project's worktrees, to run the new chat in one, remove one Cavvy made, or make one. */
+/** Home's branch control, in its card: the project's worktrees, to run the new chat in one, remove one Cavvy made, or make one. */
 export function WorktreePicker(p: { cwd: string; branch?: string }) {
     const [open, setOpen] = createSignal(false);
     const [creating, setCreating] = createSignal<NewWorktreeRequest>();
@@ -45,14 +45,14 @@ export function WorktreePicker(p: { cwd: string; branch?: string }) {
     };
 
     return <>
-        <button ref={anchor} class="strip-ctl" title={`${tildify(p.cwd, app.hello?.homeDir)}: choose the worktree for this new chat`} aria-label="Choose worktree" aria-haspopup="menu" aria-expanded={open()} onClick={toggle}>
-            <Show when={current() && !current()!.main} fallback={<GitBranch size={14} class="ic" />}>
+        <button ref={anchor} class="home-pick" title="Choose a worktree" aria-label="Choose worktree" aria-haspopup="menu" aria-expanded={open()} onClick={toggle}>
+            <Show when={current() && !current()!.main}>
                 <FolderGit2 size={14} class="ic" />
             </Show>
-            <span class="truncate">{p.branch || "Detached HEAD"}</span>
-            <ChevronDown size={12} stroke-width={2} class="chv" />
+            <span class="truncate mono">{p.branch || "Detached HEAD"}</span>
+            <ChevronDown size={13} class="chv" />
         </button>
-        <Popover open={open()} anchor={() => anchor} onClose={() => setOpen(false)} placement="bottom" align="start" width={400}>
+        <Popover open={open()} anchor={() => anchor} onClose={() => setOpen(false)} placement="bottom" align="end" width={400}>
             <div class="menu-head">Worktrees</div>
             {/* What it listed for this folder before stays while it lists them again. */}
             <Show when={here() || !listing.loading} fallback={<div class="menu-note">Loading worktrees…</div>}>

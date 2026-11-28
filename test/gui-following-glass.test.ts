@@ -11,7 +11,7 @@ test("the dock's pieces are cards, not floating glass: none of them blurs what's
         ["components/Composer.tsx", 'class="composer-box card-surface"'],
         ["components/InteractionDock.tsx", "class={`ask card-surface itab"],
         ["components/QueueTab.tsx", 'class="uq-tray card-surface"'],
-        ["components/Home.tsx", 'class="hcard card-surface'],
+        ["components/Home.tsx", 'class="home-card card-surface'],
     ] as const) expect(await read(file)).toContain(piece);
     const base = parseRules(await read("styles/base.css"));
     const card = base.filter((r) => r.selectors.includes(".card-surface"));

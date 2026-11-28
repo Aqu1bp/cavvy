@@ -15,9 +15,7 @@
     position: relative;
     z-index: 1;
     flex: none;
-    height: calc(38 * var(--sp));
-    /* 6px above what's under it (the Up next tray or the box): the composer's column gap is 8px. */
-    margin: 0 calc(14 * var(--sp)) calc(-2 * var(--sp));
+    height: calc(34 * var(--sp));
 }
 
 .steps-tray {
@@ -27,9 +25,13 @@
     bottom: 0;
     display: flex;
     flex-direction: column;
-    border-radius: calc(16 * var(--sp));
     overflow: hidden;
-    animation: c-in 260ms var(--ease);
+}
+
+/* Open over the conversation: what floats, the box's edge kept. */
+.steps-tray.open {
+    background: var(--ctl);
+    box-shadow: inset 0 0 0 1px var(--line-strong), var(--pop-shadow);
 }
 
 .st-row {
@@ -40,12 +42,12 @@
 .st-main {
     display: flex;
     align-items: center;
-    gap: calc(9 * var(--sp));
+    gap: calc(8 * var(--sp));
     width: 100%;
-    height: calc(38 * var(--sp));
+    height: calc(34 * var(--sp));
     padding: 0 calc(10 * var(--sp)) 0 calc(12 * var(--sp));
     text-align: left;
-    font-size: 0.929rem;
+    font-size: calc(12.5 * var(--sp));
     color: var(--fg-2);
 }
 
@@ -55,13 +57,13 @@
 
 /* Progress, as a ring that fills with each step done. */
 .st-ring {
-    width: calc(16 * var(--sp));
-    height: calc(16 * var(--sp));
+    width: calc(14 * var(--sp));
+    height: calc(14 * var(--sp));
     flex: none;
     border-radius: 50%;
     background: conic-gradient(var(--ok) 0 var(--p), var(--line-strong) 0);
-    -webkit-mask: radial-gradient(circle, transparent calc(5 * var(--sp)), #000 calc(5.5 * var(--sp)));
-    mask: radial-gradient(circle, transparent calc(5 * var(--sp)), #000 calc(5.5 * var(--sp)));
+    -webkit-mask: radial-gradient(circle, transparent calc(4.5 * var(--sp)), #000 calc(5 * var(--sp)));
+    mask: radial-gradient(circle, transparent calc(4.5 * var(--sp)), #000 calc(5 * var(--sp)));
 }
 
 .st-ring.all {
@@ -75,16 +77,14 @@
 
 .st-k {
     flex: none;
-    font-size: 0.857rem;
-    font-weight: 600;
-    color: var(--fg-3);
+    font-weight: 500;
+    color: var(--fg);
     font-variant-numeric: tabular-nums;
 }
 
 .st-now {
     flex: 1;
     min-width: 0;
-    color: var(--fg);
 }
 
 .st-xroom {

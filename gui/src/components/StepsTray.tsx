@@ -69,7 +69,7 @@ export function StepsTray(p: { sessionId: string; view: SessionView }) {
                             <span class="st-xroom" aria-hidden="true" />
                             <ChevronUp size={14} class="st-chev" aria-hidden="true" />
                         </button>
-                        <button class="st-x" title="Hide until the list changes" aria-label="Hide the steps until the list changes" onClick={hide}>
+                        <button class="st-x" title="Hide" aria-label="Hide the steps" onClick={hide}>
                             <X size={14} />
                         </button>
                     </div>

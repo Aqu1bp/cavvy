@@ -4,7 +4,7 @@
 
 import { createEffect, createResource, createSignal, createUniqueId, For, Match, Show, Switch } from "solid-js";
 import { render } from "solid-js/web";
-import { Check, ChevronDown, CircleArrowUp, Plus, RefreshCw, Server, Trash2 } from "lucide-solid";
+import { Check, ChevronDown, CircleArrowUp, Laptop, Plus, RefreshCw, Server, Trash2 } from "lucide-solid";
 import type { AddResult, ServerCheck, ServerProblem, UnknownHost } from "@shared/protocol";
 import { homeRpc, machineIssue, setMachineIssue, switchMachine, trustMachine, userAsked } from "../lib/machines";
 import { machine, os } from "../lib/platform";
@@ -87,11 +87,13 @@ export function connected() {
 export function mountWhere(el: HTMLElement): () => void {
     return render(
         () => (
-            <button class="strip-ctl" title="Where the session runs" aria-haspopup="menu" aria-busy={goingTo() ? "true" : undefined} onClick={(e) => openMachines(e.currentTarget, "start")}>
-                <Server size={14} class="ic" />
+            <button class="home-pick" title="Where it runs" aria-haspopup="menu" aria-busy={goingTo() ? "true" : undefined} onClick={(e) => openMachines(e.currentTarget, "end")}>
+                <Show when={runsOn()} fallback={<Laptop size={14} class="ic" />}>
+                    <Server size={14} class="ic" />
+                </Show>
                 {/* Where a session sent now runs: Home is still there until it has moved (dimmed meanwhile). */}
                 <span class="truncate">{runsOn() ?? HERE}</span>
-                <ChevronDown size={12} stroke-width={2} class="chv" />
+                <ChevronDown size={13} class="chv" />
             </button>
         ),
         el,

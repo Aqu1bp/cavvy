@@ -71,7 +71,7 @@ export function QueueTab(p: { sessionId: string; state: SessionState; dequeue: (
         if (queueId === undefined) return;
         try {
             const r = await rpc.call("session.sendQueuedNow", { id: p.sessionId, queueId });
-            if (!r.sent) toast("That message has already been sent", "info");
+            if (!r.sent) toast("Already sent", "info");
         } catch (e) {
             reportError(e);
         }
@@ -118,7 +118,7 @@ export function QueueTab(p: { sessionId: string; state: SessionState; dequeue: (
         try {
             const r = await rpc.call("session.moveQueued", { id: p.sessionId, queueId: s.id, to: s.to });
             if (!r.moved) {
-                toast("That message has already been sent", "info");
+                toast("Already sent", "info");
                 finish(s, false);
             } else if (sort()?.token === s.token) {
                 // Moved, but the queue hasn't shown it yet: give it a moment, then stop drawing it there.
@@ -278,7 +278,7 @@ export function QueueTab(p: { sessionId: string; state: SessionState; dequeue: (
                                     step(id, e.key === "ArrowUp" ? "up" : "down");
                                 }}
                             >
-                                <span class="uq-n" title={many() ? "Drag to reorder, or press ↑ or ↓" : undefined} aria-hidden="true">
+                                <span class="uq-n" title={many() ? "Drag or ↑↓ to reorder" : undefined} aria-hidden="true">
                                     <b class="num">{slot() + 1}</b>
                                     <Show when={many()}>
                                         <GripVertical size={13} />

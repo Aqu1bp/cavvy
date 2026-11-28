@@ -58,7 +58,7 @@ export function ScheduleTab(p: { sessionId: string; items: ScheduleInfo[] }) {
             <For each={shown()}>
                 {(s) => (
                     <div class={`queue-row schedule-row ${s.paused ? "paused" : ""}`} role="listitem">
-                        <span class="queue-icon" title={s.kind === "loop" ? "Loop" : s.kind === "resume" ? "Picks up where it left off once the usage limit resets" : s.recurring ? "Recurring schedule" : "One-time schedule"}>
+                        <span class="queue-icon" title={s.kind === "loop" ? "Loop" : s.kind === "resume" ? "Continues when the limit resets" : s.recurring ? "Recurring schedule" : "One-time schedule"}>
                             <KindIcon kind={s.kind} />
                         </span>
                         <Show

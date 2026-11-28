@@ -63,7 +63,7 @@ export interface ComposerAside {
     open?: (text: string, attachments: Attachment[]) => Promise<boolean>;
 }
 
-export function Composer(p: { sessionId?: string; placeholder?: string; autofocus?: boolean; variant?: "home" | "session"; aside?: ComposerAside; /** Tucked under the card, like a drawer (Home's project, worktree and the composer's prefixes). */ strip?: JSX.Element; /** Home: sending to several models at once. */ compare?: CompareOption; /** Home: told what's in the box each time it changes. */ onText?: (text: string) => void }) {
+export function Composer(p: { sessionId?: string; placeholder?: string; autofocus?: boolean; variant?: "home" | "session"; aside?: ComposerAside; /** A row at the top of the card (Home: trusting the folder). */ lead?: JSX.Element; /** Under the card, at its far end (Home: the composer's prefixes). */ under?: JSX.Element; /** Home: sending to several models at once. */ compare?: CompareOption; /** Home: told what's in the box each time it changes. */ onText?: (text: string) => void }) {
     /** The last @ search asked MCP servers too, so its empty state says so. */
     const [searchedResources, setSearchedResources] = createSignal(false);
     const whileMounted = createLifetimeGuard();
@@ -126,9 +126,9 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     /** The text's height at the large size (lib/composer-size): up from the window's foot to near the column's top, or (Home) down to near the page's foot. */
     const largeHeight = () => {
         if (!ta || !root) return least;
-        const stage = root.closest(".stage");
+        const stage = root.closest(".stage, .home");
         if (stage) return expandedHeight({ text: ta.offsetHeight, top: root.getBoundingClientRect().top, columnTop: stage.getBoundingClientRect().top, column: (!p.aside && shellLayout().column.h) || stage.clientHeight, least });
-        const page = root.closest(".home") ?? document.documentElement;
+        const page = document.documentElement;
         return expandedDown({ text: ta.offsetHeight, bottom: root.getBoundingClientRect().bottom, pageBottom: page.getBoundingClientRect().bottom, least });
     };
     const resize = () => {
@@ -202,7 +202,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         // Closed with the caret at the end: the end is what shows.
         if (!open && ta.selectionEnd === text().length) ta.scrollTop = ta.scrollHeight;
         if (p.variant !== "home") glideDock();
-        grow(box, from, box.offsetHeight, p.variant === "home" ? "top" : "bottom", motionMs(GROW_MS));
+        grow(box, from, box.offsetHeight, "bottom", motionMs(GROW_MS));
         ta.focus();
     };
 
@@ -470,7 +470,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         const t = text();
         if (!canSend() || sending()) return;
         const picks = runPicks();
-        if (picks && (picks.length < 2 || !app.homeCwd)) return toast(picks.length < 2 ? "Pick 2–4 models, or turn off Compare" : "Choose a project folder first.", "warn");
+        if (picks && (picks.length < 2 || !app.homeCwd)) return toast(picks.length < 2 ? "Pick 2–4 models" : "Choose a project folder first", "warn");
         setSending(true);
         const submitted = draft.capture();
         const { attachments: atts } = submitted.draft;
@@ -718,7 +718,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         if (queueId === undefined || !p.sessionId || !handle) return;
         try {
             const r = await rpc.call("session.dequeue", { id: p.sessionId, queueId, edit });
-            if (!r.removed) toast("That message has already been sent", "info");
+            if (!r.removed) toast("Already sent", "info");
             else if (edit) handle.addDraft({ text: r.text ?? "", images: r.images, files: r.files });
         } catch (e) {
             reportError(e);
@@ -736,7 +736,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     const placeholder = () => {
         if (shell()) return "Run a shell command";
         // A message doesn't wait for an idle compaction: it stops it and goes.
-        if (busy() && st()?.activity?.idle) return "Send a message to stop compacting and carry on…";
+        if (busy() && st()?.activity?.idle) return "Send to stop compacting…";
         if (busy()) return labels().placeholder;
         return p.placeholder ?? "Ask, plan, or describe a change…";
     };
@@ -763,21 +763,9 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         return [[enter, FOLLOW_UP_WORDS[shown()]], [otherKey || `${mod}-click`, FOLLOW_UP_WORDS[other]]];
     };
     const canSend = createMemo(() => hasContent() && !blocked());
-    // The pickers open from their own button, left-aligned with it (design/glass placePop): above it in a
-    // session, at the bottom of the window; below it on Home, which has the page below it. Each flips if there's no room.
-    const menuSide = () => (p.variant === "home" ? "bottom" : "top");
-    // Home: the @ and / menu opens downward, from just under the card (over the strip under it), and is as tall as
-    // the window has room for there (CSS caps it as ever). The card grows as you write, so it follows the text.
-    createEffect(on([menuOpen, text], ([open]) => {
-        if (!open || p.variant !== "home") return;
-        requestAnimationFrame(() => {
-            const el = menuList;
-            if (!el?.isConnected || !box || !root) return;
-            const top = box.offsetTop + box.offsetHeight + 6;
-            el.style.setProperty("--menu-top", `${top}px`);
-            el.style.setProperty("--room", `${Math.max(140, window.innerHeight - root.getBoundingClientRect().top - top - 16)}px`);
-        });
-    }));
+    // The pickers open from their own button, left-aligned with it (design/glass placePop), above it: the composer is
+    // at the column's foot, on Home too. Each flips if there's no room.
+    const menuSide = () => "top" as const;
     const interactions = () => st()?.interactions ?? [];
     /** A sign-in's card is up for this put-off row: the row isn't shown beside its own card. */
     const signInCardUp = (watchId: string) => interactions().some((i) => i.kind === "signin" && signInCardFor(watchId, i));
@@ -915,12 +903,12 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                     </Show>
                 </div>
             </Show>
+            <Show when={draft.stashes().length}>
+                <StashTray items={draft.stashes()} box={() => ta} onRestore={restoreStash} onDiscard={discardStash} />
+            </Show>
             <Show when={p.sessionId ? h() : undefined}>{(handle) => <StepsTray sessionId={p.sessionId!} view={handle().view} />}</Show>
             <Show when={p.sessionId && st()?.queued.length}>
                 <QueueTab sessionId={p.sessionId!} state={st()!} dequeue={(i, edit) => void dequeue(i, edit)} />
-            </Show>
-            <Show when={draft.stashes().length}>
-                <StashTray items={draft.stashes()} box={() => ta} onRestore={restoreStash} onDiscard={discardStash} />
             </Show>
             {/* Sign-ins put off with Later: a strip of its own above the box, until each is signed in or dismissed. Not the one whose card is up. */}
             <Show when={p.sessionId ? st()?.watches?.filter((w) => w.kind === "sign-in" && !signInCardUp(w.id)) : undefined}>
@@ -962,6 +950,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                 )}
             </Show>
             <div class="composer-box card-surface" ref={box}>
+                {p.lead}
                 <Show when={p.sessionId ? st()?.goal : undefined}>
                     {(goal) => <GoalTab sessionId={p.sessionId!} goal={goal()} />}
                 </Show>
@@ -975,7 +964,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                 <Show when={comments().length}>
                     <ReviewCommentChips
                         items={comments()}
-                        held={holdsComments() ? "Review comments wait: commands and shell lines don't take them" : undefined}
+                        held={holdsComments() ? "Comments wait: commands don't take them" : undefined}
                         onOpen={(c) => setReview({ path: c.path })}
                         onRemove={(c) => reviewComments.remove(p.sessionId!, [c.id])}
                         onClear={() => reviewComments.remove(p.sessionId!, comments().map((c) => c.id))}
@@ -986,7 +975,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                 </Show>
                 <div class="composer-input">
                     <Show when={shell()}>
-                        <span class="shell-badge" title="Runs in your shell; the output is shared with the model">
+                        <span class="shell-badge" title="Runs in your shell; the model sees the output">
                             <SquareTerminal size={14} />
                         </span>
                     </Show>
@@ -1055,8 +1044,6 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                     </button>
                     {pickers()}
                     <span class="grow" />
-                    {/* Home has no context yet: only a plan near its limit shows, here. In a session the context is under the card. */}
-                    <Show when={p.variant === "home"}>{meter()}</Show>
                     <span class="send-wrap">
                     <Show when={sendHint()}>
                         {(rows) => (
@@ -1079,7 +1066,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                                 class={`send ${(runPicks()?.length ?? 0) >= 2 ? "wide" : ""} ${busy() ? `mid-${shown()}` : ""}`}
                                 disabled={connFor(p.sessionId) !== "open" || !canSend() || sending() || Boolean(runPicks() && runPicks()!.length < 2)}
                                 onClick={(e) => void submit(busy() && isMod(e))}
-                                title={connFor(p.sessionId) !== "open" ? "Not connected" : runPicks() ? "Each model gets this prompt in a new worktree" : busy() ? undefined : withShortcut("Send", "chat:submit")}
+                                title={connFor(p.sessionId) !== "open" ? "Not connected" : runPicks() ? "Each model gets a new worktree" : busy() ? undefined : withShortcut("Send", "chat:submit")}
                                 aria-description={connFor(p.sessionId) !== "open" ? "Not connected" : busy() ? sendTitle() : undefined}
                                 aria-label={runPicks() ? `Send to ${runPicks()!.length} models` : busy() ? (shown() === "steer" ? "Steer the current turn" : "Queue for after this turn") : "Send"}
                             >
@@ -1113,13 +1100,11 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                     </button>
                 </Show>
             </div>
-            {/* How full the context is: a few quiet words under the card, at its far end. */}
-            <Show when={p.variant !== "home"}>
-                <div class="composer-under">{meter()}</div>
-            </Show>
-            <Show when={p.strip}>
-                <div class="composer-strip">{p.strip}</div>
-            </Show>
+            {/* How full the context is (Home: only a plan near its limit), a few quiet words under the card; then what Home puts at its far end. */}
+            <div class="composer-under">
+                {meter()}
+                {p.under}
+            </div>
         </div>
     );
 }

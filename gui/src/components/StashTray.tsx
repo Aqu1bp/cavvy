@@ -2,7 +2,7 @@
 // Click it and it opens along the card into their list, newest first: a row brings its prompt back,
 // its ✕ throws it away.
 
-import { createEffect, createSignal, createUniqueId, For, onCleanup, Show } from "solid-js";
+import { createSignal, createUniqueId, For, Show } from "solid-js";
 import { Archive, ChevronDown, FileText, Paperclip, X } from "lucide-solid";
 import type { Attachment } from "../lib/attachments";
 import { plural } from "../lib/format";
@@ -21,15 +21,6 @@ export function StashTray(p: { items: Stashed[]; /** The message box: where the 
     let root: HTMLDivElement | undefined;
     const files = (item: Stashed) => (item.attachments.length ? plural(item.attachments.length, "attachment") : "");
     const said = (item: Stashed) => [firstLine(item.text), files(item)].filter(Boolean).join(", ");
-    // Home: it takes no room in the column, so the question above the composer moves up by its height (home.css).
-    createEffect(() => {
-        const height = open() && p.items.length ? "open" : "";
-        const home = root?.closest<HTMLElement>(".home");
-        if (!home) return;
-        const frame = requestAnimationFrame(() => home.style.setProperty("--stash-lift", height ? `${root!.offsetHeight}px` : "0px"));
-        onCleanup(() => cancelAnimationFrame(frame));
-    });
-    onCleanup(() => root?.closest<HTMLElement>(".home")?.style.removeProperty("--stash-lift"));
     const picks = () => [...(root?.querySelectorAll<HTMLElement>(".stash-pick") ?? [])];
     const onKeyDown = (e: KeyboardEvent) => {
         if (e.key === "Escape" && open()) {

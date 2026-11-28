@@ -1,6 +1,6 @@
 // Home (gui/src/components/Home.tsx, CliSessions.tsx, ComposerMeter.tsx), rendered by Cavvy (no browser):
-// the composer's strip and its prefixes, the cards before the first message, the sessions from this project's
-// terminal to carry on here, and the limit pill Home shows in place of the context ring.
+// the card of where it runs, the composer's prefixes under it, the cards before the first message, the sessions
+// from this project's terminal to carry on here, and the limit Home shows in place of the context.
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import type { CliSessionInfo, CliSourceInfo, PlanLimits } from "../src/server/protocol";
@@ -30,7 +30,6 @@ const source = (o: Partial<CliSourceInfo> = {}): CliSourceInfo => ({ source: "cl
 function cli(sessions: CliSessionInfo[], sources: CliSourceInfo[] = [source()], rows?: number, providers: { id: string; configured: boolean }[] = []) {
     const continued: string[] = [];
     const tabs: string[] = [];
-    const shown: number[] = [];
     let refetched = 0;
     const CliSessions = componentCode("CliSessions", {
         node, Show, For, createSignal, React: { Fragment: "Fragment" },
@@ -46,9 +45,9 @@ function cli(sessions: CliSessionInfo[], sources: CliSourceInfo[] = [source()], 
         basename: (p: string) => p.split("/").pop(),
         now: () => Date.now(),
     });
-    const tree = CliSessions({ cwd: "/work/cavvy", rows, onShown: (n: number) => void shown.push(n) });
+    const tree = CliSessions({ cwd: "/work/cavvy", rows });
     const rowsOf = () => byClass(tree, "div", "cli-row");
-    return { tree, continued, tabs, shown, refetched: () => refetched, rows: rowsOf, text: text(tree) };
+    return { tree, continued, tabs, refetched: () => refetched, rows: rowsOf, text: text(tree) };
 }
 
 test("Home lists the three newest sessions not yet in Cavvy, each with its mark, when and how long, and Import", () => {
@@ -61,13 +60,15 @@ test("Home lists the three newest sessions not yet in Cavvy, each with its mark,
     ], [source(), source({ source: "codex", name: "Codex" })]);
     // Newest first; the one already in Cavvy isn't offered here.
     expect(r.rows().map((row) => row.props["aria-label"])).toEqual(["Import “Session new” from Claude Code", "Import “Session mid” from Codex", "Import “Session old” from Claude Code"]);
-    expect(r.shown).toEqual([3]);
     expect(elements(elements(r.tree, "section"), "ProviderIcon").map((i) => i.props.id)).toEqual(["claude-code", "codex", "claude-code"]);
     const [first, second] = r.rows();
-    expect(text(byClass(first, "span", "cli-meta"))).toBe("Claude Code · 6m ago · 5+ messages · Still open in a terminal");
+    // Whose it is, when and how long: the row's tooltip; a session still open in a terminal says so under its title.
+    expect(first!.props.title).toBe("Claude Code · 6m ago · 5+ messages");
+    expect(text(byClass(first, "span", "cli-meta"))).toBe("Still open in a terminal");
     // Still open: the warning keeps saying why, in its tooltip.
-    expect(byClass(first, "span", "cli-live")[0]!.props.title).toBe("Using it here and in the terminal at once mixes the two.");
-    expect(text(byClass(second, "span", "cli-meta"))).toBe("Codex · 2h ago · 1 message");
+    expect(byClass(first, "span", "cli-live")[0]!.props.title).toBe("Using both at once mixes them.");
+    expect(second!.props.title).toBe("Codex · 2h ago · 1 message");
+    expect(byClass(second, "span", "cli-meta")).toHaveLength(0);
     expect(text(byClass(first, "span", "cli-go"))).toBe("Import");
     expect(text(byClass(r.tree, "div", "cli-h"))).toBe("Continue from your terminalShow all 4");
 });
@@ -113,7 +114,6 @@ test("with nothing to import the section is gone, even with sessions already in 
     expect(elements(r.tree, "section")).toHaveLength(0);
     // The dialog stays mounted (closed), so an open one survives the list reloading.
     expect(elements(r.tree, "Dialog").map((d) => d.props.open)).toEqual([false]);
-    expect(r.shown).toEqual([0]);
     expect(elements(cli([]).tree, "section")).toHaveLength(0);
 });
 
@@ -127,7 +127,6 @@ test("with no room for a row, what's to import is still reachable: the heading a
 test("a short column shows fewer rows; Show all is there only when it lists more", () => {
     const short = cli([session("a"), session("b"), session("c")], [source()], 1);
     expect(short.rows()).toHaveLength(1);
-    expect(short.shown).toEqual([1]);
     expect(short.text).toContain("Show all 3");
     expect(cli([session("a")], [source()], 0).rows()).toHaveLength(0);
     // Everything shows, and nothing is left out: no Show all (one already in Cavvy isn't listed there either).
@@ -147,7 +146,6 @@ test("Show all lists every one to import, and what isn't listed; none already in
     const dialog = elements(r.tree, "Dialog")[0]!;
     expect(dialog.props.title).toBe("Continue from your terminal");
     const body = text(dialog.children);
-    expect(body).toStartWith("Claude Code and Codex sessions started in cavvy.");
     expect(body).not.toContain("Already here");
     const items = byClass(dialog, "button", "cl-item");
     expect(items.map((i) => text(byClass(i, "span", "cl-act")))).toEqual(["Import", "Import"]);
@@ -159,7 +157,7 @@ test("Show all lists every one to import, and what isn't listed; none already in
     expect(r.continued).toEqual(["a"]);
 });
 
-// ---- The strip, the placeholder and the cards ------------------------------------------------------
+// ---- The card, the prefixes, the placeholder and the cards ------------------------------------------
 
 test("a prefix goes in where the caret is, as typing would: an @ after a word gets a space first", () => {
     const events: string[] = [];
@@ -196,12 +194,12 @@ function home(o: { cwd?: string; needsTrust?: string[]; askTrust?: boolean; mode
     const Home = componentCode("Home", {
         node, Show, For, createSignal, onCleanup: stub, onMount: stub, React: { Fragment: "Fragment" },
         createResource: () => [() => ({ needsTrust: o.needsTrust ?? [], askTrust: o.askTrust, git: true, branch: "main" }), { refetch: stub }],
-        ChevronDown: "ChevronDown", Folder: "Folder", FolderGit2: "FolderGit2", FolderOpen: "FolderOpen", KeyRound: "KeyRound", Plug: "Plug", ShieldAlert: "ShieldAlert", Shield: "Shield",
+        ChevronDown: "ChevronDown", FolderGit2: "FolderGit2", FolderOpen: "FolderOpen", KeyRound: "KeyRound", Plug: "Plug", ShieldAlert: "ShieldAlert", Shield: "Shield",
         app: { conn: "open", homeCwd: o.cwd === undefined ? "/work/cavvy" : o.cwd || undefined, providers: o.providers ?? [], projects: [], models: o.models ?? [{ models: [{}] }], modelsLoaded: true, modelsLoading: false },
         refreshProjects: stub, reportError: stub, rpc: {}, rpcFor: () => ({}), homeOn: () => undefined, chooseProject: stub, homeProjects: () => [],
         noModel: () => (o.models ?? [{ models: [{}] }]).every((g: any) => !g.models.length),
         // No servers here: where a session runs isn't said (the servers code says it, when there are any).
-        createEffect: (fn: () => void) => fn(), isElectron: false, machine: undefined, serversUi: () => Promise.reject(new Error("not loaded here")),
+        createEffect: (fn: () => void) => fn(), isElectron: false, motionMs: () => 0, machine: undefined, serversUi: () => Promise.reject(new Error("not loaded here")),
         connectCli: async (pr: { id: string }) => (connected.push(pr.id), true),
         openProject: stub,
         trustAndContinue: async (...args: unknown[]) => void trusts.push(args),
@@ -215,34 +213,39 @@ function home(o: { cwd?: string; needsTrust?: string[]; askTrust?: boolean; mode
     }) as () => Element;
     const tree = Home();
     const composer = elements(tree, "Composer")[0]!;
-    return { tree, composer, strip: composer.props.strip, trusts, connected, tabs, cliProps };
+    const card = byClass(tree, "section", "home-card")[0]!;
+    return { tree, card, composer, hints: composer.props.under, lead: composer.props.lead, trusts, connected, tabs, cliProps };
 }
 
-test("Home is the question, then the composer with the project, its worktree and the three prefixes in the strip under it", () => {
+test("Home is a card asking what to work on, with the project, its folder and its worktree, and the three prefixes under the composer", () => {
     const h = home();
-    expect(text(elements(h.tree, "h1"))).toBe("What should we work on?");
+    expect(text(elements(h.card, "h1"))).toBe("What should we work on?");
     expect(elements(h.tree, "Logo")).toHaveLength(0);
     expect(h.composer.props.placeholder).toBe("Describe a task or ask a question");
     expect(h.composer.props.variant).toBe("home");
-    const chip = byClass(h.strip, "button", "strip-ctl")[0]!;
+    const rows = byClass(h.card, "div", "home-row");
+    // No servers: where it runs isn't asked.
+    expect(rows.map((r) => text(byClass(r, "span", "home-label")))).toEqual(["Project", "Folder", "Branch"]);
+    const chip = byClass(h.card, "button", "home-pick")[0]!;
     expect(text(chip)).toBe("cavvy");
-    expect(elements(h.strip, "WorktreePicker")[0]!.props).toMatchObject({ cwd: "/work/cavvy", branch: "main" });
-    const hints = elements(byClass(h.strip, "span", "strip-hints"), "button");
+    expect(text(byClass(h.card, "span", "home-value"))).toBe("/work/cavvy");
+    expect(elements(h.card, "WorktreePicker")[0]!.props).toMatchObject({ cwd: "/work/cavvy", branch: "main" });
+    const hints = elements(byClass(h.hints, "span", "home-hints"), "button");
     expect(hints.map((b) => [text(elements(b, "kbd")), text(b)])).toEqual([["/", "/commands"], ["@", "@files"], ["!", "!shell"]]);
     // Pressing one leaves the caret in the composer.
     let prevented = false;
     hints[0]!.props.onMouseDown({ preventDefault: () => (prevented = true) });
     expect(prevented).toBe(true);
     // No cards when there's nothing to ask.
-    expect(byClass(h.tree, "div", "hcard")).toHaveLength(0);
+    expect(byClass(h.tree, "section", "home-trust")).toHaveLength(0);
     expect(h.cliProps[0]).toMatchObject({ cwd: "/work/cavvy", rows: 3 });
 });
 
 test("/ and ! type only into an empty composer, as it is when clicked, whatever filled or cleared it; @ goes anywhere", () => {
     const h = home();
     const ta = { value: "", selectionStart: 0, selectionEnd: 0, focused: 0, focus() { this.focused++; }, setSelectionRange(a: number, b: number) { this.selectionStart = a; this.selectionEnd = b; }, dispatchEvent: stub };
-    byClass(h.tree, "div", "home-composer")[0]!.props.ref({ querySelector: (q: string) => (q === "textarea" ? ta : null) });
-    const [slash, at, bang] = elements(byClass(h.strip, "span", "strip-hints"), "button");
+    byClass(byClass(h.tree, "div", "home-foot"), "div", "composer-col")[0]!.props.ref({ querySelector: (q: string) => (q === "textarea" ? ta : null) });
+    const [slash, at, bang] = elements(byClass(h.hints, "span", "home-hints"), "button");
     // History recalled into the box, with no input event: / and ! only focus it.
     ta.value = "earlier message";
     ta.selectionStart = ta.selectionEnd = ta.value.length;
@@ -263,26 +266,27 @@ test("/ and ! type only into an empty composer, as it is when clicked, whatever 
     expect(composer).toContain("createEffect(() => p.onText?.(text()));");
 });
 
-test("with no folder Home asks for one, and the strip has no prefixes", () => {
+test("with no folder Home asks for one, with no folder or branch rows and no prefixes", () => {
     const h = home({ cwd: "" });
     expect(text(elements(h.tree, "h1"))).toBe("Choose a project to start");
     expect(h.composer.props.placeholder).toBe("Choose a project folder to start");
-    expect(text(byClass(h.strip, "button", "strip-ctl")[0]!)).toBe("Choose a project");
-    expect(byClass(h.strip, "span", "strip-hints")).toHaveLength(0);
+    expect(text(byClass(h.card, "button", "home-pick")[0]!)).toBe("Choose a project");
+    expect(byClass(h.card, "div", "home-row")).toHaveLength(1);
+    expect(byClass(h.hints, "span", "home-hints")).toHaveLength(0);
     expect(elements(h.tree, "CliSessions")).toHaveLength(0);
 });
 
 test("the trust card lists the folder's files and keeps both answers", async () => {
     const h = home({ needsTrust: [".mcp.json", ".claude/settings.json"] });
-    const card = byClass(h.tree, "div", "trust")[0]!;
-    expect(card.props.class).toBe("hcard card-surface trust");
-    expect(text(byClass(card, "span", "ask-title"))).toBe("Do you trust this folder?");
+    const card = byClass(h.tree, "section", "home-trust")[0]!;
+    expect(card.props.class).toBe("home-card home-trust card-surface");
+    expect(text(elements(card, "h2"))).toBe("Do you trust this folder?");
     expect(elements(card, "code").map(text)).toEqual([".mcp.json", ".claude/settings.json"]);
-    // The answer that goes ahead first, filled; the way out at the far end.
-    const [trust, skip] = elements(byClass(card, "div", "ask-row"), "button");
+    // The answer that goes ahead first, filled; the way out after it.
+    const [trust, skip] = elements(byClass(card, "div", "home-trust-acts"), "button");
     expect([text(trust), text(skip)]).toEqual(["Trust this folder", "Open without them"]);
-    expect(skip!.props.class).toBe("pbtn quiet");
-    expect(trust!.props.class).toBe("pbtn primary");
+    expect(skip!.props.class).toBe("btn sm");
+    expect(trust!.props.class).toBe("btn sm primary");
     await skip!.props.onClick();
     await trust!.props.onClick();
     expect(h.trusts).toEqual([["/work/cavvy", false], ["/work/cavvy", true]]);
@@ -294,8 +298,9 @@ test("with no model the question asks for one, and the ways to connect sit in a 
     const h = home({ models: [{ models: [] }], providers: [{ id: "claude-code", name: "Claude Code", configured: false, agentCli: { installed: true, plan: "Claude subscription" } }] });
     expect(text(elements(h.tree, "h1"))).toBe("Connect a model to start");
     expect(h.composer.props.placeholder).toBe("Describe a task or ask a question");
-    // A row, not a card.
-    expect(byClass(h.tree, "div", "hcard")).toHaveLength(0);
+    // A row in the card, not a card of its own.
+    expect(byClass(h.tree, "section", "home-trust")).toHaveLength(0);
+    expect(byClass(h.card, "div", "home-connect")).toHaveLength(1);
     const [plan, key] = elements(byClass(h.tree, "div", "home-connect")[0]!, "button");
     expect(text(plan)).toBe("Claude");
     expect(plan!.props.title).toBe("Use your Claude subscription");
@@ -314,25 +319,26 @@ test("with no model the question asks for one, and the ways to connect sit in a 
 test("a short column shows fewer terminal rows, down to none, and a card in a narrow one takes more room", () => {
     const rows = (o: Parameters<typeof home>[0]) => home(o).cliProps[0]!.rows;
     // 1024×700 and 720×480 windows, and shorter.
-    expect(rows({ height: 640 })).toBe(3);
-    expect(rows({ height: 464, width: 700 })).toBe(2);
-    expect(rows({ height: 400 })).toBe(1);
-    expect(rows({ height: 330 })).toBe(0);
-    expect(rows({ height: 700, needsTrust: [".mcp.json"], width: 900 })).toBe(3);
-    expect(rows({ height: 700, needsTrust: [".mcp.json"], width: 500 })).toBe(2);
+    // 1024×700 and 720×600 windows, and shorter.
+    expect(rows({ height: 700 })).toBe(3);
+    expect(rows({ height: 600, width: 700 })).toBe(1);
+    expect(rows({ height: 560 })).toBe(1);
+    expect(rows({ height: 500 })).toBe(0);
+    expect(rows({ height: 800, needsTrust: [".mcp.json"], width: 900 })).toBe(3);
+    expect(rows({ height: 800, needsTrust: [".mcp.json"], width: 500 })).toBe(2);
 });
 
-test("a folder with nothing to protect, not yet trusted, is asked about in a bar on the composer, by name: trusting it turns on checking edits", async () => {
-    const bar = (h: ReturnType<typeof home>) => byClass(h.tree, "div", "home-tab")[0];
+test("a folder with nothing to protect, not yet trusted, is asked about in a row at the top of the composer, by name: trusting it turns on checking edits", async () => {
+    const bar = (h: ReturnType<typeof home>) => (h.lead ? byClass(h.lead, "div", "home-ask")[0] ?? (h.lead.props?.class === "home-ask" ? h.lead : undefined) : undefined);
     const h = home({ askTrust: true });
-    expect(byClass(h.tree, "div", "trust")).toEqual([]);
+    expect(byClass(h.tree, "section", "home-trust")).toEqual([]);
     const tab = bar(h)!;
     expect(tab.props["aria-label"]).toBe("Trust this folder");
     expect(text(tab)).toContain("Trust cavvy?");
-    const [later, trust] = byClass(tab, "button", "strip-ctl");
+    const [later, trust] = elements(tab, "button");
     expect([text(later), text(trust)]).toEqual(["Not now", "Trust"]);
-    // Not in the strip under the composer, where the folder and its branch are.
-    expect(text(h.strip)).not.toContain("trust");
+    // Not in the card, where the folder and its branch are.
+    expect(text(h.card)).not.toContain("Trust");
     later!.props.onClick();
     trust!.props.onClick();
     expect(h.trusts).toEqual([["/work/cavvy", false], ["/work/cavvy", true]]);
@@ -342,15 +348,15 @@ test("a folder with nothing to protect, not yet trusted, is asked about in a bar
     expect(bar(home({ askTrust: true, models: [{ models: [] }] }))).toBeUndefined();
     // Settings that can run commands are asked about by name, in the card: not in the bar as well.
     const settings = home({ askTrust: true, needsTrust: [".mcp.json"] });
-    expect(byClass(settings.tree, "div", "trust").length).toBe(1);
+    expect(byClass(settings.tree, "section", "home-trust").length).toBe(1);
     expect(bar(settings)).toBeUndefined();
 });
 
-test("Home shows the error cards above the trust and connect cards", () => {
+test("Home shows the error cards over the composer, where a session has them", () => {
     const source = readFileSync(new URL("../gui/src/components/Home.tsx", import.meta.url), "utf8");
     const at = source.indexOf('<ErrorCards place="home" />');
-    expect(at).toBeGreaterThan(source.indexOf('<div class="home-composer"'));
-    expect(at).toBeLessThan(source.indexOf("<Show when={needsTrust().length}>"));
+    expect(at).toBeGreaterThan(source.indexOf('<div class="home-foot"'));
+    expect(at).toBeLessThan(source.indexOf("<Composer"));
 });
 
 // ---- The worktree picker ----------------------------------------------------------------------------
@@ -460,7 +466,8 @@ test("Home shows only the limit pill, as status with no card; a session has its 
     const pill = meter(true, 94);
     expect(pill.trigger!.props.class).toStartWith("ctx-limit");
     expect(elements(pill.trigger, "Ring")).toHaveLength(0);
-    expect(elements(pill.trigger, "Gauge")).toHaveLength(1);
+    // Words alone: no gauge.
+    expect(elements(pill.trigger, "Gauge")).toHaveLength(0);
     expect(text(pill.trigger)).toBe("94%of 5-hour limit");
     expect(text(byClass(pill.trigger, "span", "lbl"))).toBe("of 5-hour limit");
     // Its label says what the pill shows, no more.

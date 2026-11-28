@@ -19,30 +19,17 @@
     position: relative;
     z-index: 2;
     flex: none;
-    border-radius: calc(18 * var(--sp));
-    padding: calc(14 * var(--sp)) calc(12 * var(--sp)) calc(10 * var(--sp)) calc(18 * var(--sp));
-    transition: box-shadow 200ms, background 200ms;
+    border-radius: var(--r-card);
+    box-shadow: inset 0 0 0 1px var(--line-strong), var(--ctl-shadow);
 }
 
 /* Typing in it: its edge a step stronger. No ring in the accent: the caret says where you are. */
 .composer-box:has(textarea:focus) {
-    box-shadow: inset 0 0 0 0.5px var(--line-strong), inset 0 0.5px 0 var(--card-hi), var(--card-shadow);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 34%, var(--line-strong)), var(--ctl-shadow);
 }
 
 .composer.dragging .composer-box {
-    box-shadow: inset 0 0 0 1.5px var(--accent);
-}
-
-/* A shell command (!): a plain ring in the text colour. */
-.composer.shell .composer-box {
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 34%, transparent);
-}
-
-@keyframes c-in {
-    from {
-        opacity: 0;
-        transform: translateY(4px);
-    }
+    box-shadow: inset 0 0 0 1.5px var(--accent), 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent), var(--ctl-shadow);
 }
 
 /* The send button's keys, over it while it's pointed at or focused: steer or queue (and the other way) while a
@@ -60,13 +47,11 @@
     z-index: 12;
     display: grid;
     gap: calc(4 * var(--sp));
-    padding: calc(7 * var(--sp)) calc(9 * var(--sp));
-    border-radius: calc(10 * var(--sp));
+    padding: calc(6 * var(--sp)) calc(8 * var(--sp));
+    border-radius: var(--radius-md);
     background: var(--ctl-strong);
-    -webkit-backdrop-filter: blur(30px) saturate(1.6);
-    backdrop-filter: blur(30px) saturate(1.6);
     box-shadow: var(--pop-shadow);
-    font-size: 0.821rem;
+    font-size: calc(12 * var(--sp));
     color: var(--fg-2);
     white-space: nowrap;
     pointer-events: none;
@@ -90,11 +75,6 @@
 
 .sh-row kbd {
     min-width: calc(34 * var(--sp));
-    height: auto;
-    padding: calc(2 * var(--sp)) calc(5 * var(--sp));
-    font-size: 0.75rem;
-    color: var(--fg-3);
-    text-align: center;
 }
 
 .composer .grow {
@@ -102,13 +82,11 @@
     min-width: 0;
 }
 
-/* ---- Goal and schedules: rows inside the card ---------------------------- */
+/* ---- Goal and schedules: rows at the top of the card, a hairline under each ---- */
 
 .queue {
     display: flex;
     flex-direction: column;
-    gap: calc(4 * var(--sp));
-    margin-bottom: calc(8 * var(--sp));
     min-width: 0;
 }
 
@@ -125,30 +103,21 @@
     gap: calc(8 * var(--sp));
     min-width: 0;
     min-height: calc(34 * var(--sp));
-    padding: calc(4 * var(--sp)) calc(6 * var(--sp)) calc(4 * var(--sp)) calc(10 * var(--sp));
-    border-radius: calc(12 * var(--sp));
-    background: var(--hover);
-    color: var(--fg-2);
+    padding: 0 calc(6 * var(--sp)) 0 calc(12 * var(--sp));
+    border-bottom: 1px solid var(--line);
+    font-size: calc(12.5 * var(--sp));
+    color: var(--fg);
     white-space: nowrap;
-    animation: c-in 300ms var(--ease);
-}
-
-.queue .hb.sm {
-    width: calc(22 * var(--sp));
-    height: calc(22 * var(--sp));
-    border-radius: var(--pill);
 }
 
 .queue-icon {
     display: inline-grid;
     flex: none;
-    color: var(--fg-2);
+    color: var(--fg-3);
 }
 
 .queue-text {
     flex: 1;
-    font-size: 0.929rem;
-    color: var(--fg);
 }
 
 .queue-attached {
@@ -156,13 +125,13 @@
     align-items: center;
     gap: calc(4 * var(--sp));
     max-width: 40%;
-    font-size: 0.857rem;
+    font-size: calc(12 * var(--sp));
     color: var(--fg-3);
 }
 
 .queue-hint {
     flex: none;
-    font-size: 0.857rem;
+    font-size: calc(12 * var(--sp));
     color: var(--fg-3);
     font-variant-numeric: tabular-nums;
 }
@@ -172,9 +141,6 @@
 .si-later {
     display: flex;
     flex-direction: column;
-    padding: calc(3 * var(--sp));
-    border-radius: calc(14 * var(--sp));
-    animation: ask-rise 460ms var(--spring);
 }
 
 .si-later-row {
@@ -182,8 +148,9 @@
     align-items: center;
     gap: calc(8 * var(--sp));
     min-width: 0;
-    min-height: calc(32 * var(--sp));
-    padding: 0 calc(3 * var(--sp)) 0 calc(12 * var(--sp));
+    min-height: calc(34 * var(--sp));
+    padding: 0 calc(6 * var(--sp)) 0 calc(12 * var(--sp));
+    font-size: calc(12.5 * var(--sp));
 }
 
 .si-later-row + .si-later-row {
@@ -197,7 +164,6 @@
 
 .si-later-what {
     flex: 1;
-    font-size: 0.929rem;
     font-weight: 500;
     color: var(--fg);
 }
@@ -205,15 +171,26 @@
 /* What's the matter with it, and where: quieter than its name. */
 .si-later-why {
     margin-left: calc(8 * var(--sp));
-    font-size: 0.857rem;
     font-weight: 400;
     color: var(--fg-3);
 }
 
-.si-later .hb.sm {
-    width: calc(26 * var(--sp));
-    height: calc(26 * var(--sp));
-    border-radius: calc(8 * var(--sp));
+/* ---- Trays on top of the box: the stash, the steps, Up next, sign-ins put off ----
+   One stack with the box: each a row in the card's tint with the box's edge, the first with its top corners. */
+.composer > :is(.steps-slot, .uq-tray, .si-later, .stash-tray.open) {
+    margin-bottom: calc(-9 * var(--sp));
+}
+
+:is(.steps-tray, .uq-tray, .si-later, .stash-tray) {
+    border-radius: var(--r-card) var(--r-card) 0 0;
+    background: color-mix(in srgb, var(--fg) 3%, var(--card));
+    box-shadow: inset 0 0 0 1px var(--line-strong);
+}
+
+.composer > :is(.steps-slot, .uq-tray, .si-later, .stash-tray.open) ~ :is(.uq-tray, .si-later, .composer-box),
+.composer > :is(.stash-tray.open) ~ .steps-slot > .steps-tray:not(.open) {
+    border-top-left-radius: 0;
+    border-top-right-radius: 0;
 }
 
 /* ---- Stashed prompts: a tab on the box's top edge, which opens into their list ----
@@ -228,37 +205,32 @@
     flex-direction: column;
     align-self: flex-end;
     min-width: 0;
-    /* On the box's top edge: the composer's column gap is 8px. */
-    margin: 0 calc(20 * var(--sp)) calc(-8 * var(--sp)) 0;
-    border-radius: calc(11 * var(--sp)) calc(11 * var(--sp)) 0 0;
-    background: var(--card);
-    box-shadow:
-        inset 0 0.5px 0 var(--card-stroke),
-        inset 0.5px 0 0 var(--card-stroke),
-        inset -0.5px 0 0 var(--card-stroke),
-        inset 0 1px 0 var(--card-hi);
-    font-size: 0.857rem;
+    /* On the stack's top edge, its own bottom edge over it: the composer's column gap is 8px. */
+    margin: 0 calc(12 * var(--sp)) calc(-9 * var(--sp)) 0;
+    border-radius: calc(6 * var(--sp)) calc(6 * var(--sp)) 0 0;
+    font-size: calc(11.5 * var(--sp));
+    font-weight: 500;
     color: var(--fg-2);
 }
 
 .stash-tray.open {
     align-self: stretch;
-    margin-left: calc(20 * var(--sp));
-    padding: calc(3 * var(--sp)) calc(4 * var(--sp)) calc(5 * var(--sp));
-    border-radius: calc(15 * var(--sp)) calc(15 * var(--sp)) 0 0;
+    margin-right: 0;
+    padding: calc(2 * var(--sp)) calc(4 * var(--sp)) calc(5 * var(--sp));
+    border-radius: var(--r-card) var(--r-card) 0 0;
+    font-size: calc(12.5 * var(--sp));
 }
 
 .stash-head {
     display: flex;
     align-items: center;
-    gap: calc(7 * var(--sp));
-    height: calc(28 * var(--sp));
-    padding: 0 calc(12 * var(--sp));
+    gap: calc(6 * var(--sp));
+    height: calc(22 * var(--sp));
+    padding: 0 calc(9 * var(--sp));
     border-radius: inherit;
     font: inherit;
     color: inherit;
     text-align: left;
-    transition: color 140ms;
 }
 
 .stash-head:hover {
@@ -273,10 +245,10 @@
 
 /* Open, the head is the list's first line: its icon and word over the rows', the count and the way to close at the far end. */
 .stash-tray.open .stash-head {
-    gap: calc(10 * var(--sp));
+    gap: calc(9 * var(--sp));
     height: calc(30 * var(--sp));
-    padding: 0 calc(11 * var(--sp)) 0 calc(9 * var(--sp));
-    border-radius: calc(10 * var(--sp));
+    padding: 0 calc(8 * var(--sp));
+    border-radius: var(--radius-sm);
 }
 
 .stash-tray.open .stash-head > svg:first-child {
@@ -314,8 +286,7 @@
     align-items: center;
     min-width: 0;
     height: calc(30 * var(--sp));
-    border-radius: calc(10 * var(--sp));
-    transition: background 140ms;
+    border-radius: var(--radius-sm);
 }
 
 .stash-row:hover,
@@ -330,10 +301,9 @@
     gap: calc(10 * var(--sp));
     min-width: 0;
     height: 100%;
-    padding: 0 calc(8 * var(--sp)) 0 calc(9 * var(--sp));
+    padding: 0 calc(8 * var(--sp));
     border-radius: inherit;
     font: inherit;
-    font-size: 0.929rem;
     color: var(--fg);
     text-align: left;
 }
@@ -351,42 +321,16 @@
     display: grid;
     flex: none;
     place-items: center;
-    width: calc(26 * var(--sp));
-    height: calc(26 * var(--sp));
-    margin-right: calc(5 * var(--sp));
-    border-radius: calc(8 * var(--sp));
+    width: calc(24 * var(--sp));
+    height: calc(24 * var(--sp));
+    margin-right: calc(3 * var(--sp));
+    border-radius: calc(5 * var(--sp));
     color: var(--fg-3);
-    transition: background 140ms, color 140ms;
 }
 
 .stash-drop:hover {
     background: var(--press);
     color: var(--fg);
-}
-
-/* Home: in the fill of the card's other tabs there (home.css), and it takes no room in the column, so the composer
-   doesn't move when it comes, goes, opens or closes. */
-.composer.v-home .stash-tray {
-    position: absolute;
-    right: 0;
-    bottom: 100%;
-    /* Set in from the card's ends as its other tabs are. */
-    margin: 0 calc(22 * var(--sp)) 0 0;
-    background: color-mix(in srgb, var(--fg) 3.5%, var(--sheet));
-    box-shadow:
-        inset 0 0.5px 0 var(--line),
-        inset 0.5px 0 0 var(--line),
-        inset -0.5px 0 0 var(--line);
-}
-
-.composer.v-home .stash-tray.open {
-    left: 0;
-    margin-left: calc(22 * var(--sp));
-}
-
-/* Over the tab that asks to trust the folder, which stands on the card's top edge too. */
-.home-tab + .composer.v-home .stash-tray {
-    bottom: calc(100% + 38 * var(--sp));
 }
 
 /* ---- Up next: steers and queued messages, in a tray on top of the box -------
@@ -396,14 +340,9 @@
 
 .uq-tray {
     position: relative;
-    z-index: 1;
     flex: none;
     min-width: 0;
-    /* 6px above the box: the composer's column gap is 8px. */
-    margin: 0 calc(14 * var(--sp)) calc(-2 * var(--sp));
     padding: calc(4 * var(--sp));
-    border-radius: calc(16 * var(--sp));
-    animation: c-in 260ms var(--ease);
 }
 
 .uq-list {
@@ -427,14 +366,13 @@
     gap: calc(8 * var(--sp));
     flex: none;
     min-width: 0;
-    height: calc(34 * var(--sp));
-    padding: 0 calc(6 * var(--sp)) 0 calc(4 * var(--sp));
-    border-radius: calc(12 * var(--sp));
-    font-size: 0.929rem;
+    height: calc(30 * var(--sp));
+    padding: 0 calc(2 * var(--sp));
+    border-radius: var(--radius-sm);
+    font-size: calc(12.5 * var(--sp));
     color: var(--fg);
     white-space: nowrap;
     outline: none;
-    transition: background 140ms;
 }
 
 .uq-row.movable {
@@ -681,18 +619,19 @@
     max-width: 30%;
     overflow: hidden;
     text-overflow: ellipsis;
-    font-size: 0.857rem;
+    font-size: calc(12 * var(--sp));
     color: var(--fg-2);
 }
 
 .schedule-next.due {
-    color: var(--accent);
+    color: var(--accent-text);
 }
 
 .schedule-more {
-    align-self: flex-start;
-    margin: 0 0 0 calc(10 * var(--sp));
-    font-size: 0.857rem;
+    padding: calc(5 * var(--sp)) calc(12 * var(--sp));
+    border-bottom: 1px solid var(--line);
+    font-size: calc(12 * var(--sp));
+    color: var(--fg-3);
 }
 
 /* The goal: what it's working toward, where it stands. */
@@ -702,38 +641,30 @@
 
 .goal-icon {
     flex: none;
-    color: var(--accent);
-}
-
-.goal-tab.st-paused .goal-icon {
     color: var(--fg-3);
 }
 
 .goal-label {
     flex: none;
-    font-size: 0.857rem;
     font-weight: 600;
-    color: var(--fg-2);
 }
 
 .goal-by {
     flex: none;
-    padding: 0 calc(7 * var(--sp));
-    border-radius: var(--pill);
-    box-shadow: inset 0 0 0 0.5px var(--line);
-    font-size: 0.786rem;
-    color: var(--fg-3);
+    padding: 0 calc(6 * var(--sp));
+    border-radius: calc(4 * var(--sp));
+    background: var(--hover);
+    font-size: calc(11.5 * var(--sp));
+    color: var(--fg-2);
 }
 
 .goal-text {
     flex: 1;
-    font-size: 0.929rem;
-    color: var(--fg);
 }
 
 .goal-status {
     flex: none;
-    font-size: 0.857rem;
+    font-size: calc(12 * var(--sp));
     color: var(--fg-3);
     font-variant-numeric: tabular-nums;
 }
@@ -742,9 +673,10 @@
     max-height: min(140 * var(--sp), 18vh);
     overflow-y: auto;
     overscroll-behavior: contain;
-    padding: 0 calc(10 * var(--sp)) calc(2 * var(--sp));
-    font-size: 0.857rem;
-    color: var(--fg-3);
+    padding: 0 calc(12 * var(--sp)) calc(8 * var(--sp)) calc(34 * var(--sp));
+    border-bottom: 1px solid var(--line);
+    font-size: calc(12.5 * var(--sp));
+    color: var(--fg-2);
 }
 
 .goal-details p {
@@ -1105,6 +1037,7 @@ button.att-card:hover {
     display: flex;
     align-items: flex-start;
     gap: calc(8 * var(--sp));
+    padding: calc(12 * var(--sp)) calc(14 * var(--sp)) calc(4 * var(--sp));
 }
 
 /* A modest height, seven lines of the text size or less in a short column; past it the text scrolls, and the expand
@@ -1113,16 +1046,16 @@ button.att-card:hover {
     display: block;
     flex: 1;
     width: 100%;
-    min-height: calc(40 * var(--sp));
-    max-height: min(calc(7lh + 2 * var(--sp)), calc(var(--column-h, 100vh) * 0.3));
-    padding: calc(2 * var(--sp)) 0 0;
-    /* Scrolled, the line above shows a sliver of its descenders in the top padding: faded out. */
+    min-height: calc(28 * var(--sp));
+    max-height: min(7lh, calc(var(--column-h, 100vh) * 0.3));
+    padding: 0;
+    /* Scrolled, the line above shows a sliver of its descenders at the top: faded out. */
     mask-image: linear-gradient(transparent, #000 4px);
     border: 0;
     resize: none;
     overflow-y: auto;
     background: transparent;
-    font-size: 1.036rem;
+    font-size: var(--chat-size);
     line-height: 1.5;
     color: var(--fg);
 }
@@ -1134,13 +1067,9 @@ button.att-card:hover {
     mask-image: none;
 }
 
-.composer.v-home textarea {
-    min-height: calc(58 * var(--sp));
-}
-
-.composer.shell textarea {
+.composer.shell :is(textarea, .composer-mirror) {
     font-family: var(--font-mono);
-    font-size: 0.929rem;
+    font-size: calc(var(--chat-size) - 1.5 * var(--sp));
 }
 
 /* Its text's height, up to the modest one (Composer.tsx sizes it where the engine can't). */
@@ -1177,7 +1106,7 @@ button.att-card:hover {
 /* See-through, so the letters behind show in it. */
 .composer-field.marked textarea::selection {
     color: transparent;
-    background: color-mix(in srgb, var(--accent) 30%, transparent);
+    background: color-mix(in srgb, var(--accent) 28%, transparent);
 }
 
 .composer-mirror {
@@ -1185,8 +1114,7 @@ button.att-card:hover {
     top: 0;
     left: 0;
     overflow: hidden;
-    padding: calc(2 * var(--sp)) 0 0;
-    font-size: 1.036rem;
+    font-size: var(--chat-size);
     line-height: 1.5;
     white-space: pre-wrap;
     overflow-wrap: break-word;
@@ -1202,7 +1130,7 @@ button.att-card:hover {
 
 /* What the command takes, until something's typed there. */
 .ctok-hint {
-    color: var(--fg-3);
+    color: var(--fg-4);
 }
 
 /* The card shows focus; the field inside doesn't need its own ring. */
@@ -1214,41 +1142,48 @@ button.att-card:hover {
    clear of it: the text's own padding when that's the first row, so its scrollbar stays at the edge. */
 .composer-box > .c-expand {
     position: absolute;
-    top: calc(8 * var(--sp));
-    right: calc(8 * var(--sp));
+    top: calc(6 * var(--sp));
+    right: calc(6 * var(--sp));
     z-index: 1;
-    height: calc(26 * var(--sp));
-    min-width: calc(26 * var(--sp));
+    height: calc(24 * var(--sp));
+    min-width: calc(24 * var(--sp));
     padding: 0;
+    background: var(--card);
     color: var(--fg-3);
-    animation: fade 160ms var(--ease);
 }
 
 .composer.expandable .composer-box > :first-child:not(.composer-input, .c-expand) {
-    padding-right: calc(30 * var(--sp));
+    padding-right: calc(34 * var(--sp));
 }
 
-.composer.expandable .composer-input:first-child textarea,
-.composer.expandable .composer-input:first-child .composer-mirror {
-    padding-right: calc(30 * var(--sp));
+.composer.expandable .composer-input:first-child {
+    padding-right: calc(34 * var(--sp));
 }
 
+/* A shell line (!): runs in your shell. */
 .shell-badge {
-    margin-top: calc(3 * var(--sp));
-    color: var(--fg-2);
+    display: inline-grid;
+    place-items: center;
+    flex: none;
+    width: calc(20 * var(--sp));
+    height: calc(22 * var(--sp));
+    margin: calc(-1 * var(--sp)) 0 0 calc(-2 * var(--sp));
+    border-radius: calc(5 * var(--sp));
+    background: var(--add-bg);
+    color: var(--add-fg);
 }
 
-/* ---- Controls row: attach | model, effort, mode … context, send ----------
+/* ---- Controls row: attach | model, effort, mode … send --------------------
    Words, not chips: each picker is what it's set to and a chevron, quiet
-   until pointed at. Their glyphs (the provider's mark, the effort's bars, the
-   mode's icon) stand in only when the row is too tight for the words. */
+   until pointed at. Their glyphs (the provider's mark, the mode's icon) stand
+   in only when the row is too tight for the words. */
 
 .composer-bar {
     display: flex;
     align-items: center;
     gap: calc(2 * var(--sp));
     min-width: 0;
-    margin: calc(8 * var(--sp)) 0 0 calc(-8 * var(--sp));
+    padding: calc(6 * var(--sp)) calc(8 * var(--sp)) calc(8 * var(--sp)) calc(6 * var(--sp));
 }
 
 .cb {
@@ -1259,9 +1194,8 @@ button.att-card:hover {
     height: calc(28 * var(--sp));
     min-width: calc(28 * var(--sp));
     padding: 0 calc(5 * var(--sp));
-    border-radius: calc(8 * var(--sp));
-    color: var(--fg-2);
-    transition: background 140ms, color 140ms, transform 160ms var(--ease);
+    border-radius: var(--radius-sm);
+    color: var(--fg-3);
 }
 
 .cb:hover {
@@ -1269,35 +1203,24 @@ button.att-card:hover {
     color: var(--fg);
 }
 
-.cb:active {
-    transform: scale(0.94);
-    background: var(--press);
-}
-
-/* Attach leads the row; the pickers start a little after it. */
-.composer-bar > .cb:first-of-type {
-    margin-right: calc(4 * var(--sp));
-}
-
 .pick {
     display: inline-flex;
     align-items: center;
     flex: none;
-    gap: calc(4 * var(--sp));
+    gap: calc(6 * var(--sp));
     height: calc(28 * var(--sp));
     min-width: 0;
     padding: 0 calc(6 * var(--sp)) 0 calc(8 * var(--sp));
-    border-radius: calc(8 * var(--sp));
-    font-size: 0.964rem;
-    color: var(--fg-2);
+    border-radius: var(--radius-sm);
+    font-size: calc(12.5 * var(--sp));
+    font-weight: 500;
+    color: var(--fg);
     white-space: nowrap;
-    transition: background 140ms, color 140ms;
 }
 
 .pick:hover,
 .pick.open {
     background: var(--hover);
-    color: var(--fg);
 }
 
 .pick > svg {
@@ -1306,6 +1229,7 @@ button.att-card:hover {
 
 .pick .chev {
     flex: none;
+    margin-left: calc(-2 * var(--sp));
     color: var(--fg-3);
 }
 
@@ -1319,22 +1243,13 @@ button.att-card:hover {
 
 /* How hard the model thinks, after its name: a step quieter, so the two read as one thing, name first. */
 .pick-eff {
+    font-weight: 450;
     color: var(--fg-3);
-}
-
-.pick:hover .pick-eff,
-.pick.open .pick-eff {
-    color: var(--fg-2);
 }
 
 /* The mode's glyph waits until its word gives way (below). The model's provider always shows its mark, before the name. */
 .composer-bar .pick:not(.model) > :is(svg:not(.chev), .provider-mono) {
     display: none;
-}
-
-.composer-bar .pick.model > :is(svg:not(.chev), .provider-mono) {
-    flex: none;
-    margin-right: calc(2 * var(--sp));
 }
 
 .composer-bar[data-fit~="4"] .pick.model > :is(svg:not(.chev), .provider-mono) {
@@ -1354,50 +1269,43 @@ button.att-card:hover {
     white-space: nowrap;
 }
 
-.composer-bar[data-fit~="1"] .ctx-limit .lbl,
 .composer-bar[data-fit~="2"] .pick .chev,
-.composer-bar[data-fit~="3"] > .cb:first-of-type,
-.composer-bar[data-fit~="5"] .ctx-btn {
+.composer-bar[data-fit~="3"] > .cb:first-of-type {
     display: none;
 }
 
 /* Comparing models (Home): the chip says how many. */
-.pick.model.on {
+.pick.model.on,
+.pick.mode-plan {
     color: var(--accent-text);
 }
 
-.pick.mode-plan,
-.pick.mode-plan:hover {
-    color: var(--accent-text);
-}
-
-.pick.mode-bypass,
-.pick.mode-bypass:hover {
+.pick.mode-bypass {
     color: var(--danger);
 }
 
-/* Fast mode: a filled ⚡ before the model's name. */
+/* Fast mode: a ⚡ before the model's mark. */
 .pick .fz {
     display: inline-grid;
-    margin: 0 calc(1 * var(--sp)) 0 calc(-2 * var(--sp));
-    color: var(--accent-text);
+    margin-right: calc(-2 * var(--sp));
+    color: var(--warn);
 }
 
 .pick .fz svg {
     fill: currentColor;
 }
 
-/* Context: a few quiet words under the card, at its far end ("4% context"), amber then red as it fills. */
+/* Under the card: how full the context is ("4% context", amber then red as it fills; Home: a plan near its limit),
+   then what Home puts at the far end. */
 .composer-under {
     display: flex;
     align-items: center;
-    justify-content: flex-end;
-    gap: calc(12 * var(--sp));
+    gap: calc(4 * var(--sp));
     min-width: 0;
     min-height: calc(20 * var(--sp));
     margin-top: calc(-2 * var(--sp));
-    padding: 0 calc(14 * var(--sp));
-    font-size: 0.857rem;
+    padding: 0 calc(4 * var(--sp));
+    font-size: calc(11.5 * var(--sp));
     color: var(--fg-3);
 }
 
@@ -1405,25 +1313,29 @@ button.att-card:hover {
     display: none;
 }
 
-.ctx-btn {
+.ctx-btn,
+.ctx-limit {
+    display: inline-flex;
+    align-items: center;
     flex: none;
-    padding: 0;
+    height: calc(20 * var(--sp));
+    margin-left: calc(-6 * var(--sp));
+    padding: 0 calc(6 * var(--sp));
+    border-radius: calc(5 * var(--sp));
     font: inherit;
-    line-height: 1.5;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
     color: var(--fg-3);
-    transition: color 140ms;
 }
 
 .ctx-btn:hover,
 .ctx-btn.open {
+    background: var(--hover);
     color: var(--fg);
 }
 
-.ctx-num {
-    font-variant-numeric: tabular-nums;
-}
-
-.ctx-btn.tone-warning {
+.ctx-btn.tone-warning,
+.ctx-limit {
     color: var(--warn);
 }
 
@@ -1431,50 +1343,28 @@ button.att-card:hover {
     color: var(--danger);
 }
 
-/* Home: the plan's limit in place of the ring, only once it's close (ComposerMeter nearLimit). Just status: no card. */
 .ctx-limit {
-    display: inline-flex;
-    align-items: center;
-    flex: none;
-    gap: calc(5 * var(--sp));
-    height: calc(26 * var(--sp));
-    margin: 0 calc(6 * var(--sp)) 0 calc(2 * var(--sp));
-    padding: 0 calc(10 * var(--sp)) 0 calc(8 * var(--sp));
-    border-radius: var(--pill);
-    font-size: 0.857rem;
-    font-variant-numeric: tabular-nums;
-    white-space: nowrap;
-    color: var(--warn);
-    background: var(--warn-bg);
-    cursor: default;
+    gap: 0.3em;
 }
 
 .ctx-limit b {
-    font-weight: 650;
+    font-weight: inherit;
 }
 
-.ctx-limit svg {
-    flex: none;
-}
-
+/* Send: a small square of ink. */
 .send {
     display: grid;
     place-items: center;
     flex: none;
-    width: calc(32 * var(--sp));
-    height: calc(32 * var(--sp));
-    border-radius: 50%;
+    width: calc(28 * var(--sp));
+    height: calc(28 * var(--sp));
+    border-radius: var(--radius-sm);
     background: var(--ink);
     color: var(--ink-fg);
-    transition: transform 200ms var(--spring), opacity 160ms, background 200ms;
 }
 
 .send:hover:not(:disabled) {
     background: var(--ink-hover);
-}
-
-.send:active:not(:disabled) {
-    transform: scale(0.88);
 }
 
 /* Nothing to send: there, and plainly not yet. */
@@ -1483,16 +1373,25 @@ button.att-card:hover {
     color: var(--fg-3);
 }
 
+.send.stop {
+    background: var(--raised);
+    box-shadow: inset 0 0 0 1px var(--line-strong);
+    color: var(--fg);
+}
+
+.send.stop:hover {
+    background: color-mix(in srgb, var(--fg) 4%, var(--raised));
+}
+
 /* Home, comparing models: the button says how many get the prompt. */
 .send.wide {
     display: flex;
     align-items: center;
     gap: calc(6 * var(--sp));
     width: auto;
-    padding: 0 calc(12 * var(--sp)) 0 calc(14 * var(--sp));
-    border-radius: var(--pill);
-    font-size: 0.857rem;
-    font-weight: 600;
+    padding: 0 calc(10 * var(--sp));
+    font-size: calc(12.5 * var(--sp));
+    font-weight: 500;
     white-space: nowrap;
 }
 
@@ -2021,29 +1920,16 @@ button.att-card:hover {
     position: absolute;
     left: 0;
     right: 0;
-    bottom: calc(100% + 8 * var(--sp));
+    bottom: calc(100% + 6 * var(--sp));
     z-index: 10;
-    /* --room: Home's, the window's height under it (Composer.tsx). */
-    max-height: min(calc(320 * var(--sp)), var(--room, calc(320 * var(--sp))));
+    max-height: calc(264 * var(--sp));
     overflow-y: auto;
-    padding: calc(5 * var(--sp));
-    border-radius: calc(16 * var(--sp));
+    padding: calc(4 * var(--sp));
+    border-radius: var(--r-card);
     background: var(--ctl-strong);
-    -webkit-backdrop-filter: blur(20px) saturate(1.9);
-    backdrop-filter: blur(20px) saturate(1.9);
-    box-shadow: var(--pop-shadow), inset 0 1px 0 var(--ctl-hi);
+    box-shadow: var(--pop-shadow);
     transform-origin: bottom left;
-    animation: c-pop 240ms var(--spring);
-}
-
-/* Home: the box sits in the middle of the page, under its heading. The menu drops below it (and the strip), as
-   the pickers do there, over the list of sessions rather than the heading and the top of the window. */
-.composer.v-home .composer-menu {
-    top: var(--menu-top, calc(100% + 6 * var(--sp)));
-    bottom: auto;
-    transform-origin: top left;
-    /* Over the strip's words: the glass on a solid sheet, so nothing reads through it. */
-    background: linear-gradient(var(--ctl-strong), var(--ctl-strong)), var(--sheet);
+    animation: c-pop 140ms var(--ease);
 }
 
 /* Files: a compact list by the text, not a slab the composer's width. Each row is the file's name, then its
@@ -2051,20 +1937,10 @@ button.att-card:hover {
 .composer-menu.files {
     right: auto;
     width: min(calc(420 * var(--sp)), 100%);
-    max-height: min(calc(286 * var(--sp)), var(--room, calc(286 * var(--sp))));
-    padding: calc(4 * var(--sp));
-    border-radius: calc(13 * var(--sp));
-}
-
-.composer-menu.files .cm-item {
-    gap: calc(8 * var(--sp));
-    padding: calc(5 * var(--sp)) calc(8 * var(--sp));
-    border-radius: calc(9 * var(--sp));
 }
 
 .composer-menu.files .cm-icon {
     width: calc(16 * var(--sp));
-    color: var(--fg-3);
 }
 
 /* The name gives way last: its folder shrinks ten times as fast. */
@@ -2072,69 +1948,66 @@ button.att-card:hover {
     flex: 0 1 auto;
     max-width: none;
     min-width: 0;
+    font-family: var(--font-ui);
+    font-size: inherit;
 }
 
 .cm-dir {
     flex: 0 10 auto;
     min-width: 0;
-    font-size: 0.821rem;
+    font-size: calc(12 * var(--sp));
     color: var(--fg-3);
 }
 
 @keyframes c-pop {
     from {
         opacity: 0;
-        transform: scale(0.95);
+        transform: scale(0.97);
     }
 }
 
 .cm-item {
     display: flex;
     align-items: center;
-    gap: calc(9 * var(--sp));
+    gap: calc(8 * var(--sp));
     width: 100%;
     min-width: 0;
-    padding: calc(7 * var(--sp)) calc(10 * var(--sp));
-    border-radius: calc(10 * var(--sp));
+    height: calc(28 * var(--sp));
+    padding: 0 calc(9 * var(--sp));
+    border-radius: var(--radius-sm);
     color: var(--fg);
 }
 
 .cm-item.sel {
-    background: color-mix(in srgb, var(--accent) 13%, transparent);
+    background: var(--press);
 }
 
 .cm-icon {
     display: grid;
     place-items: center;
     flex: none;
-    width: calc(20 * var(--sp));
-    color: var(--fg-2);
+    color: var(--fg-3);
 }
 
 .cm-icon.skill {
-    color: var(--accent);
+    color: var(--accent-text);
 }
 
 .cm-name {
     flex: none;
     max-width: 60%;
-    font-size: 0.893rem;
-    font-weight: 500;
-}
-
-/* Commands: the names take one column (a longer name just runs past it), so what each does starts at the same
-   place down the list and reads as a column beside its name. */
-.composer-menu:not(.files) .cm-name {
-    min-width: calc(176 * var(--sp));
+    font: calc(12 * var(--sp)) var(--font-mono);
 }
 
 .cm-args {
-    color: var(--fg-3);
+    color: var(--fg-4);
 }
 
+/* What a command does, at the row's far end. */
 .cm-desc {
     flex: 1;
-    font-size: 0.821rem;
+    font-size: calc(12.5 * var(--sp));
+    text-align: right;
     color: var(--fg-3);
 }
 
@@ -2143,8 +2016,8 @@ button.att-card:hover {
 }
 
 .cm-status {
-    padding: calc(9 * var(--sp)) calc(10 * var(--sp));
-    font-size: 0.857rem;
+    padding: calc(8 * var(--sp)) calc(9 * var(--sp));
+    font-size: calc(12.5 * var(--sp));
     color: var(--fg-3);
 }
 
@@ -2186,7 +2059,7 @@ button.att-card:hover {
 .cx-head h3 {
     margin: 0;
     font-size: inherit;
-    font-weight: 500;
+    font-weight: 600;
     color: var(--fg);
 }
 
@@ -2276,28 +2149,24 @@ button.att-card:hover {
     color: var(--fg-2);
 }
 
-/* The card's small buttons, like the mockup's ghost pills. */
+/* The card's small buttons. */
 .cbtn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    height: calc(26 * var(--sp));
+    height: calc(24 * var(--sp));
     max-width: 100%;
-    padding: 0 calc(11 * var(--sp));
-    border-radius: var(--pill);
-    font-size: 0.857rem;
+    padding: 0 calc(8 * var(--sp));
+    border-radius: var(--radius-sm);
+    font-size: calc(12 * var(--sp));
     font-weight: 500;
     color: var(--fg);
-    background: var(--press);
-    transition: background 140ms, transform 160ms var(--ease);
+    background: var(--raised);
+    box-shadow: inset 0 0 0 1px var(--line-strong);
 }
 
 .cbtn:hover:not(:disabled):not([aria-disabled="true"]) {
-    background: color-mix(in srgb, var(--fg) 15%, transparent);
-}
-
-.cbtn:active:not(:disabled) {
-    transform: scale(0.96);
+    background: color-mix(in srgb, var(--fg) 4%, var(--raised));
 }
 
 .cbtn:disabled {
@@ -2315,8 +2184,8 @@ button.att-card:hover {
 }
 
 /* ---- Effort: what the model picker opens on; and the slider (Settings uses it too) ----
-   The model in use and how hard it thinks, over a slider with a stop per level. The name opens the models in the
-   popover's place; fast mode is a bolt beside it. */
+   The model in use and how hard it thinks, over a slider with a stop per level and their names under it. The name
+   opens the models in the popover's place; Fast is beside it. */
 
 .popover.mp:has(> .mpe) {
     overflow: visible;
@@ -2325,32 +2194,28 @@ button.att-card:hover {
 .mpe {
     display: flex;
     flex-direction: column;
-    gap: calc(10 * var(--sp));
-    padding: calc(10 * var(--sp)) calc(12 * var(--sp)) calc(12 * var(--sp));
+    padding: calc(8 * var(--sp)) calc(8 * var(--sp)) calc(14 * var(--sp));
 }
 
 .mpe-h {
     display: flex;
     align-items: center;
-    gap: calc(4 * var(--sp));
+    gap: calc(6 * var(--sp));
     min-width: 0;
-    margin: 0 calc(-4 * var(--sp));
 }
 
 /* The model and its effort, as on the button that opened this; the whole row goes to the models. */
-/* Centred, not on the text's baseline: the provider's mark and Fast's bolt beside it line up with the words. */
 .mpe-model {
     display: flex;
     align-items: center;
     flex: 1;
     gap: calc(8 * var(--sp));
     min-width: 0;
-    height: calc(32 * var(--sp));
-    padding: 0 calc(6 * var(--sp)) 0 calc(8 * var(--sp));
-    border-radius: calc(8 * var(--sp));
-    font-size: 1rem;
+    height: calc(34 * var(--sp));
+    padding: 0 calc(8 * var(--sp));
+    border-radius: var(--radius-sm);
+    font-weight: 500;
     text-align: left;
-    transition: background 140ms;
 }
 
 .mpe-model:hover,
@@ -2366,91 +2231,67 @@ button.att-card:hover {
 .mpe-name {
     flex: 0 1 auto;
     min-width: 0;
-    font-weight: 500;
-    color: var(--fg);
 }
 
 .mpe-eff {
     flex: none;
-    margin-left: calc(-2 * var(--sp));
+    font-weight: 450;
     color: var(--fg-3);
 }
 
 .mpe-model .chev {
     flex: none;
-    align-self: center;
     margin-left: auto;
     color: var(--fg-3);
 }
 
-/* Fast mode: a bolt, filled while it's on. */
+/* Fast: a bordered toggle with its bolt; amber while it's on. */
 .mpe-fast {
-    display: grid;
-    place-items: center;
+    display: inline-flex;
+    align-items: center;
+    gap: calc(5 * var(--sp));
     flex: none;
-    width: calc(32 * var(--sp));
-    height: calc(32 * var(--sp));
-    border-radius: calc(8 * var(--sp));
-    color: var(--fg-3);
-    transition: background 140ms, color 140ms;
+    height: calc(28 * var(--sp));
+    padding: 0 calc(9 * var(--sp)) 0 calc(7 * var(--sp));
+    border-radius: var(--radius-sm);
+    box-shadow: inset 0 0 0 1px var(--line-strong);
+    font-size: calc(12.5 * var(--sp));
+    font-weight: 500;
+    color: var(--fg-2);
 }
 
 .mpe-fast:hover:not(:disabled) {
     background: var(--hover);
-    color: var(--fg);
 }
 
 .mpe-fast.on {
-    color: var(--accent-text);
+    background: var(--warn-bg);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warn) 35%, transparent);
+    color: var(--warn);
 }
 
 .mpe-fast.on svg {
     fill: currentColor;
-    animation: ep-bolt 260ms var(--ease-out);
 }
 
 .mpe-fast:disabled {
-    opacity: 0.45;
+    opacity: 0.5;
 }
 
-/* Back to the effort, from the models. */
-.mp-search .mp-back {
-    margin-left: calc(-8 * var(--sp));
-}
-
-@keyframes ep-bolt {
-    40% {
-        transform: scale(1.35) rotate(-8deg);
-    }
-}
-
-@media (prefers-reduced-motion: reduce) {
-    .mpe-fast.on svg {
-        animation: none;
-    }
-}
-
-[data-motion="instant"] .mpe-fast.on svg {
-    animation: none;
-}
-
+/* The slider: a hairline track with a dot per level, filled up to the knob; each level's name under its dot. */
 .es {
-    --pad: calc(3 * var(--sp));
-    --t: calc(28 * var(--sp));
-    --move: 150ms var(--ease-out);
+    --pad: calc(1 * var(--sp));
+    --t: calc(14 * var(--sp));
+    --move: 140ms var(--ease);
     position: relative;
-    height: calc(34 * var(--sp));
-    border-radius: var(--pill);
-    background: color-mix(in srgb, var(--fg) 6%, transparent);
-    box-shadow: inset 0 0 0 0.5px var(--line);
+    height: calc(16 * var(--sp));
     cursor: pointer;
     touch-action: none;
     outline: none;
 }
 
-.es.sm {
-    --t: calc(18 * var(--sp));
-    height: calc(24 * var(--sp));
+.mpe .es {
+    margin: calc(16 * var(--sp)) calc(22 * var(--sp)) calc(26 * var(--sp));
 }
 
 .es.drag {
@@ -2468,45 +2309,59 @@ button.att-card:hover {
     }
 }
 
+/* The track, from the first stop to the last. */
+.es::before,
 .es-fill {
+    content: "";
     position: absolute;
-    left: 0;
-    top: 0;
-    bottom: 0;
-    width: calc(2 * var(--pad) + var(--t) + (100% - 2 * var(--pad) - var(--t)) * var(--p));
-    border-radius: inherit;
-    background: linear-gradient(90deg, color-mix(in srgb, var(--fg) 14%, transparent), color-mix(in srgb, var(--fg) 34%, transparent));
+    top: calc(7 * var(--sp));
+    left: calc(var(--pad) + var(--t) / 2);
+    height: calc(2 * var(--sp));
+    border-radius: 1px;
+}
+
+.es::before {
+    right: calc(var(--pad) + var(--t) / 2);
+    background: var(--line-strong);
+}
+
+.es-fill {
+    width: calc((100% - 2 * var(--pad) - var(--t)) * var(--p));
+    background: var(--fg);
     transition: width var(--move);
 }
 
 /* Across the knob's travel, from its middle at the first stop to its middle at the last. */
-.es-stops {
+.es-stops,
+.es-labels {
     position: absolute;
     top: 0;
-    bottom: 0;
     left: calc(var(--pad) + var(--t) / 2);
     right: calc(var(--pad) + var(--t) / 2);
+}
+
+.es-stops {
+    bottom: 0;
     display: flex;
     align-items: center;
     justify-content: space-between;
 }
 
 .es-stops i {
-    width: calc(4 * var(--sp));
-    height: calc(4 * var(--sp));
-    margin: 0 calc(-2 * var(--sp));
+    width: calc(6 * var(--sp));
+    height: calc(6 * var(--sp));
+    margin: 0 calc(-3 * var(--sp));
     border-radius: 50%;
-    background: color-mix(in srgb, var(--fg) 30%, transparent);
-    transition: transform 120ms var(--ease-out), background 120ms;
+    background: var(--line-strong);
+    box-shadow: 0 0 0 2px var(--ctl);
 }
 
 .es-stops i.on {
-    background: rgba(255, 255, 255, 0.55);
+    background: var(--fg);
 }
 
 .es-stops i.hov {
-    transform: scale(1.75);
-    background: color-mix(in srgb, var(--fg) 60%, transparent);
+    background: var(--fg-3);
 }
 
 .es-thumb {
@@ -2516,14 +2371,10 @@ button.att-card:hover {
     width: var(--t);
     height: var(--t);
     border-radius: 50%;
-    background: #fff;
-    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+    background: var(--ctl);
+    box-shadow: inset 0 0 0 calc(4 * var(--sp)) var(--fg), 0 1px 3px rgba(0, 0, 0, 0.2);
     pointer-events: none;
-    transition: left var(--move), transform 120ms var(--ease-out);
-}
-
-.es.drag .es-thumb {
-    transform: scale(1.08);
+    transition: left var(--move);
 }
 
 /* No level chosen (the model's default): an empty track, the knob at the start. */
@@ -2531,17 +2382,35 @@ button.att-card:hover {
     opacity: 0;
 }
 
-
 .es:focus-visible .es-thumb {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
 }
 
+.es-labels {
+    top: calc(22 * var(--sp));
+}
+
+.es-labels span {
+    position: absolute;
+    translate: -50% 0;
+    font-size: calc(11.5 * var(--sp));
+    white-space: nowrap;
+    color: var(--fg-3);
+}
+
+.es:hover .es-labels span:hover,
+.es-labels .on {
+    color: var(--fg);
+}
+
+.es-labels .on {
+    font-weight: 500;
+}
+
 /* ---- Model picker ---------------------------------------------------------
-   From the top: search; whose models are listed, as plain words (the
-   favourites or one provider, with its account at the row's end); the models;
-   and under them the effort of the one in use. No headings, no marks, one
-   fill: the row under the pointer or the keys. */
+   From the top: search; the providers as their marks (Favorites first) and under them the one listed, with its
+   account at the end; the models. One fill: the row under the pointer or the keys. */
 
 /* One size while it's open, whatever is filtered or searched: tall enough for everything the providers offer
    (--mp-fit, ModelPicker.tsx), so a few models don't leave half of it blank, and never taller than a long list
@@ -2551,7 +2420,6 @@ button.att-card:hover {
     flex-direction: column;
     padding: 0;
     overflow: hidden;
-    border-radius: calc(16 * var(--sp));
 }
 
 .mp-wrap {
@@ -2564,37 +2432,14 @@ button.att-card:hover {
     min-height: 0;
 }
 
-/* Closing: a still copy of the panel fades and settles back toward its button (Popover's exit). */
-@keyframes mp-out {
-    to {
-        opacity: 0;
-        transform: scale(0.97) translateY(4px);
-    }
-}
-
-.popover.mp.closing {
-    pointer-events: none;
-    animation: mp-out calc(var(--dur-panel) * 0.75) var(--ease-in-out) forwards;
-}
-
-.popover.mp.closing[data-side="bottom"] {
-    animation-name: mp-out-down;
-}
-
-@keyframes mp-out-down {
-    to {
-        opacity: 0;
-        transform: scale(0.97) translateY(-4px);
-    }
-}
-
 .mp-search {
     display: flex;
     align-items: center;
     flex: none;
-    gap: calc(8 * var(--sp));
-    padding: calc(4 * var(--sp)) calc(8 * var(--sp)) 0 calc(14 * var(--sp));
-    height: calc(42 * var(--sp));
+    gap: calc(4 * var(--sp));
+    height: calc(40 * var(--sp));
+    padding: 0 calc(6 * var(--sp)) 0 calc(13 * var(--sp));
+    border-bottom: 1px solid var(--line);
     color: var(--fg-3);
 }
 
@@ -2602,9 +2447,9 @@ button.att-card:hover {
     flex: 1;
     min-width: 0;
     height: calc(26 * var(--sp));
+    padding: 0 calc(4 * var(--sp));
     border: 0;
     background: none;
-    font-size: 0.929rem;
     color: var(--fg);
 }
 
@@ -2617,30 +2462,28 @@ button.att-card:hover {
 }
 
 .mp-search .hb.sm {
-    border-radius: calc(7 * var(--sp));
     color: var(--fg-3);
 }
 
-.mp-search .hb.sm + .hb.sm {
-    margin-left: calc(-6 * var(--sp));
+/* Back to the effort, from the models. */
+.mp-search .mp-back {
+    margin-left: calc(-7 * var(--sp));
 }
 
-/* Whose models are listed, and the listed provider's account at the row's end. */
-/* The account goes under the tabs when both don't fit: beside them, it took the room the next tab needed. */
+/* The providers' marks, in one row that scrolls sideways, faded at an edge with more past it, where an arrow shows it. */
 .mp-bar {
     position: relative;
-    z-index: 2;
     display: flex;
-    flex-wrap: wrap;
-    align-items: center;
     flex: none;
-    gap: calc(8 * var(--sp));
     min-width: 0;
-    padding: 0 calc(10 * var(--sp)) 0 calc(6 * var(--sp));
-    border-bottom: 0.5px solid var(--line);
+    padding: calc(6 * var(--sp)) calc(6 * var(--sp)) 0;
 }
 
-/* The filters and the arrows at their edges. */
+/* Searching: the matches of every provider, under their names; the marks step aside. */
+.mp-wrap:has(.mp-search input:not(:placeholder-shown)) .mp-bar {
+    display: none;
+}
+
 .mp-fwrap {
     position: relative;
     display: flex;
@@ -2648,13 +2491,11 @@ button.att-card:hover {
     min-width: 0;
 }
 
-/* The filters: one row of words that scrolls sideways, faded at an edge with more past it, where an arrow shows it. */
 .mp-filters {
     display: flex;
     flex: 1 1 auto;
     min-width: 0;
-    gap: calc(2 * var(--sp));
-    padding: calc(2 * var(--sp)) 0 calc(6 * var(--sp));
+    gap: 1px;
     overflow-x: auto;
     scrollbar-width: none;
     scroll-padding: 0 calc(28 * var(--sp));
@@ -2679,15 +2520,13 @@ button.att-card:hover {
 
 .mp-more {
     position: absolute;
-    top: calc(5 * var(--sp));
+    top: calc(4 * var(--sp));
     display: grid;
     place-items: center;
     width: calc(20 * var(--sp));
     height: calc(20 * var(--sp));
-    border-radius: 50%;
-    background: var(--sheet-2);
+    border-radius: calc(5 * var(--sp));
     color: var(--fg-2);
-    transition: color var(--dur-fast);
 }
 
 .mp-more.l {
@@ -2699,32 +2538,28 @@ button.att-card:hover {
 }
 
 .mp-more:hover {
+    background: var(--hover);
     color: var(--fg);
 }
 
 .mp-f {
     position: relative;
-    display: inline-flex;
-    align-items: center;
-    gap: calc(6 * var(--sp));
+    display: inline-grid;
+    place-items: center;
     flex: none;
-    max-width: 100%;
-    height: calc(26 * var(--sp));
-    padding: 0 calc(8 * var(--sp));
-    border-radius: calc(7 * var(--sp));
-    white-space: nowrap;
-    font-size: 0.893rem;
-    color: var(--fg-3);
-    transition: color var(--dur-fast);
+    width: calc(32 * var(--sp));
+    height: calc(28 * var(--sp));
+    border-radius: var(--radius-sm);
+    color: var(--fg-2);
 }
 
-.mp-f:hover:not(.on) {
-    color: var(--fg);
+.mp-f:hover {
+    background: var(--hover);
 }
 
 .mp-f.on {
+    background: var(--press);
     color: var(--fg);
-    font-weight: 500;
 }
 
 .mp-f:focus-visible {
@@ -2732,28 +2567,45 @@ button.att-card:hover {
     outline-offset: -2px;
 }
 
-/* A provider that couldn't list its models: a small dot after its name. */
+/* A provider that couldn't list its models: a small dot at its corner. */
 .mp-f.err::after {
     content: "";
     position: absolute;
-    top: calc(5 * var(--sp));
-    right: calc(1 * var(--sp));
+    top: calc(3 * var(--sp));
+    right: calc(3 * var(--sp));
     width: calc(5 * var(--sp));
     height: calc(5 * var(--sp));
     border-radius: 50%;
     background: var(--danger);
 }
 
-/* Searching, each provider's matches under its name: a quiet label. */
-.mp-f > :is(svg, .provider-mono) {
+.mp-f.on > .lucide-star {
+    fill: currentColor;
+}
+
+/* The provider listed, and its account at the end. */
+.mp-cap {
+    position: relative;
+    z-index: 2;
+    display: flex;
+    align-items: center;
     flex: none;
+    gap: calc(8 * var(--sp));
+    min-width: 0;
+    height: calc(30 * var(--sp));
+    padding: 0 calc(6 * var(--sp)) 0 calc(14 * var(--sp));
+    border-bottom: 1px solid var(--line);
+    font-size: calc(11.5 * var(--sp));
+    font-weight: 500;
+    color: var(--fg-3);
 }
 
-/* Favorites' star, quiet until its tab is the one shown. */
-.mp-f:not(.on) > .lucide-star {
-    color: var(--fg-4);
+.mp-cap-note {
+    flex: none;
+    font-weight: 400;
 }
 
+/* Searching, each provider's matches under its name: a quiet label. */
 .mp-h {
     display: flex;
     align-items: center;
@@ -2761,8 +2613,9 @@ button.att-card:hover {
     gap: calc(8 * var(--sp));
     min-width: 0;
     height: calc(26 * var(--sp));
-    padding: 0 calc(10 * var(--sp));
-    font-size: 0.821rem;
+    padding: 0 calc(9 * var(--sp));
+    font-size: calc(11.5 * var(--sp));
+    font-weight: 500;
     color: var(--fg-3);
 }
 
@@ -2770,7 +2623,7 @@ button.att-card:hover {
     display: grid;
     place-items: center;
     flex: none;
-    width: calc(16 * var(--sp));
+    width: calc(14 * var(--sp));
 }
 
 /* In Favorites, where providers mix: each row's provider mark before its name. */
@@ -2779,11 +2632,10 @@ button.att-card:hover {
     place-items: center;
     flex: none;
     align-self: center;
-    margin-right: calc(-2 * var(--sp));
 }
 
 .mp-group + .mp-group {
-    margin-top: calc(6 * var(--sp));
+    margin-top: calc(4 * var(--sp));
 }
 
 /* A subscription's account: a quiet button with its name (and a plan near its limit), opening the list of them. */
@@ -2792,9 +2644,8 @@ button.att-card:hover {
     display: inline-flex;
     flex: 0 1 auto;
     min-width: 0;
+    max-width: 60%;
     margin-left: auto;
-    max-width: 50%;
-    margin-bottom: calc(4 * var(--sp));
 }
 
 .mp-acct-btn {
@@ -2803,13 +2654,12 @@ button.att-card:hover {
     gap: calc(5 * var(--sp));
     min-width: 0;
     height: calc(24 * var(--sp));
-    padding: 0 calc(6 * var(--sp)) 0 calc(9 * var(--sp));
-    border-radius: calc(7 * var(--sp));
-    font-size: 0.821rem;
-    font-weight: 500;
+    padding: 0 calc(6 * var(--sp)) 0 calc(8 * var(--sp));
+    border-radius: var(--radius-sm);
+    font-size: calc(12 * var(--sp));
+    font-weight: 400;
     white-space: nowrap;
     color: var(--fg-2);
-    transition: background var(--dur-fast), color var(--dur-fast);
 }
 
 .mp-acct-btn:hover,
@@ -2821,43 +2671,31 @@ button.att-card:hover {
 .mp-acct-btn .chev {
     flex: none;
     color: var(--fg-3);
-    transition: transform var(--dur-fast);
-}
-
-.mp-acct-btn.open .chev {
-    transform: rotate(180deg);
 }
 
 /* On the model button, only once the session's account is gone (ModelPicker). */
-.pick-acct {
+.pick-acct,
+.mp-acct-btn.missing {
     flex: 0 1 auto;
     color: var(--warn);
 }
 
-/* The session's account was removed: the button asks for another. */
-.mp-acct-btn.missing {
-    color: var(--warn);
-}
-
+/* Near or at a limit: a small tag. */
 .mp-acct-lv {
     flex: none;
-    font-size: 0.75rem;
-    font-weight: 600;
+    padding: 1px calc(5 * var(--sp));
+    border-radius: calc(4 * var(--sp));
+    background: var(--warn-bg);
+    font-size: calc(11 * var(--sp));
+    font-weight: 500;
+    line-height: 1.4;
     font-variant-numeric: tabular-nums;
     color: var(--warn);
 }
 
 .mp-acct-lv.full {
+    background: var(--danger-soft);
     color: var(--danger);
-}
-
-/* On the button, a small badge, so it doesn't read on from the name ("Work limit"). */
-.mp-acct-btn .mp-acct-lv {
-    padding: calc(2 * var(--sp)) calc(5 * var(--sp));
-    border-radius: calc(4 * var(--sp));
-    font-size: 0.714rem;
-    line-height: 1;
-    background: color-mix(in srgb, currentColor 14%, transparent);
 }
 
 .mp-acct-menu {
@@ -2869,18 +2707,16 @@ button.att-card:hover {
     width: max-content;
     min-width: calc(180 * var(--sp));
     max-width: calc(260 * var(--sp));
-    /* Inside the picker, which is only as tall as its list of models (--mp-fit): what's under the search and the
-       filters' row, and the account's own row when it goes under the tabs (.mp-bar). */
+    /* Inside the picker, which is only as tall as its list of models (--mp-fit): what's under the search, the
+       marks and the caption. */
     max-height: min(calc(220 * var(--sp)), calc((var(--mp-fit, 380) - 118) * var(--sp)));
     padding: calc(4 * var(--sp));
     overflow-y: auto;
-    border-radius: calc(9 * var(--sp));
-    /* The picker's own surface (.popover), frosted over the rows it covers. */
+    border-radius: var(--radius-md);
     background: var(--ctl-strong);
-    -webkit-backdrop-filter: blur(16px) saturate(1.08);
-    backdrop-filter: blur(16px) saturate(1.08);
     box-shadow: var(--pop-shadow);
-    animation: pop var(--dur-panel) var(--ease-out);
+    font-weight: 400;
+    animation: c-pop 140ms var(--ease);
     transform-origin: top right;
 }
 
@@ -2892,8 +2728,8 @@ button.att-card:hover {
     min-width: 0;
     height: calc(28 * var(--sp));
     padding: 0 calc(10 * var(--sp)) 0 calc(6 * var(--sp));
-    border-radius: calc(6 * var(--sp));
-    font-size: 0.857rem;
+    border-radius: var(--radius-sm);
+    font-size: calc(12.5 * var(--sp));
     text-align: left;
     white-space: nowrap;
     color: var(--fg);
@@ -2911,7 +2747,6 @@ button.att-card:hover {
 
 .mp-acct-it .mp-acct-lv {
     margin-left: calc(10 * var(--sp));
-    font-weight: 500;
 }
 
 .mp-acct-ck {
@@ -2919,13 +2754,13 @@ button.att-card:hover {
     justify-content: center;
     flex: none;
     width: calc(16 * var(--sp));
-    color: var(--fg-2);
+    color: var(--accent);
 }
 
 .mp-acct-sep {
     flex: none;
     height: 1px;
-    margin: calc(4 * var(--sp)) calc(6 * var(--sp));
+    margin: calc(4 * var(--sp)) calc(-4 * var(--sp));
     background: var(--line);
 }
 
@@ -2934,21 +2769,17 @@ button.att-card:hover {
     align-items: flex-start;
     flex: none;
     gap: calc(7 * var(--sp));
-    margin: calc(2 * var(--sp)) calc(8 * var(--sp)) calc(2 * var(--sp));
-    padding: calc(6 * var(--sp)) calc(8 * var(--sp));
-    border-radius: calc(8 * var(--sp));
-    background: color-mix(in srgb, var(--warn) 12%, transparent);
-    font-size: 0.857rem;
-    line-height: 1.35;
-    color: var(--fg);
+    padding: calc(8 * var(--sp)) calc(14 * var(--sp));
+    border-bottom: 1px solid var(--line);
+    font-size: calc(12 * var(--sp));
+    line-height: 1.4;
+    color: var(--warn);
 }
 
 .mp-acct-note svg {
     flex: none;
     margin-top: calc(2 * var(--sp));
-    color: var(--warn);
 }
-
 
 .mp-list {
     display: flex;
@@ -2956,12 +2787,10 @@ button.att-card:hover {
     flex: 1;
     gap: 1px;
     min-height: 0;
-    padding: calc(6 * var(--sp)) calc(6 * var(--sp)) calc(14 * var(--sp));
+    padding: calc(5 * var(--sp));
     overflow-y: auto;
     overscroll-behavior: contain;
-    scrollbar-width: none;
-    /* More below: the rows fade out, not cut through their words. */
-    mask-image: linear-gradient(#000 calc(100% - 18 * var(--sp)), transparent);
+    scrollbar-width: thin;
 }
 
 .mp-group {
@@ -2975,9 +2804,9 @@ button.att-card:hover {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: calc(8 * var(--sp));
-    padding: calc(34 * var(--sp)) calc(20 * var(--sp));
-    font-size: 0.893rem;
+    gap: calc(10 * var(--sp));
+    padding: calc(28 * var(--sp)) calc(16 * var(--sp));
+    font-size: calc(12.5 * var(--sp));
     line-height: 1.4;
     text-align: center;
     color: var(--fg-3);
@@ -2992,38 +2821,33 @@ button.att-card:hover {
     color: var(--danger);
 }
 
-.mp-empty .btn {
-    margin-top: calc(2 * var(--sp));
-}
-
-/* A model row. The current model: an accent check and a slightly heavier name, no fill (the composer's
-   button already names it). The row under the keyboard or pointer: the only fill, a neutral one. */
+/* A model row: a check's column, its mark, its name, ⌘1–9 and its star. The row under the keys or the pointer: the
+   only fill. */
 .mr {
     display: flex;
     align-items: center;
     flex: none;
     min-width: 0;
-    height: calc(34 * var(--sp));
-    border-radius: calc(10 * var(--sp));
+    height: calc(30 * var(--sp));
+    border-radius: var(--radius-sm);
     /* OpenRouter lists hundreds: rows out of view skip layout and paint. */
     content-visibility: auto;
-    contain-intrinsic-size: auto calc(34 * var(--sp));
+    contain-intrinsic-size: auto calc(30 * var(--sp));
 }
 
 .mr.sel {
-    background: var(--hover);
+    background: var(--press);
 }
 
 .mr-pick {
     display: flex;
     align-items: center;
     flex: 1;
-    gap: calc(8 * var(--sp));
+    gap: calc(9 * var(--sp));
     min-width: 0;
     height: 100%;
-    padding: 0 calc(4 * var(--sp)) 0 calc(10 * var(--sp));
-    border-radius: calc(10 * var(--sp));
-    font-size: 0.929rem;
+    padding: 0 calc(4 * var(--sp)) 0 calc(9 * var(--sp));
+    border-radius: inherit;
     text-align: left;
 }
 
@@ -3037,51 +2861,39 @@ button.att-card:hover {
     display: grid;
     place-items: center;
     flex: none;
-    width: calc(16 * var(--sp));
-    color: var(--fg);
+    width: calc(14 * var(--sp));
+    color: var(--accent);
 }
 
-/* ⌘1–9: on the row under the pointer or keyboard, not down every row. */
 .mr-pick kbd {
     flex: none;
-    height: auto;
+    min-width: 0;
     margin-left: auto;
-    padding: calc(2 * var(--sp)) calc(5 * var(--sp));
-    font-size: 0.75rem;
-    color: var(--fg-3);
+    padding: 0 1px;
     background: none;
-    visibility: hidden;
-}
-
-.mr.sel .mr-pick kbd {
-    visibility: visible;
+    box-shadow: none;
+    color: var(--fg-4);
 }
 
 .mr-text {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     flex: 1;
-    gap: calc(8 * var(--sp));
+    gap: calc(9 * var(--sp));
     min-width: 0;
-    line-height: calc(20 * var(--sp));
 }
 
 /* The name keeps its room; the line beside it gives way. */
 .mr-name {
     flex: 0 0 auto;
     max-width: 100%;
-    font-weight: 500;
-}
-
-.mr.on .mr-name {
-    font-weight: 600;
 }
 
 /* Beside the name: whose it is (in Favorites), the id an alias stands for, its context window and price. */
 .mr-sub {
     flex: 0 1 auto;
     min-width: 0;
-    font-size: 0.821rem;
+    font-size: calc(12 * var(--sp));
     color: var(--fg-3);
 }
 
@@ -3089,29 +2901,17 @@ button.att-card:hover {
     display: grid;
     place-items: center;
     flex: none;
-    width: calc(26 * var(--sp));
-    height: calc(26 * var(--sp));
-    margin-right: calc(2 * var(--sp));
-    border-radius: calc(8 * var(--sp));
+    width: calc(28 * var(--sp));
+    height: calc(30 * var(--sp));
+    border-radius: var(--radius-sm);
     color: var(--fg-4);
-    opacity: 0;
-    transition: opacity var(--dur-fast), color var(--dur-fast);
-}
-
-/* Shown for a favorite, and on the row under the pointer or keyboard. */
-.mr.sel .mr-star,
-.mr-star.f,
-.mr-star:focus-visible {
-    opacity: 1;
 }
 
 .mr-star:hover {
-    background: var(--hover);
-    color: var(--fg-2);
+    color: var(--fg);
 }
 
-.mr-star.f,
-.mr-star.f:hover {
+.mr-star.f {
     color: var(--warn);
 }
 
@@ -3124,10 +2924,11 @@ button.att-card:hover {
     display: grid;
     place-items: center;
     flex: none;
-    width: calc(15 * var(--sp));
-    height: calc(15 * var(--sp));
-    border-radius: calc(5 * var(--sp));
-    box-shadow: inset 0 0 0 1.5px var(--fg-4);
+    width: calc(14 * var(--sp));
+    height: calc(14 * var(--sp));
+    border-radius: calc(4 * var(--sp));
+    box-shadow: inset 0 0 0 1px var(--line-strong);
+    background: var(--raised);
     color: var(--accent-ink);
 }
 
@@ -3136,22 +2937,26 @@ button.att-card:hover {
     box-shadow: none;
 }
 
-/* While comparing: each model gets a worktree of its own. */
+/* Compare, at the foot: the switch, and a note while it's on. */
+.mp-foot,
 .mp-cmp-note {
     flex: none;
-    padding: calc(6 * var(--sp)) calc(14 * var(--sp));
-    border-top: 0.5px solid var(--line);
-    font-size: 0.786rem;
-    line-height: 1.35;
+    background: var(--sheet-2);
+}
+
+.mp-cmp-note {
+    order: 1;
+    padding: 0 calc(14 * var(--sp)) calc(8 * var(--sp));
+    font-size: calc(12 * var(--sp));
+    line-height: 1.4;
     color: var(--fg-3);
 }
 
 .mp-foot {
     display: flex;
     align-items: center;
-    flex: none;
-    padding: calc(6 * var(--sp)) calc(8 * var(--sp));
-    border-top: 0.5px solid var(--line);
+    padding: calc(3 * var(--sp)) calc(6 * var(--sp));
+    border-top: 1px solid var(--line);
 }
 
 .mp-cmp-wrap,
@@ -3159,28 +2964,18 @@ button.att-card:hover {
     flex: 1;
 }
 
-.mp-cmp .mp-switch {
-    margin-left: auto;
+.mp-cmp-wrap {
+    display: inline-flex;
 }
 
 .mp-cmp {
     display: inline-flex;
     align-items: center;
-    gap: calc(7 * var(--sp));
-    height: calc(28 * var(--sp));
-    padding: 0 calc(6 * var(--sp));
-    border-radius: calc(8 * var(--sp));
-    font-size: 0.857rem;
-    color: var(--fg-2);
-    transition: background var(--dur-fast), color var(--dur-fast);
-}
-
-.mp-cmp:hover:not(:disabled) {
-    background: var(--hover);
-    color: var(--fg);
-}
-
-.mp-cmp.on {
+    gap: calc(8 * var(--sp));
+    height: calc(30 * var(--sp));
+    padding: 0 calc(6 * var(--sp)) 0 calc(8 * var(--sp));
+    border-radius: var(--radius-sm);
+    font-weight: 500;
     color: var(--fg);
 }
 
@@ -3188,11 +2983,12 @@ button.att-card:hover {
     opacity: 0.5;
 }
 
-.mp-cmp-wrap {
-    display: inline-flex;
+.mp-cmp .mp-switch {
+    margin-left: auto;
 }
 
 .mp-cmp-n {
+    font-weight: 450;
     color: var(--fg-3);
 }
 
@@ -3200,11 +2996,10 @@ button.att-card:hover {
 .mp-switch {
     position: relative;
     flex: none;
-    width: calc(26 * var(--sp));
-    height: calc(15 * var(--sp));
-    border-radius: var(--pill);
-    background: var(--press);
-    transition: background 140ms;
+    width: calc(30 * var(--sp));
+    height: calc(18 * var(--sp));
+    border-radius: var(--round);
+    background: var(--line-strong);
 }
 
 .mp-switch::after {
@@ -3212,19 +3007,20 @@ button.att-card:hover {
     position: absolute;
     top: calc(2 * var(--sp));
     left: calc(2 * var(--sp));
-    width: calc(11 * var(--sp));
-    height: calc(11 * var(--sp));
+    width: calc(14 * var(--sp));
+    height: calc(14 * var(--sp));
     border-radius: 50%;
-    background: var(--sheet);
+    background: #fff;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
     transition: transform 140ms var(--ease);
 }
 
 .mp-switch.on {
-    background: var(--fg);
+    background: var(--accent);
 }
 
 .mp-switch.on::after {
-    transform: translateX(calc(11 * var(--sp)));
+    transform: translateX(calc(12 * var(--sp)));
 }
 
 /* A provider's mark; the two letters when there isn't one (ProviderIcon, used across the app). */
@@ -3244,40 +3040,27 @@ button.att-card:hover {
     color: var(--fg-2);
 }
 
-/* ---- Permission mode menu ----------------------------------------------------- */
+/* ---- Permission mode menu: a check column, then the mode and what it does ---- */
 
 .menu-ico {
     display: grid;
     place-items: center;
     flex: none;
-    margin-top: 1px;
-    color: var(--fg-2);
+    width: calc(14 * var(--sp));
+    height: 1lh;
 }
 
-.menu-item.danger .menu-ico svg {
-    color: var(--danger);
+.menu-ico .menu-check {
+    margin: 0;
 }
 
 .menu-hint {
     color: var(--fg-2);
 }
 
-/* Words alone: the mode and what it does under it, the check (in a .menu-ico a line tall) on the mode's line. */
 .mode-menu .menu-item {
     align-items: flex-start;
-    padding: calc(7 * var(--sp)) calc(10 * var(--sp)) calc(7 * var(--sp)) calc(12 * var(--sp));
-    border-radius: calc(10 * var(--sp));
-}
-
-.mode-menu .menu-ico {
-    height: 1lh;
-    margin-top: 0;
-}
-
-.mode-menu .menu-head kbd {
-    height: auto;
-    padding: calc(3 * var(--sp)) calc(5 * var(--sp));
-    font-size: 0.75rem;
+    gap: calc(8 * var(--sp));
 }
 
 /* ---- Used elsewhere, kept here where they started --------------------------------- */

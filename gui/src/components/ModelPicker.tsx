@@ -99,10 +99,10 @@ export interface CompareOption {
 
 const MAX_COMPARE = 4;
 const COMPARE_ON = "Each model gets a new worktree. Uncommitted changes aren't carried over.";
-const COMPARE_OFF = "Send one prompt to 2–4 models, each in a worktree of its own";
+const COMPARE_OFF = "Send one prompt to 2–4 models, each in its own worktree";
 
-const FAST_TIP = "Faster replies from the same model, at higher usage or cost.";
-const FAST_BUSY = "Change speed after this response finishes";
+const FAST_TIP = "Faster replies, higher usage";
+const FAST_BUSY = "Change after this reply";
 
 /**
  * The model, and how hard it thinks, in one control: "Opus 5.5 xhigh". Its popover opens on what's changed most:
@@ -424,7 +424,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
         if (q()) return { text: `No models match “${q()}”.`, icon: "search" };
         if (!groups().length) return { text: "No providers yet.", action: providers };
         if (filter() === FAVORITES) return { text: "Star a model to keep it here.", icon: "star" };
-        if (group()?.status === "error") return { text: group()?.error ?? "Couldn't list this provider's models.", icon: "error", action: { label: "Try again", run: () => void refreshModelsFor(p.sessionId, true) } };
+        if (group()?.status === "error") return { text: group()?.error ?? "Couldn't load models.", icon: "error", action: { label: "Try again", run: () => void refreshModelsFor(p.sessionId, true) } };
         return { text: "No models." };
     };
 
@@ -639,11 +639,6 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                     {/* The model in use and how hard it thinks; its name opens the models. Fast mode's bolt beside it. */}
                     <div class="mpe">
                         <div class="mpe-h">
-                            <Show when={fastOk()}>
-                                <button class={`mpe-fast ${fastOn() ? "on" : ""}`} aria-pressed={fastOn()} aria-label="Fast mode" disabled={p.busy} title={p.busy ? FAST_BUSY : FAST_TIP} onClick={() => void setFastMode(!p.fast, target())}>
-                                    <Zap size={15} stroke-width={2} />
-                                </button>
-                            </Show>
                             <button ref={modelRow} class="mpe-model" title="Change model" aria-label={`${chipName()}. Change model`} onClick={() => toModels()}>
                                 <Show when={currentProvider()}>{(id) => <ProviderIcon id={id()} name={providerName(id())} size={16} />}</Show>
                                 <span class="mpe-name truncate">{chipModel()}</span>
@@ -652,6 +647,12 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                                 </Show>
                                 <ChevronRight size={14} class="chev" />
                             </button>
+                            <Show when={fastOk()}>
+                                <button class={`mpe-fast ${fastOn() ? "on" : ""}`} aria-pressed={fastOn()} aria-label="Fast mode" disabled={p.busy} title={p.busy ? FAST_BUSY : FAST_TIP} onClick={() => void setFastMode(!p.fast, target())}>
+                                    <Zap size={14} stroke-width={2} />
+                                    Fast
+                                </button>
+                            </Show>
                         </div>
                         <Show when={reasoning()}>
                             <EffortSlider ref={(el) => (sliderEl = el)} levels={levels()} value={effort()} onChange={pickEffort} />
@@ -695,9 +696,9 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                                 e.preventDefault();
                             }}
                         >
-                            <button class={`mp-f ${filter() === FAVORITES && !q() ? "on" : ""}`} role="tab" aria-selected={filter() === FAVORITES} onClick={(e) => (show(FAVORITES), e.detail && input?.focus())}>
-                                <Star size={13} />
-                                Favorites
+                            <button class={`mp-f ${filter() === FAVORITES && !q() ? "on" : ""}`} role="tab" aria-selected={filter() === FAVORITES} title="Favorites" onClick={(e) => (show(FAVORITES), e.detail && input?.focus())}>
+                                <Star size={14} />
+                                <span class="sr-only">Favorites</span>
                             </button>
                             <For each={groups()}>
                                 {(g) => (
@@ -706,11 +707,11 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                                         role="tab"
                                         aria-selected={filter() === g.provider}
                                         aria-label={g.provider === currentProvider() ? `${g.providerName}, current model` : undefined}
-                                        title={g.status === "error" ? (g.error ?? "Couldn't list this provider's models") : g.status === "cached" ? "Last known list: the provider didn't answer" : g.providerName}
+                                        title={g.status === "error" ? (g.error ?? "Couldn't list its models") : g.status === "cached" ? "Saved list: no answer" : g.providerName}
                                         onClick={(e) => (show(g.provider), e.detail && input?.focus())}
                                     >
                                         <ProviderIcon id={g.provider} name={g.providerName} size={14} />
-                                        <span class="truncate">{g.providerName}</span>
+                                        <span class="sr-only">{g.providerName}</span>
                                     </button>
                                 )}
                             </For>
@@ -730,11 +731,20 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                             )}
                         </For>
                         </div>
-                        {/* Rebuilt only when the list changes, so the accounts list (and focus in it) survives an update. */}
-                        <Show when={acctProvider()} keyed>
-                            {(id) => accounts(id)}
-                        </Show>
                     </div>
+                    {/* Whose models these are, and the provider's account at its end where it's a subscription with accounts. */}
+                    <Show when={!q()}>
+                        <div class="mp-cap">
+                            <span class="mp-cap-name truncate">{filter() === FAVORITES ? "Favorites" : group()?.providerName}</span>
+                            <Show when={filter() !== FAVORITES && group()?.status === "cached"}>
+                                <span class="mp-cap-note">Saved list</span>
+                            </Show>
+                            {/* Rebuilt only when the list changes, so the accounts list (and focus in it) survives an update. */}
+                            <Show when={acctProvider()} keyed>
+                                {(id) => accounts(id)}
+                            </Show>
+                        </div>
+                    </Show>
                     <Show when={acctProvider() && missingAccount(acctProvider())}>
                         <div class="mp-acct-note">
                             <CircleAlert size={13} />
@@ -875,6 +885,12 @@ export function EffortSlider(p: { levels: Effort[]; value?: EffortLevel; onChang
                 <For each={p.levels}>{(l, i) => <i class={`${i() <= at() ? "on" : ""} ${i() === hover() && i() !== at() && !down() ? "hov" : ""}`} title={l.label} />}</For>
             </span>
             <span ref={thumb} class="es-thumb" aria-hidden="true" />
+            {/* Each level's name under its stop: a click there picks it, as a click on the track does. */}
+            <Show when={p.size !== "sm"}>
+                <span class="es-labels" aria-hidden="true">
+                    <For each={p.levels}>{(l, i) => <span class={i() === at() ? "on" : ""} style={{ left: `${place(i()) * 100}%` }}>{l.label}</span>}</For>
+                </span>
+            </Show>
         </div>
     );
 }

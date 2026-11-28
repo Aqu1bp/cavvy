@@ -3,19 +3,19 @@
 // in Cavvy; "Show all" lists every one of those. Importing opens a Cavvy session on
 // the same backend.
 
-import { createEffect, createResource, createSignal, For, Show } from "solid-js";
+import { createResource, createSignal, For, Show } from "solid-js";
 import type { CliSessionInfo } from "@shared/protocol";
 import { app, rpc } from "../state/app";
 import { continueCliSession } from "../state/actions";
 import { cliListedBefore, listCli } from "../state/home-ahead";
 import { setSettingsTab } from "../state/ui";
-import { ago, basename } from "../lib/format";
+import { ago } from "../lib/format";
 import { now } from "../lib/clock";
 import { Dialog } from "./ui/Dialog";
 import { ProviderIcon } from "./ui/ProviderIcon";
 
 /** Using it here and in the terminal at once mixes the two: said wherever one still open shows. */
-const STILL_OPEN = "Using it here and in the terminal at once mixes the two.";
+const STILL_OPEN = "Using both at once mixes them.";
 
 /** "6m ago", "just now"; an older one by its date. */
 const agoText = (at: number) => {
@@ -24,10 +24,10 @@ const agoText = (at: number) => {
 };
 
 /**
- * `rows`: how many Home has room for (3 at most); `onShown`: how many it shows, and whether the section shows at all
- * (with no room for a row it's still there, its heading and Show all, so what's to import stays reachable).
+ * `rows`: how many Home has room for (3 at most). With no room for a row the card is still there, its heading and
+ * Show all, so what's to import stays reachable.
  */
-export function CliSessions(p: { cwd: string; rows?: number; onShown?: (rows: number, section: boolean) => void }) {
+export function CliSessions(p: { cwd: string; rows?: number }) {
     const [all, setAll] = createSignal(false);
     const [busy, setBusy] = createSignal<string>();
     const [list, { refetch, mutate }] = createResource(
@@ -52,7 +52,6 @@ export function CliSessions(p: { cwd: string; rows?: number; onShown?: (rows: nu
     const shown = () => fresh().slice(0, Math.max(0, Math.min(3, p.rows ?? 3)));
     // Worth opening when it lists something these rows don't.
     const hasMore = () => fresh().length > shown().length || more().length > 0;
-    createEffect(() => p.onShown?.(shown().length, fresh().length > 0));
 
     const go = async (s: CliSessionInfo) => {
         if (busy()) return;
@@ -82,16 +81,16 @@ export function CliSessions(p: { cwd: string; rows?: number; onShown?: (rows: nu
             tabIndex={0}
             aria-label={enabled(s) ? `Import “${s.title}” from ${name(s)}` : `${turnOn(s)} to import “${s.title}”`}
             aria-busy={busy() === s.id}
+            title={`${name(s)} · ${(now(), agoText(s.updatedAt))} · ${count(s)}`}
             onClick={() => act(s)}
             onKeyDown={keys(s)}
         >
-            <span class="cli-pv"><ProviderIcon id={s.source} name={name(s)} size={16} /></span>
+            <span class="cli-pv"><ProviderIcon id={s.source} name={name(s)} size={14} /></span>
             <span class="cli-main">
                 <span class="cli-title truncate">{s.title}</span>
-                <span class="cli-meta">
-                    {name(s)} · {(now(), agoText(s.updatedAt))} · {count(s)}
-                    <Show when={s.recent}> · <span class="cli-live" title={STILL_OPEN}>Still open in a terminal</span></Show>
-                </span>
+                <Show when={s.recent}>
+                    <span class="cli-meta"><span class="cli-live" title={STILL_OPEN}>Still open in a terminal</span></span>
+                </Show>
             </span>
             <Show when={enabled(s)} fallback={<span class="cli-off">Turn on in Settings</span>}>
                 <span class="cli-go">{busy() === s.id ? "Importing…" : "Import"}</span>
@@ -113,35 +112,28 @@ export function CliSessions(p: { cwd: string; rows?: number; onShown?: (rows: nu
             <span class="cl-act">{enabled(s) ? "Import" : "Turn on in Settings"}</span>
         </button>
     );
-    const sourceNames = () => [...new Set((list()?.sources ?? []).map((s) => s.name))].join(" and ") || "Claude Code and Codex";
 
     return (
         <>
             <Show when={fresh().length}>
-            <section class="cli-sessions" aria-label="Continue from your terminal">
-                <div class="cli-h">
-                    <span>Continue from your terminal</span>
-                    <span class="grow" />
-                    <Show when={hasMore()}>
-                        <button class="cli-all" onClick={() => { setAll(true); void refetch(); }}>Show all {fresh().length}</button>
-                    </Show>
-                </div>
-                <Show when={shown().length}>
-                    <div class="cli-rows">
-                        <For each={shown()}>{row}</For>
+                <section class="home-card cli-sessions card-surface" aria-label="Continue from your terminal">
+                    <div class="cli-h">
+                        <h2>Continue from your terminal</h2>
+                        <Show when={hasMore()}>
+                            <button class="link-btn" onClick={() => { setAll(true); void refetch(); }}>Show all {fresh().length}</button>
+                        </Show>
                     </div>
-                </Show>
-            </section>
+                    <For each={shown()}>{row}</For>
+                </section>
             </Show>
             {/* Outside the section: open, it stays while the list reloads (or fails to). */}
             <Dialog open={all()} onClose={() => setAll(false)} title="Continue from your terminal" width={520} class="cli-dialog" footer={<button class="btn secondary" onClick={() => setAll(false)}>Done</button>}>
-                <p>{sourceNames()} sessions started in {basename(p.cwd)}.</p>
                 <div class="cl-list">
                     <Show when={list.loading || sessions().length}>
                         <For each={fresh()}>{item}</For>
                     </Show>
                     <Show when={!list.loading && !sessions().length}>
-                        <div class="cl-note">Couldn't list the sessions from your terminal just now.</div>
+                        <div class="cl-note">Couldn't list terminal sessions.</div>
                     </Show>
                     <For each={more()}>{(m) => <div class="cl-note">{m.more} more {m.name} {m.more === 1 ? "session" : "sessions"} not shown</div>}</For>
                 </div>

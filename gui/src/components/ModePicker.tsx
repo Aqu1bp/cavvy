@@ -42,7 +42,7 @@ export function ModePicker(p: ComposerMenu & { /** The session it's for (default
                 aria-haspopup="menu"
                 aria-expanded={p.open}
                 onClick={() => p.setOpen(!p.open)}
-                title={`Permission mode: ${MODE_LABELS[p.mode].label} (⇧Tab cycles)`}
+                title="Permission mode (⇧Tab)"
             >
                 <span>{MODE_LABELS[p.mode].label}</span>
                 <ChevronDown size={13} class="chev" />
@@ -62,12 +62,16 @@ export function ModePicker(p: ComposerMenu & { /** The session it's for (default
                                     role="menuitemradio"
                                     aria-checked={p.mode === m}
                                     disabled={disabled()}
-                                    title={disabled() ? BYPASS_OFF : describe(m)}
                                     onClick={() => {
                                         p.setOpen(false);
                                         void setMode(m, p.sessionId);
                                     }}
                                 >
+                                    <span class="menu-ico">
+                                        <Show when={p.mode === m}>
+                                            <Check size={14} stroke-width={2} class="menu-check" />
+                                        </Show>
+                                    </span>
                                     <span class="menu-text">
                                         <span class="menu-label">{MODE_LABELS[m].label}</span>
                                         {/* Off, what turns it on matters more than what it does. */}
@@ -75,11 +79,6 @@ export function ModePicker(p: ComposerMenu & { /** The session it's for (default
                                             <span class="menu-desc menu-hint">{BYPASS_OFF}</span>
                                         </Show>
                                     </span>
-                                    <Show when={p.mode === m}>
-                                        <span class="menu-ico">
-                                            <Check size={15} stroke-width={2} class="menu-check" />
-                                        </span>
-                                    </Show>
                                 </button>
                             );
                         }}
