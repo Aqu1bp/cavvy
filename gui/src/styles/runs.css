@@ -59,3 +59,44 @@
 @media (max-width: 520px) {
     .usage-view .usage-bar > .spacer { display: none; }
 }
+
+/* ---- One prompt sent to several models: the sheet (RunSheet; the design's dialogs.css "compare run") ---- */
+
+.run-body {
+    display: flex;
+    flex-direction: column;
+}
+
+.run-pad {
+    display: flex;
+    flex-direction: column;
+    gap: calc(10 * var(--sp));
+    padding: calc(14 * var(--sp)) calc(20 * var(--sp)) calc(16 * var(--sp));
+}
+
+/* No list's indent (the design's base has none for lists). */
+.run-list {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+/* .row.run-row: over the kit's .row:not(…), as the design's .run-row is over its .row. */
+.row.run-row {
+    min-height: calc(52 * var(--sp));
+    padding-left: calc(20 * var(--sp));
+    padding-right: calc(16 * var(--sp));
+}
+
+.run-row .row-sub.mono {
+    font-size: calc(11.5 * var(--sp));
+}
+
+.run-error {
+    color: var(--red);
+}
+
+.run-spin {
+    margin-right: calc(6 * var(--sp));
+    color: var(--accent);
+}

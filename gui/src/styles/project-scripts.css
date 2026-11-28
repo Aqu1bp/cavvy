@@ -72,3 +72,41 @@
     font-family: var(--font-mono);
     white-space: nowrap;
 }
+
+/* ---- Add script / Edit script (the design's terminal.css) ---- */
+
+.script-form {
+    display: flex;
+    flex-direction: column;
+    gap: calc(12 * var(--sp));
+}
+
+.script-icons {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: calc(6 * var(--sp));
+}
+
+.script-icon {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    height: calc(30 * var(--sp));
+    padding: 0 calc(10 * var(--sp));
+    border-radius: var(--radius-s);
+    background: var(--surface);
+    box-shadow: inset 0 0 0 1px var(--line-strong);
+    color: var(--text-2);
+    font-weight: 500;
+    transition: background 0.12s, box-shadow 0.12s, color 0.12s;
+}
+
+.script-icon:hover {
+    background: var(--fill-1);
+    color: var(--text);
+}
+
+.script-icon[aria-checked="true"] {
+    box-shadow: inset 0 0 0 1.5px var(--accent);
+    color: var(--text);
+}

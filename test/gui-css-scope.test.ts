@@ -57,7 +57,7 @@ test("project-scripts bare CSS classes do not target other components", async ()
     // as project-script styles; only selectors with no component scope are guarded.
     for (const [sheet, marker] of [
         ["project-scripts.css", "/* ---- Project scripts (title line)"],
-        ["overlays.css", "/* ---- Labelled form fields (the project script dialog)"],
+        ["project-scripts.css", "/* ---- Add script / Edit script"],
     ] as const) {
         const css = readFileSync(join(gui, "styles", sheet), "utf8");
         expect(css).toContain(marker);
