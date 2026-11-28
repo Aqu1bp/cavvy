@@ -45,12 +45,12 @@ export function WorktreePicker(p: { cwd: string; branch?: string }) {
     };
 
     return <>
-        <button ref={anchor} class="home-pick" title="Choose a worktree" aria-label="Choose worktree" aria-haspopup="menu" aria-expanded={open()} onClick={toggle}>
+        <button ref={anchor} class="select home-select" title="Choose a worktree" aria-label="Choose worktree" aria-haspopup="menu" aria-expanded={open()} onClick={toggle}>
             <Show when={current() && !current()!.main}>
-                <FolderGit2 size={14} class="ic" />
+                <FolderGit2 size={14} />
             </Show>
-            <span class="truncate mono">{p.branch || "Detached HEAD"}</span>
-            <ChevronDown size={13} class="chv" />
+            <span class="select-value mono">{p.branch || "Detached HEAD"}</span>
+            <ChevronDown size={13} class="select-caret" />
         </button>
         <Popover open={open()} anchor={() => anchor} onClose={() => setOpen(false)} placement="bottom" align="end" width={400}>
             <div class="menu-head">Worktrees</div>

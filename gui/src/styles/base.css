@@ -196,8 +196,7 @@ h1,
 h2,
 h3 {
     margin: 0;
-    font-weight: 600;
-    letter-spacing: -0.01em;
+    padding: 0;
 }
 
 /* Scrollbars: thin and quiet. */
@@ -726,7 +725,7 @@ select:focus-visible {
     select:focus-visible,
     .input:focus,
     .select:focus,
-    .composer-box:focus-within,
+    .composer:focus-within,
     :root .itab-input:focus,
     :root .itab-feedback:focus,
     :root .mp-search input:focus-visible {
@@ -768,14 +767,14 @@ select:focus-visible {
     }
 
     /* button: outranks composer.css, which loads later. */
-    button.send,
-    button.send.stop {
+    button.send-btn,
+    button.send-btn.send-stop {
         border: 1px solid ButtonText;
         background: ButtonText;
         color: ButtonFace;
     }
 
-    button.send:disabled {
+    button.send-btn:disabled {
         background: GrayText;
     }
 }
@@ -814,7 +813,7 @@ svg.lucide {
 }
 
 .btn svg.lucide,
-.send svg.lucide {
+.send-btn svg.lucide {
     stroke-width: 2;
 }
 
@@ -875,12 +874,12 @@ svg.lucide {
    the end, and in a list that fits, nothing is drawn. Driven by the list's own scroll position (no script). Where
    the browser has no scroll timelines the animation ends at once, on nothing drawn: the list is as it was.
    The row the keys select stops above the fade, never under it (lib/composer-menu.ts reads this for its own list). */
-.composer-menu,
+.suggest,
 .pal-list {
     scroll-padding-bottom: calc(30 * var(--sp));
 }
 
-.composer-menu::after,
+.suggest::after,
 .pal-list::after {
     content: "";
     position: sticky;

@@ -46,7 +46,7 @@ function cli(sessions: CliSessionInfo[], sources: CliSourceInfo[] = [source()], 
         now: () => Date.now(),
     });
     const tree = CliSessions({ cwd: "/work/cavvy", rows });
-    const rowsOf = () => byClass(tree, "div", "cli-row");
+    const rowsOf = () => byClass(tree, "div", "home-cli-row");
     return { tree, continued, tabs, refetched: () => refetched, rows: rowsOf, text: text(tree) };
 }
 
@@ -64,13 +64,13 @@ test("Home lists the three newest sessions not yet in Cavvy, each with its mark,
     const [first, second] = r.rows();
     // Whose it is, when and how long: the row's tooltip; a session still open in a terminal says so under its title.
     expect(first!.props.title).toBe("Claude Code · 6m ago · 5+ messages");
-    expect(text(byClass(first, "span", "cli-meta"))).toBe("Still open in a terminal");
+    expect(text(byClass(first, "span", "row-sub"))).toBe("Still open in a terminal");
     // Still open: the warning keeps saying why, in its tooltip.
-    expect(byClass(first, "span", "cli-live")[0]!.props.title).toBe("Using both at once mixes them.");
+    expect(byClass(first, "span", "row-sub")[0]!.props.title).toBe("Using both at once mixes them.");
     expect(second!.props.title).toBe("Codex · 2h ago · 1 message");
-    expect(byClass(second, "span", "cli-meta")).toHaveLength(0);
-    expect(text(byClass(first, "span", "cli-go"))).toBe("Import");
-    expect(text(byClass(r.tree, "div", "cli-h"))).toBe("Continue from your terminalShow all 4");
+    expect(byClass(second, "span", "row-sub")).toHaveLength(0);
+    expect(text(byClass(first, "span", "btn"))).toBe("Import");
+    expect(text(byClass(r.tree, "header", "home-cli-head"))).toBe("Continue from your terminalShow all 4");
 });
 
 test("a row is a button: a click, Enter or Space imports it; one whose CLI is off goes to Settings → Providers", async () => {
@@ -86,8 +86,8 @@ test("a row is a button: a click, Enter or Space imports it; one whose CLI is of
     await Bun.sleep(0);
     expect(r.continued).toEqual(["a", "a"]);
     expect(prevented).toBe(2);
-    expect(text(byClass(b, "span", "cli-off"))).toBe("Turn on in Settings");
-    expect(byClass(b, "span", "cli-go")).toHaveLength(0);
+    expect(text(byClass(b, "span", "link-btn"))).toBe("Turn on in Settings");
+    expect(byClass(b, "span", "btn")).toHaveLength(0);
     expect(b!.props["aria-label"]).toBe("Turn on Codex in Settings → Providers to import “Session b”");
     b!.props.onClick();
     expect(r.tabs).toEqual(["providers"]);
@@ -227,11 +227,11 @@ test("Home is a card asking what to work on, with the project, its folder and it
     const rows = byClass(h.card, "div", "home-row");
     // No servers: where it runs isn't asked.
     expect(rows.map((r) => text(byClass(r, "span", "home-label")))).toEqual(["Project", "Folder", "Branch"]);
-    const chip = byClass(h.card, "button", "home-pick")[0]!;
+    const chip = byClass(h.card, "button", "home-select")[0]!;
     expect(text(chip)).toBe("cavvy");
     expect(text(byClass(h.card, "span", "home-value"))).toBe("/work/cavvy");
     expect(elements(h.card, "WorktreePicker")[0]!.props).toMatchObject({ cwd: "/work/cavvy", branch: "main" });
-    const hints = elements(byClass(h.hints, "span", "home-hints"), "button");
+    const hints = elements(h.hints, "button");
     expect(hints.map((b) => [text(elements(b, "kbd")), text(b)])).toEqual([["/", "/commands"], ["@", "@files"], ["!", "!shell"]]);
     // Pressing one leaves the caret in the composer.
     let prevented = false;
@@ -245,8 +245,8 @@ test("Home is a card asking what to work on, with the project, its folder and it
 test("/ and ! type only into an empty composer, as it is when clicked, whatever filled or cleared it; @ goes anywhere", () => {
     const h = home();
     const ta = { value: "", selectionStart: 0, selectionEnd: 0, focused: 0, focus() { this.focused++; }, setSelectionRange(a: number, b: number) { this.selectionStart = a; this.selectionEnd = b; }, dispatchEvent: stub };
-    byClass(byClass(h.tree, "div", "home-foot"), "div", "composer-col")[0]!.props.ref({ querySelector: (q: string) => (q === "textarea" ? ta : null) });
-    const [slash, at, bang] = elements(byClass(h.hints, "span", "home-hints"), "button");
+    byClass(byClass(h.tree, "div", "composer-wrap-home"), "div", "composer-col")[0]!.props.ref({ querySelector: (q: string) => (q === "textarea" ? ta : null) });
+    const [slash, at, bang] = elements(h.hints, "button");
     // History recalled into the box, with no input event: / and ! only focus it.
     ta.value = "earlier message";
     ta.selectionStart = ta.selectionEnd = ta.value.length;
@@ -271,23 +271,23 @@ test("with no folder Home asks for one, with no folder or branch rows and no pre
     const h = home({ cwd: "" });
     expect(text(elements(h.tree, "h1"))).toBe("Choose a project to start");
     expect(h.composer.props.placeholder).toBe("Choose a project folder to start");
-    expect(text(byClass(h.card, "button", "home-pick")[0]!)).toBe("Choose a project");
+    expect(text(byClass(h.card, "button", "home-select")[0]!)).toBe("Choose a project");
     expect(byClass(h.card, "div", "home-row")).toHaveLength(1);
-    expect(byClass(h.hints, "span", "home-hints")).toHaveLength(0);
+    expect(elements(h.hints, "button")).toHaveLength(0);
     expect(elements(h.tree, "CliSessions")).toHaveLength(0);
 });
 
 test("the trust card lists the folder's files and keeps both answers", async () => {
     const h = home({ needsTrust: [".mcp.json", ".claude/settings.json"] });
     const card = byClass(h.tree, "section", "home-trust")[0]!;
-    expect(card.props.class).toBe("home-card home-trust card-surface");
+    expect(card.props.class).toBe("home-card card-surface card home-trust");
     expect(text(elements(card, "h2"))).toBe("Do you trust this folder?");
     expect(elements(card, "code").map(text)).toEqual([".mcp.json", ".claude/settings.json"]);
     // The answer that goes ahead first, filled; the way out after it.
-    const [trust, skip] = elements(byClass(card, "div", "home-trust-acts"), "button");
+    const [trust, skip] = elements(byClass(card, "div", "home-trust-actions"), "button");
     expect([text(trust), text(skip)]).toEqual(["Trust this folder", "Open without them"]);
-    expect(skip!.props.class).toBe("btn sm");
-    expect(trust!.props.class).toBe("btn sm primary");
+    expect(skip!.props.class).toBe("btn");
+    expect(trust!.props.class).toBe("btn btn-primary");
     await skip!.props.onClick();
     await trust!.props.onClick();
     expect(h.trusts).toEqual([["/work/cavvy", false], ["/work/cavvy", true]]);
@@ -356,7 +356,7 @@ test("a folder with nothing to protect, not yet trusted, is asked about in a car
 test("Home shows the error cards over the composer, where a session has them", () => {
     const source = readFileSync(new URL("../gui/src/components/Home.tsx", import.meta.url), "utf8");
     const at = source.indexOf('<ErrorCards place="home" />');
-    expect(at).toBeGreaterThan(source.indexOf('<div class="home-foot"'));
+    expect(at).toBeGreaterThan(source.indexOf('<div class="composer-wrap composer-wrap-home"'));
     expect(at).toBeLessThan(source.indexOf("<Composer"));
 });
 
@@ -458,19 +458,19 @@ function meter(home: boolean, used?: number, sessionId?: string, o: { windows?: 
         Gauge: "Gauge", Shrink: "Shrink", Ring: "Ring", Popover: tagged("Popover"),
     }) as (p: { provider?: string; sessionId?: string; home?: boolean; model?: { id: string; resolvedModel?: string; resolvedFor?: string } }) => unknown;
     const tree = ComposerMeter({ provider, sessionId, home, model: o.model });
-    return { tree, trigger: home ? elements(tree, "span").find((s) => String(s.props.class).startsWith("ctx-limit")) : elements(tree, "button")[0] };
+    return { tree, trigger: home ? elements(tree, "span").find((s) => String(s.props.class).startsWith("meter meter-static")) : elements(tree, "button")[0] };
 }
 
 test("Home shows only the limit pill, as status with no card; a session has its context in words", () => {
     // A new session has no context: below 80% Home shows nothing there.
     expect(meter(true, 60).trigger).toBeUndefined();
     const pill = meter(true, 94);
-    expect(pill.trigger!.props.class).toStartWith("ctx-limit");
+    expect(pill.trigger!.props.class).toStartWith("meter meter-static");
     expect(elements(pill.trigger, "Ring")).toHaveLength(0);
     // Words alone: no gauge.
     expect(elements(pill.trigger, "Gauge")).toHaveLength(0);
-    expect(text(pill.trigger)).toBe("94%of 5-hour limit");
-    expect(text(byClass(pill.trigger, "span", "lbl"))).toBe("of 5-hour limit");
+    expect(text(pill.trigger)).toBe("94% of 5-hour limit");
+    expect(pill.trigger!.props["data-tone"]).toBe("red");
     // Its label says what the pill shows, no more.
     expect(pill.trigger!.props["aria-label"]).toMatch(/^Claude Code: 94% of 5-hour limit, resets /);
     // Home has no session: nothing to compact or switch, so no card to open; when it resets is the tooltip.
@@ -478,13 +478,13 @@ test("Home shows only the limit pill, as status with no card; a session has its 
     expect(pill.trigger!.props.title).toMatch(/^Resets \d{1,2}:\d\d [AP]M$/);
     expect(meter(true, 100).trigger!.props.title).toMatch(/^Resets \d{1,2}:\d\d [AP]M, in 1h 4[56]m$/);
     // At the limit, it names the limit that stops the chosen model.
-    expect(text(meter(true, 100).trigger)).toBe("5-hourlimit reached");
+    expect(text(meter(true, 100).trigger)).toBe("5-hour limit reached");
     expect(meter(true, 100).trigger!.props["aria-label"]).toMatch(/^Claude Code: 5-hour limit reached, resets /);
     expect(elements(pill.tree, "button")).toHaveLength(0);
     expect(elements(pill.tree, "Popover")).toHaveLength(0);
     // A session's composer: the context in words, at any plan usage (no ring, no pill).
     const words = meter(false, 94, "s1");
-    expect(words.trigger!.props.class).toStartWith("ctx-btn");
+    expect(words.trigger!.props.class).toStartWith("meter");
     expect(elements(words.trigger, "Gauge")).toHaveLength(0);
     expect(text(words.trigger)).toMatch(/context$|^Context$/);
     expect(text(meter(false, 10, "s1").trigger)).toMatch(/context$|^Context$/);
@@ -494,13 +494,13 @@ test("Home's pill for the chosen model: a model's limit reached only for a model
     const later = Date.now() + 2 * 86_400_000;
     const windows = [{ id: "seven_day", label: "Weekly", usedPercent: 40, resetsAt: later }, { id: "seven_day_overage_included", label: "Weekly Fable", usedPercent: 97, reached: true, scope: "fable", resetsAt: later }] as PlanLimits["windows"];
     const fable = meter(true, undefined, undefined, { windows, model: { id: "fable" } });
-    expect(text(fable.trigger)).toBe("Fablelimit reached");
+    expect(text(fable.trigger)).toBe("Fable limit reached");
     expect(fable.trigger!.props["aria-label"]).toMatch(/^Claude Code: Fable limit reached, resets /);
     // Opus: Fable's says nothing; the week at 40% neither.
     expect(meter(true, undefined, undefined, { windows, model: { id: "opus" } }).trigger).toBeUndefined();
     // Said to be allowed at 100% (allowed_warning): a share, not a limit reached.
     const allowed = meter(true, undefined, undefined, { windows: [{ id: "seven_day_overage_included", label: "Weekly Fable", usedPercent: 100, reached: false, scope: "fable", resetsAt: later }] as PlanLimits["windows"], model: { id: "fable" } });
-    expect(text(allowed.trigger)).toBe("100%of weekly Fable limit");
+    expect(text(allowed.trigger)).toBe("100% of weekly Fable limit");
 });
 
 test("a configured model not in the list yet still counts for its model limits", () => {
@@ -518,10 +518,10 @@ test("Home's pill for an alias: by what it's known to stand for on the account, 
     // Or last served as Opus on this account.
     expect(meter(true, undefined, undefined, { windows, model: { id: "default" }, served: { [servedKey("claude-code", "default", "default")]: "claude-opus-5-5" } }).trigger).toBeUndefined();
     // Listed for another account only: not known for this one, so it may be Fable's: it warns.
-    expect(text(meter(true, undefined, undefined, { windows, model: { id: "default", resolvedModel: "claude-opus-5-5", resolvedFor: "work" } }).trigger)).toBe("Fablelimit reached");
-    expect(text(meter(true, undefined, undefined, { windows, model: { id: "default" } }).trigger)).toBe("Fablelimit reached");
+    expect(text(meter(true, undefined, undefined, { windows, model: { id: "default", resolvedModel: "claude-opus-5-5", resolvedFor: "work" } }).trigger)).toBe("Fable limit reached");
+    expect(text(meter(true, undefined, undefined, { windows, model: { id: "default" } }).trigger)).toBe("Fable limit reached");
     // Fable chosen: its limit.
-    expect(text(meter(true, undefined, undefined, { windows, model: { id: "fable" } }).trigger)).toBe("Fablelimit reached");
+    expect(text(meter(true, undefined, undefined, { windows, model: { id: "fable" } }).trigger)).toBe("Fable limit reached");
 });
 
 test("what an alias stands for: last served on the account first, else as listed for that account", () => {

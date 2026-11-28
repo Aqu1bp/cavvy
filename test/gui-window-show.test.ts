@@ -42,7 +42,7 @@ test("a second launch that raises the window marks it shown, so neither the page
 test("Home's entrance is short, and doesn't play when Home was drawn before the window came up", () => {
     const rules = parseRules(readFileSync(join(root, "gui/src/styles/home.css"), "utf8"));
     // The cards, together. The composer is at the column's foot, where a session has it: it doesn't enter.
-    const entrance = rules.filter((r) => /^home-in /.test(r.decls.get("animation") ?? ""));
+    const entrance = rules.filter((r) => /^rise-in /.test(r.decls.get("animation") ?? ""));
     expect(entrance.map((r) => r.selectors.join()).sort()).toEqual([".home-stack"]);
     for (const r of entrance) {
         // Its duration, then its delay if it has one.

@@ -76,7 +76,7 @@ export function CliSessions(p: { cwd: string; rows?: number }) {
 
     const row = (s: CliSessionInfo) => (
         <div
-            class={`cli-row ${busy() === s.id ? "busy" : ""}`}
+            class={`row home-cli-row ${busy() === s.id ? "busy" : ""}`}
             role="button"
             tabIndex={0}
             aria-label={enabled(s) ? `Import “${s.title}” from ${name(s)}` : `${turnOn(s)} to import “${s.title}”`}
@@ -85,15 +85,15 @@ export function CliSessions(p: { cwd: string; rows?: number }) {
             onClick={() => act(s)}
             onKeyDown={keys(s)}
         >
-            <span class="cli-pv"><ProviderIcon id={s.source} name={name(s)} size={14} /></span>
-            <span class="cli-main">
-                <span class="cli-title truncate">{s.title}</span>
+            <ProviderIcon id={s.source} name={name(s)} size={14} />
+            <span class="row-text">
+                <span class="row-title">{s.title}</span>
                 <Show when={s.recent}>
-                    <span class="cli-meta"><span class="cli-live" title={STILL_OPEN}>Still open in a terminal</span></span>
+                    <span class="row-sub" title={STILL_OPEN}>Still open in a terminal</span>
                 </Show>
             </span>
-            <Show when={enabled(s)} fallback={<span class="cli-off">Turn on in Settings</span>}>
-                <span class="cli-go">{busy() === s.id ? "Importing…" : "Import"}</span>
+            <Show when={enabled(s)} fallback={<span class="link-btn">Turn on in Settings</span>}>
+                <span class="btn btn-sm">{busy() === s.id ? "Importing…" : "Import"}</span>
             </Show>
         </div>
     );
@@ -129,13 +129,13 @@ export function CliSessions(p: { cwd: string; rows?: number }) {
     return (
         <>
             <Show when={fresh().length}>
-                <section class="home-card cli-sessions card-surface" aria-label="Continue from your terminal">
-                    <div class="cli-h">
-                        <h2>Continue from your terminal</h2>
+                <section class="home-card card-surface card home-cli" aria-label="Continue from your terminal">
+                    <header class="home-cli-head">
+                        <h2 class="home-cli-title">Continue from your terminal</h2>
                         <Show when={hasMore()}>
                             <button class="link-btn" onClick={() => { setAll(true); void refetch(); }}>Show all {fresh().length}</button>
                         </Show>
-                    </div>
+                    </header>
                     <For each={shown()}>{row}</For>
                 </section>
             </Show>

@@ -87,13 +87,13 @@ export function connected() {
 export function mountWhere(el: HTMLElement): () => void {
     return render(
         () => (
-            <button class="home-pick" title="Where it runs" aria-haspopup="menu" aria-busy={goingTo() ? "true" : undefined} onClick={(e) => openMachines(e.currentTarget, "end")}>
-                <Show when={runsOn()} fallback={<Laptop size={14} class="ic" />}>
-                    <Server size={14} class="ic" />
+            <button class="select home-select" title="Where it runs" aria-haspopup="menu" aria-busy={goingTo() ? "true" : undefined} onClick={(e) => openMachines(e.currentTarget, "end")}>
+                <Show when={runsOn()} fallback={<Laptop size={14} />}>
+                    <Server size={14} />
                 </Show>
                 {/* Where a session sent now runs: Home is still there until it has moved (dimmed meanwhile). */}
-                <span class="truncate">{runsOn() ?? HERE}</span>
-                <ChevronDown size={13} class="chv" />
+                <span class="select-value">{runsOn() ?? HERE}</span>
+                <ChevronDown size={13} class="select-caret" />
             </button>
         ),
         el,

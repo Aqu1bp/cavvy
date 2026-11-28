@@ -30,7 +30,7 @@ const KEY: [file: string, selector: string, property: string, at14: string][] = 
     ["overlays.css", ".toggle.on .toggle-knob", "transform", "translateX(14px)"],
     ["sidebar.css", ".search", "height", "32px"],
     ["sidebar.css", ".new-session", "height", "34px"],
-    ["composer.css", ".send", "width", "28px"],
+    ["composer.css", ".send-btn", "width", "28px"],
     ["composer.css", ".uq-row", "height", "30px"],
     ["transcript.css", ".tool-line", "height", "30px"],
     ["transcript.css", ".acts-h", "padding", "4px 7px"],
