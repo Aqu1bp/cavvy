@@ -733,7 +733,7 @@ button.meter[aria-expanded="true"] {
     margin-top: calc(4 * var(--sp));
 }
 
-.q-attached .attachments-wrap {
+.q-attached .atts {
     margin-bottom: 0;
 }
 

@@ -40,7 +40,7 @@ import { canStop } from "../lib/session-status";
 import { listedSchedules } from "../lib/notices";
 import { QueueTab } from "./QueueTab";
 import { StashTray } from "./StashTray";
-import { StepsTray } from "./StepsTray";
+import { StepsTray, stepsTrayShown } from "./StepsTray";
 
 /** `mention`: a skill picked from the $ menu, which goes in where the $ is. */
 type MenuItem = { kind: "command"; cmd: CommandInfo; mention?: boolean } | { kind: "file"; path: string } | { kind: "resource"; res: McpResourceInfo };
@@ -769,6 +769,9 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     const interactions = () => st()?.interactions ?? [];
     /** A sign-in's card is up for this put-off row: the row isn't shown beside its own card. */
     const signInCardUp = (watchId: string) => interactions().some((i) => i.kind === "signin" && signInCardFor(watchId, i));
+    const laterSignIns = () => (p.sessionId ? st()?.watches?.filter((w) => w.kind === "sign-in" && !signInCardUp(w.id)) ?? [] : []);
+    /** A tray sits on the box: its top corners square off to meet it. */
+    const attached = () => Boolean((p.sessionId && h() && stepsTrayShown(p.sessionId, h()!.view)) || (p.sessionId && st()?.queued.length) || laterSignIns().length);
     /** A turn runs, and no request card is up: what it's doing is the turn's live line (LiveLine.tsx), not a row here. */
     const working = () => Boolean(p.sessionId && busy() && !interactions().length && !far.asks?.(p.sessionId));
 
@@ -904,50 +907,41 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
             <Show when={draft.stashes().length}>
                 <StashTray items={draft.stashes()} box={() => ta} onRestore={restoreStash} onDiscard={discardStash} />
             </Show>
-            <Show when={p.sessionId ? h() : undefined}>{(handle) => <StepsTray sessionId={p.sessionId!} view={handle().view} />}</Show>
-            <Show when={p.sessionId && st()?.queued.length}>
-                <QueueTab sessionId={p.sessionId!} state={st()!} dequeue={(i, edit) => void dequeue(i, edit)} />
-            </Show>
-            {/* Sign-ins put off with Later: a strip of its own above the box, until each is signed in or dismissed. Not the one whose card is up. */}
-            <Show when={p.sessionId ? st()?.watches?.filter((w) => w.kind === "sign-in" && !signInCardUp(w.id)) : undefined}>
-                {(items) => (
-                    <Show when={items().length}>
-                        <div class="si-later card-surface" role="status">
-                            <For each={items()}>
-                                {(w) => {
-                                    // A session on a server doesn't know what this machine calls it: the window does.
-                                    const what = putOffSignIn(w.label, machine);
-                                    return (
-                                        <div class="si-later-row" title={w.label}>
-                                            {/* The service's own mark where there is one; a key for the rest (and for several at once). */}
-                                            <Show when={signInMark(w.id)} fallback={<KeyRound size={14} class="si-later-icon" />}>
-                                                {(mark) => <ProviderIcon id={mark()} size={15} class="si-later-icon" />}
-                                            </Show>
-                                            <span class="si-later-what truncate">
-                                                {what.name}
-                                                <span class="si-later-why">
-                                                    Not signed in
-                                                    <Show when={what.on}>
-                                                        {" on "}
-                                                        <span class="mono">{what.on}</span>
-                                                    </Show>
-                                                </span>
-                                            </span>
-                                            <button class="btn sm" onClick={() => { signInPressed.at = Date.now(); void rpc.call("session.signIn", { id: p.sessionId!, watchId: w.id }).catch(reportError); }}>
-                                                Sign in
-                                            </button>
-                                            <button class="hb sm" title="Dismiss" aria-label={`Dismiss: ${w.label}`} onClick={() => void rpc.call("session.stopWatch", { id: p.sessionId!, watchId: w.id }).catch(reportError)}>
-                                                <X size={14} />
-                                            </button>
-                                        </div>
-                                    );
-                                }}
-                            </For>
-                        </div>
-                    </Show>
-                )}
-            </Show>
-            <div class="composer-box card-surface" classList={{ composer: true }} data-dropping={dragging() || undefined} ref={box}>
+            <div class="trays">
+                <Show when={p.sessionId ? h() : undefined}>{(handle) => <StepsTray sessionId={p.sessionId!} view={handle().view} />}</Show>
+                <Show when={p.sessionId && st()?.queued.length}>
+                    <QueueTab sessionId={p.sessionId!} state={st()!} dequeue={(i, edit) => void dequeue(i, edit)} />
+                </Show>
+                {/* Sign-ins put off with Later: a tray each above the box, until each is signed in or dismissed. Not the one whose card is up. */}
+                <For each={laterSignIns()}>
+                    {(w) => {
+                        // A session on a server doesn't know what this machine calls it: the window does.
+                        const what = putOffSignIn(w.label, machine);
+                        return (
+                            <div class="tray tray-signin" role="status" title={w.label}>
+                                {/* The service's own mark where there is one; a key for the rest (and for several at once). */}
+                                <Show when={signInMark(w.id)} fallback={<KeyRound size={14} />}>
+                                    {(mark) => <ProviderIcon id={mark()} size={14} />}
+                                </Show>
+                                <span class="tray-text">
+                                    <b>{what.name}</b> Not signed in
+                                    <Show when={what.on}>
+                                        {" on "}
+                                        <span class="mono">{what.on}</span>
+                                    </Show>
+                                </span>
+                                <button type="button" class="btn btn-sm" onClick={() => { signInPressed.at = Date.now(); void rpc.call("session.signIn", { id: p.sessionId!, watchId: w.id }).catch(reportError); }}>
+                                    Sign in
+                                </button>
+                                <button type="button" class="icon-btn icon-btn-sm" title="Dismiss" aria-label={`Dismiss: ${w.label}`} onClick={() => void rpc.call("session.stopWatch", { id: p.sessionId!, watchId: w.id }).catch(reportError)}>
+                                    <X size={13} />
+                                </button>
+                            </div>
+                        );
+                    }}
+                </For>
+            </div>
+            <div class="composer-box card-surface" classList={{ composer: true, "composer-attached": attached() }} data-dropping={dragging() || undefined} ref={box}>
                 {p.lead}
                 <Show when={p.sessionId ? st()?.goal : undefined}>
                     {(goal) => <GoalTab sessionId={p.sessionId!} goal={goal()} />}

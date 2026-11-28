@@ -87,6 +87,14 @@
     color: var(--text-3);
 }
 
+.crow-trust .btn-sm {
+    height: calc(24 * var(--sp));
+}
+
+.crow-trust .crow-line {
+    padding-right: calc(8 * var(--sp));
+}
+
 .crow-more {
     display: block;
     width: 100%;
