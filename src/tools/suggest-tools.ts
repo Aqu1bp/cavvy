@@ -118,7 +118,7 @@ export const SERVED_SUGGEST_NAME = `mcp__${MCP_SERVER_NAME}__${SUGGEST_SERVER_TO
  */
 export const SUGGEST_INSTRUCTIONS = `# Suggesting tasks (${MCP_SERVER_NAME})
 
-When you notice a problem unrelated to what you were asked (a bug, a UI glitch, a test failing for a reason your change didn't cause), call ${SUGGEST_SERVER_TOOL} with a title, a self-contained prompt and why, then carry on with your task. Do this instead of fixing it, offering to fix it or only mentioning it: the user gets a card to start it as a new session, and nothing starts until they do.`;
+Before you reply, if you noticed a problem unrelated to what you were asked (a bug, a UI glitch, a test failing for a reason your change didn't cause), call ${SUGGEST_SERVER_TOOL} with a title, a self-contained prompt and why, then carry on with your task. Do this instead of fixing it, offering to fix it or only mentioning it: the user gets a card to start it as a new session, and nothing starts until they do.`;
 
 /** For Claude Code's --append-system-prompt: SUGGEST_INSTRUCTIONS, where Cavvy's MCP server offers it suggest_task. */
 export function suggestNote(orchestrator: { tools: readonly string[] } | undefined): string | undefined {
