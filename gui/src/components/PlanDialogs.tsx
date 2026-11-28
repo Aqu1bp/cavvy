@@ -89,7 +89,7 @@ function ViewPlan(p: { info: PlanInfo; onClose: () => void; onSave: () => void; 
             width={680}
             class="plan-view"
             footer={[
-                <button class="btn dlg-foot-left" onClick={() => void copyText(p.info.plan).then((ok) => ok && toast("Copied the plan", "success"))}>
+                <button class="copy-btn btn dlg-foot-left" onClick={() => void copyText(p.info.plan).then((ok) => ok && toast("Copied the plan", "success"))}>
                     Copy
                 </button>,
                 <button class="btn" onClick={p.onSave}>
@@ -181,7 +181,6 @@ function SavePlan(p: { sessionId: string; info: PlanInfo; busy: boolean; setBusy
                     <input class="input mono" autofocus spellcheck={false} autocomplete="off" maxLength={4096} disabled={p.busy} value={path()} onInput={(e) => edit(e.currentTarget.value)} aria-invalid={Boolean(error() || replacing())} />
                     <Show
                         when={error() ?? (replacing() ? { message: "That file exists." } : undefined)}
-                        fallback={<span class="field-hint">Only in {home(p.info.cwd)} or {home(p.info.home)}; a name ending in .md.</span>}
                     >
                         {(m) => <span class="field-hint field-error">{m().message}</span>}
                     </Show>
@@ -309,7 +308,7 @@ function ImplementPlan(p: { sessionId: string; info: PlanInfo; busy: boolean; se
                 <label class="field">
                     <span class="field-label">Branch name</span>
                     <input class="input mono" autofocus spellcheck={false} autocomplete="off" placeholder="feature/my-change" maxLength={200} disabled={p.busy || Boolean(made())} value={branch()} onInput={(e) => setBranch(e.currentTarget.value)} aria-invalid={Boolean(errorFor("branch"))} />
-                    <Show when={errorFor("branch") ?? errorFor("location")} fallback={<span class="field-hint mono" title={target()}>{target()}</span>}>
+                    <Show when={errorFor("branch") ?? errorFor("location")} fallback={<span class="field-hint"><span class="mono" title={target()}>{target()}</span></span>}>
                         {(m) => <span class="field-hint field-error">{m()}</span>}
                     </Show>
                 </label>
