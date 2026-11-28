@@ -109,19 +109,53 @@ test("settled and archive paging preserve required rows even across collapsed/fi
 });
 
 for (const reason of ["hover", "menu", "rename"]) {
-    test(`${reason} holds row positions and shelves, appends new attention; release applies pending order`, () => {
+    test(`${reason} holds row positions and shelves, adds new attention after the rows; release applies pending order`, () => {
         const list = many();
         const before = sidebarEntries(list, [], options());
         list[1]!.settled = true;
         list[60]!.status = "waiting";
         const next = sidebarEntries(list, [], options({ activeId: "79" }));
         const held = holdSidebar(before, next, true, list, "79");
-        expect(held.slice(0, before.length)).toEqual(before);
+        // The rows where they were, the new ones after them, and Show more still last.
+        expect(before.at(-1)!.kind).toBe("more");
+        expect(held.slice(0, before.length - 1)).toEqual(before.slice(0, -1));
+        expect(held.at(-1)).toEqual(before.at(-1)!);
         expect(sidebarIds(held).slice(-2)).toEqual(["60", "79"]);
         expect(holdSidebar(held, next, false, list, "79")).toEqual(next);
         expect(sidebarIds(next)[0]).toBe("60");
     });
 }
+
+test("held, a day whose only session went (deleted) loses its heading too", () => {
+    const now = new Date(2026, 9, 27, 8, 30).getTime();
+    const list = [session("pin", { pinned: true }), session("a", { updatedAt: now - 60_000 })];
+    const before = sidebarEntries(list, [], options({ now }));
+    const left = list.filter((s) => s.id !== "pin");
+    expect(holdSidebar(before, sidebarEntries(left, [], options({ now })), true, left).map((e) => e.key)).toEqual(["day:Today", "a"]);
+});
+
+test("held, a new session joins its day's rows, not the shelf at the bottom; a new day heading comes with it", () => {
+    const now = new Date(2026, 9, 27, 8, 30).getTime();
+    const at = (d: number, h: number) => new Date(2026, 9, 27 - d, h).getTime();
+    const date = (patch: Partial<SidebarOptions> = {}) => options({ now, ...patch });
+    let list = [session("pin", { pinned: true }), session("a", { updatedAt: at(0, 7) }), session("b", { updatedAt: at(0, 6) }), session("zz", { updatedAt: at(0, 5), snoozedUntil: now + 3600_000 }), session("s", { updatedAt: at(0, 4), settled: true })];
+    const before = sidebarEntries(list, [], date({ snoozedOpen: true }));
+    list = [...list, session("new", { updatedAt: now })];
+    const next = sidebarEntries(list, [], date({ snoozedOpen: true, activeId: "new" }));
+    const held = holdSidebar(before, next, true, list, "new");
+    expect(held.map((e) => e.key)).toEqual(["day:Pinned", "pin", "day:Today", "a", "b", "new", "heading:snoozed", "zz", "heading:settled", "s"]);
+    expect(holdSidebar(held, next, false, list, "new").map((e) => e.key)).toEqual(["day:Pinned", "pin", "day:Today", "new", "a", "b", "heading:snoozed", "zz", "heading:settled", "s"]);
+    // Nothing under Today yet: Today comes with it, above the older days and the shelves.
+    let old = [session("y", { updatedAt: at(1, 12) }), session("zz", { updatedAt: at(1, 5), snoozedUntil: now + 3600_000 })];
+    const quiet = sidebarEntries(old, [], date());
+    old = [...old, session("new", { updatedAt: now })];
+    expect(holdSidebar(quiet, sidebarEntries(old, [], date({ activeId: "new" })), true, old, "new").map((e) => e.key)).toEqual(["day:Today", "new", "day:Yesterday", "y", "heading:snoozed"]);
+    // Grouped by project: under its project's heading, before the next project's.
+    let byProject = [session("p1", { cwd: "/one", projectName: "one", updatedAt: 3 }), session("p2", { cwd: "/two", projectName: "two", updatedAt: 2 }), session("zz", { snoozedUntil: now })];
+    const grouped = sidebarEntries(byProject, [], options({ groupBy: "project" }));
+    byProject = [...byProject, session("new", { cwd: "/one", projectName: "one", updatedAt: 1 })];
+    expect(holdSidebar(grouped, sidebarEntries(byProject, [], options({ groupBy: "project", activeId: "new" })), true, byProject, "new").map((e) => e.key)).toEqual(["project:/one", "p1", "new", "project:/two", "p2", "heading:snoozed"]);
+});
 
 test("navigation handles empty lists, home, wraparound and absent current IDs", () => {
     expect(adjacentSession([], "x", 1)).toBeUndefined();

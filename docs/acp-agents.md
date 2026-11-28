@@ -8,7 +8,7 @@ Supported: OpenCode and Grok Build.
 
 ### Setup
 
-1. Install [OpenCode](https://opencode.ai/docs). Its free models work without signing in. For others, sign in there: `opencode auth login`.
+1. Install [OpenCode](https://opencode.ai/docs). Its free models work without signing in, and Settings → Providers shows it as **Free** until it is. For others, sign in there: `opencode auth login`. The free models have a usage limit: once it's reached, OpenCode waits and tries again without a word, so Cavvy shows OpenCode's reason (read from its own log, which it starts it with `--print-logs` for) and **Stop** ends the turn.
 2. In Cavvy, `/login opencode` (`cavvy auth add opencode` from a shell, or **Use my OpenCode** in the desktop app's Settings → Providers). Cavvy starts `opencode acp` and checks that it answers, then turns it on.
 3. Pick a model in `/model`, like `opencode:opencode/big-pickle`. The list comes from `opencode models`, and model ids go to OpenCode as they are. The effort setting goes to OpenCode when the model has effort levels, and is ignored when it doesn't.
 
@@ -17,7 +17,7 @@ Supported: OpenCode and Grok Build.
 - Each Cavvy session gets one `opencode acp --cwd <folder>` process, kept between turns. Your next prompt continues the same OpenCode session (`session/resume`, or `session/load` where that's all it offers), also after a restart. If that session is gone, a new one starts with the conversation so far as context.
 - By default OpenCode asks about nothing. Cavvy starts it with its own permission config (`OPENCODE_CONFIG_CONTENT`), which makes it ask before it edits a file, runs a command, fetches, searches the web, starts a sub-agent or goes outside the folder, in every one of its agents. The same config is used in every mode, so a mode change needs no restart. Each ask then goes through Cavvy's rules and mode, as Codex's do:
   - A command is checked as `Bash`, an edit as `Edit` or `Write` of every file it names, a fetch as `WebFetch`. Anything else is checked as a tool named `OpenCode`. An edit that carries the file's new content is a `Write` of that content, and a delete or move says which it is, so a yes to one change doesn't cover another.
-  - Deny rules refuse without asking. Allow rules approve. Accept edits approves an edit inside the workspace. Plan refuses edits, and also switches OpenCode to its own plan agent. Bypass approves.
+  - Deny rules refuse without asking. Allow rules approve. Accept edits approves an edit inside the workspace. Plan refuses edits, and also switches OpenCode to its own plan agent. Bypass approves, except a catastrophic command (`rm -rf ~`, `mkfs`), which asks.
   - OpenCode asks about every command, so a read-only command Cavvy would run for its own models runs without asking you, as with Codex.
   - Auto has no reviewer for OpenCode, so it asks you about anything a rule doesn't approve.
   - A yes is "allow once": "don't ask again" saves a Cavvy rule, never one of OpenCode's. A request Cavvy can't check (an edit that names no file, say) is refused.
@@ -60,7 +60,7 @@ Cavvy never reads, copies or stores OpenCode's sign-in. It starts your installed
   | Accept edits | As Manual, and an edit inside the workspace goes without asking. | Grok's default mode. |
   | Plan | Edits and commands that aren't read-only are refused, except Grok's own plan file (unless a deny rule covers it). | Grok's own plan mode (`session/set_mode plan`), which also refuses edits except its plan file. Leaving Plan sets it back to `default`. |
   | Auto | Everything goes on to Grok's own reviewer, which decides what runs. What it sends for approval goes through Cavvy's rules, and asks you if no rule decides. | Grok's auto mode. |
-  | Bypass | Only Cavvy's deny rules refuse. Grok's own always-approve (`yoloMode`) is never used. | Grok's default mode. |
+  | Bypass | Only Cavvy's deny rules refuse, and a catastrophic command (`rm -rf ~`, `mkfs`) asks. Grok's own always-approve (`yoloMode`) is never used. | Grok's default mode. |
 
   - A command is checked as `Bash`, a file write as a `Write` of its content (a yes covers that content only), an edit as an `Edit` of the file it names, a read as `Read`, a listing as `LS`, a search as `Grep`, a fetch as `WebFetch`, a subagent as `Task`, and an MCP tool by its `mcp__server__tool` name. Grok's own bookkeeping (its to-do list, a look at a command it started) goes without asking, in Plan too, unless a deny rule names it. Any other tool of Grok's is checked as a tool named `Grok Build`: asked about in Manual, refused in Plan.
   - You see the same permission prompt as for any other agent, with the diff where Grok says the file's content. A subagent's call says which subagent asks.

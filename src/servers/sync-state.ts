@@ -23,18 +23,20 @@ import { dirname, join } from "path";
 import { forgetCachedKeys, getKey, removeKey, setKey, storedKey } from "../auth/credentials";
 import { checkAgentCli } from "../backends";
 import { findCli } from "../backends/cli";
-import { AGENT_CLIS, agentCli } from "../backends/defs";
+import { AGENT_CLIS, agentCli, baseCli } from "../backends/defs";
 import { cavvyHome, paths } from "../config/paths";
 import { loadScope, loadScopeChecked, readJsonForUpdate, updateSettings, type Effort, type McpServerConfig, type Settings } from "../config/settings";
 import { enablePlugin, installPlugin, uninstallPlugin, updatePlugin } from "../plugins/install";
 import { addMarketplace, forgetMarketplace, updateMarketplace } from "../plugins/marketplaces";
 import { pluginPaths, readInstalled, readKnownMarketplaces, splitId, type MarketplaceSource } from "../plugins/store";
 import { ACCOUNT_PROVIDERS, addAccount, listAccounts, removeAccount, renameAccount, setDefaultAccount } from "../providers/accounts";
-import { allProviders, BUILTIN_PROVIDERS, customEnvKey, readAgentConfig, readProvidersFileForUpdate, readVertexConfig, removeAgentConfig, resolveBaseUrl, SEARCH_PROVIDERS, validGoogleAccount, validVertexLocation, validVertexProject, writeProvidersFile, type CustomProviderEntry, type VertexConfig } from "../providers/registry";
+import { forgetSecrets, secretEnvId, saveAgentEnv } from "../providers/agent-env";
+import { checkInstance, isInstance, removeInstance } from "../providers/instances";
+import { allProviders, BUILTIN_PROVIDERS, customEnvKey, readAgentConfig, readProvidersFileForUpdate, readVertexConfig, rememberRemovedInstance, removeAgentConfig, resolveBaseUrl, SEARCH_PROVIDERS, validGoogleAccount, validVertexLocation, validVertexProject, writeProvidersFile, type CustomProviderEntry, type VertexConfig } from "../providers/registry";
 import { matchesSecretPattern } from "../util/secret-patterns";
 import { CLI_SIGN_IN_TOKEN, isProtectedCredentialPath, localHost, packageSpec, portableMcpEntry, portableRule, RUNNER_FLAGS, RUNNERS, SETTINGS_KEYS, SUBSCRIPTION_OAUTH_TOKEN } from "./copy";
 import { syncTo, type SyncFilesResult } from "./sync";
-import { installing, startInstall } from "./sync-install";
+import { installing, startInstall, wouldInstall } from "./sync-install";
 
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 const stableJson = (v: unknown): string => {
@@ -68,6 +70,23 @@ export interface SyncedAgentCli {
     /** Managed named accounts only (never external paths, never credentials). */
     accounts: { id: string; name: string }[];
     defaultAccount?: string;
+    /** Its variables (agentVarSyncs). Left out: the server keeps its own as they are (a secret couldn't be read here). */
+    env?: SyncedAgentVar[];
+}
+
+/** One of a CLI's environment variables (Settings → Providers). A secret one only while keys sync. */
+export interface SyncedAgentVar {
+    name: string;
+    value: string;
+    secret?: true;
+}
+
+/** A named copy of a CLI (providers/instances.ts): its name, models and variables. Its path and arguments are this machine's. */
+export interface SyncedAgentInstance {
+    id: string;
+    name: string;
+    models?: string[];
+    env?: SyncedAgentVar[];
 }
 
 export interface SyncedApiKey {
@@ -88,6 +107,8 @@ export interface SyncStatePayload {
     customProviders?: CustomProviderEntry[];
     vertex?: VertexConfig;
     agents?: SyncedAgentCli[];
+    /** Sent beside `agents`, not in it: a server from before copies would take one for its CLI. */
+    agentInstances?: SyncedAgentInstance[];
     /** Present ONLY when `includeSecrets` is true; contains Cavvy API/search keys only (never CLI tokens). */
     apiKeys?: Record<string, SyncedApiKey>;
     includeSecrets?: boolean;
@@ -137,8 +158,34 @@ export interface SyncStateSummary {
     result?: ApplyStateResult;
 }
 
-/** Env variable names that select or inject CLI subscription auth must never be carried in MCP env. */
+/** Env variable names that select or inject CLI subscription auth must never be carried in MCP env, or a CLI's own. */
 const BLOCKED_CLI_ENV_NAME = /^(CLAUDE_CODE_OAUTH|CLAUDE_CONFIG_DIR|CLAUDE_SECURESTORAGE|CODEX_HOME|ANTHROPIC_AUTH_TOKEN)/i;
+
+/**
+ * Whether a CLI's variable may go to a server: never one that signs a CLI in, by its name or a sign-in token in it.
+ * Without key sync, nor one that holds a key, as a secret or in a known format (it goes as keys go).
+ */
+export function agentVarSyncs(v: { name: string; value: string; secret?: boolean }, includeSecrets: boolean): boolean {
+    if (BLOCKED_CLI_ENV_NAME.test(v.name) || CLI_SIGN_IN_TOKEN.test(v.value)) return false;
+    return includeSecrets || (!v.secret && !SUBSCRIPTION_OAUTH_TOKEN.test(v.value) && !matchesSecretPattern(v.value));
+}
+
+/** A CLI's (or a copy's) variables to send. Undefined when a secret one couldn't be read: the server keeps its own. */
+async function syncedAgentEnv(provider: string, includeSecrets: boolean): Promise<SyncedAgentVar[] | undefined> {
+    const cfg = readAgentConfig(provider);
+    const out: SyncedAgentVar[] = [];
+    for (const [name, value] of Object.entries(cfg?.env ?? {})) if (agentVarSyncs({ name, value }, includeSecrets)) out.push({ name, value });
+    if (includeSecrets) {
+        for (const name of cfg?.secretEnv ?? []) {
+            if (BLOCKED_CLI_ENV_NAME.test(name)) continue;
+            const k = await getKey(secretEnvId(provider, name)).catch(() => undefined);
+            if (!k) return undefined;
+            const v = { name, value: k.value, secret: true as const };
+            if (agentVarSyncs(v, true)) out.push(v);
+        }
+    }
+    return out.sort((a, b) => a.name.localeCompare(b.name));
+}
 const SAFE_GIT_REF = /^[A-Za-z0-9._/@+-]{1,200}$/;
 
 /** Public remote URL with no embedded credentials, query string, hash, subscription token, or local/private host. */
@@ -378,6 +425,7 @@ export async function localSyncState(o: { includeSecrets?: boolean } = {}): Prom
     let customProviders: CustomProviderEntry[] | undefined;
     let vertex: VertexConfig | undefined;
     let agents: SyncedAgentCli[] | undefined;
+    let agentInstances: SyncedAgentInstance[] | undefined;
     let apiKeys: Record<string, SyncedApiKey> | undefined;
 
     const providersFile = paths.providers();
@@ -408,11 +456,21 @@ export async function localSyncState(o: { includeSecrets?: boolean } = {}): Prom
                 .map((a) => ({ id: a.id, name: a.name }))
                 .sort((a, b) => a.id.localeCompare(b.id));
             const defaultAccount = cfg.defaultAccount === "default" || accounts.some((a) => a.id === cfg.defaultAccount) ? cfg.defaultAccount : undefined;
+            const env = await syncedAgentEnv(def.id, includeSecrets);
             agents.push({
                 id: def.id,
                 accounts,
                 ...(defaultAccount ? { defaultAccount } : {}),
+                ...(env ? { env } : {}),
             });
+        }
+
+        agentInstances = [];
+        for (const id of Object.keys(pf.agents ?? {}).sort()) {
+            const cfg = isInstance(id) ? readAgentConfig(id) : undefined;
+            if (!cfg?.name) continue;
+            const env = await syncedAgentEnv(id, includeSecrets);
+            agentInstances.push({ id, name: cfg.name, ...(cfg.models?.length ? { models: [...cfg.models] } : {}), ...(env ? { env } : {}) });
         }
 
         if (includeSecrets) {
@@ -440,7 +498,7 @@ export async function localSyncState(o: { includeSecrets?: boolean } = {}): Prom
     return {
         ...(settings !== undefined ? { settings, permissions, mcpServers } : {}),
         ...(marketplaces !== undefined ? { marketplaces, plugins } : {}),
-        ...(customProviders !== undefined ? { customProviders, ...(vertex ? { vertex } : {}), agents } : {}),
+        ...(customProviders !== undefined ? { customProviders, ...(vertex ? { vertex } : {}), agents, agentInstances } : {}),
         // Said whenever it's on, keys read or not: without it a server takes the MCP servers that carry a secret for removed.
         ...(includeSecrets ? { includeSecrets: true, ...(apiKeys !== undefined ? { apiKeys } : {}) } : {}),
     };
@@ -454,6 +512,14 @@ interface SyncedAgentRecord {
     defaultAccount?: string;
     /** Managed account IDs CREATED/OWNED by sync -> last synced display name. Never includes pre-existing server accounts. */
     accounts: Record<string, string>;
+    /** Its variables sync wrote, by name: a hash of each as written (a secret's too, never its value). */
+    env?: Record<string, string>;
+}
+
+/** A copy of a CLI sync added: a hash of its fields as written, and the variables it wrote. */
+interface SyncedInstanceRecord {
+    fields: string;
+    env?: Record<string, string>;
 }
 
 interface SyncedMarketplaceRecord {
@@ -479,6 +545,8 @@ interface SyncedStateRecord {
     installedClis?: string[];
     /** CLIs last requested by the Mac that weren't installed yet. */
     missingClis?: string[];
+    /** The last state taken asked for those to be installed (sync on). Unknown in a record from before it was kept. */
+    installMissing?: boolean;
     settings: Record<string, string>;
     /** Only rules INSERTED/OWNED by sync: pre-existing server rules are never added here. */
     rules: { allow: string[]; ask: string[]; deny: string[] };
@@ -487,6 +555,7 @@ interface SyncedStateRecord {
     vertex?: string;
     apiKeys: Record<string, SyncedKeyRecord>;
     agents: Record<string, SyncedAgentRecord>;
+    instances: Record<string, SyncedInstanceRecord>;
     marketplaces: Record<string, SyncedMarketplaceRecord>;
     /** Only plugins INSTALLED/OWNED by sync: pre-existing server plugins are never added here. */
     plugins: Record<string, SyncedPluginRecord>;
@@ -499,6 +568,7 @@ const emptyRecord = (): SyncedStateRecord => ({
     customProviders: {},
     apiKeys: {},
     agents: {},
+    instances: {},
     marketplaces: {},
     plugins: {},
 });
@@ -513,6 +583,7 @@ export function readSyncedStateRecord(): SyncedStateRecord {
             ...(typeof v.digest === "string" ? { digest: v.digest } : {}),
             ...(Array.isArray(v.installedClis) ? { installedClis: v.installedClis.filter((x: unknown): x is string => typeof x === "string") } : {}),
             ...(Array.isArray(v.missingClis) ? { missingClis: v.missingClis.filter((x: unknown): x is string => typeof x === "string") } : {}),
+            ...(typeof v.installMissing === "boolean" ? { installMissing: v.installMissing } : {}),
             settings: v.settings && typeof v.settings === "object" ? v.settings : {},
             rules: {
                 allow: Array.isArray(v.rules?.allow) ? v.rules.allow.filter((x: unknown): x is string => typeof x === "string") : [],
@@ -524,6 +595,7 @@ export function readSyncedStateRecord(): SyncedStateRecord {
             ...(typeof v.vertex === "string" ? { vertex: v.vertex } : {}),
             apiKeys: v.apiKeys && typeof v.apiKeys === "object" ? v.apiKeys : {},
             agents: v.agents && typeof v.agents === "object" ? v.agents : {},
+            instances: v.instances && typeof v.instances === "object" ? v.instances : {},
             marketplaces: v.marketplaces && typeof v.marketplaces === "object" ? v.marketplaces : {},
             plugins: v.plugins && typeof v.plugins === "object" ? v.plugins : {},
         };
@@ -600,9 +672,12 @@ export async function readSyncedStateDigest(signIns = true): Promise<SyncRemoteS
     const missingClis = (r.missingClis ?? []).filter((id) => !installed.includes(id));
     const needsSignIn = signIns ? await collectNeedsSignIn(trackedClis) : [];
     const now = installing();
+    // One missing that would be installed now (this server restarted since its installer failed, or has a new
+    // installer): the computer's state, though unchanged, is asked for again, and taking it installs it.
+    const retry = r.installMissing !== false && missingClis.some(wouldInstall);
     return {
         // One being installed: asked for again once it's there, which a changed list of CLIs above sees to.
-        ...(r.digest && sameClis ? { digest: r.digest } : {}),
+        ...(r.digest && sameClis && !retry ? { digest: r.digest } : {}),
         missingClis,
         ...(now.length ? { installing: now } : {}),
         needsSignIn,
@@ -634,6 +709,152 @@ async function takeBackKey(id: string, hash: string): Promise<"gone" | "absent" 
  * Always preserves server-local overrides, pre-existing server rules/accounts/plugins, never redirects a
  * server key to a new endpoint, and never reads, copies or destroys independent CLI subscription logins.
  */
+
+const varHash = (v: { value: string; secret?: boolean }) => hashVal([v.secret ? 1 : 0, v.value]);
+
+/**
+ * A CLI's (or a copy's) variables as the computers that sync send them, as settings are: one the server lacks, or has
+ * as sync last wrote it, takes the sent value; one set or changed on the server stays; one sync wrote and no computer
+ * sends now goes, unless it was changed here. A secret one comes only while keys sync, so turning that off takes them
+ * away. `incoming` left out: as they are. Returns what sync wrote of them now.
+ */
+async function applyAgentEnv(
+    id: string,
+    incoming: unknown,
+    prev: Record<string, string> | undefined,
+    allowSecrets: boolean,
+    out: { warnings: string[]; keysLeft: string[] },
+): Promise<{ rec: Record<string, string> | undefined; changed: boolean }> {
+    const cfg = readAgentConfig(id);
+    if (!Array.isArray(incoming) || !cfg) return { rec: prev, changed: false };
+    const cur = new Map<string, { value: string; secret?: boolean }>();
+    for (const [name, value] of Object.entries(cfg.env ?? {})) cur.set(name, { value });
+    for (const name of cfg.secretEnv ?? []) {
+        // Unreadable here: nothing sync wrote matches it, so it's left as it is.
+        const k = await getKey(secretEnvId(id, name)).catch(() => undefined);
+        cur.set(name, { value: k?.value ?? "", secret: true });
+    }
+    const next = new Map(cur);
+    const fresh = new Set<string>();
+    const rec: Record<string, string> = {};
+    const sent = new Set<string>();
+    for (const v of incoming as SyncedAgentVar[]) {
+        if (!v || typeof v.name !== "string" || typeof v.value !== "string") continue;
+        const want = { value: v.value, ...(v.secret === true ? { secret: true } : {}) };
+        if (!agentVarSyncs({ name: v.name, ...want }, allowSecrets)) continue;
+        sent.add(v.name);
+        const h = varHash(want);
+        const have = cur.get(v.name);
+        const before = prev?.[v.name];
+        if (!have || (before !== undefined && varHash(have) === before && varHash(have) !== h)) {
+            next.set(v.name, want);
+            fresh.add(v.name);
+            rec[v.name] = h;
+        } else if (varHash(have) === h && before !== undefined) {
+            rec[v.name] = h;
+        }
+    }
+    for (const [name, before] of Object.entries(prev ?? {})) {
+        const have = cur.get(name);
+        if (sent.has(name)) continue;
+        if (have && varHash(have) === before) next.delete(name);
+        else if (!have && !(await secretGone(id, name))) {
+            // Its removal failed before: its value is still stored.
+            stuck(out, id, name);
+            rec[name] = before;
+        }
+    }
+    const recOut = Object.keys(rec).length ? rec : undefined;
+    const same = next.size === cur.size && [...next].every(([name, v]) => cur.get(name) === v);
+    if (same) return { rec: recOut, changed: false };
+    try {
+        await saveAgentEnv(id, [...next].map(([name, v]) => (v.secret ? { name, secret: true, ...(fresh.has(name) ? { value: v.value } : {}) } : { name, value: v.value })));
+    } catch (e) {
+        out.warnings.push(`${agentCli(id)?.name ?? id} variables: ${(e as Error).message}`);
+        return { rec: prev, changed: false };
+    }
+    // A secret sync took away whose value is still stored here: said, as for a key, and kept on record to try again.
+    for (const [name, v] of cur) {
+        if (!v.secret || next.has(name) || prev?.[name] === undefined || (await secretGone(id, name))) continue;
+        stuck(out, id, name);
+        rec[name] = prev[name]!;
+    }
+    return { rec: Object.keys(rec).length ? rec : undefined, changed: true };
+}
+
+/** A secret sync put here couldn't be taken away: said, as for a key (the sync isn't done until it's gone). */
+function stuck(out: { warnings: string[]; keysLeft: string[] }, id: string, name: string) {
+    out.keysLeft.push(secretEnvId(id, name));
+    out.warnings.push(`${agentCli(id)?.name ?? id}'s ${name} couldn't be removed from this server.`);
+}
+
+/** Whether a secret variable's stored value is gone here, removing it once more if it isn't. */
+async function secretGone(id: string, name: string): Promise<boolean> {
+    const stored = async () => Boolean(await getKey(secretEnvId(id, name)).catch(() => undefined));
+    if (!(await stored())) return true;
+    await forgetSecrets(id, [name]);
+    return !(await stored());
+}
+
+/**
+ * Key sync is off: the secret variables sync put here (and plain ones holding a key) go, whatever else the payload carries (as keys do, before
+ * anything else is looked at). One changed here since is the server's own and stays; one that can't be removed
+ * stays on record, and is said.
+ */
+async function takeBackAgentSecrets(recs: Record<string, { env?: Record<string, string> }>, out: { warnings: string[]; keysLeft: string[] }): Promise<string[]> {
+    const changed: string[] = [];
+    for (const [id, r] of Object.entries(recs)) {
+        const cfg = readAgentConfig(id);
+        if (!r.env) continue;
+        if (!cfg) {
+            // Its setup unreadable here (or gone, with its secrets): nothing can be told apart, so nothing's touched and
+            // all stays on record. A value still stored is said, so the sync isn't done and tries again once it reads.
+            for (const name of Object.keys(r.env)) if (await getKey(secretEnvId(id, name)).catch(() => undefined)) stuck(out, id, name);
+            continue;
+        }
+        const listed = new Set(cfg?.secretEnv ?? []);
+        const take: string[] = [];
+        const plain = { ...cfg?.env };
+        for (const [name, before] of Object.entries(r.env)) {
+            if (Object.hasOwn(plain, name)) {
+                // One holding a key goes only with key sync (agentVarSyncs): back with the rest.
+                const value = plain[name]!;
+                if (varHash({ value }) === before && !agentVarSyncs({ name, value }, false)) {
+                    delete plain[name];
+                    take.push(name);
+                }
+                continue;
+            }
+            if (!listed.has(name)) {
+                // Not listed any more, but its value may still be stored from a removal that failed.
+                if (await secretGone(id, name)) delete r.env[name];
+                else stuck(out, id, name);
+                continue;
+            }
+            const k = await getKey(secretEnvId(id, name)).catch(() => undefined);
+            if (k && varHash({ value: k.value, secret: true }) === before) take.push(name);
+            else delete r.env[name];
+        }
+        if (!take.length || !cfg) continue;
+        try {
+            await saveAgentEnv(id, [
+                ...Object.entries(plain).map(([name, value]) => ({ name, value })),
+                ...[...listed].filter((n) => !take.includes(n)).map((name) => ({ name, secret: true })),
+            ]);
+            changed.push(id);
+        } catch (e) {
+            out.warnings.push(`${agentCli(id)?.name ?? id} variables: ${(e as Error).message}`);
+            for (const name of take) stuck(out, id, name);
+            continue;
+        }
+        for (const name of take) {
+            if (await secretGone(id, name)) delete r.env[name];
+            else stuck(out, id, name);
+        }
+    }
+    return changed;
+}
+
 export async function applyStateSync(digest: unknown, raw: unknown, o: { signIns?: boolean } = {}): Promise<ApplyStateResult> {
     const p = (raw && typeof raw === "object" ? raw : {}) as Partial<SyncStatePayload>;
     const record = readSyncedStateRecord();
@@ -820,6 +1041,10 @@ export async function applyStateSync(digest: unknown, raw: unknown, o: { signIns
                 delete record.apiKeys[id];
             }
             forgetCachedKeys();
+            for (const id of [...(await takeBackAgentSecrets(record.agents, { warnings, keysLeft })), ...(await takeBackAgentSecrets(record.instances, { warnings, keysLeft }))]) {
+                keysChanged++;
+                changedProviders.add(id);
+            }
         }
 
         // 2. Custom API providers & Vertex metadata.
@@ -1127,7 +1352,12 @@ export async function applyStateSync(digest: unknown, raw: unknown, o: { signIns
                     }
                 }
 
-                nextAgentRec[def.id] = { owned, ...(nextDefault ? { defaultAccount: nextDefault } : {}), accounts: nextAccounts };
+                const env = await applyAgentEnv(def.id, a.env, prevRec?.env, allowSecrets, { warnings, keysLeft });
+                if (env.changed) {
+                    providersChanged++;
+                    changedProviders.add(def.id);
+                }
+                nextAgentRec[def.id] = { owned, ...(nextDefault ? { defaultAccount: nextDefault } : {}), accounts: nextAccounts, ...(env.rec ? { env: env.rec } : {}) };
             }
 
             // Handle CLIs dropped on Mac: clean up sync-owned unsigned accounts even if the CLI itself pre-existed,
@@ -1151,9 +1381,15 @@ export async function applyStateSync(digest: unknown, raw: unknown, o: { signIns
                         }
                     }
                 }
+                // Its variables sync wrote go with it from the computers.
+                if (prevRec.env && (await applyAgentEnv(prevCli, [], prevRec.env, allowSecrets, { warnings, keysLeft })).changed) {
+                    providersChanged++;
+                    changedProviders.add(prevCli);
+                }
                 if (!prevRec.owned) continue;
                 const remaining = readAgentConfig(prevCli);
-                if (remaining && !(remaining.accounts?.length) && (await probeAccountSignedIn(prevCli, "default", probeSignal)) === false) {
+                // Variables the server set itself keep it.
+                if (remaining && !(remaining.accounts?.length) && !remaining.env && !remaining.secretEnv?.length && (await probeAccountSignedIn(prevCli, "default", probeSignal)) === false) {
                     try {
                         removeAgentConfig(prevCli);
                         providersChanged++;
@@ -1166,6 +1402,86 @@ export async function applyStateSync(digest: unknown, raw: unknown, o: { signIns
 
             record.agents = nextAgentRec;
             record.missingClis = [...missingClis].sort();
+            record.installMissing = p.installMissing === true;
+        }
+
+        // 4b. Named copies of a CLI (Claude Code · OpenRouter): one sync added, while unchanged here, follows the
+        // computers; one the server has of its own stays as it is. Their path and arguments are each machine's.
+        if (Array.isArray(p.agentInstances)) {
+            const nextInst: Record<string, SyncedInstanceRecord> = {};
+            const sentIds = new Set<string>();
+            const fieldsOf = (c: { name?: string; models?: string[] }) => hashVal({ name: c.name, ...(c.models?.length ? { models: c.models } : {}) });
+            for (const i of p.agentInstances) {
+                if (!i || typeof i !== "object" || typeof i.id !== "string" || typeof i.name !== "string" || !isInstance(i.id)) continue;
+                sentIds.add(i.id);
+                const prevRec = record.instances[i.id];
+                const def = agentCli(baseCli(i.id))!;
+                // Its CLI is installed first (as for a CLI above, even when the CLI itself is off): a later sync adds it.
+                if (!findCli(def.id, def.cli)) {
+                    if (!missingClis.includes(def.id)) {
+                        missingClis.push(def.id);
+                        if (p.installMissing === true) startInstall(def.id);
+                        record.missingClis = [...missingClis].sort();
+                    }
+                    if (prevRec) nextInst[i.id] = prevRec;
+                    continue;
+                }
+                let fields: ReturnType<typeof checkInstance>;
+                try {
+                    fields = checkInstance(def.id, { name: i.name, models: Array.isArray(i.models) ? i.models : [] }, i.id);
+                } catch (e) {
+                    warnings.push(`${def.name} · ${i.name}: ${(e as Error).message}`);
+                    if (prevRec) nextInst[i.id] = prevRec;
+                    continue;
+                }
+                const want = fieldsOf(fields);
+                const cur = readAgentConfig(i.id);
+                const have = cur ? fieldsOf(cur) : undefined;
+                // The server's own: left as it is.
+                if (cur && !prevRec) continue;
+                // Its name or models changed here stay; what sync wrote of its variables still follows the computers.
+                const ours = !cur || have === prevRec!.fields;
+                if (ours && have !== want) {
+                    const pf = readProvidersFileForUpdate();
+                    const entry = (pf.agents ??= {})[i.id] ?? {};
+                    delete entry.name;
+                    delete entry.models;
+                    pf.agents[i.id] = { ...entry, ...fields };
+                    if (!cur) rememberRemovedInstance(pf, i.id, undefined);
+                    writeProvidersFile(pf);
+                    providersChanged++;
+                    changedProviders.add(i.id);
+                }
+                const env = await applyAgentEnv(i.id, i.env, prevRec?.env, allowSecrets, { warnings, keysLeft });
+                if (env.changed) {
+                    providersChanged++;
+                    changedProviders.add(i.id);
+                }
+                nextInst[i.id] = { fields: ours || have === want ? want : prevRec!.fields, ...(env.rec ? { env: env.rec } : {}) };
+            }
+            // One no computer sends now goes: what sync wrote of its variables first, then the copy, unless it was
+            // changed here or has a path, arguments or variables of the server's own.
+            for (const [id, prevRec] of Object.entries(record.instances)) {
+                if (sentIds.has(id) || !readAgentConfig(id)) continue;
+                const env = await applyAgentEnv(id, [], prevRec.env, allowSecrets, { warnings, keysLeft });
+                if (env.changed) {
+                    providersChanged++;
+                    changedProviders.add(id);
+                }
+                if (env.rec) nextInst[id] = { fields: prevRec.fields, env: env.rec };
+                const cur = readAgentConfig(id)!;
+                if (fieldsOf(cur) !== prevRec.fields || cur.path || cur.args?.length || cur.env || cur.secretEnv?.length) continue;
+                try {
+                    if (await removeInstance(id)) {
+                        providersChanged++;
+                        changedProviders.add(id);
+                    }
+                } catch (e) {
+                    warnings.push(`${id}: ${(e as Error).message}`);
+                    nextInst[id] = prevRec;
+                }
+            }
+            record.instances = nextInst;
         }
 
         // 5. Remote marketplaces & user-scoped plugins (skipped when sender's plugin manifests were unreadable).

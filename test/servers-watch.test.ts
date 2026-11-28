@@ -387,3 +387,111 @@ test("a server's sessions as last heard stay listed, none at work, where it can'
         ["old", "idle", false, true],
     ]);
 });
+
+test("what a row offers is done here while the server can't be reached, kept through a restart, and sent there in order once it's back", async () => {
+    const row = (id: string, o: object = {}) => ({ id, title: id, cwd: "/srv/app", projectName: "app", status: "idle", updatedAt: 2, createdAt: 1, messages: 2, pinned: false, settled: false, archived: false, live: false, ...o });
+    let pending: unknown = undefined;
+    const store = { read: () => (pending === undefined ? undefined : JSON.parse(JSON.stringify(pending))), write: (c: unknown) => void (pending = c) };
+    const kept = { read: () => [row("s1"), row("s2", { updatedAt: 1 }), row("s3", { updatedAt: 0 })], write: () => {} };
+    const each: SessionChange[] = [];
+    const away = new MachineWatch("box", { reach: async () => ({ status: "failed", problem: { message: "no route" } }) as never, changed: () => {}, session: (c) => each.push(c), notice: () => {}, retryMs: [60_000], kept, pending: store });
+    stops.push(() => away.stop());
+    away.start();
+    await until("it to be unreachable", () => away.overview().state === "unreachable");
+    // Done here at once, as if it had been there.
+    expect(await away.call("session.settle", { id: "s1", settled: true })).toBeNull();
+    expect(await away.call("session.delete", { id: "s2" })).toBeNull();
+    expect(await away.call("session.delete", { id: "s3" })).toBeNull();
+    expect(away.overview().sessions.map((s) => [s.id, s.settled])).toEqual([["s1", true]]);
+    expect(each).toEqual([{ session: expect.objectContaining({ id: "s1", settled: true }) }, { hidden: "s2" }, { hidden: "s3" }]);
+    // Undo before it was sent: never deleted there, back in the list.
+    expect(await away.call("session.restore", { id: "s3" })).toBeNull();
+    expect(away.overview().sessions.map((s) => s.id)).toEqual(["s1", "s3"]);
+    // Each change in turn: brought back, settled again, renamed (as the server keeps a title: one line).
+    await away.call("session.settle", { id: "s1", settled: false });
+    await away.call("session.settle", { id: "s1", settled: true });
+    await away.call("session.rename", { id: "s1", title: "  re\n named " });
+    expect(away.overview().sessions[0]).toMatchObject({ id: "s1", settled: true, title: "re named" });
+    // What needs the server still says it's away; so does a session this machine doesn't list.
+    await expect(away.call("session.regenerateTitle", { id: "s1" })).rejects.toThrow("box isn't connected.");
+    await expect(away.call("session.settle", { id: "nope", settled: true })).rejects.toThrow("box isn't connected.");
+    expect((pending as { method: string }[]).map((c) => c.method)).toEqual(["session.settle", "session.delete", "session.settle", "session.settle", "session.rename"]);
+    away.stop();
+
+    // The next launch, and the server is back: it takes them all, in order, and the deleted session isn't shown again on the way.
+    const asked: { method: string; params: any }[] = [];
+    let refuse = false;
+    const srv = Bun.serve({
+        port: 0,
+        fetch: (req, s) => (s.upgrade(req) ? undefined : new Response("no")),
+        websocket: {
+            message(ws, raw) {
+                const m = JSON.parse(String(raw));
+                if (m.method === "sessions.list") return void ws.send(JSON.stringify({ id: m.id, result: m.params?.archived ? [] : [row("s1"), row("s2", { updatedAt: 1 }), row("s3", { updatedAt: 0 })] }));
+                if (!m.method.startsWith("session.")) return;
+                asked.push({ method: m.method, params: m.params });
+                ws.send(JSON.stringify(refuse ? { id: m.id, error: m.params.id === "s3" ? { message: "No session", code: "not_found" } : { message: "It's in use.", code: "in_use" } } : { id: m.id, result: null }));
+            },
+        },
+    });
+    const seen: string[][] = [];
+    const told: SessionChange[] = [];
+    const back = new MachineWatch("box", { reach: async () => ({ status: "connected", url: `ws://127.0.0.1:${srv.port}/ws`, token: "t" }), changed: () => seen.push(back.overview().sessions.map((s) => s.id)), session: (c) => told.push(c), notice: () => {}, kept, pending: store });
+    stops.push(() => (back.stop(), void srv.stop(true)));
+    back.start();
+    await until("the changes to be sent", () => asked.length === 5 && (pending as unknown[]).length === 0);
+    expect(asked).toEqual([
+        { method: "session.settle", params: { id: "s1", settled: true } },
+        { method: "session.delete", params: { id: "s2" } },
+        { method: "session.settle", params: { id: "s1", settled: false } },
+        { method: "session.settle", params: { id: "s1", settled: true } },
+        { method: "session.rename", params: { id: "s1", title: "  re\n named " } },
+    ]);
+    expect(seen.every((ids) => !ids.includes("s2"))).toBe(true);
+    // Deleted there now: gone for good (a window forgets what it kept of it, its draft, only now).
+    expect(told).toContainEqual({ remove: "s2" });
+    expect(back.overview().sessions.map((s) => [s.id, s.settled, s.title])).toEqual([
+        ["s1", true, "re named"],
+        ["s3", false, "s3"],
+    ]);
+
+    // One the server refuses (gone there, say): the row shows what the server has.
+    back.stop();
+    // A listed one the server no longer has, and one not listed here (a restart since, a long list) that it can't delete now.
+    pending = [{ method: "session.delete", params: { id: "s3" } }, { method: "session.delete", params: { id: "gone" } }];
+    refuse = true;
+    const shownAgain: SessionChange[] = [];
+    const refused = new MachineWatch("box", { reach: async () => ({ status: "connected", url: `ws://127.0.0.1:${srv.port}/ws`, token: "t" }), changed: () => {}, session: (c) => shownAgain.push(c), notice: () => {}, kept, pending: store });
+    stops.push(() => refused.stop());
+    refused.start();
+    await until("the refusal", () => (pending as unknown[]).length === 0);
+    expect(refused.overview().sessions.map((s) => s.id)).not.toContain("s3");
+    // Not there: gone for good, whatever this machine kept of it. Refused while in use: not said to be gone.
+    expect(shownAgain.filter((c) => "remove" in c)).toEqual([{ remove: "s3" }]);
+});
+
+test("a delete sent without an answer, then undone, is brought back there too: the server may have done it", async () => {
+    const row = { id: "s1", title: "s1", cwd: "/srv/app", projectName: "app", status: "idle", updatedAt: 2, createdAt: 1, messages: 2, pinned: false, settled: false, archived: false, live: false };
+    let pending: unknown = [{ method: "session.delete", params: { id: "s1" } }];
+    const store = { read: () => JSON.parse(JSON.stringify(pending)), write: (c: unknown) => void (pending = c) };
+    // It takes the delete, then goes away before it answers.
+    const srv = Bun.serve({
+        port: 0,
+        fetch: (req, s) => (s.upgrade(req) ? undefined : new Response("no")),
+        websocket: {
+            message(ws, raw) {
+                const m = JSON.parse(String(raw));
+                if (m.method === "sessions.list") return void ws.send(JSON.stringify({ id: m.id, result: m.params?.archived ? [] : [row] }));
+                if (m.method === "session.delete") ws.close();
+            },
+        },
+    });
+    const watch = new MachineWatch("box", { reach: async () => ({ status: "connected", url: `ws://127.0.0.1:${srv.port}/ws`, token: "t" }), changed: () => {}, notice: () => {}, retryMs: [60_000], kept: { read: () => [row], write: () => {} }, pending: store });
+    stops.push(() => (watch.stop(), void srv.stop(true)));
+    watch.start();
+    await until("the delete to be tried", () => (pending as { tried?: boolean }[])[0]?.tried === true);
+    await until("it to be away", () => watch.overview().state !== "connected");
+    expect(await watch.call("session.restore", { id: "s1" })).toBeNull();
+    expect(pending).toEqual([{ method: "session.restore", params: { id: "s1" } }]);
+    expect(watch.overview().sessions.map((s) => s.id)).toEqual(["s1"]);
+});

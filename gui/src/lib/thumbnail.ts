@@ -51,23 +51,34 @@ function start(): Worker {
 /** Where a worker can decode and draw images (the desktop app's WebKit and current browsers; not Bun). */
 export const canThumbnail = () => typeof Worker !== "undefined" && typeof OffscreenCanvas !== "undefined" && typeof createImageBitmap !== "undefined";
 
+/** An image this small (its bytes) is shown as it is: decoding it costs nothing worth a worker. */
+const SMALL_BYTES = 16 * 1024;
+/** A worker that hasn't answered by then won't (one that can't start, say): the image itself is shown. */
+const ANSWER_MS = 3000;
+
 /**
  * A thumbnail of an image, as a data: URL. Undefined when the image is small
  * enough to show as it is, or can't be made here: show the image itself then.
  */
 export function thumbnail(image: { blob: Blob; mediaType: string } | { data: string; mediaType: string }): Promise<string | undefined> {
     if (!canThumbnail()) return Promise.resolve(undefined);
+    if (("blob" in image ? image.blob.size : (image.data.length * 3) / 4) < SMALL_BYTES) return Promise.resolve(undefined);
     return new Promise((resolve) => {
         const id = ++sequence;
         clearTimeout(idle);
+        const late = setTimeout(() => pending.get(id)?.(undefined), ANSWER_MS);
+        const done = (url: string | undefined) => {
+            clearTimeout(late);
+            pending.delete(id);
+            resolve(url);
+            rest();
+        };
         try {
             worker ??= start();
-            pending.set(id, resolve);
+            pending.set(id, done);
             worker.postMessage({ id, ...image } satisfies ThumbRequest);
         } catch {
-            pending.delete(id);
-            resolve(undefined);
-            rest();
+            done(undefined);
         }
     });
 }

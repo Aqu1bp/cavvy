@@ -85,6 +85,11 @@ const SETTLE_MS = 200;
 const STILL_ECHO_MS = 60;
 const EVAL_MAX_CHARS = 10_000;
 const SCREENSHOT_MAX_BASE64 = 4 * 1024 * 1024;
+/**
+ * The most a new size waits for screenshots under way (setViewport): one held up longer (a page busy, or held by a
+ * dialog) has the size set again once it's taken.
+ */
+const CAPTURE_WAIT_MS = 1500;
 const FULL_PAGE_MAX_HEIGHT = 8000;
 
 /** An object as JSON, with what JSON can't say named: elements, functions, big integers, a second visit to an object. */
@@ -134,9 +139,10 @@ function nowhere(url: string): boolean {
     return url === "" || url === "about:blank" || url.startsWith("chrome-error:");
 }
 
-function navigationFailure(url: string, error: string): string {
+/** `person`: the one at the pane typed or clicked the address, not the agent: no advice about the agent's tools. */
+function navigationFailure(url: string, error: string, person = false): string {
     const where = displayUrl(url);
-    if (/ERR_CONNECTION_REFUSED/.test(error)) return `Couldn't load ${where}: nothing is listening there (${error}). If it's a dev server, start it first (Bash with run_in_background) and wait for it to be ready.`;
+    if (/ERR_CONNECTION_REFUSED/.test(error)) return person ? `Nothing is running at ${where}.` : `Couldn't load ${where}: nothing is listening there (${error}). If it's a dev server, start it first (Bash with run_in_background) and wait for it to be ready.`;
     if (/ERR_NAME_NOT_RESOLVED/.test(error)) return `Couldn't load ${where}: the host name doesn't resolve (${error}).`;
     if (/ERR_ABORTED/.test(error)) return `Couldn't load ${where}: the load was aborted (${error}). It may be a download (downloads are blocked here), or a page that redirected itself elsewhere.`;
     if (/ERR_BLOCKED_BY_CLIENT/.test(error)) return `Couldn't load ${where}: the browser here doesn't open that kind of address.`;
@@ -243,6 +249,14 @@ export class Page {
     /** The host the agent was let open in this tab, or a person went to: its ask rules don't stop the page moving about on it. */
     private approvedHost?: string;
     private evaluation = 0;
+    /**
+     * Screenshots under way. Chrome sizes a page for one and, once it's taken, puts back the size the page had when it
+     * began: a size set meanwhile was undone, and the page stayed at the old one (measured with Chrome 157 on Linux:
+     * every time a size came during one). So a size waits for them (setViewport).
+     */
+    private captures = new Set<Promise<unknown>>();
+    /** A size was set while a screenshot was still under way: it's set again once they're all taken. */
+    private resizeAfterCapture = false;
 
     private constructor(
         readonly cdp: CdpClient,
@@ -633,13 +647,16 @@ export class Page {
         return loaded;
     }
 
-    /** Opens `url` (already checked by the URL policy) and waits for the load. False if it was still loading after `timeoutMs`. */
-    goto(url: string, signal?: AbortSignal, timeoutMs = LOAD_TIMEOUT_MS): Promise<boolean> {
+    /**
+     * Opens `url` (already checked by the URL policy) and waits for the load. False if it was still loading after
+     * `timeoutMs`. `person`: asked for at the pane, not by the agent.
+     */
+    goto(url: string, signal?: AbortSignal, timeoutMs = LOAD_TIMEOUT_MS, person = false): Promise<boolean> {
         this.ready();
         return this.navigate(async () => {
             if (signal) this.stillAgent(signal);
             const r = await this.send<{ errorText?: string }>("Page.navigate", { url });
-            if (r.errorText) throw new BrowserError(navigationFailure(url, r.errorText));
+            if (r.errorText) throw new BrowserError(navigationFailure(url, r.errorText, person));
         }, signal, timeoutMs);
     }
 
@@ -692,7 +709,35 @@ export class Page {
         // A view in the desktop app is the size the window gives it (Cavvy.viewSize says what that is).
         if (this.o.hosted) return;
         this.viewport = v;
-        await this.send("Emulation.setDeviceMetricsOverride", { width: v.width, height: v.height, deviceScaleFactor: v.scale, mobile: false });
+        // After any screenshot under way, which would put the old size back (`captures`).
+        if (this.captures.size) {
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            await Promise.race([Promise.allSettled([...this.captures]), new Promise((r) => (timer = setTimeout(r, CAPTURE_WAIT_MS)))]);
+            clearTimeout(timer);
+        }
+        await this.applyViewport();
+    }
+
+    /** The page's size as Chrome lays it out: the latest one set, which another call may have set while this one waited. */
+    private applyViewport() {
+        const v = this.viewport;
+        // One still being taken (held up past the wait, or begun since) would put the old size back: set again after.
+        if (this.captures.size) this.resizeAfterCapture = true;
+        return this.send("Emulation.setDeviceMetricsOverride", { width: v.width, height: v.height, deviceScaleFactor: v.scale, mobile: false });
+    }
+
+    /** A screenshot of the page (Page.captureScreenshot), counted while it's taken (`captures`). */
+    private capture(params: Record<string, unknown>): Promise<{ data: string }> {
+        const shot = this.send<{ data: string }>("Page.captureScreenshot", params);
+        this.captures.add(shot);
+        const done = () => {
+            this.captures.delete(shot);
+            if (this.captures.size || !this.resizeAfterCapture) return;
+            this.resizeAfterCapture = false;
+            if (!this.closed && !this.o.hosted) void this.applyViewport().catch(() => undefined);
+        };
+        shot.then(done, done);
+        return shot;
     }
 
     // -----------------------------------------------------------------------
@@ -733,7 +778,7 @@ export class Page {
         const v = m.cssVisualViewport;
         const region = o.fullPage ? { x: 0, y: 0, width: Math.ceil(m.cssContentSize.width), height: Math.min(Math.ceil(m.cssContentSize.height), FULL_PAGE_MAX_HEIGHT) } : o.clip ? { ...o.clip, x: o.clip.x + v.pageX, y: o.clip.y + v.pageY } : { x: v.pageX, y: v.pageY, width: v.clientWidth, height: v.clientHeight };
         const shoot = async (format: "png" | "jpeg") => {
-            const r = await this.send<{ data: string }>("Page.captureScreenshot", { format, ...(format === "jpeg" ? { quality: 80 } : {}), clip: { ...region, scale: 1 / this.viewport.scale }, captureBeyondViewport: o.fullPage === true });
+            const r = await this.capture({ format, ...(format === "jpeg" ? { quality: 80 } : {}), clip: { ...region, scale: 1 / this.viewport.scale }, captureBeyondViewport: o.fullPage === true });
             return r.data;
         };
         let data = await shoot("png");
@@ -838,7 +883,7 @@ export class Page {
                           const { cssVisualViewport: v } = await this.send<{ cssVisualViewport: { pageX: number; pageY: number } }>("Page.getLayoutMetrics");
                           clip = { x: v.pageX, y: v.pageY, width, height, scale: stillScale / scale };
                       }
-                      const { data } = await this.send<{ data: string }>("Page.captureScreenshot", { format: "jpeg", quality: STREAM_QUALITY, captureBeyondViewport: false, ...(clip ? { clip } : {}) });
+                      const { data } = await this.capture({ format: "jpeg", quality: STREAM_QUALITY, captureBeyondViewport: false, ...(clip ? { clip } : {}) });
                       return { frame: { data, width, height }, key: Bun.hash(data) };
                   },
               })
@@ -876,7 +921,7 @@ export class Page {
         const seen = this.fullFrames;
         this.stillUntil = Infinity;
         try {
-            const { data } = await this.send<{ data: string }>("Page.captureScreenshot", { format: "jpeg", quality: STREAM_QUALITY, captureBeyondViewport: false });
+            const { data } = await this.capture({ format: "jpeg", quality: STREAM_QUALITY, captureBeyondViewport: false });
             if (this.streaming && !this.closed && epoch === this.streamEpoch && this.fullFrames === seen) {
                 this.o.hooks.frame(this, { data, width: this.viewport.width, height: this.viewport.height });
             }

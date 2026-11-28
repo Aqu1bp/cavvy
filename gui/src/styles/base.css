@@ -317,7 +317,10 @@ h3 {
     flex: none;
 }
 
+/* Its own size in a flex column too: stretched across it, it turned round its middle, off its box and out of sight, and
+   made a dialog's body scroll (a Tab stop with nothing to show). */
 .spinner {
+    align-self: center;
     animation: spin 0.8s steps(16) infinite;
     animation-play-state: var(--loops);
 }
@@ -499,6 +502,10 @@ h3 {
 .link-btn:hover:not(:disabled) {
     text-decoration: underline;
     text-underline-offset: 2px;
+}
+
+.link-btn:disabled {
+    opacity: 0.45;
 }
 
 /* ---- Chips ---- */
@@ -763,8 +770,8 @@ input[type="range"] {
     background: var(--hover);
 }
 
-/* Text fields show focus with their own border or container, not an outline. */
-input:focus-visible,
+/* Text fields show focus with their own border or container, not an outline; a checkbox keeps the ring. */
+input:not([type="checkbox"]):focus-visible,
 textarea:focus-visible,
 select:focus-visible {
     outline: none;

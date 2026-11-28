@@ -20,11 +20,12 @@ export interface Placement extends Point, Size {}
 /**
  * Where a frame of the page is drawn: as large as fits the box, centred. The page takes the pane's size, so
  * the frame fills the box; a frame from before the pane was resized is a little off its shape, and is drawn whole
- * with bars at its sides rather than stretched.
+ * with bars at its sides rather than stretched. `most`: drawn no larger than this many times its size (a device's page,
+ * picked in the pane's menu, is never drawn larger than it is).
  */
-export function placeFrame(box: Size, frame: Size): Placement {
+export function placeFrame(box: Size, frame: Size, most = Infinity): Placement {
     if (box.width <= 0 || box.height <= 0 || frame.width <= 0 || frame.height <= 0) return { x: 0, y: 0, width: 0, height: 0 };
-    const scale = Math.min(box.width / frame.width, box.height / frame.height);
+    const scale = Math.min(box.width / frame.width, box.height / frame.height, most);
     const width = frame.width * scale;
     const height = frame.height * scale;
     return { x: (box.width - width) / 2, y: (box.height - height) / 2, width, height };

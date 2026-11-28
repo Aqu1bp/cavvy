@@ -864,6 +864,8 @@ describe("background work across turns", () => {
         expect(asked.map((r) => r.tool.name)).toEqual(["Bash"]);
         // A background sub-agent's: the turn's end or Esc doesn't withdraw it (#295 review, P1-1).
         expect(asked[0]!.background).toBe(true);
+        // It says which sub-agent asks (agent_id names its task): by the task it was given.
+        expect(asked[0]!.agentLabel).toBe("Map auth");
         expect(logLines().find((l) => l.backgroundAsk).backgroundAsk).toBe("allow");
         await until(() => wakes.length > 0, 5000, "its report");
     });
@@ -1033,6 +1035,32 @@ describe("the process: crashes, restarts, settings", () => {
         expect(starts().length).toBe(1);
         expect(controls("set_model")).toEqual([{ subtype: "set_model", model: "sonnet" }]);
         expect(controls("set_permission_mode").map((r) => r.mode)).toContain("plan");
+    });
+
+    test("a switch to accept edits and back reaches the running process as Claude Code's own modes", async () => {
+        process.env.FAKE_SCENARIO = "silent";
+        const { run, setMode } = await makeAgent();
+        expect(await run("one")).toBe("done");
+        setMode("acceptEdits");
+        expect(await run("two")).toBe("done");
+        setMode("default");
+        expect(await run("three")).toBe("done");
+        expect(starts().length).toBe(1);
+        expect(controls("set_permission_mode").map((r) => r.mode)).toEqual(["acceptEdits", "default"]);
+    });
+
+    test("started in bypass, what a background sub-agent asks from Claude Code's own bypass mode (a hook's ask) gets a card", async () => {
+        process.env.FAKE_SCENARIO = "agent-background-ask";
+        const asked: PermissionRequest[] = [];
+        const { run, setMode, wakes } = await makeAgent({ ask: (req) => (asked.push(req), { allow: false }) });
+        setMode("bypassPermissions");
+        expect(await run("start it")).toBe("done");
+        expect(starts()[0].argv).toEqual(expect.arrayContaining(["--permission-mode", "bypassPermissions"]));
+        await until(() => logLines().some((l) => l.backgroundAsk), 5000, "the sub-agent's ask");
+        // In its own bypass it asks only what a hook of the user's says to: the user's to answer (ownBypassAsk).
+        expect(asked.length).toBe(1);
+        expect(logLines().find((l) => l.backgroundAsk).backgroundAsk).toBe("deny");
+        await until(() => wakes.length > 0, 5000, "its report");
     });
 
     test("a model change Claude Code refuses restarts the idle process, resuming the session", async () => {

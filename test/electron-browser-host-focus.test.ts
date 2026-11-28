@@ -6,6 +6,10 @@ import { afterEach, expect, mock, test } from "bun:test";
 import { EventEmitter } from "node:events";
 
 mock.module("electron", () => ({
+    // DevTools' window (browser-host.ts devTools), not used here.
+    BrowserWindow: class {},
+    nativeTheme: { shouldUseDarkColors: false },
+    screen: {},
     app: { getAppMetrics: () => [], userAgentFallback: "Chrome/140", getName: () => "Cavvy" },
     session: { fromPartition: () => ({ setUserAgent() {}, getUserAgent: () => "Chrome/140", on() {}, setPermissionRequestHandler() {} }) },
 }));

@@ -41,7 +41,7 @@ import { formatWakes, wakeDisplay, type Wake } from "./wakes";
 import { isReadOnly, isShellTool } from "../tools/types";
 import { coerceInput, validateInput, EXPLORE_TOOLS, toSchema } from "../tools/index";
 import { isReadOnlyCommand, notReadOnly } from "../permissions/bash-safety";
-import { mcpToolMatches } from "../permissions/rules";
+import { mcpToolMatches, workingBashRules } from "../permissions/rules";
 import { toolNameFor } from "../mcp/manager";
 import { costOf, promptTokens, type CostEstimate } from "../providers/pricing";
 import { redactMessage, Session } from "./session";
@@ -50,6 +50,7 @@ import { hookApplies, isAsync, matcherFn, runHandler, runHooks, runInBackground,
 import { FileWatchHooks, type FileEvent } from "./file-watch-hooks";
 import { instructionsLoadedHooks, sessionStartHooks } from "./session-hooks";
 import { compactRequestMessage, estimateTokens, summaryMessage, transcriptCompactRequest, compactTranscriptText, handoffTranscript } from "./compact";
+import { withContext } from "./side-chat";
 import { cacheTtl, idleCompactPlan, type CacheWindow, type IdleCompactPlan } from "./idle-compact";
 import { agentMemoryDir, agentMemoryPrompt, DEFAULT_MAX_TURNS, findSkill, loadAgents, readAgentMemory, type AgentDef } from "./agents";
 import { childMode, createAgentWorktree, finishAgentWorktree, fromServers, keepLocal, startAgentServers, withAgentHooks, worktreeNote, type AgentServers, type AgentWorktree, type WorktreeOutcome } from "./subagent-setup";
@@ -61,12 +62,13 @@ import type { Skill } from "./skills";
 import { limitNotice } from "../backends/limits";
 import { claudeAgents } from "../backends/claude-agents";
 import { isAgentBackend, type AgentBackendClient, type BackendPermission, type BackgroundStop, type BackendWake, type SessionEvent, type SessionHost, type TurnSink, type BackendResult, type BackendTurn, type OrchestratorServer, type PermissionAnswer, type SteerMessage } from "../backends/types";
-import { agentCli } from "../backends/defs";
+import { agentCli, baseCli } from "../backends/defs";
 import { getProvider, imageTypesOf } from "../providers/registry";
 import { ACCOUNT_PROVIDERS, accountPlace, type AccountPlace } from "../providers/accounts";
-import { forBackend, pastedTexts, readsPdf } from "../providers/files";
+import { attachedAsText, forBackend, pastedTexts, readsPdf } from "../providers/files";
 import { fitContent, fitToolImages, hasImages, imagesFor } from "../providers/images";
 import { cachedListings, type ProviderListing } from "../providers/models";
+import { loadAgentSecrets } from "../providers/agent-env";
 import { registerTools, type Registration, type ServerTool, type ServerToolResult } from "../mcp/server";
 import { inputKeysOf } from "../backends/served-tools";
 import { CRON_TOOL_NAMES, SCHEDULE_INSTRUCTIONS, scheduleServerTools } from "./schedule-tools";
@@ -111,7 +113,6 @@ import {
     type ChildResult,
     type DelegatedTask,
 } from "./delegation";
-import { suggestBashRules } from "../permissions/bash-safety";
 import { isTrusted, trustedByUser } from "../config/trust";
 import { deniedWithin } from "../permissions/rules";
 import { canonical, expandPath, isInside } from "../util/files";
@@ -137,7 +138,7 @@ export type AgentEvent =
     | { type: "tool_approved"; id: string; reason: string; sandboxed?: boolean }
     | { type: "tool_end"; call: ToolCallPart; result: ToolResult; durationMs: number; /** Its title now, when what it did was only known at its end (a backend's web search). */ title?: string }
     | { type: "notice"; level: "info" | "warn" | "error"; message: string; /** What it is, for the GUI to draw (#426); `message` stays the whole of it, as text. */ data?: NoticeData }
-    | { type: "retry"; attempt: number; delayMs: number; reason: string }
+    | { type: "retry"; attempt: number; delayMs: number; reason: string; /** What it streamed stands: it goes on with the same response. */ keep?: boolean }
     | { type: "usage"; usage: Usage; cost: CostEstimate; contextTokens: number; /** Already accounted for by the backend; only updates a sub-agent's display. */ displayOnly?: boolean }
     /** `idle`: compacting a conversation left idle, before its prompt cache expires. */
     | { type: "compact_start"; auto: boolean; idle?: boolean }
@@ -346,6 +347,11 @@ export interface AgentOptions {
     parentFastMode?: () => boolean | undefined;
     /** The model catalog as the host last listed it (local servers aren't cached); the cache by default. */
     listings?: () => ProviderListing[];
+    /**
+     * A side chat's (src/agent/side-chat.ts): another session's conversation, sent before this one's own messages
+     * and never part of them. An agent CLI is handed it with its first prompt, as a conversation it joins.
+     */
+    context?: () => readonly Message[];
 }
 
 const MAX_RETRIES = 10;
@@ -483,11 +489,19 @@ interface PendingNote {
 const PLAN_NOTE =
     "Plan mode is now active. The user wants you to research and plan before changing anything. Do not edit files, run commands that change state, or commit; those tools will be refused. Explore with read-only tools, then present your plan with the ExitPlanMode tool. If the user only asked a question, just answer it.";
 
+/**
+ * What a mode means, for a model whose tools Cavvy checks. An agent CLI runs in its own counterpart of the mode
+ * (BackendPermission.ownMode), which asks for other things than Cavvy's does: it hears the mode's name only.
+ */
+function modeMeaning(to: PermissionMode, own: boolean): string {
+    return own ? "." : `: ${MODE_INFO[to].description}`;
+}
+
 /** What the model hears when the mode went from `from` (as it last heard) to `to`. */
-function modeNote(from: string, to: PermissionMode): string {
+function modeNote(from: string, to: PermissionMode, own = false): string {
     if (to === "plan") return PLAN_NOTE;
     if (from === "plan") return `Plan mode has ended. The permission mode is now "${MODE_INFO[to].label}"; you can make changes again.`;
-    return `The user switched the permission mode to "${MODE_INFO[to].label}": ${MODE_INFO[to].description}`;
+    return `The user switched the permission mode to "${MODE_INFO[to].label}"${modeMeaning(to, own)}`;
 }
 
 /** Which state a note (a reminder's text) reports, this version's wording or an earlier one's. */
@@ -672,7 +686,7 @@ export class Agent {
         if (this.running && isAgentBackend(this.client)) this.client.setMode(to);
         // Each in the mode it works out under the new one: a read-only one stays read-only, one whose definition sets a mode keeps it (childMode).
         for (const c of this.children) if (isAgentBackend(c.client)) c.client.setMode(c.o.mode.get());
-        this.noteState("mode", from, to, (origin) => modeNote(origin, to));
+        this.noteState("mode", from, to, (origin) => modeNote(origin, to, isAgentBackend(this.client)));
     }
 
     /** The user picked another model (`from` is the one before, provider:id). */
@@ -1238,7 +1252,7 @@ export class Agent {
         // The mode may have changed in the dropped turns: say what it is now.
         const mode = this.o.mode.get();
         this.pendingReminders = this.pendingReminders.filter((r) => r.kind !== "mode");
-        this.pendingReminders.push({ kind: "mode", from: "", text: mode === "plan" ? modeNote("", "plan") : `The permission mode is "${MODE_INFO[mode].label}": ${MODE_INFO[mode].description}` });
+        this.pendingReminders.push({ kind: "mode", from: "", text: mode === "plan" ? modeNote("", "plan") : `The permission mode is "${MODE_INFO[mode].label}"${modeMeaning(mode, isAgentBackend(this.client))}` });
         // So may the model, if a dropped prompt told it of a switch (a switch since is still queued).
         const switched = dropped.some((m) => m.role === "user" && promptNotes(m).some((n) => stateKind(n) === "model"));
         if (switched && !this.pendingReminders.some((r) => r.kind === "model")) {
@@ -1453,7 +1467,7 @@ export class Agent {
     /** Estimated tokens in the next request. */
     estimatedContext(): number {
         const since = this.session.messagesSince(this.lastUsageTotal);
-        if (!this.contextTokens) return estimateTokens(this.session.messages) + Math.ceil(this.systemPrompt().length / 3.5) + this.tools.length * 300;
+        if (!this.contextTokens) return estimateTokens(withContext(this.o.context?.(), this.session.messages)) + Math.ceil(this.systemPrompt().length / 3.5) + this.tools.length * 300;
         return this.contextTokens + estimateTokens(since);
     }
 
@@ -1498,7 +1512,7 @@ export class Agent {
         return this.withRetries(signal, async () => {
             const last = (messages ?? this.session.messages).at(-1);
             this.emit({ type: "request_start", ...(last?.role === "user" && last.meta?.kind === "continuation" ? { continuation: true } : {}) });
-            const sendable = await this.sendable(messages ?? this.session.messages);
+            const sendable = await this.sendable(messages ?? withContext(this.o.context?.(), this.session.messages));
             // After any retries: the cache dates from the request that was answered.
             this.sentAt = Date.now();
             this.idleTried = false;
@@ -1703,7 +1717,7 @@ export class Agent {
             maxTurns: this.o.maxTurns,
             // Claude Code runs some of them itself; Codex only says what it does, so it hears of all of them.
             // Claude Code runs the plugins' hooks with the plugins (--plugin-dir), so only Cavvy's own are registered with it.
-            hooks: this.model.provider === "claude-code" ? backendOwnedHooks(this.hookSettings()) : s.hooks,
+            hooks: baseCli(this.model.provider) === "claude-code" ? backendOwnedHooks(this.hookSettings()) : s.hooks,
             orchestrator: this.orchestrator(),
             readOnly: this.o.readOnly,
             agents: this.nativeAgents(trusted),
@@ -1757,13 +1771,13 @@ export class Agent {
         // A watch wakes the session later: only one that stays open (not -p) has somewhere to wake.
         const watching = Boolean(this.state.wakes && this.state.watchers) && !this.oneShot;
         // Claude Code has a Monitor of its own; Codex gets Cavvy's.
-        const monitoring = watching && caller === "codex";
+        const monitoring = watching && baseCli(caller) === "codex";
         // None has a browser to show Cavvy's pane: its tools go to all.
         const browsing = offered(BrowserNavigateTool, this.o.settings());
         // Nor a simulator: its tools go to all, on a Mac with Xcode.
         const simulating = offered(SimulatorControlTool, this.o.settings());
         // Claude Code has EnterWorktree and ExitWorktree of its own; the others get Cavvy's.
-        const worktrees = caller === "codex" || acp;
+        const worktrees = baseCli(caller) === "codex" || acp;
         // The user's other sessions: where the host reaches them (not a -p run's).
         const peers = !this.oneShot ? this.state.peers : undefined;
         // The user's servers: from their own machine, where there's someone to say yes to what costs money.
@@ -1827,7 +1841,7 @@ export class Agent {
             tools.push(...selfChecked(serverServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId))));
             instructions.push(SERVER_INSTRUCTIONS);
         }
-        // First, where it's sure to be read: Claude Code keeps only the start of a server's instructions (about 4,000 characters).
+        // First, where it's sure to be read by an agent that keeps only the start of a server's instructions.
         else if (!this.oneShot && onServer()) instructions.unshift(SERVERS_ELSEWHERE_INSTRUCTIONS);
         if (theming) {
             tools.push(...selfChecked(themeServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId))));
@@ -1840,10 +1854,11 @@ export class Agent {
         }
         this.serverTools = tools;
         this.serverInstructions = instructions.join("\n\n");
-        // Claude Code puts MCP server instructions in its system prompt; Codex gets them as developer instructions.
+        // Codex gets them as developer instructions, and Claude Code in its appended system prompt: it keeps only about
+        // the first 4,000 characters of a server's instructions (measured on 2.1.325), and none of an appended prompt is cut.
         this.registration ??= registerTools(
             () => this.serverTools,
-            () => (this.model.provider === "codex" ? undefined : this.serverInstructions),
+            () => (baseCli(this.model.provider) === "codex" || baseCli(this.model.provider) === "claude-code" ? undefined : this.serverInstructions),
         );
         return {
             name: MCP_SERVER_NAME,
@@ -2264,7 +2279,8 @@ export class Agent {
      */
     private missedMessages(promptIndex: number, resume?: { synced: number }): Message[] {
         const from = resume ? resume.synced : 0;
-        const all = this.session.messagesSince(from).slice(0, Math.max(0, promptIndex - from));
+        // A side chat's CLI joins with the other session's conversation before its own.
+        const all = withContext(resume ? undefined : this.o.context?.(), this.session.messagesSince(from).slice(0, Math.max(0, promptIndex - from)));
         const has = (t: string) => all.some((x) => x.role === "user" && !x.meta?.resends && ((x.content[0]?.type === "text" && x.content[0].text === t) || textOf(x) === t));
         return all.filter((m) => !(m.role === "user" && m.meta?.resends?.length && m.meta.resends.every(has)));
     }
@@ -2320,12 +2336,12 @@ export class Agent {
             // Written after the backend sync cursor: a resumed CLI must see this
             // on its next prompt, including after reopening or switching models.
             if (this.backendStopReminders.length) {
-                this.session.push({ role: "user", content: [reminder(this.backendStopReminders.splice(0).join("\n"))], meta: { kind: "reminder" } });
+                this.session.push({ role: "user", content: [reminder(this.backendStopReminders.splice(0).join("\n"))], meta: { kind: "reminder", ended: true } });
             }
             // Messages its turn ended before taking: a note of their own, which says what it sends again.
             if (this.undeliveredNotes.length) {
                 const notes = this.undeliveredNotes.splice(0);
-                this.session.push({ role: "user", content: [reminder(notes.map((n) => n.text).join("\n")), ...notes.flatMap((n) => [...n.images, ...n.documents])], meta: { kind: "reminder", resends: notes.flatMap((n) => n.resends) } });
+                this.session.push({ role: "user", content: [reminder(notes.map((n) => n.text).join("\n")), ...notes.flatMap((n) => [...n.images, ...n.documents])], meta: { kind: "reminder", resends: notes.flatMap((n) => n.resends), ended: true } });
             }
         }
     }
@@ -2448,7 +2464,15 @@ export class Agent {
                 const ask = this.o.host.ui.askQuestion;
                 if (!ask) return undefined;
                 const out: string[][] = [];
+                const ui = this.o.host.ui;
                 for (const q of qs) {
+                    // The CLI's answer is text: what's attached goes in it, framed in or where it's saved.
+                    if (q.attach && ui.askQuestionAttaching) {
+                        const r = await ui.askQuestionAttaching(q.question, q.options, Boolean(q.multiSelect), "paths");
+                        if (!r || (!r.answers.length && !r.attached.length)) return undefined;
+                        out.push([...r.answers.map(redact), ...attachedAsText(r.attached)]);
+                        continue;
+                    }
                     const a = await ask(q.question, q.options, Boolean(q.multiSelect));
                     if (!a) return undefined;
                     out.push(a.map(redact));
@@ -2643,6 +2667,8 @@ export class Agent {
             declined = true;
             stopper.abort();
         };
+        // A secret variable another Cavvy saved since this one read them (a CLI is started synchronously).
+        await loadAgentSecrets(this.model.provider);
         const base = this.backendTurn(AbortSignal.any([signal, stopper.signal]), session, sink);
         this.runningIn = base.cwd;
         let stopRounds = 0;
@@ -2873,7 +2899,7 @@ export class Agent {
         const resume = this.backendResume(provider, place);
         if (!resume) return false;
         // Claude Code runs PreCompact and PostCompact hooks itself (they're registered with it); Codex can't.
-        const ownHooks = provider === "codex";
+        const ownHooks = baseCli(provider) === "codex";
         if (ownHooks && !(await this.preCompact(opts))) return false;
         this.emit({ type: "compact_start", auto: opts.auto, ...(opts.idle ? { idle: true } : {}) });
         const hostAccount = this.session.accountId(provider);
@@ -2903,6 +2929,7 @@ export class Agent {
             drainQueued: () => [],
         };
         this.backendsUsed.add(backend);
+        await loadAgentSecrets(this.model.provider);
         const r = await backend.compact({ ...this.backendTurn(opts.signal, session, sink), resumeId: resume.id, forkSession: resume.fork, instructions: opts.instructions });
         if (r.reason === "aborted") throw new ProviderError("aborted");
         if (r.reason === "error") throw new Error(r.error ?? "Compaction failed");
@@ -2911,7 +2938,7 @@ export class Agent {
         this.emit({ type: "compact_end", summary: `${getProvider(provider)?.name ?? provider} compacted its own context.`, ...(opts.idle ? { idle: true } : {}) });
         if (ownHooks && !this.o.isSubagent) void this.hooks("PostCompact", { trigger: opts.auto ? "auto" : "manual", compact_summary: "" });
         // Claude Code runs SessionStart (compact) itself (backendOwnedHooks); Cavvy runs it for Codex, and the memory files' InstructionsLoaded on both.
-        if (!this.o.isSubagent) void (provider === "claude-code" ? instructionsLoadedHooks(this.o.settings(), this.session, "compact", this.state.cwd, (msg, level = "warn") => this.emit({ type: "notice", level, message: msg }), this.hookServices()) : this.compacted());
+        if (!this.o.isSubagent) void (baseCli(provider) === "claude-code" ? instructionsLoadedHooks(this.o.settings(), this.session, "compact", this.state.cwd, (msg, level = "warn") => this.emit({ type: "notice", level, message: msg }), this.hookServices()) : this.compacted());
         return true;
     }
 
@@ -3364,8 +3391,11 @@ export class Agent {
             const reads = !req.widens && (tool.category === "read" || tool.category === "network" || (tool.name === "Bash" && isReadOnlyCommand(String(input.command ?? ""))));
             if (!reads) return { allow: false, message: readOnlyRefusal(tool.name, String(input.command ?? ""), req.widens ? "it asks for more access than the sandbox gives" : undefined), stop: false };
         }
-        // Approved without asking: by an allow rule, or an edit Cavvy's mode approves (accept edits: inside the workspace).
-        const approves = (d: Decision) => d.behavior === "allow" && (Boolean(d.rule) || d.remembered === true || tool.category === "edit");
+        // The CLI's own mode decided this needs the user. Not for a read-only agent: Cavvy has it ask (its own rule).
+        const ownMode = req.ownMode === true && !this.o.readOnly;
+        // Approved without asking: by an allow rule, an action the user allowed for the session, or an edit Cavvy's mode
+        // approves (accept edits: inside the workspace), unless the CLI's own mode decided it needs the user.
+        const approves = (d: Decision) => d.behavior === "allow" && (Boolean(d.rule) || d.remembered === true || (tool.category === "edit" && !ownMode));
         const memory = { memoryDir: this.o.memoryDir };
         let decision = this.o.checker.check(tool, input, mode, cwd, memory);
         let ruled = approves(decision);
@@ -3381,11 +3411,13 @@ export class Agent {
         if (mode === "bypassPermissions" && decision.behavior === "allow" && !req.ownBypassAsk) ruled = true;
         const command = tool.name === "Bash" ? String(input.command ?? "") : "";
         // Allowed as read-only by the checker: no ask rule, nothing with credentials, not left to a sandbox.
-        if (command && (req.asksAlways ?? this.o.readOnly) && decision.behavior === "allow" && !decision.sandbox && isReadOnlyCommand(command)) ruled = true;
+        const saysNothing = (req.asksAlways ?? this.o.readOnly) && !ownMode;
+        if (command && saysNothing && decision.behavior === "allow" && !decision.sandbox && isReadOnlyCommand(command)) ruled = true;
         // Likewise a read, search or listing (or a to-do list) Cavvy would let its own models do without asking.
-        if (req.asksAlways && decision.behavior === "allow" && (tool.category === "read" || tool.category === "meta" || tool.name === "WebSearch")) ruled = true;
+        if (req.asksAlways && !ownMode && decision.behavior === "allow" && (tool.category === "read" || tool.category === "meta" || tool.name === "WebSearch")) ruled = true;
         if (req.widens) {
-            // More access for the backend's sandbox: never in plan mode, never past a deny rule, never without asking.
+            // More access for the backend's sandbox: never in plan mode, never past a deny rule or into Cavvy's credential
+            // store, and asked about in every mode but bypass (which gives the CLI everything anyway).
             if (mode === "plan") return { allow: false, message: "Plan mode is active: no extra permissions until the user approves a plan.", stop: false };
             const deny = this.o.settings().permissions?.deny ?? [];
             const access: ["read" | "write", string[]][] = [
@@ -3410,10 +3442,19 @@ export class Agent {
         } catch {
             // keep the backend's title
         }
-        // Codex was told to ask only so PreToolUse hooks would see the call (bypass mode): the mode decides, as it would have.
+        // Bypass: whatever an agent CLI (or its sub-agent) still asks about runs (above), as in the CLI's own bypass mode,
+        // where it asks about nothing. Deny rules and Cavvy's credential store refused it above (extra sandbox access too).
+        // Codex and Grok told to ask only so PreToolUse hooks see the call (hooksOnly): the mode decides, as it would have.
         if (req.hooksOnly && decision.behavior === "allow") ruled = true;
+        // But what an agent CLI asks about in Bypass that is catastrophic (rm -rf ~, mkfs; on a server, a push to the
+        // default branch) reaches the user, whatever else allowed it.
+        const guarded = mode === "bypassPermissions" && decision.behavior === "allow" ? this.o.checker.bypassGuard(tool, input, cwd) : undefined;
+        if (guarded) {
+            decision = guarded;
+            ruled = false;
+        }
         // A PreToolUse hook that asks wants the user, whatever the rules say. So does a command in another folder
-        // (Grok, Antigravity), but for a read-only agent in a session in Bypass.
+        // (Grok), but for a read-only agent in a session in Bypass.
         if (req.hookDecision === "ask" || (req.elsewhere && mode !== "bypassPermissions")) ruled = false;
         if (ruled) return { allow: true };
         // A PreToolUse hook approved it: as for Cavvy's own tools, past everything but deny rules and dangerous commands.
@@ -3442,11 +3483,11 @@ export class Agent {
             ...(req.incomplete ? { ...decision, grant: undefined } : this.o.checker.withGrant(tool, input, decision, cwd)),
             behavior: "ask" as const,
             reason: decision.behavior === "ask" ? (decision.reason ?? req.reason) : req.reason,
-            suggestions: req.incomplete ? [] : (decision.suggestions ?? (command ? suggestBashRules(command) : tool.category === "mcp" ? [tool.name] : undefined)),
+            suggestions: req.incomplete ? [] : (decision.suggestions ?? (command ? workingBashRules(command) : tool.category === "mcp" ? [tool.name] : undefined)),
             sandbox: undefined,
             needsClassifier: undefined,
         };
-        const answer = await this.o.host.askPermission({ tool, input, title, decision: ask, preview, ...(req.agentLabel ? { agentLabel: req.agentLabel } : {}), ...(req.callId ? { callId: req.callId } : {}), ...(req.background ? { background: true, signal } : req.signal ? { signal } : {}) });
+        const answer = await this.o.host.askPermission({ tool, input, title, decision: ask, preview, ...(req.agentLabel || req.asker ? { agentLabel: req.agentLabel ?? req.asker } : {}), ...(req.callId ? { callId: req.callId } : {}), ...(req.background ? { background: true, signal } : req.signal ? { signal } : {}) });
         if (signal.aborted) return { allow: false, message: "Interrupted by user", stop: true };
         if (answer.setMode) this.o.mode.set(answer.setMode);
         if (answer.rules?.length) {
@@ -3455,7 +3496,8 @@ export class Agent {
         }
         if (answer.allow) {
             const grant = answer.grant ? ask.grant : undefined;
-            // A yes to part of a call isn't one to the next call that looks the same.
+            // "Allow once" covers this call; with a grant, so does the rest of the session. A yes to part of a call
+            // isn't one to the next call that looks the same, even for the session.
             if (!req.incomplete) this.o.checker.approve(tool, input, cwd, { sandbox: decision.sandbox, grant });
             if (grant) this.o.checker.applyGrant(grant);
             return { allow: true, mode: answer.setMode };
@@ -3634,7 +3676,7 @@ export class Agent {
         const mode = lender ? narrowerMode(this.o.mode.get(), lender) : this.o.mode.get();
         let decision = this.o.checker.check(tool, input, mode, this.state.cwd, { memoryDir: this.o.memoryDir });
         if (decision.behavior === "deny") return { result: this.errorResult(call, decision.reason ?? "Permission denied", undefined, quiet) };
-        // What an approval is remembered by: the call as the model made it, before hosts are added.
+        // What an approval is recorded as: the call as the model made it, before hosts are added.
         const asked = input;
         // The hosts the checker opens by itself (settings, registries) join the ones the command listed.
         if (isShellTool(tool.name) && decision.sandbox && decision.hosts?.length) input = { ...input, allowedHosts: decision.hosts };
@@ -3728,7 +3770,7 @@ export class Agent {
             }
         }
         if (answer.allow) {
-            // This exact action needs no asking again; with a grant, what it covers doesn't either.
+            // "Allow once" covers this call only. With a grant, this exact action and what the grant covers run unasked for the session.
             const grant = answer.grant ? decision.grant : undefined;
             this.o.checker.approve(tool, asked, this.state.cwd, { sandbox, grant });
             if (grant) this.o.checker.applyGrant(grant);
@@ -4271,7 +4313,7 @@ function nestedAgentLabel(parent: string, label: string): string {
 /** The mode a read-only agent on Claude Code or Codex runs in, under the session's mode. */
 export function readOnlyBackendMode(mode: PermissionMode, provider: string): PermissionMode {
     if (mode === "plan") return "plan";
-    return mode === "auto" && provider === "codex" ? "auto" : "default";
+    return mode === "auto" && baseCli(provider) === "codex" ? "auto" : "default";
 }
 
 /** A call that only reads (Read, Grep, a read-only command, as the permission check takes them): it can't have changed a worktree it names. */

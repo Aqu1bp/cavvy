@@ -16,6 +16,7 @@ import type { ProviderDef } from "../../providers/registry";
 import { type AssistantMessage, type ChatRequest, type ModelInfo } from "../../providers/types";
 import { TurnRecord } from "../claude-live";
 import { JsonLinesProcess, cliMessage, extraArgs, findCli, requireCli } from "../cli";
+import { cliEnv } from "../../providers/agent-env";
 import { STRICTNESS, modeSwitched } from "../codex";
 import { agentCli, type AgentCliDef } from "../defs";
 import type { AgentCliStatus } from "../index";
@@ -69,7 +70,9 @@ class AcpAdapter implements AgentCliAdapter {
         const bin = requireCli(this.def.id, this.def.cli);
         const own = this.agent.spawn(cfg);
         const args = [...extraArgs(this.def.id), ...(this.def.acpArgs ?? []), ...own.args];
-        return { bin, args, cwd: cfg.cwd, env: own.env, fingerprint: spawnFingerprint({ bin, args, cwd: cfg.cwd, env: own.env }) };
+        // The user's variables for it (agent-env.ts), then what Cavvy sets for it (its permission config).
+        const env = { ...cliEnv(this.def.id), ...own.env };
+        return { bin, args, cwd: cfg.cwd, env, fingerprint: spawnFingerprint({ bin, args, cwd: cfg.cwd, env }) };
     }
 
     async connect(proc: JsonLinesProcess, events: CliEventSink, host: SessionHost): Promise<CliConnection> {
@@ -122,14 +125,14 @@ export async function acpStatus(providerId: string, signal?: AbortSignal): Promi
     const own = acpAgent(providerId).status;
     if (own) {
         try {
-            const s = await own(path, signal);
-            return { ...base, installed: true, path, signedIn: s.signedIn, description: `${def.name}, ${s.description}` };
+            const s = await own(path, signal, cliEnv(providerId));
+            return { ...base, installed: true, path, signedIn: s.signedIn, ...(s.free ? { free: true } : {}), description: `${def.name}, ${s.description}` };
         } catch (e) {
             if (signal?.aborted) throw new Error("aborted");
             return { ...base, installed: true, path, signedIn: false, probeFailed: true, description: `${def.name} didn't answer: ${cliMessage((e as Error).message) || "no answer"}` };
         }
     }
-    const proc = new JsonLinesProcess(path, [...extraArgs(providerId), ...(def.acpArgs ?? [])], { cwd: homedir() });
+    const proc = new JsonLinesProcess(path, [...extraArgs(providerId), ...(def.acpArgs ?? [])], { cwd: homedir(), env: cliEnv(providerId) });
     const kill = () => void proc.kill();
     signal?.addEventListener("abort", kill, { once: true });
     const timer = setTimeout(kill, STATUS_TIMEOUT_MS);
@@ -164,7 +167,7 @@ export async function acpModels(providerId: string, signal?: AbortSignal): Promi
     const def = acpDef(providerId);
     const bin = requireCli(providerId, def.cli);
     const agent = acpAgent(providerId);
-    const listed = await agent.listModels(bin, signal);
+    const listed = await agent.listModels(bin, signal, cliEnv(providerId));
     // Where each id names its effort (gemini-4-neon-medium), Cavvy's effort setting has nothing to set.
     return listed.map((m) =>
         backendModel(providerId, m.id, m.name ?? m.id, { supportsImages: def.caps.images, ...acpModelTraits(providerId, m.id) }),

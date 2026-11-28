@@ -18,6 +18,7 @@ import { unreadableMcpApprovals, unreadableSettings, updateSettings, type McpSer
 import { expandPath } from "../util/files";
 import { redact } from "../util/redact";
 import type { McpApprovalInfo, McpServerInfo, McpServerStatus } from "./info";
+import { baseCli } from "../backends/defs";
 
 /** A request the caller got wrong, or one this folder's state refuses. */
 export class McpApprovalError extends Error {
@@ -444,12 +445,12 @@ export function describeServer(st: DescribeInput, projectCwd: string): McpServer
 /** The facts behind the approve button, for both front ends. */
 export function approvalMeaning(provider: string | undefined, userTrusted: boolean): string {
     const here = "Approving starts the server in Cavvy for this folder, and its tools go to sessions here that run on Cavvy's own models.";
-    if (provider === "claude-code") {
+    if (baseCli(provider) === "claude-code") {
         return userTrusted
             ? `${here} This session runs on Claude Code, which starts its own copies from .mcp.json. Cavvy enables only project servers its manager permits starting whose definitions still match the approved configuration and whose working directory matches this folder. All other project servers are disabled; if Cavvy cannot safely check the configuration, it isolates Claude Code from project MCP servers. (Read-only sub-agents get no MCP servers.)`
             : `${here} This session runs on Claude Code, which doesn't get them. It gets no servers from .mcp.json in this folder either, because you haven't trusted the folder yourself.`;
     }
-    if (provider === "codex") return `${here} This session runs on Codex, which doesn't get them and takes its MCP servers from its own config, not from .mcp.json.`;
+    if (baseCli(provider) === "codex") return `${here} This session runs on Codex, which doesn't get them and takes its MCP servers from its own config, not from .mcp.json.`;
     return here;
 }
 

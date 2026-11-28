@@ -1,11 +1,11 @@
 import { createEffect, createMemo, createSignal, For, on, onCleanup, Show, type Component } from "solid-js";
-import { Archive, Bot, ChartColumn, FileDiff, FolderGit2, FolderOpen, GitFork, History, MessageSquare, Moon, MoreHorizontal, PanelLeft, PanelRight, Plus, Search, Settings, SquareTerminal, Share, Shrink, Sparkles, Sun, Trash2, User } from "lucide-solid";
+import { Archive, Bot, ChartColumn, FileDiff, FolderGit2, FolderOpen, GitBranch, GitFork, GitPullRequest, History, MessageSquare, Moon, MoreHorizontal, PanelLeft, PanelRight, Plus, Search, Settings, SquareTerminal, Share, Shrink, Sparkles, Sun, Trash2, User } from "lucide-solid";
 import { MODE_LABELS, type SessionSearchHit } from "@shared/protocol";
 import { machine as windowMachine, os } from "../lib/platform";
 import { activate, app, handleFor, reportError, restoredFrom, rpc, sessionPresenceVersion } from "../state/app";
 import { archive, chooseProject, exportSession, fork, newSession, openProject, openReview, setMode, togglePanel, toggleSidebar } from "../state/actions";
 import { setPrefs } from "../state/prefs";
-import { terminalOpen, setTerminalOpen, paletteOpen, setAgentFocus, setJumpTarget, setModelPickerOpen, setPaletteOpen, setRewindOpen, setSettingsTab } from "../state/ui";
+import { openGit, terminalOpen, setTerminalOpen, paletteOpen, setAgentFocus, setJumpTarget, setModelPickerOpen, setPaletteOpen, setRewindOpen, setSettingsTab } from "../state/ui";
 import { ago, tildify } from "../lib/format";
 import { ModeIcon, MODES } from "./ModePicker";
 import { Dialog } from "./ui/Dialog";
@@ -62,7 +62,8 @@ function Snippet(p: { text: string; match?: [number, number] }) {
     );
 }
 
-export function CommandPalette() {
+/** `files`: opens Go to file or Search in project (App.tsx). */
+export function CommandPalette(p: { files: (mode: "files" | "search") => void }) {
     const [q, setQ] = createSignal("");
     const [sel, setSel] = createSignal(0);
     /** Every message hit, not only the first few (Show more). */
@@ -150,6 +151,8 @@ export function CommandPalette() {
                     if (p) void openProject(p);
                 },
             },
+            { id: "branch", section: "Actions", label: "Switch branch…", keywords: "git checkout pull", kbd: shortcutHint("app:switchBranch"), icon: GitBranch, run: () => openGit("openBranches") },
+            { id: "pr", section: "Actions", label: "Work on a pull request…", keywords: "github pr checkout", icon: GitPullRequest, run: () => openGit("openPullRequests") },
             { id: "model", section: "Actions", label: "Switch model…", kbd: shortcutHint("chat:modelPicker"), icon: Sparkles, run: () => setModelPickerOpen(true) },
             { id: "sidebar", section: "Actions", label: "Toggle sidebar", kbd: shortcutHint("app:toggleSidebar"), icon: PanelLeft, run: toggleSidebar },
             { id: "terminal", section: "Actions", label: "Toggle terminal", kbd: shortcutHint("app:toggleTerminal"), icon: SquareTerminal, run: () => setTerminalOpen(!terminalOpen()) },
@@ -159,8 +162,9 @@ export function CommandPalette() {
             { id: "usage", section: "Actions", label: "Usage and plan limits", keywords: "cost tokens spend limits plan quota", icon: ChartColumn, run: () => setSettingsTab("usage") },
         ];
         if (id()) {
+            for (const [m, label, key] of [["files", "Go to file…", "app:goToFile"], ["search", "Search in project…", "app:searchFiles"]] as const) out.push({ id: m, section: "Session", label, kbd: shortcutHint(key), icon: Search, run: () => p.files(m) });
             out.push(
-                { id: "changes", section: "Session", label: "Review changes", icon: FileDiff, run: () => openReview() },
+                { id: "changes", section: "Session", label: "Review changes", kbd: shortcutHint("app:toggleReview"), icon: FileDiff, run: () => openReview() },
                 { id: "rewind", section: "Session", label: "Rewind…", icon: History, run: () => setRewindOpen(true) },
                 { id: "fork", section: "Session", label: "Fork session", desc: "From the latest response", keywords: "branch copy duplicate", icon: GitFork, run: () => void fork(id()!) },
                 { id: "compact", section: "Session", label: "Compact conversation", icon: Shrink, run: () => void rpc.call("session.compact", { id: id()! }).catch(reportError) },

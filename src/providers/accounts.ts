@@ -11,6 +11,7 @@ import { readAgentConfig, readProvidersFileForUpdate, writeProvidersFile, type C
 import { RpcError } from "../server/rpc-error";
 import { catalogSentence, type NoticeAccount } from "../server/protocol";
 import { ensureSharedLayout, isSharedLink, type SharedLayout } from "./account-layout";
+import { baseCli } from "../backends/defs";
 
 export const ACCOUNT_PROVIDERS = ["claude-code", "codex"] as const;
 export function accountProvider(provider: string): asserts provider is typeof ACCOUNT_PROVIDERS[number] {
@@ -41,15 +42,18 @@ function selector(provider: string): string { return provider === "codex" ? "COD
 const launchCwd = process.cwd();
 function defaultFolder(provider: string): string { return resolve(launchCwd, process.env[selector(provider)] || normalFolder(provider)); }
 export function listAccounts(provider: string): CliAccount[] {
+    provider = baseCli(provider);
     accountProvider(provider);
     return [{ id: "default", name: "Default", folder: defaultFolder(provider), managed: false }, ...(readAgentConfig(provider)?.accounts ?? [])];
 }
 /** A CLI's accounts: its own folders, or for one without accounts (an ACP agent), only its default sign-in. */
 export function cliAccounts(provider: string): CliAccount[] {
+    provider = baseCli(provider);
     if ((ACCOUNT_PROVIDERS as readonly string[]).includes(provider)) return listAccounts(provider);
     return [{ id: "default", name: "Default", folder: "", managed: false }];
 }
 function findAccount(provider: string, id: string): CliAccount {
+    provider = baseCli(provider);
     accountProvider(provider);
     if (!validAccountId(id)) throw new RpcError("Invalid account id", "invalid");
     const found = listAccounts(provider).find((a) => a.id === id);
@@ -72,10 +76,12 @@ export interface AccountPlace {
 }
 /** The history folder of a CLI home (AccountPlace.history), by real path; undefined when it can't be resolved. */
 export function historyFolder(provider: string, folder: string): string | undefined {
+    provider = baseCli(provider);
     try { return accountRealPath(join(folder, provider === "codex" ? "sessions" : "projects")); } catch { return undefined; }
 }
 /** The account's AccountPlace now. Throws as account() does. */
 export function accountPlace(provider: string, id = "default"): AccountPlace {
+    provider = baseCli(provider);
     const folder = accountRealPath(account(provider, id).folder);
     const history = historyFolder(provider, folder);
     return history ? { folder, history } : { folder };
@@ -86,6 +92,7 @@ export function accountPlace(provider: string, id = "default"): AccountPlace {
  * no other account is ever used in its place.
  */
 export function removedAccount(provider: string | undefined, id: string): string | undefined {
+    provider = baseCli(provider);
     if (!provider || !(ACCOUNT_PROVIDERS as readonly string[]).includes(provider)) return undefined;
     return listAccounts(provider).some((a) => a.id === id) ? undefined : id;
 }
@@ -94,6 +101,7 @@ export function removedAccountNote(cli: string, id: string, held = true): string
     return `The ${cli} account this session used ("${id}") was removed. Pick an account for ${cli} ${held ? "to send your message" : "before you send"}.`;
 }
 export function defaultAccount(provider: string): string {
+    provider = baseCli(provider);
     const id = readAgentConfig(provider)?.defaultAccount ?? "default";
     return listAccounts(provider).some((a) => a.id === id) ? id : "default";
 }
@@ -102,6 +110,7 @@ export function defaultAccount(provider: string): string {
  * by its starting account only. Said when a session uses another, whose own may differ.
  */
 export function catalogNote(provider: string, selected: CliAccount, cli: string): string | undefined {
+    provider = baseCli(provider);
     const from = defaultAccount(provider);
     if (from === selected.id) return undefined;
     const source = listAccounts(provider).find((a) => a.id === from)?.name ?? from;
@@ -133,6 +142,7 @@ const SELECTORS = { "claude-code": ["CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_C
  * The other CLI's relative selector is left out rather than repointed by a child's cwd.
  */
 export function accountEnv(provider: string, id = "default", cwd = homedir()): Record<string, string> {
+    provider = baseCli(provider);
     const a = account(provider, id);
     if (id === "default") {
         const own: readonly string[] = SELECTORS[provider as keyof typeof SELECTORS];
@@ -180,6 +190,7 @@ function shareDefault(provider: string, id: string, folder: string): void {
 }
 /** Said of a Cavvy-made account that doesn't share all of Default's entries. */
 export function accountSharingWarning(provider: string, id: string): string | undefined {
+    provider = baseCli(provider);
     const layout = sharingConflicts.get(`${provider}:${id}`);
     if (!layout) return undefined;
     const said: string[] = [];

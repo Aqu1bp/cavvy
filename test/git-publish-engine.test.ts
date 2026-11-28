@@ -52,6 +52,11 @@ test("engine pushes new upstream, exposes rejection and caches PR state after fa
         expect(await engine.handle(client, "session.gitPrState", { id })).toEqual(result);
         expect(await engine.handle(client, "session.gitPrState", { id })).toEqual(result);
         expect(calls(state)).toHaveLength(before);
+        // Another branch checked out, in a terminal (the session's header may not know yet): read again, not the last one's.
+        git(cwd, "checkout", "-q", "main");
+        await engine.handle(client, "session.gitPrState", { id });
+        expect(calls(state).length).toBeGreaterThan(before);
+        git(cwd, "checkout", "-q", "feature");
         // Existing PR must still receive new commits on another explicit confirmation.
         git(cwd, "commit", "--allow-empty", "-qm", "update existing PR");
         const next = await engine.handle(client, "session.gitPublishInfo", { id });
@@ -60,7 +65,7 @@ test("engine pushes new upstream, exposes rejection and caches PR state after fa
         expect(calls(state).filter((args) => args[1] === "create")).toHaveLength(1);
         git(cwd, "reset", "--hard", "HEAD~1"); git(cwd, "commit", "--allow-empty", "-qm", "diverged");
         const diverged = await engine.handle(client, "session.gitPublishInfo", { id });
-        await expect(engine.handle(client, "session.gitPublish", { id, action: "push", fingerprint: diverged.fingerprint })).rejects.toThrow("No force push was attempted");
+        await expect(engine.handle(client, "session.gitPublish", { id, action: "push", fingerprint: diverged.fingerprint })).rejects.toThrow("The remote has commits this branch doesn't. Pull, then push again.");
     } finally { await engine.stop(); }
 });
 
@@ -75,7 +80,7 @@ test("engine unauthenticated PR request cannot push; missing upstream remote is 
         await expect(engine.handle(client, "session.gitPublish", { id, action: "pr", fingerprint: info.fingerprint, base: "main", title: "Title" })).rejects.toMatchObject({ message: "GitHub isn't signed in.", code: "sign_in" });
         expect(calls(state, ".git-calls").filter((args) => args.includes("push"))).toHaveLength(0);
         git(cwd, "remote", "remove", "origin");
-        await expect(engine.handle(client, "session.gitPublishInfo", { id })).rejects.toThrow("unambiguous");
+        await expect(engine.handle(client, "session.gitPublishInfo", { id })).rejects.toMatchObject({ code: "no_remote", message: "This repository has no remote." });
     } finally { await engine.stop(); }
 });
 

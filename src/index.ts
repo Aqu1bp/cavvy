@@ -21,11 +21,13 @@ import { EFFORT_LEVELS, loadScope, loadSettings, worktreeSettings, readJson, rea
 import { isTrusted, projectConfigSummary, trustFolder, trustForSession } from "./config/trust";
 import { MODE_INFO, parseMode, startMode, type PermissionMode } from "./permissions/modes";
 import { onServer as thisIsAServer } from "./servers/role";
-import { allProviders, getProvider, readAgentConfig, readVertexConfig, removeAgentConfig, removeVertexConfig, saveAgentConfig, saveVertexConfig, SEARCH_PROVIDERS, validGoogleAccount, validVertexLocation, validVertexProject } from "./providers/registry";
+import { allProviders, getProvider, readAgentConfig, readVertexConfig, removeVertexConfig, saveAgentConfig, saveVertexConfig, SEARCH_PROVIDERS, validGoogleAccount, validVertexLocation, validVertexProject } from "./providers/registry";
 import { checkAgentCli, vendorOf } from "./backends/index";
 import { agentCli } from "./backends/defs";
 import { checkVertex, gcloudAccounts } from "./auth/gcloud";
 import { listAllModels, forgetClient } from "./providers/models";
+import { forgetRemovedProvider, resetNote } from "./providers/model-refs";
+import { turnOffAgent } from "./providers/agent-env";
 import { formatPrice, formatTokens } from "./providers/pricing";
 import { modelRef } from "./providers/types";
 import { findSession, listSessions } from "./agent/session";
@@ -426,12 +428,14 @@ async function authCommand(args: string[]): Promise<number> {
         const id = arg.toLowerCase();
         let removed = false;
         try {
-            removed = removeAgentConfig(id);
+            removed = await turnOffAgent(id);
         } catch (e) {
             die(redact((e as Error).message));
         }
         forgetClient(id);
         process.stdout.write(removed ? `Turned off ${getProvider(id)!.name} (it stays signed in; ${agentCli(id)?.cli.signOut} signs it out)\n` : `${getProvider(id)!.name} isn't turned on\n`);
+        const note = removed ? resetNote(await forgetRemovedProvider(process.cwd(), id).catch(() => [])) : "";
+        if (note) process.stdout.write(`${note}\n`);
         return removed ? 0 : 1;
     }
     if ((sub === "remove" || sub === "rm" || sub === "logout") && arg?.toLowerCase() === "vertex") {
@@ -480,6 +484,8 @@ async function authCommand(args: string[]): Promise<number> {
         const removed = await removeKey(arg);
         forgetClient(arg);
         process.stdout.write(removed ? `Removed the ${arg} key\n` : `No stored key for ${arg}\n`);
+        const note = removed ? resetNote(await forgetRemovedProvider(process.cwd(), arg).catch(() => [])) : "";
+        if (note) process.stdout.write(`${note}\n`);
         return removed ? 0 : 1;
     }
     die(`unknown auth command "${sub}" (add, list, remove)`);

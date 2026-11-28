@@ -1170,7 +1170,7 @@ const SHELL_SYNTAX = /(^|[\s;&|])(if|then|else|elif|fi|for|while|until|do|done|c
  * a POSIX shell, silently with `2>/dev/null`). Before the search, it can't
  * run, quoted or not (`e""xit 1`, `command -p eval ...`).
  */
-const SHELL_WORDS = new Set([
+export const SHELL_WORDS = new Set([
     "if", "then", "else", "elif", "fi", "for", "while", "until", "do", "done", "case", "esac", "function", "select", "coproc", "repeat", "foreach", "end",
     "break", "continue", "eval", "exec", "exit", "export", "readonly", "return", "set", "shift", "times", "trap", "unset",
     "source", "alias", "unalias", "builtin", "emulate", "setopt", "unsetopt", "typeset", "declare", "local", "integer", "float", "hash", "rehash", "unhash",
@@ -1329,6 +1329,9 @@ export function finalSearch(cmd: string, env: Record<string, string | undefined>
  * to run agents freely and can be rebuilt; the rest is this machine's own to lose. (Reading other saved secrets,
  * a key file or a token, isn't on this list on any machine.)
  */
+/** dangerousReason's reason for a command that names Cavvy's credential store: guarded, but nothing it destroys. */
+export const TOUCHES_CREDENTIALS = "touches Cavvy credential store";
+
 const DANGEROUS: [RegExp, string, beyond?: true][] = [
     [/\brm\s+(-[a-zA-Z]*[rR][a-zA-Z]*\s+|--recursive\s+)*(-[a-zA-Z]*f[a-zA-Z]*\s+)*(--no-preserve-root\s+)?(\/|\/\*|~|~\/|\$HOME|\$\{HOME\}|\/Users\/?|\/home\/?|\.\.?\/?)(\s|$|;|&|\|)/, "recursive delete of a root, home or parent directory"],
     [/:\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:/, "fork bomb"],
@@ -1683,7 +1686,7 @@ function dangerousArgv(argv0: string[], depth: number, server: boolean): string 
         if (beyond) return beyond;
         // The server's own folder, in the words as the shell has unquoted them (`~/.cavvy/'server'/…`), and behind a
         // pattern that would match it (`~/.cavvy/serve?/…`).
-        if (argv.some(namesServerFolder)) return "touches Cavvy credential store";
+        if (argv.some(namesServerFolder)) return TOUCHES_CREDENTIALS;
         if (!server && runs(prog, "rm") && opts.some((a) => /^-[a-zA-Z]*[rR]/.test(a) || a === "--recursive") && operands.some((o) => criticalTarget(o))) {
             return "recursive delete of a root, home or parent directory";
         }
@@ -1787,7 +1790,7 @@ export function dangerousReason(cmd: string, depth = 0, dataBlanked = false, ser
     const said = withoutMessages(cmd);
     for (const text of [said, ...programsSpelled(said)]) for (const [re, reason, beyond] of DANGEROUS) if ((beyond || !server) && re.test(text)) return reason;
     const spelled = [said, ...spellings(said)];
-    if (spelled.some((t) => CREDENTIAL_STORE.test(t))) return "touches Cavvy credential store";
+    if (spelled.some((t) => CREDENTIAL_STORE.test(t))) return TOUCHES_CREDENTIALS;
     if (!server && spelled.some((t) => STARTUP_FILE.test(t))) return "overwrites a shell startup file";
     if (depth > 4) return undefined;
     const a = analyzeCommand(cmd);

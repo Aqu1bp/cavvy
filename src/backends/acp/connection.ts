@@ -30,6 +30,7 @@ import { MODE_INFO, type PermissionMode } from "../../permissions/modes";
 import type { PdfPart, Usage } from "../../providers/types";
 import type { ToolDisplay } from "../../tools/types";
 import { titleFor } from "../claude-code";
+import { redact } from "../../util/redact";
 import type { JsonLinesProcess } from "../cli";
 import { servedToolArgs, servedToolName } from "../served-tools";
 import type { AgentCliDef, CliCapabilities } from "../defs";
@@ -72,6 +73,10 @@ interface ToolState {
 
 interface Turn {
     ref: string;
+    /** Times its agent said it's waiting to try again (AcpAgent.stalled). */
+    retries?: number;
+    /** It said so, and nothing of the turn has come since: what comes next ends the wait. */
+    stalled?: boolean;
     tools: Map<string, ToolState>;
     /** Tool calls the agent asked about, or Cavvy's gate answered. */
     asked: Set<string>;
@@ -235,6 +240,18 @@ export class AcpConnection implements CliConnection {
         this.caps = { ...def.caps };
         this.rpc = new AcpRpc(proc, (m, p) => this.onNotification(m, p), (m, p) => this.onRequest(m, p));
         this.done = this.rpc.done.then(() => this.lost());
+        // An error it waits out without a word over ACP (OpenCode's refusals): the turn says why it's waiting.
+        // What it streamed stays: it goes on with the same prompt.
+        if (agent.stalled) {
+            proc.onStderrLine = (line) => {
+                const turn = this.turn;
+                if (!turn || turn.ended || !this.sessionId) return;
+                const why = agent.stalled!(line, this.sessionId);
+                if (!why) return;
+                turn.stalled = true;
+                this.emit({ type: "retry", attempt: (turn.retries = (turn.retries ?? 0) + 1), delayMs: 0, reason: redact(why), keep: true });
+            };
+        }
     }
 
     /** initialize: no file system or terminal offered. */
@@ -675,6 +692,11 @@ export class AcpConnection implements CliConnection {
             return;
         }
         const u = p.update ?? {};
+        // Going on after a wait it said (AcpAgent.stalled): no longer retrying.
+        if (this.turn?.stalled && !this.turn.ended && /^(agent_message_chunk|agent_thought_chunk|tool_call)/.test(String(u.sessionUpdate))) {
+            this.turn.stalled = false;
+            this.emit({ type: "activity" });
+        }
         switch (u.sessionUpdate) {
             case "config_option_update":
                 if (Array.isArray(u.configOptions)) this.config = u.configOptions;
@@ -1009,7 +1031,9 @@ export class AcpConnection implements CliConnection {
         // Its own plan file, in plan mode, checked here again (a yes at the gate to one it cut isn't kept): as there, deny rules and Cavvy's protections only.
         const path = typeof req.input.file_path === "string" ? req.input.file_path : undefined;
         const plan = this.host.mode() === "plan" && path && (req.toolName === "Write" || req.toolName === "Edit") && !req.otherPaths?.length && !("operation" in req.input) && this.agent.gate?.planFile?.(path, this.sessionId);
-        const asked: BackendPermission = { ...req, asksAlways: true, ...(plan ? { exempt: true, planFile: path } : {}), ...(this.host.mode() === "bypassPermissions" ? { hooksOnly: true } : {}), ...(id ? { callId: id } : {}) };
+        // In auto, an agent with a gate (Grok) runs its own reviewer, which decided this needs the user (BackendPermission.ownMode).
+        const own = this.host.mode() === "auto" && this.agent.gate ? { ownMode: true } : {};
+        const asked: BackendPermission = { ...req, asksAlways: true, ...own, ...(plan ? { exempt: true, planFile: path } : {}), ...(this.host.mode() === "bypassPermissions" ? { hooksOnly: true } : {}), ...(id ? { callId: id } : {}) };
         let settle!: (outcome: Record<string, unknown>) => void;
         const stopped = new Promise<Record<string, unknown>>((r) => (settle = r));
         turn.waiting.add(settle);

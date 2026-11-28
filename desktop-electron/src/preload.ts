@@ -179,7 +179,19 @@ contextBridge.exposeInMainWorld("cavvyDesktop", {
         ipcRenderer.on("window_state", listener);
         return () => void ipcRenderer.removeListener("window_state", listener);
     },
+    /** Asked whether it has the question before quitting (main.ts askInPage), told to show it (`show`), or to drop it (`end`). */
+    onQuitAsk: (fn: (q: { id: number; title: string; detail: string; show?: boolean } | { id: number; end: true }) => void) => {
+        const listener = (_e: unknown, q: { id: number; title: string; detail: string; show?: boolean } | { id: number; end: true }) => fn(q);
+        ipcRenderer.on("quit_ask", listener);
+        return () => void ipcRenderer.removeListener("quit_ask", listener);
+    },
+    /** The page has the question ("asked", at once), then its answer, or "unable": it couldn't put it up. */
+    quitReply: (id: number, answer: "asked" | "quit" | "cancel" | "unable") => ipcRenderer.send("quit_reply", id, answer),
     browserShown: (keys: string[]) => ipcRenderer.send("browser_shown", keys),
     browserBack: (seen: number) => ipcRenderer.send("browser_back", seen),
     browserSized: (key: string, size: { width: number; height: number; scale: number }) => ipcRenderer.send("browser_sized", key, size),
+    browserDevTools: (key: string, pane?: { x: number; y: number; width: number; height: number }) => ipcRenderer.send("browser_devtools", key, pane),
+    browserPainted: (key: string, size: { width: number; height: number }): Promise<boolean> => ipcRenderer.invoke("browser_painted", key, size),
+    /** Where the person was in the tab's page, kept as its find bar opens and gone back to as it closes. */
+    browserPageFocus: (key: string, what: "keep" | "restore") => ipcRenderer.send("browser_page_focus", key, what),
 });

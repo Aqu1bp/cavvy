@@ -24,13 +24,14 @@ import { ACTIONS, CONTEXTS, KEYBINDINGS_DOCS, formatKeys } from "../../../src/ke
 import { ConfirmDialog } from "./ui/ConfirmDialog";
 import { ProviderIcon } from "./ui/ProviderIcon";
 import { Accounts } from "./Accounts";
+import { resetToast } from "../lib/reset-toast";
 import { ProvidersAtContext, useProvidersAt, type ProvidersAt } from "../state/providers-at";
 import type { Rpc } from "../lib/rpc";
 import { createUpdateAction } from "./UpdateAction";
 import { MessageText } from "./ErrorCards";
 import { commandIn } from "../lib/error-text";
 import { ModeIcon, MODES } from "./ModePicker";
-import { EffortSlider } from "./ModelPicker";
+import { EffortSlider, modelName, refLabel } from "./ModelPicker";
 import { effortLevels, effortOf } from "../lib/effort";
 import { SidebarFrame } from "./Sidebar";
 import { NeedsYou } from "./Header";
@@ -150,16 +151,20 @@ function SelectButton(p: { icon?: JSX.Element; children: JSX.Element }) {
 
 function ModelSelect(p: { value?: string; onChange: (v: string) => void; empty: string; label: string; apiOnly?: boolean }) {
     // Claude Code and Codex run whole turns: they can't answer a one-off request.
-    const groups = () => (p.apiOnly ? app.models.filter((g) => app.providers.find((x) => x.id === g.provider)?.kind !== "agent") : app.models);
+    const groups = () => (p.apiOnly ? app.models.filter((g) => app.providers.find((x) => x.id === g.provider.split("@")[0])?.kind !== "agent") : app.models);
     const provider = () => (p.value ? app.models.find((g) => g.models.some((m) => m.ref === p.value)) : undefined);
+    // Saved but not listed (its provider removed or turned off, or a model typed by hand): shown as such, never blank or as its id.
+    const unlisted = () => (p.value && app.models.length && !provider() ? refLabel(p.value, app.models) : undefined);
     return (
         <SelectButton icon={provider() ? <ProviderIcon id={provider()!.provider} name={provider()!.providerName} size={15} /> : undefined}>
             <select class="select" aria-label={p.label} value={p.value ?? ""} onChange={(e) => p.onChange(e.currentTarget.value)}>
                 <option value="">{p.empty}</option>
+                <Show when={unlisted()}>{(u) => <option value={p.value} disabled>{u().provider ? `${u().name} · ${u().provider}` : u().name}</option>}</Show>
                 <For each={groups()}>
                     {(g) => (
                         <optgroup label={g.providerName}>
-                            <For each={g.models}>{(m) => <option value={m.ref}>{m.name}</option>}</For>
+                            {/* Named as the model picker names it: "Opus 5.5", not "Opus 5.5 (claude-opus-5-5)". */}
+                            <For each={g.models}>{(m) => <option value={m.ref}>{modelName(m)}</option>}</For>
                         </optgroup>
                     )}
                 </For>
@@ -188,7 +193,8 @@ function General() {
         on(
             () => app.conn,
             (conn) => {
-                if (conn === "open") void refreshEditors();
+                // Settings too: what this computer allows (keeping it awake) can change as sessions run.
+                if (conn === "open") void Promise.all([refreshEditors(), refreshSettings()]);
             },
         ),
     );
@@ -200,7 +206,7 @@ function General() {
                 <Row title="Model" desc="Also changes when you pick a model in a session.">
                     <ModelSelect label="Model" value={s().model} empty="Automatic" onChange={(v) => void update({ model: v })} />
                 </Row>
-                <Row title="Small model" desc="For session titles and page summaries.">
+                <Row title="Small model" desc="For titles, summaries and git drafts.">
                     <ModelSelect label="Small model" value={s().smallModel} empty="Provider's small default" onChange={(v) => void update({ smallModel: v })} />
                 </Row>
                 <Row title="Auto-mode reviewer" desc="Checks API models' actions in Auto before they run.">
@@ -295,6 +301,19 @@ function General() {
                     <Toggle label="Enter sends" checked={prefs.enterSends} onChange={(v) => setPrefs("enterSends", v)} />
                 </Row>
             </Section>
+            <Section title="Sidebar">
+                <Row title="Settle idle sessions after" changed={(s().autoSettleDays ?? 7) !== 7} reset={() => void update({ autoSettleDays: 7 })}>
+                    <SelectButton>
+                        <select class="select" aria-label="Settle idle sessions after" value={String(s().autoSettleDays ?? 7)} onChange={(e) => void update({ autoSettleDays: Number(e.currentTarget.value) })}>
+                            <option value="0">Off</option>
+                            <option value="1">1 day</option>
+                            <option value="3">3 days</option>
+                            <option value="7">7 days</option>
+                            <option value="14">14 days</option>
+                        </select>
+                    </SelectButton>
+                </Row>
+            </Section>
             <Section title="This computer">
                 <Row title="Open files with" desc="For file links in replies, changed files and tool rows.">
                     {/* Each option says whether it's the one chosen: the list arrives after the
@@ -317,6 +336,10 @@ function General() {
                 </Row>
                 <Row title="Notifications" desc="When a session needs you or finishes while you're elsewhere.">
                     <Toggle label="Notifications" checked={prefs.notifications} onChange={(v) => setPrefs("notifications", v)} />
+                </Row>
+                <Row title="Keep computer awake while agents work" desc={s().keepAwakeUnavailable ? "Not available on this computer." : undefined}>
+                    {/* Unavailable: off, as it acts; the choice is kept for when it works (another computer, a fixed install). */}
+                    <Toggle label="Keep computer awake while agents work" checked={s().keepAwake !== false && !s().keepAwakeUnavailable} disabled={s().keepAwakeUnavailable} onChange={(v) => void update({ keepAwake: v })} />
                 </Row>
                 {/* On one of the user's servers Bypass can always be chosen: there's nothing to allow. */}
                 <Show when={!s().bypassAlways}>
@@ -567,9 +590,10 @@ function ProviderRow(p: { pr: ProviderInfo }) {
         if (removingProviders().has(id)) return;
         setRemovingProviders((ids) => new Set(ids).add(id));
         try {
-            await at.link.call("providers.removeKey", { provider: p.pr.id });
+            const r = await at.link.call("providers.removeKey", { provider: p.pr.id });
             await at.changed();
             toast(agentCli ? `Turned off ${name}; it stays signed in` : `Removed the ${name} key`);
+            resetToast(r?.reset);
         } catch (e) {
             reportError(e);
         } finally {
@@ -756,7 +780,9 @@ function ProviderSections(p: { noSubscriptions?: boolean; localOnly?: boolean; s
             setBusy(false);
         }
     };
-    const where = () => at.server ?? "this computer";
+    // The server they're on: one shown from here, or the one this window is on. Undefined: this computer.
+    const server = () => at.server ?? machine;
+    const where = () => server() ?? "this computer";
     const LOCAL = "On this computer";
     // Grouped as the mockup has them: subscriptions (the CLIs), API keys, models on that machine, then web search.
     const models = () => at.list().filter((p) => !p.search);
@@ -781,7 +807,7 @@ function ProviderSections(p: { noSubscriptions?: boolean; localOnly?: boolean; s
         <For each={sections()}>
             {(g) => (
                 <Section
-                    title={g.title === LOCAL && at.server ? `On ${at.server}` : g.title}
+                    title={g.title === LOCAL && server() ? `On ${server()}` : g.title}
                     class="prov-group"
                     caption={g.title === "API keys" ? <>Kept on {p.synced ? "this computer and the servers you sync" : where()}, sent only to their provider. Custom endpoints: <code>/login custom</code> in the terminal app.</> : undefined}
                 >
@@ -820,12 +846,12 @@ function Providers() {
     // changes as they're changed.
     const listed = createMemo(() => [...serverList()].sort((a, b) => a.name.localeCompare(b.name)));
     onMount(() => {
-        if (machine || !app.hello?.servers) return;
+        if (!machine && !app.hello?.servers) return;
         void serversUi().then((m) => (setServers(() => m), m.refreshServerList())).catch(() => undefined);
     });
-    const withServers = () => !machine && listed().length > 0;
-    // Subscriptions are signed in on each machine: one table across them. Keys go with sync; a server's own local
-    // models are its own.
+    const withServers = () => listed().length > 0;
+    // Subscriptions are signed in on each machine: one table across them, the same in a window on any of them. Keys
+    // go with sync; a server's own local models are its own.
     return (
         <>
             <Show when={withServers()}>
@@ -835,8 +861,8 @@ function Providers() {
                     </Suspense>
                 </Section>
             </Show>
-            <ProviderSections noSubscriptions={withServers()} synced={listed().some((s) => s.syncOn)} />
-            <Show when={withServers()}>
+            <ProviderSections noSubscriptions={withServers()} synced={!machine && listed().some((s) => s.syncOn)} />
+            <Show when={!machine && withServers()}>
                 <For each={listed()}>{(s) => <ServerLocalModels name={s.name} />}</For>
             </Show>
         </>

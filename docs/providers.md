@@ -39,14 +39,14 @@ Vertex's model catalog has no context sizes or prices. They're filled in from th
 - A key is only ever sent to its own provider's API host. (Vertex AI uses gcloud tokens instead of a key; see above.)
 - Keys are registered with a redactor, so they're masked in tool output, session transcripts, exports, and error messages. Nothing that's written to disk (sessions, history, settings, the model cache) contains a key.
 - Everything that enters the conversation is redacted before any model sees it: your prompts, tool results, memory files, and the model's own replies (so a key can't hop from one provider's transcript to another's when you switch models). The terminal and `-p` output are redacted too, and so is what hooks receive on stdin.
-- Every process Cavvy starts (shell commands, hooks, MCP servers, git, ripgrep, your editor) gets an environment with all provider keys removed. A settings `env` entry can't put one back; MCP servers' own `env` blocks are passed through as you wrote them.
+- Every process Cavvy starts (shell commands, hooks, MCP servers, git, ripgrep, your editor) gets an environment with all provider keys removed. A settings `env` entry can't put one back; MCP servers' own `env` blocks are passed through as you wrote them, and so are an agent CLI's own [environment variables](subscriptions.md#environment-variables), to that CLI only. A secret one is kept and masked like a key.
 - The agent's file tools can't open the credential store at all. Reading `.env` files, `~/.ssh`, `~/.aws` and similar asks first, through the Read tool or a shell command. Shell commands are matched on their text, so this is a guard against fishing, not a sandbox.
 - A `.env` in the project you're working on is never loaded. Only Cavvy's own `.env` and `~/.cavvy/.env` are read, and only for known variables.
 - `bin/cavvy` starts Bun with `--no-env-file` and its own `--config`, because Bun otherwise reads `.env` and `bunfig.toml` from the current directory, and a repository's `bunfig.toml` can preload scripts.
 
 ## Models
 
-`/model` shows one combined, searchable list of every model from every provider you have a key for, with context window and price (USD per million input/output tokens; `~` means the price comes from OpenRouter's catalog). Lists are cached for 12 hours; `ctrl+r` in the picker refreshes. Use `←`/`→` in the picker to set reasoning effort. Your choice is remembered.
+`/model` shows one combined, searchable list of every model from every provider you have a key for (and each [other setup of an agent CLI](subscriptions.md#other-setups-of-the-same-cli), like "Claude Code · OpenRouter"), with context window and price (USD per million input/output tokens; `~` means the price comes from OpenRouter's catalog). Lists are cached for 12 hours; `ctrl+r` in the picker refreshes. Use `←`/`→` in the picker to set reasoning effort. Your choice is remembered.
 
 Shortcuts: `/model gpt-6.1-sol` (unique match), `--model anthropic:claude-opus-5-5`, `cavvy models` for the same list in the shell (`--json` for scripts).
 

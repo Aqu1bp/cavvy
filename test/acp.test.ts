@@ -348,7 +348,7 @@ describe("OpenCode's spawn", () => {
         expect(plan.edit).toEqual({ "*": "deny", ".opencode/plans/*.md": "ask" });
         expect(plan.bash).toBe("ask");
         const spec = acpAgent("opencode").spawn({ cwd: "/w", trusted: true } as any);
-        expect(spec.args).toEqual(["--cwd", "/w"]);
+        expect(spec.args).toEqual(["--print-logs", "--log-level", "ERROR", "--cwd", "/w"]);
     });
 });
 
@@ -407,7 +407,7 @@ describe("the backend, on the live pool, against a fake agent", () => {
         expect((await b.run).reason).toBe("done");
         expect(b.usage[0]!.u.cost).toBe(0.25);
         expect(starts()).toHaveLength(1);
-        expect(starts()[0]).toMatchObject({ argv: ["acp", "--cwd", cwd], cwd, env: { OPENCODE_DISABLE_PROJECT_CONFIG: "1" } });
+        expect(starts()[0]).toMatchObject({ argv: ["acp", "--print-logs", "--log-level", "ERROR", "--cwd", cwd], cwd, env: { OPENCODE_DISABLE_PROJECT_CONFIG: "1" } });
         expect(JSON.parse(starts()[0].env.OPENCODE_CONFIG_CONTENT).permission["*"]).toBe("ask");
         const sets = received().filter((m) => m.method === "session/set_config_option").map((m) => [m.params.configId, m.params.value]);
         expect(sets).toEqual([["model", "opencode/gpt-5-nano"], ["mode", "plan"]]);
@@ -563,8 +563,15 @@ describe("the backend, on the live pool, against a fake agent", () => {
         await expect(backend.stream({ messages: [] } as any)).rejects.toThrow(/runs whole turns only/);
     });
 
-    test("status from initialize, models from `opencode models`, through clientFor", async () => {
-        expect(await acpStatus("opencode")).toMatchObject({ installed: true, signedIn: true, path: fake, description: "OpenCode 0.0.0-fake, answering over ACP", signIn: "opencode auth login", signOut: "opencode auth logout" });
+    test("status from `opencode auth list`, models from `opencode models`, through clientFor", async () => {
+        expect(await acpStatus("opencode")).toMatchObject({ installed: true, signedIn: true, path: fake, description: "OpenCode, signed in (1 provider)", signIn: "opencode auth login", signOut: "opencode auth logout" });
+        // No credentials and no provider key in its environment: it runs, on its free models only.
+        process.env.FAKE_OC_CREDENTIALS = "0";
+        expect(await acpStatus("opencode")).toMatchObject({ installed: true, signedIn: true, free: true });
+        process.env.FAKE_OC_ENV = "1";
+        expect((await acpStatus("opencode")).free).toBeUndefined();
+        delete process.env.FAKE_OC_CREDENTIALS;
+        delete process.env.FAKE_OC_ENV;
         expect(await checkAgentCli("opencode")).toMatchObject({ signedIn: true });
         expect((await acpModels("opencode")).map((m) => m.id)).toEqual(["opencode/big-pickle", "opencode/gpt-5-nano", "anthropic/claude-x"]);
         expect(received().some((m) => m.method === "session/new")).toBe(false);

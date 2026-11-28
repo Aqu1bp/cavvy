@@ -29,14 +29,19 @@
 .account-form { display: grid; gap: calc(8 * var(--sp)); margin: calc(2 * var(--sp)) calc(14 * var(--sp)) calc(14 * var(--sp)) calc(54 * var(--sp)); padding: calc(12 * var(--sp)) calc(14 * var(--sp)); border-radius: calc(12 * var(--sp)); background: var(--sheet); box-shadow: inset 0 0 0 0.5px var(--line); }
 .account-form label { font-size: 0.857rem; font-weight: 600; color: var(--fg-2); }
 .account-form .input { width: 100%; min-width: 0; }
+.account-form .input.mono::placeholder { font-family: var(--font-ui); }
 .account-advanced { font-size: 0.857rem; }
-.account-advanced summary { cursor: default; width: fit-content; color: var(--fg-2); font-weight: 500; }
+/* A disclosure as the app's others are: a chevron before its words, turned down while it's open. */
+.account-advanced summary { display: flex; align-items: center; gap: calc(4 * var(--sp)); cursor: default; width: fit-content; list-style: none; color: var(--fg-2); font-weight: 500; }
+.account-advanced summary::-webkit-details-marker { display: none; }
+.account-advanced summary .chev { flex: none; margin-left: calc(-2 * var(--sp)); color: var(--fg-3); transition: transform 220ms var(--ease); }
+.account-advanced[open] > summary .chev { transform: rotate(90deg); }
 .account-advanced summary:hover { color: var(--fg); }
 .account-advanced summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: calc(4 * var(--sp)); }
-.account-advanced input { margin-top: calc(8 * var(--sp)); }
+.account-advanced > input { margin-top: calc(8 * var(--sp)); }
 .account-hint, .account-advanced .account-error { display: block; margin-top: calc(6 * var(--sp)); }
 .account-hint { font-size: 0.821rem; color: var(--fg-3); }
-.account-actions { display: flex; align-items: center; flex-wrap: wrap; gap: calc(8 * var(--sp)); }
+.account-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: calc(8 * var(--sp)); }
 
 .account-error { color: var(--danger); font-size: 0.857rem; overflow-wrap: anywhere; }
 .account-note { display: block; padding: 0 calc(14 * var(--sp)) calc(12 * var(--sp)) calc(54 * var(--sp)); }

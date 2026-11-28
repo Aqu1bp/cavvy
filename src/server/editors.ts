@@ -9,6 +9,7 @@
 // that way. Finder only reveals.
 
 import { existsSync, realpathSync, statSync } from "fs";
+import { lstat, realpath } from "fs/promises";
 import { basename, extname, join } from "path";
 import { homedir } from "os";
 import { RpcError } from "./rpc-error";
@@ -227,6 +228,26 @@ export function checkPathInput(path: unknown): string {
     if (path.length > 4096 || path.includes("\0")) throw new RpcError("That isn't a usable path", "invalid");
     if (path.trimStart().startsWith("-")) throw new RpcError("Paths starting with '-' aren't opened", "refused");
     return path;
+}
+
+/**
+ * Whether a listed file `rel` (in `cwd`) can be opened as confinePath allows: anything but a link that leads out of
+ * `roots`, or nowhere. Only links are looked into: a listing (git ls-files, a walk) doesn't go through a linked folder.
+ */
+export async function opensInside(rel: string, cwd: string, roots: string[]): Promise<boolean> {
+    const abs = expandPath(rel, cwd);
+    try {
+        if (!(await lstat(abs)).isSymbolicLink()) return true;
+    } catch {
+        // Gone since it was listed: as the listing has it, for the viewer to say so.
+        return true;
+    }
+    try {
+        const real = await realpath(abs);
+        return roots.some((r) => isInside(real, canonical(r)));
+    } catch {
+        return false;
+    }
 }
 
 /**

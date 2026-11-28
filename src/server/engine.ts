@@ -16,7 +16,9 @@ import { ACCOUNT_PROVIDERS, account, accountProvider, cliAccounts, accountSharin
 import { loginCommand } from "../backends/account-login";
 import { redactedError } from "./git-handles";
 import { sessionWorktree } from "./session-worktrees";
-import { planLimitKey, type AccountInfo, type BackgroundTaskInfo } from "./protocol";
+import { gitBranches, gitCreateBranch, gitFetch, gitPull, gitSwitch, gitSyncInfo, worktreeTop } from "./git-sync";
+import { gitPrWorktree, gitPullRequests } from "./git-pr";
+import { planLimitKey, type AccountInfo, type BackgroundTaskInfo, type GitBranchNameInfo } from "./protocol";
 import { endedText } from "../agent/background";
 import { FileHistory } from "../agent/checkpoints";
 import { mergeLimits, type MergeHow } from "../backends/limits";
@@ -26,13 +28,13 @@ import { checkGrant, SetupTickets, setupTrusted } from "./setup";
 import { RpcError } from "./rpc-error";
 export { RpcError };
 import { randomUUID } from "crypto";
-import { existsSync, mkdirSync, readdirSync, realpathSync, statSync } from "fs";
+import { existsSync, mkdirSync, readdirSync, realpathSync, rmSync, statSync } from "fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "path";
 import { homedir, hostname, userInfo } from "os";
 import { APP_TITLE, APP_VERSION, cavvyHome, paths } from "../config/paths";
 import { LEGACY } from "../config/legacy";
-import { JsonFileError, loadedUnreadable, loadScope, loadScopeChecked, loadSettings, readJson, readJsonCached, updateSettings, writeJson, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
-import { isTrusted, projectConfigSummary, trustedByUser, trustFolder, trustForSession } from "../config/trust";
+import { JsonFileError, loadedUnreadable, loadScope, loadScopeChecked, loadSettings, readJson, readJsonCached, updateSettings, worktreeSettings, writeJson, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
+import { forgetTrustInside, isTrusted, projectConfigSummary, trustedByUser, trustFolder, trustForSession } from "../config/trust";
 import { fireHooks } from "../agent/hooks";
 import { findSessionAnywhere, heldSessionFolders, listAllSessions, Session, SessionInUseError, sessionFolder, sessionHolder, newSessionId, type Line } from "../agent/session";
 import { forkSessionSoon, forkTitle, readForkSource } from "../agent/fork";
@@ -45,14 +47,19 @@ import { APP_NAME } from "../config/name";
 import { approvalMeaning, McpApprovalError, visible } from "../mcp/approval";
 import { defaultMode, lendingMode, PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
 import { onServer } from "../servers/role";
-import { cachedListings, clientFor, defaultModelFrom, forgetClient, listAllModels, resolveModelInfo, type ProviderListing } from "../providers/models";
-import { allProviders, getProvider, readAgentConfig, readVertexConfig, removeAgentConfig, saveAgentConfig, SEARCH_PROVIDERS } from "../providers/registry";
+import { cachedListings, clientFor, defaultModelFrom, forgetClient, listAllModels, resolveModelInfo, smallModelFor, type ProviderListing } from "../providers/models";
+import { clearModelSettings, type ModelSetting } from "../providers/model-refs";
+import { allProviders, getProvider, providerLabel, readAgentConfig, readVertexConfig, saveAgentConfig, SEARCH_PROVIDERS } from "../providers/registry";
+import { WholeTurnsOnly } from "../backends/one-off";
+import { agentEnvInfo, saveAgentEnv, turnOffAgent } from "../providers/agent-env";
+import { addInstance, listInstances, removeInstance, updateInstance, type InstanceInput } from "../providers/instances";
+
 import { checkAgentPlan, checkPlanLimits, vendorOf, type AgentCliStatus } from "../backends/index";
 import { loadPlanLimits, loadServedModels, savePlanLimits } from "./limits-store";
 import { reportedOf } from "./plan-meter";
 import { AppUpdates } from "./app-update";
 import { findCli, stopTiming } from "../backends/cli";
-import { AGENT_CLIS, agentCli } from "../backends/defs";
+import { AGENT_CLIS, agentCli, baseCli } from "../backends/defs";
 import { forgetCachedKeys, getKey, removeKey, setKey } from "../auth/credentials";
 import { detectKeyProvider, validateKey } from "../auth/detect";
 import { FileIndex } from "../ui/mentions";
@@ -62,7 +69,7 @@ import { defaultPlanPath, implementPrompt, planTitle, slugify, writePlanFile } f
 import { billingOf, parseRunRequest, startRun, type RunHost, type RunRecord } from "./runs";
 import { readRegular } from "./git-changes";
 import { agentsByWorktree } from "./worktree-agents";
-import { checkPathInput, confinePath, defaultDetectEnv, opensAsProject, detectEditor, editorArgv, editorById, EDITOR_IDS, EDITORS, MAX_COL, MAX_LINE, position, takesLines, type DetectEnv } from "./editors";
+import { checkPathInput, confinePath, defaultDetectEnv, opensAsProject, opensInside, detectEditor, editorArgv, editorById, EDITOR_IDS, EDITORS, MAX_COL, MAX_LINE, position, takesLines, type DetectEnv } from "./editors";
 import { childEnv, pathSettling } from "../util/env";
 import { expandPath, isInside, MAX_SHOWN_IMAGE, sniffImage } from "../util/files";
 import { maskKey, redact } from "../util/redact";
@@ -79,7 +86,7 @@ import { listServers } from "../servers/store";
 import type { WakeMemory } from "../agent/wakes";
 import { forkUiLogSoon, readSegments, readUiLogSoon, type UiLog } from "./history";
 import { CLI_SOURCES, findCliSession, listCliSessions, readCliTranscript, validCliId, type CliSource } from "./cli-sessions";
-import { cavvyLinks, importModel, linkKey, writeImportedSession, type CavvyLinks } from "./cli-import";
+import { cavvyLinks, importModel, keepCliLinks, keepSideChatLinks, linkKey, writeImportedSession, type CavvyLinks } from "./cli-import";
 import { CODEX_CLIENT_NAME } from "../backends/codex";
 import { checkId, claimForDelete, listTrash, locateSession, purgeTrash, restoreSession, trashSession, type SessionFlags } from "./session-delete";
 import { searchSessions, warmSearch } from "./search";
@@ -128,6 +135,7 @@ import type {
     WorktreeInfo,
     PluginActionParams,
     PluginsInfo,
+    ProjectSearchResult,
 } from "./protocol";
 import { ensureKeybindingsFile, keybindingsPath, readKeybindings, watchKeybindings } from "../keybindings/file";
 import { listThemes, removeTheme, restoreTheme, watchThemes } from "../themes/store";
@@ -139,13 +147,21 @@ import { runPluginCli } from "../plugins/cli";
 import { pluginServerMatch } from "../plugins/loader";
 import { withPluginCommands } from "../plugins/native";
 import { IMPLEMENT_MODES, PROTOCOL_VERSION, SCRIPT_LIMITS } from "./protocol";
-import { modelRef, type AttachedPart, type ImagePart } from "../providers/types";
-import { checkFiles, checkMedia, fileSaver, toWire } from "./attachments";
+import { modelRef, textOf, type AttachedPart, type ImagePart } from "../providers/types";
+import { isAgentBackend } from "../backends/types";
+import { BRANCH_NAME_SYSTEM, branchName, branchPrompt, DRAFT_FAILED } from "./git-generate";
+import { attachmentsDir, checkFiles, checkMedia, fileSaver, toWire, validImage } from "./attachments";
+import { sideChatCut, sideChatDir, sideChatsDir } from "../agent/side-chat";
 import { BrowserError } from "../browser/page";
 import { SimulatorError } from "../simulator/simctl";
 import { simulatorOutlook } from "../simulator/session";
 import { TitleQueue } from "./title-queue";
+import { autoSettleDays, AUTO_SETTLE_DAYS, forgetPlay, notePlay, settleable, settleDue, type SettleStore } from "./auto-settle";
+import { Alarm, checkSnoozeUntil, dueWakes, forget, nextWake, woken, type SnoozeEntry, type SnoozeStore } from "./snooze";
 import { WorkingIndex } from "./working";
+import { keepAwake } from "../agent/keep-awake";
+import { searchProject } from "./project-search";
+import { readProjectFile } from "./file-view";
 
 export interface EngineOptions {
     /** How long without a turn running before memory is handed back (default SHRINK_IDLE_MS; tests). */
@@ -164,6 +180,8 @@ export interface EngineOptions {
     unloadAfterMs?: number;
     /** For tests: GUEST_IDLE_MS. */
     guestIdleMs?: number;
+    /** For tests: SIDE_CHAT_UNDO_MS. */
+    sideChatUndoMs?: number;
     /** How long a window that went away has to come back to its terminals before they're stopped (tests shorten it). */
     terminalGraceMs?: number;
     /** The server's log (stderr), for details the GUI isn't shown. */
@@ -181,6 +199,8 @@ export interface EngineOptions {
      * this Cavvy last stopped carry on by themselves once it starts. A server's Cavvy gives it (src/servers/host.ts).
      */
     working?: string;
+    /** The clock snoozes wake by (tests). */
+    now?: () => number;
     /** Told when a turn starts with none running, and when the last one running ends: a Mac server stays awake between the two (src/servers/wake.ts). */
     onTurns?: (running: boolean) => void;
 }
@@ -204,6 +224,8 @@ const RECENT_CLI_MS = 2 * 60_000;
 
 /** Long enough for a window that reloads (or reconnects) to open its sessions again. */
 const UNLOAD_AFTER_MS = 30_000;
+/** How long a closed side chat can be brought back (the toast's Undo, which waits while it's pointed at). */
+const SIDE_CHAT_UNDO_MS = 60_000;
 /** A plan reported or checked this recently isn't asked again (refreshLimits): a check costs Claude Code a process of its own for a few seconds. Changeable for tests. */
 export const limitTiming = { freshMs: 3 * 60_000 };
 /** A plan check (Engine.refreshPlan): queued, then running; stopped by `abort`. */
@@ -263,7 +285,7 @@ export interface EngineClient {
 // ---------------------------------------------------------------------------
 // The GUI's own state: recent projects, pinned, settled and archived sessions.
 
-interface GuiStore {
+interface GuiStore extends SnoozeStore, SettleStore {
     recent?: { path: string; at: number }[];
     pinned?: string[];
     archived?: string[];
@@ -288,11 +310,11 @@ function runOutcome(rt: Runtime): RunOutcome {
 }
 
 /** The store's lists as sets, for asking about many sessions at once. */
-type StoreLists = { pinned: Set<string>; archived: Set<string>; settled: Set<string>; runs: Map<string, RunMember> };
+type StoreLists = { pinned: Set<string>; archived: Set<string>; settled: Set<string>; runs: Map<string, RunMember>; woke: Set<string>; snoozed: Record<string, SnoozeEntry>; neverSettle: Set<string> };
 let listsOf: { store: GuiStore; lists: StoreLists } | undefined;
 function storeLists(store: GuiStore): StoreLists {
     // The store read is frozen and kept until the file changes: so are these.
-    if (listsOf?.store !== store) listsOf = { store, lists: { pinned: new Set(store.pinned ?? []), archived: new Set(store.archived ?? []), settled: new Set(store.settled ?? []), runs: runMembers(store) } };
+    if (listsOf?.store !== store) listsOf = { store, lists: { pinned: new Set(store.pinned ?? []), archived: new Set(store.archived ?? []), settled: new Set(store.settled ?? []), runs: runMembers(store), woke: new Set(store.woke ?? []), snoozed: store.snoozed ?? {}, neverSettle: new Set(store.neverSettle ?? []) } };
     return listsOf.lists;
 }
 
@@ -316,6 +338,17 @@ function updateStore(fn: (s: GuiStore) => void): boolean {
         return false;
     }
 }
+
+/** A row's snooze (snooze.ts): when it wakes, or that it woke and hasn't been opened since. */
+function snoozeOf(id: string, lists: StoreLists): Pick<SessionSummary, "snoozedUntil" | "woke" | "neverSettle"> {
+    const until = lists.snoozed[id]?.until;
+    return { ...(until !== undefined ? { snoozedUntil: until } : {}), ...(lists.woke.has(id) ? { woke: true as const } : {}), ...(lists.neverSettle.has(id) ? { neverSettle: true as const } : {}) };
+}
+
+/** How often a far-off wake is checked again: a laptop's sleep holds timers back (snooze.ts Alarm). */
+const ALARM_MAX_MS = 10 * 60_000;
+/** The same with nothing snoozed, only sessions to settle (by the day). */
+const SETTLE_CHECK_MS = 6 * 3600_000;
 
 // ---------------------------------------------------------------------------
 
@@ -474,20 +507,37 @@ export class Engine {
     /** Folders whose configuration the user chose not to trust (this run). */
     private declined = new Set<string>();
     private unloadTimers = new Map<string, ReturnType<typeof setTimeout>>();
+    /**
+     * Side chats closed a moment ago, by their parent's id: kept for Undo (closeSideChat). `deleted`: closed as their
+     * parent was deleted, and put back with it when it's opened again after an Undo (openSession).
+     */
+    private closedSideChats = new Map<string, { rt: Runtime; timer: ReturnType<typeof setTimeout>; deleted?: true }>();
     /** Sessions being unloaded (their SessionEnd hooks running): opened again once that's done. */
     private closing = new Map<string, Promise<void>>();
     /** Their folders, meanwhile: hooks may still be running there. */
     private closingIn = new Map<string, string[]>();
+
+    /** The folders of this app's other sessions that are working now, or closing: a rewind doesn't put files back under them. */
+    private workingFolders(rt: Runtime): string[] {
+        return [...[...this.runtimes.values()].filter((r) => r !== rt && r.busy).flatMap((r) => r.folders), ...[...this.closingIn.values()].flat()];
+    }
     /** Worktrees being removed (real paths): no session opens in them meanwhile. */
     private removing = new Set<string>();
     /** File names of folders Home's @ searches before a session opens there (the last few, newest last). */
     private homeFiles = new Map<string, FileIndex>();
+    /** Each window's Search in project under way: a newer one (or the window going) stops it. */
+    private fileSearches = new Map<EngineClient, AbortController>();
     /** Closing everything: no new work is taken on, as it would outlive the server. */
     private stopping = false;
     /** Sessions whose plan is being taken to a worktree, and sessions being archived with theirs: one at a time each. */
     private implementing = new Set<string>();
     private archiving = new Set<string>();
     private purgeTimer?: ReturnType<typeof setInterval>;
+    /** Wakes snoozed sessions: the one timer, set for the next one due (snooze.ts). */
+    private readonly alarm = new Alarm({ now: () => this.now(), fire: () => this.sweep(), maxDelayMs: ALARM_MAX_MS });
+    private now(): number {
+        return this.o.now?.() ?? Date.now();
+    }
     /** The commands each agent CLI last said it runs itself, so a new session's first message can be one. */
     private cliCommandNames = new Map<string, Set<string>>();
 
@@ -525,7 +575,18 @@ export class Engine {
         this.updates.start();
         this.reopenScheduled();
         void this.resumeWorking();
+        // Side chats left by a server that stopped: discarded with it.
+        let left: string[] = [];
+        try {
+            left = readdirSync(sideChatsDir());
+        } catch {
+            // none
+        }
+        for (const s of left) keepSideChatLinks(join(sideChatsDir(), s));
+        rmSync(sideChatsDir(), { recursive: true, force: true });
         purgeTrash();
+        // Snoozes that ran out while Cavvy was closed wake now.
+        this.sweep();
         this.purgeTimer = setInterval(() => purgeTrash(), PURGE_EVERY_MS);
         this.purgeTimer.unref?.();
     }
@@ -598,8 +659,12 @@ export class Engine {
             this.turnsRunning.add(rt.id);
             clearTimeout(this.shrinkTimer);
             this.shrinkTimer = undefined;
-        } else this.idleNow(rt.id);
-        if (!this.working || this.stopping) return;
+        } else {
+            this.idleNow(rt.id);
+            this.wakeEarly(rt.id, "turn");
+        }
+        // A side chat isn't carried on after a restart: it's gone with the server.
+        if (!this.working || this.stopping || rt.side) return;
         if (running) this.working.started(rt.id, rt.ws.cwd);
         else this.working.ended(rt.id);
     }
@@ -649,13 +714,16 @@ export class Engine {
         for (const pending of this.openingTerminals.values()) pending.cancelled = true;
         const terminalsStopped = this.terminals.stop();
         clearInterval(this.purgeTimer);
+        this.alarm.stop();
         clearTimeout(this.shrinkTimer);
         this.stopKeybindings?.();
         this.stopThemes?.();
         this.updates.stop();
         for (const t of this.unloadTimers.values()) clearTimeout(t);
         this.unloadTimers.clear();
+        for (const closed of this.closedSideChats.values()) clearTimeout(closed.timer);
         await Promise.all([...this.runtimes.values()].map((r) => r.close().catch(() => undefined)).concat([...this.closing.values()]));
+        keepAwake.releaseAll(this.runtimes.values());
         await terminalsStopped;
         // What this Cavvy signed in on its servers ends with it.
         await Promise.race([this.serverLinks?.stopAll(), new Promise((r) => setTimeout(r, 3000))]);
@@ -743,7 +811,9 @@ export class Engine {
     }
 
     sessionShown(sessionId: string): boolean {
-        for (const c of this.clients) if (c.subs.has(sessionId) && (c.shown === undefined || c.shown === sessionId)) return true;
+        // A side chat is shown beside its session (in the side panel): on screen with it.
+        const of = this.runtimes.get(sessionId)?.side?.of;
+        for (const c of this.clients) if (c.subs.has(sessionId) && (c.shown === undefined || c.shown === sessionId || (of !== undefined && c.shown === of))) return true;
         return false;
     }
 
@@ -791,6 +861,11 @@ export class Engine {
 
     notify(rt: Runtime, kind: "done" | "permission" | "question" | "plan" | "error", body: string) {
         if (rt.guestOf !== undefined) return this.notifyLent(rt, rt.guestOf, kind, body);
+        // A side chat is shown in its parent's panel: its tab says it's waiting, not a notification.
+        if (rt.side) return this.sessionChanged(rt);
+        // Asking, or stopped by a failure: a snoozed session wakes for it. Finishing wakes only the turn it was
+        // snoozed in (turnRunning).
+        if (kind !== "done") this.wakeEarly(rt.id, "asks");
         const title = this.notifyTitle(rt);
         this.broadcast({ type: "notify", sessionId: rt.id, kind, title, body });
         // No window is on this computer, only windows on servers: one of those says it, as it would another machine's.
@@ -802,8 +877,16 @@ export class Engine {
     }
 
     sessionChanged(rt: Runtime) {
+        // Working (a turn running, not waiting for the user): the computer stays awake (src/agent/keep-awake.ts).
+        keepAwake.set(rt, rt.status === "running");
         // One that lends to a session on a server is never listed: what it asks shows in that session (lentChanged).
         if (rt.guest) return this.lentChanged(rt);
+        // A side chat isn't listed: its parent's tab shows how it is.
+        // Not one closed a moment ago (closeSideChat), kept for Undo: it's out of the tab.
+        if (rt.side) {
+            const parent = this.runtimes.get(rt.side.of);
+            return parent?.sideChat === rt.id ? parent.sideChatChanged(rt.id, rt.status) : undefined;
+        }
         // An empty new session isn't listed. A turn can end with nothing in the history (a !command, a prompt a hook blocked): its row has to hear that it ended.
         if (!rt.session.messageCount && !rt.busy && rt.firstPrompt() === undefined) return;
         const member = readStore().runs?.flatMap((r) => r.sessions).find((s) => s.id === rt.id);
@@ -997,9 +1080,10 @@ export class Engine {
         return Promise.race([this.cachedListings, fresh.then(() => true)]).then((shown): unknown => (shown ? undefined : fresh));
     }
 
-    refreshListings(force = false): Promise<ProviderListing[]> {
-        if (this.refreshing && !force) return this.refreshing;
-        const p = Promise.resolve(pathSettling).then(() => (this.o.listModels ?? listAllModels)({ refresh: force }))
+    /** `ids`: list these providers again (an instance added or changed), the others from the cache as it stands. */
+    refreshListings(force = false, ids?: string[]): Promise<ProviderListing[]> {
+        if (this.refreshing && !force && !ids) return this.refreshing;
+        const p = Promise.resolve(pathSettling).then(() => (this.o.listModels ?? listAllModels)({ refresh: force, ...(ids ? { refreshIds: ids } : {}) }))
             .then((l) => {
                 const key = (x: ProviderListing[]) => JSON.stringify(x.map((y) => [y.provider.id, y.status, y.models.map((m) => [m.id, m.contextWindow, m.pricing?.input])]));
                 const changed = key(l) !== key(this.listings);
@@ -1134,6 +1218,12 @@ export class Engine {
             this.removing.delete(reserved);
         }
         if (!result.removed) return result;
+        // A new checkout at the same path may hold anything: trust given to this one doesn't carry over.
+        try {
+            forgetTrustInside(plan.path);
+        } catch {
+            // not saved: the folder is gone either way
+        }
         for (const [cwd, ws] of idle) {
             if (this.workspaces.get(cwd) !== ws || [...this.runtimes.values()].some((rt) => rt.ws === ws)) continue;
             this.workspaces.delete(cwd);
@@ -1188,6 +1278,8 @@ export class Engine {
             updatedAt: Math.max(rt.lastActive, rt.session.workedAt ?? -Infinity),
             messages: rt.session.messageCount,
             status: rt.status,
+            // Stopped, or cut off and closed when it was opened again (the history says so: runtime.ts).
+            ...(rt.status === "idle" && rt.session.messageCount > 0 && rt.lastTurnStatus === "aborted" ? { stopped: true as const } : {}),
             waitingKind: rt.waitingKind,
             turnStartedAt: rt.sidebarTurnStartedAt,
             pinned: lists.pinned.has(rt.id),
@@ -1196,6 +1288,7 @@ export class Engine {
             model: rt.session.model,
             live: true,
             run: run ? { ...run, outcome: runOutcome(rt) } : undefined,
+            ...snoozeOf(rt.id, lists),
         };
     }
 
@@ -1206,10 +1299,10 @@ export class Engine {
         const out = new Map<string, SessionSummary>();
         // Only the list asked for is read: the other side of `archived` grows with history.
         for (const s of listAllSessions(limit, { match: (s) => arch.has(s.id) === archived })) {
-            out.set(s.id, { id: s.id, cwd: s.cwd, projectName: basename(s.cwd) || s.cwd, title: s.title, createdAt: s.createdAt, updatedAt: s.updatedAt, messages: s.messages, status: "idle", pinned: pinned.has(s.id), archived: arch.has(s.id), settled: settled.has(s.id), model: s.model, live: false, run: runs.get(s.id) });
+            out.set(s.id, { id: s.id, cwd: s.cwd, projectName: basename(s.cwd) || s.cwd, title: s.title, createdAt: s.createdAt, updatedAt: s.updatedAt, messages: s.messages, status: "idle", ...(s.stopped ? { stopped: true as const } : {}), pinned: pinned.has(s.id), archived: arch.has(s.id), settled: settled.has(s.id), model: s.model, live: false, run: runs.get(s.id), ...snoozeOf(s.id, lists) });
         }
         for (const rt of this.runtimes.values()) {
-            if (rt.guest || (!rt.session.messageCount && !rt.busy) || arch.has(rt.id) !== archived) continue;
+            if (rt.guest || rt.side || (!rt.session.messageCount && !rt.busy) || arch.has(rt.id) !== archived) continue;
             // By when it last worked, which its file can't say yet while it works (Session.worked writes a line a minute).
             out.set(rt.id, this.summaryOf(rt, lists));
         }
@@ -1306,8 +1399,9 @@ export class Engine {
     /** What a session's agent reaching the others (session-peers.ts) does through the engine. */
     peerHost(): PeerHost {
         return {
-            live: () => this.runtimes.values(),
-            get: (id) => this.runtimes.get(id),
+            // Side chats aren't sessions other agents reach.
+            live: () => [...this.runtimes.values()].filter((rt) => !rt.side),
+            get: (id) => (this.runtimes.get(id)?.side ? undefined : this.runtimes.get(id)),
             open: async (id) => {
                 if (this.stopping) throw new RpcError("Cavvy server is stopping.", "stopping");
                 while (this.closing.has(id)) await this.afterClosing(id);
@@ -1446,6 +1540,102 @@ export class Engine {
         return rt;
     }
 
+    /**
+     * The session's side chat (src/agent/side-chat.ts), opened now if it has none, with `text` sent to it. It's given
+     * the session's conversation as it is now (a turn under way, up to its last step; none yet, nothing), works in its
+     * folder with its model, accounts, speed and permission mode as they are now, and isn't listed. Its mode is its own
+     * after that, as another session's would be: a change to either doesn't reach the other.
+     */
+    async openSideChat(parent: Runtime, text?: string): Promise<Runtime> {
+        if (parent.side) throw new RpcError("A side chat can't have a side chat of its own.", "invalid");
+        if (parent.guest) throw new RpcError("This session can't have a side chat.", "invalid");
+        let rt = parent.sideChat ? this.runtimes.get(parent.sideChat) : undefined;
+        if (!rt) {
+            // A new one: the one closed a moment ago can't be brought back any more.
+            this.dropClosedSideChat(parent.id);
+            // Read for it if the parent doesn't hold them (a long agent CLI session), and let go of again there: the side
+            // chat holds the one copy. Otherwise the parent's own, shared.
+            const held = !parent.session.historyDigest;
+            const all = parent.session.messages;
+            const context = all.slice(0, sideChatCut(all));
+            // Once what reading them left for this task is gone (Session.readMessages), and not while it works (as Runtime).
+            if (!held) queueMicrotask(() => !parent.busy && parent.session.letGoOfMessages());
+            const id = newSessionId();
+            const dir = sideChatDir(id);
+            mkdirSync(dir, { recursive: true, mode: 0o700 });
+            const session = new Session({ id, cwd: parent.session.meta.cwd, createdAt: Date.now(), version: APP_VERSION, system: parent.session.meta.system }, { file: join(dir, `${id}.jsonl`) });
+            for (const provider of ["claude-code", "codex"]) session.setAccount(provider, parent.session.accountId(provider));
+            if (parent.model) session.setModel(modelRef(parent.model));
+            if (parent.session.fastMode !== undefined) session.setFastMode(parent.session.fastMode);
+            if (parent.session.workdir) session.setWorkdir(parent.session.workdir);
+            session.setTitle("Side chat");
+            try {
+                // Never looser than the session: its mode (Bypass only where it's allowed, which the Runtime checks as anywhere).
+                rt = new Runtime(this, parent.ws, session, { mode: parent.mode, resumed: false, side: { of: parent.id, context } });
+            } catch (e) {
+                session.release();
+                rmSync(dir, { recursive: true, force: true });
+                throw e;
+            }
+            this.runtimes.set(id, rt);
+            await rt.ready.catch(() => undefined);
+            if (parent.effort) rt.setEffort(parent.effort);
+            parent.sideChatChanged(id, rt.status);
+        }
+        if (text?.trim()) await rt.send(text.trim());
+        return rt;
+    }
+
+    /**
+     * The session's side chat closed: out of its tab at once, its turn stopped. Kept for a while, so Undo can bring it
+     * back as it was (reopenSideChat), then discarded; at once if the session gets a new one, closes or is archived.
+     */
+    closeSideChat(parent: Runtime, deleted = false) {
+        const side = parent.sideChat ? this.runtimes.get(parent.sideChat) : undefined;
+        if (!side) return;
+        this.dropClosedSideChat(parent.id);
+        parent.sideChatChanged(undefined);
+        side.interrupt();
+        const timer = setTimeout(() => this.dropClosedSideChat(parent.id), this.o.sideChatUndoMs ?? SIDE_CHAT_UNDO_MS);
+        timer.unref?.();
+        this.closedSideChats.set(parent.id, { rt: side, timer, ...(deleted ? { deleted } : {}) });
+    }
+
+    /** The side chat closed a moment ago, back in its tab. */
+    reopenSideChat(parent: Runtime): string {
+        const closed = this.closedSideChats.get(parent.id);
+        if (!closed || parent.sideChat || this.runtimes.get(closed.rt.id) !== closed.rt) throw new RpcError("That side chat is gone.", "not_found");
+        clearTimeout(closed.timer);
+        this.closedSideChats.delete(parent.id);
+        parent.sideChatChanged(closed.rt.id, closed.rt.status);
+        return closed.rt.id;
+    }
+
+    /** The side chat closed a moment ago, discarded now. */
+    private dropClosedSideChat(parentId: string): Promise<void> | undefined {
+        const closed = this.closedSideChats.get(parentId);
+        if (!closed) return;
+        clearTimeout(closed.timer);
+        this.closedSideChats.delete(parentId);
+        return this.discardSideChat(closed.rt);
+    }
+
+    /** A side chat closed: its turn stopped, its runtime let go of, its files removed. Its parent's tab goes. */
+    async discardSideChat(rt: Runtime): Promise<void> {
+        if (!rt.side) return;
+        const parent = this.runtimes.get(rt.side.of);
+        if (parent?.sideChat === rt.id) parent.sideChatChanged(undefined);
+        for (const c of this.clients) if (c.subs.delete(rt.id)) c.send({ type: "sessions.remove", id: rt.id });
+        if (this.runtimes.get(rt.id) === rt) {
+            rt.interrupt();
+            await this.unload(rt);
+        }
+        keepSideChatLinks(sideChatDir(rt.id));
+        rmSync(sideChatDir(rt.id), { recursive: true, force: true });
+        // What was attached to its messages, saved in the project.
+        rmSync(join(attachmentsDir(rt.ws.cwd), rt.id), { recursive: true, force: true });
+    }
+
     /** Claude Code and Codex sessions that ran in this folder, newest first, marked when already in Cavvy. */
     cliSessionsList(cwd: string): CliSessionsList {
         const p = resolve(expandHome(cwd));
@@ -1575,6 +1765,13 @@ export class Engine {
             throw e;
         }
         this.runtimes.set(rt.id, rt);
+        // Deleted a moment ago and put back: its side chat comes back with it.
+        const kept = this.closedSideChats.get(id);
+        if (kept?.deleted && this.runtimes.get(kept.rt.id) === kept.rt) {
+            clearTimeout(kept.timer);
+            this.closedSideChats.delete(id);
+            rt.sideChatChanged(kept.rt.id, kept.rt.status);
+        }
         return rt;
     }
 
@@ -1586,6 +1783,10 @@ export class Engine {
     private unloadIfUnused(id: string) {
         const rt = this.runtimes.get(id);
         if (!rt || this.stopping || [...this.clients].some((c) => c.subs.has(id))) return;
+        // A side chat stays as long as its parent is open (its panel shows it again), and goes with it; or while it's
+        // kept for an Undo (closeSideChat, deleteSession).
+        if (rt.side && (this.runtimes.has(rt.side.of) || this.closedSideChats.get(rt.side.of)?.rt === rt)) return;
+        if (rt.side) return void this.discardSideChat(rt);
         // One a server's session is lent tools through stays until it has sat unused for a while (guestLater), and
         // while a window shows its simulator.
         if (rt.guest && rt.simulator.watched) return this.guestLater(rt);
@@ -1599,18 +1800,22 @@ export class Engine {
     private unload(rt: Runtime): Promise<void> {
         const id = rt.id;
         if (rt.guest) this.guestGone(rt);
+        // Its side chat goes with it, and one closed a moment ago: closed once they are too (a worktree's removal waits
+        // for that: their agent CLIs work in its folder).
+        const side = rt.sideChat ? this.runtimes.get(rt.sideChat) : undefined;
+        const sides = [side ? this.discardSideChat(side) : undefined, this.dropClosedSideChat(id)].map((p) => p?.catch(() => undefined));
         const timer = this.unloadTimers.get(id);
         if (timer) clearTimeout(timer);
         this.unloadTimers.delete(id);
         this.runtimes.delete(id);
+        keepAwake.set(rt, false);
         this.summarySent.delete(id);
         if (this.turnsRunning.has(id)) this.idleNow(id);
         // Nothing of it was ever saved (only a ! command ran in it, say): there's no file to open it from again,
         // so the windows that list it are told it's gone, not left with a row that opens nothing.
         if (!existsSync(rt.session.path)) this.broadcast({ type: "sessions.remove", id });
-        const done: Promise<void> = rt
-            .close()
-            .catch(() => undefined)
+        const done: Promise<void> = Promise.all([rt.close().catch(() => undefined), ...sides])
+            .then(() => undefined)
             .finally(() => {
                 this.closedNow();
                 if (this.closing.get(id) === done) {
@@ -1722,6 +1927,8 @@ export class Engine {
     /** A window went away (closed, reloading, or lost its connection). Its terminals wait a while for it to come back. */
     dropClient(client: EngineClient) {
         this.clients.delete(client);
+        this.fileSearches.get(client)?.abort();
+        this.fileSearches.delete(client);
         for (const key of [...this.forwards.keys()]) this.unforward(client, key);
         for (const c of [...this.mcpCallbacks.values()]) if (c.client === client) c.stop();
         if (this.lenders.has(client) || [...this.lentCalls.values()].some((c) => c.client === client)) this.setLender(client, [], true);
@@ -1762,7 +1969,8 @@ export class Engine {
      * Meanwhile opening or renaming it waits, as for one being unloaded, and
      * then finds nothing.
      */
-    private async deleteSession(id: string) {
+    /** Whether it went to the trash, for Undo: one never saved (nothing but `!` commands run, say) is only closed. */
+    private async deleteSession(id: string): Promise<boolean> {
         // A model still being set up (as it opens) isn't work to refuse over: wait for it, a while.
         const until = Date.now() + 10_000;
         for (;;) {
@@ -1776,13 +1984,21 @@ export class Engine {
         if (rt?.compactingWhileIdle) await rt.yieldIdleCompaction();
         if (rt && !rt.idle) throw new RpcError("This session is still working (a response, queued messages, a question, or shells or tasks running). Stop it first, then delete it.", "busy");
         const store = readStore();
-        const flags: SessionFlags = { pinned: !!store.pinned?.includes(id), archived: !!store.archived?.includes(id), settled: !!store.settled?.includes(id) };
+        const snoozedUntil = store.snoozed?.[id]?.until;
+        const flags: SessionFlags = { pinned: !!store.pinned?.includes(id), archived: !!store.archived?.includes(id), settled: !!store.settled?.includes(id), neverSettle: !!store.neverSettle?.includes(id), ...(snoozedUntil !== undefined ? { snoozedUntil } : {}) };
         // Held from before its runtime closes until it's in the trash, so a terminal can't take it in between.
-        const release = claimForDelete(locateSession(id).file);
+        const unsaved = !!rt && !findSessionAnywhere(id);
+        const release = unsaved ? () => {} : claimForDelete(locateSession(id).file);
+        let trashed = false;
         const work = (async () => {
             try {
                 if (rt) {
+                    // Its side chat is kept a while, as a closed one is: an Undo puts it back with the session. One
+                    // closed before goes.
+                    this.dropClosedSideChat(id);
+                    this.closeSideChat(rt, true);
                     this.runtimes.delete(id);
+                    keepAwake.set(rt, false);
                     this.summarySent.delete(id);
                     if (this.turnsRunning.has(id)) this.idleNow(id);
                     clearTimeout(this.unloadTimers.get(id));
@@ -1792,7 +2008,12 @@ export class Engine {
                     await rt.close().catch(() => undefined);
                     this.closedNow();
                 }
+                const file = unsaved ? findSessionAnywhere(id) : locateSession(id).file;
+                if (!file) return;
+                // Cavvy's own: its CLI sessions stay out of the list to continue once it's gone.
+                keepCliLinks([file]);
                 trashSession(id, flags);
+                trashed = true;
             } finally {
                 release();
             }
@@ -1822,8 +2043,11 @@ export class Engine {
         for (const c of this.clients) c.subs.delete(id);
         updateStore((s) => {
             for (const key of STORE_FLAGS) if (s[key]) s[key] = s[key]!.filter((x) => x !== id);
+            forget(s, id);
+            forgetPlay(s, id);
         });
         this.broadcast({ type: "sessions.remove", id });
+        return trashed;
     }
 
     private runtime(id: unknown): Runtime {
@@ -1840,11 +2064,169 @@ export class Engine {
             if (on) list.add(id);
             else list.delete(id);
             s[key] = [...list];
+            // Archived, it's out of the list: a snooze has nothing left to bring back.
+            if (key === "archived" && on) forget(s, id);
+            // Brought back by hand: it isn't settled again by itself until it's been idle the setting's days from now.
+            if ((key === "settled" || key === "archived") && !on) notePlay(s, id, this.now());
         });
+        // Archived, its side chat goes.
+        const parent = key === "archived" && on ? this.runtimes.get(id) : undefined;
+        const side = parent?.sideChat ? this.runtimes.get(parent.sideChat) : undefined;
+        if (side) void this.discardSideChat(side);
+        if (parent) this.dropClosedSideChat(id);
+        this.upsertRow(id, { [key]: on });
+    }
+
+    /** Every window hears how a session's row is now. */
+    private upsertRow(id: string, over?: Partial<SessionSummary>, known?: SessionSummary) {
         const rt = this.runtimes.get(id);
+        // A side chat has no row.
+        if (rt?.side) return;
         // One that isn't open is read from its file, in whichever list its flags now put it.
-        const summary = rt ? this.summaryOf(rt) : (this.listSessions(1000).find((s) => s.id === id) ?? this.listSessions(1000, true).find((s) => s.id === id));
-        if (summary) this.broadcast({ type: "sessions.upsert", session: { ...summary, [key]: on } });
+        const summary = rt ? this.summaryOf(rt) : (known ?? this.listSessions(1000).find((s) => s.id === id) ?? this.listSessions(1000, true).find((s) => s.id === id));
+        if (!summary) return;
+        const session = { ...summary, ...over };
+        // What sessionChanged next compares with: it's what the windows have now.
+        if (rt) this.summarySent.set(id, JSON.stringify(session));
+        this.broadcast({ type: "sessions.upsert", session });
+    }
+
+    // -----------------------------------------------------------------------
+    // Snoozing (snooze.ts)
+
+    /** Snoozed until `until`, or (null) woken now by the user's hand. */
+    private snooze(id: string, until: unknown) {
+        if (until === null) {
+            if (!readStore().snoozed?.[id]) return;
+            this.wake(id, false);
+            return;
+        }
+        const at = checkSnoozeUntil(until, this.now());
+        if (at === undefined) throw new RpcError("Choose a time in the next year.", "invalid");
+        const rt = this.runtimes.get(id);
+        if (rt?.status === "waiting") throw new RpcError("This session is waiting for you. Answer it first.", "busy");
+        if (!rt && !findSessionAnywhere(id)) throw new RpcError(`No session ${id}`, "not_found");
+        updateStore((s) => {
+            woken(s, id, false);
+            s.snoozed = { ...s.snoozed, [id]: { until: at, ...(rt?.busy ? { turn: true as const } : {}) } };
+        });
+        this.upsertRow(id);
+        this.armAlarm();
+    }
+
+    /**
+     * Back in the list: by itself (its time, or it needs you: its row says it woke until it's opened, unless a window
+     * shows it now), or by the user's hand. Waking by itself, a settled one is back in play: it's come back to be looked at.
+     */
+    private wake(id: string, self: boolean) {
+        const mark = self && ![...this.clients].some((c) => c.shown === id);
+        updateStore((s) => {
+            woken(s, id, mark);
+            if (self && s.settled?.includes(id)) s.settled = s.settled.filter((x) => x !== id);
+            notePlay(s, id, this.now());
+        });
+        this.upsertRow(id);
+        this.armAlarm();
+    }
+
+    /** It needs you (`why`), or the turn it was snoozed in ended: a snoozed session wakes early. */
+    private wakeEarly(id: string, why: "asks" | "turn") {
+        const e = readStore().snoozed?.[id];
+        if (e && (why === "asks" || e.turn)) this.wake(id, true);
+    }
+
+    /** Wakes what's due, and sets the timer for the next. */
+    private sweep() {
+        if (this.stopping) return;
+        for (const id of dueWakes(readStore(), this.now())) this.wake(id, true);
+        this.settleAt = this.autoSettle();
+        this.armAlarm();
+    }
+
+    /** When the last sweep found the next session due to settle (undefined: none, or auto-settle off). */
+    private settleAt: number | undefined;
+
+    /**
+     * The one timer, for whichever comes first: the next snooze's wake or the next settle. With auto-settle on it's
+     * always set, since sessions idle from now on come due too: settling is by the day, so with nothing snoozed it
+     * can wait hours.
+     */
+    private armAlarm() {
+        const wake = nextWake(readStore());
+        const settle = this.settleAt ?? (this.autoSettleDays() ? this.now() + SETTLE_CHECK_MS : undefined);
+        const next = wake === undefined ? settle : settle === undefined ? wake : Math.min(wake, settle);
+        this.alarm.arm(next, wake === undefined ? SETTLE_CHECK_MS : undefined);
+    }
+
+    /** The setting's days (0: off), from the user's settings on this machine. */
+    private autoSettleDays(): number {
+        return autoSettleDays(loadScope("user", this.o.startCwd ?? homedir()).autoSettleDays);
+    }
+
+    /** Settles the sessions idle the setting's days, at once and in one write; when the next will be due. */
+    private autoSettle(): number | undefined {
+        const days = this.autoSettleDays();
+        if (!days) return undefined;
+        const store = readStore();
+        const shown = new Set([...this.clients].map((c) => c.shown));
+        const list = this.listSessions(1000);
+        const { due, next } = settleDue(
+            list.map((s) => {
+                const rt = this.runtimes.get(s.id);
+                return { ...s, busy: rt ? !rt.idle : false, shown: shown.has(s.id) };
+            }),
+            store,
+            days,
+            this.now(),
+        );
+        if (!due.length) return next;
+        const settled = new Set(due);
+        if (!updateStore((s) => (s.settled = [...new Set([...(s.settled ?? []), ...due])]))) return next;
+        this.log(`Settled ${due.length} session${due.length === 1 ? "" : "s"} idle ${days} day${days === 1 ? "" : "s"} or more`);
+        for (const s of list) if (settled.has(s.id)) this.upsertRow(s.id, { settled: true }, s);
+        return next;
+    }
+
+    /**
+     * Its pull request is known merged or closed (its PR row, read as it's shown): with auto-settle on, it's settled,
+     * once. Not one working or waiting, pinned, snoozed or kept in play.
+     */
+    prEnded(rt: Runtime) {
+        const store = readStore();
+        if (!this.autoSettleDays() || store.prSettled?.includes(rt.id)) return;
+        const s = this.summaryOf(rt);
+        if (!settleable({ ...s, busy: !rt.idle }, store)) return;
+        updateStore((x) => {
+            x.settled = [...new Set([...(x.settled ?? []), rt.id])];
+            x.prSettled = [...(x.prSettled ?? []), rt.id].slice(-500);
+        });
+        this.upsertRow(rt.id, { settled: true });
+    }
+
+    /** A new title from the conversation so far. One that isn't open is opened for it, and closed again after. */
+    private async regenerateTitle(id: string): Promise<string> {
+        while (this.closing.has(id)) await this.afterClosing(id);
+        const opened = !this.runtimes.has(id);
+        const rt = this.openSession(id);
+        try {
+            return await rt.regenerateTitle();
+        } finally {
+            if (opened) this.unloadLater(id);
+        }
+    }
+
+    /** Never settled by itself (`on`), or as any other again. */
+    private neverSettle(id: string, on: boolean) {
+        if (!this.runtimes.has(id) && !findSessionAnywhere(id)) throw new RpcError(`No session ${id}`, "not_found");
+        updateStore((s) => {
+            const list = new Set(s.neverSettle ?? []);
+            if (on) list.add(id);
+            else list.delete(id);
+            s.neverSettle = [...list];
+            if (!on) notePlay(s, id, this.now());
+        });
+        this.upsertRow(id);
+        if (!on) this.sweep();
     }
 
     // -----------------------------------------------------------------------
@@ -1974,6 +2356,54 @@ export class Engine {
     }
 
     // -----------------------------------------------------------------------
+    // A folder's branch: fetch, pull, switch, create (git-sync.ts)
+
+    /**
+     * `cwd`'s branch may have moved (a commit to a new branch, a switch here or outside, noticed by a read): every
+     * session open in it, or in a folder it's in or holds, shows the branch it's on now. A HEAD file read each, no git.
+     */
+    branchMoved(cwd: string) {
+        const near = within(cwd);
+        for (const rt of this.runtimes.values()) if (rt.folders.some((f) => near(f) || within(f)(cwd))) rt.branchMoved();
+    }
+
+    /** Folders with a fetch, pull or switch under way (their work tree's top). */
+    private gitBusy = new Set<string>();
+
+    private gitFolder(v: unknown): string {
+        const cwd = resolve(expandHome(text(v, "cwd", 4096)));
+        if (!isDir(cwd)) throw new RpcError(`${cwd} isn't a folder.`, "not_found");
+        return cwd;
+    }
+
+    /**
+     * One at a time per work tree, in a folder the user trusts (git runs the repository's configured programs).
+     * `changes`: it moves HEAD or the files, so it's refused while a session there works, and holds those sessions
+     * (no turn starts) until it's done.
+     */
+    private async gitAction<T>(v: unknown, changes: boolean, work: (cwd: string) => Promise<T>): Promise<T> {
+        const cwd = this.gitFolder(v);
+        if (!isTrusted(cwd)) throw new RpcError("Trust this folder first: Git runs the repository's configured programs.", "needs_trust", cwd);
+        const top = await worktreeTop(cwd);
+        if (this.gitBusy.has(top)) throw new RpcError("Another Git action is running in this folder.", "busy");
+        // Worktrees Cavvy keeps inside this one are folders of their own.
+        const nested = within(join(top, ".claude", "worktrees"));
+        const here = [...this.runtimes.values()].filter((rt) => rt.folders.some((f) => within(top)(f) && !nested(f)));
+        this.gitBusy.add(top);
+        try {
+            if (changes) {
+                for (const rt of here) if (await rt.workingForGit()) throw new RpcError("A session is working in this folder. Wait for it to finish, or stop it.", "busy");
+                const done = work(cwd);
+                await Promise.all(here.map((rt) => rt.holdForGit(done).catch(() => undefined)));
+                return await done;
+            }
+            return await work(cwd);
+        } finally {
+            this.gitBusy.delete(top);
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Archiving a session in a managed worktree, and removing the worktree with it
 
     /** A session's folder, live or from its file, and the file (for whether another process has it open). */
@@ -2000,7 +2430,8 @@ export class Engine {
         const inside = within(wt.path);
         const other = this.listSessions(Infinity).find((s) => s.id !== id && inside(s.cwd));
         if (other) return { reason: `“${other.title}” also works in this worktree, so it stays.`, code: "shared" };
-        if ([...this.runtimes.values()].some((r) => r.id !== id && inside(r.ws.cwd))) return { reason: "Another open session works in this worktree, so it stays.", code: "shared" };
+        // Its own side chat (open, or closed and kept for Undo) goes with it: not another session.
+        if ([...this.runtimes.values()].some((r) => r.id !== id && r.side?.of !== id && inside(r.ws.cwd))) return { reason: "Another open session works in this worktree, so it stays.", code: "shared" };
         if (wt.locked !== undefined) return { reason: `The worktree is locked${wt.locked ? ` (${wt.locked})` : ""}.`, code: "locked" };
         try {
             const why = await unpushedReason({ path: cwd, worktree: wt.path });
@@ -2048,7 +2479,7 @@ export class Engine {
             if (keep) return done(false, keep.reason, keep.code);
             const rt = this.runtimes.get(id);
             // As removal will see it, but with this session not counting yet: it's still open, and only closed once nothing needs asking.
-            const others = [...[...this.runtimes.values()].filter((r) => r !== rt).flatMap((r) => r.folders), ...[...this.closingIn.values()].flat(), ...heldSessionFolders()];
+            const others = [...[...this.runtimes.values()].filter((r) => r !== rt && r.side?.of !== id).flatMap((r) => r.folders), ...[...this.closingIn.values()].flat(), ...heldSessionFolders()];
             let plan: Removal;
             try {
                 plan = planRemoval({ path: cwd, worktree: wt, inUse: (dir) => others.some(within(dir)) });
@@ -2294,7 +2725,7 @@ export class Engine {
     /** What the CLI said of an account's sign-in; true when that's news. */
     private noteStatus(provider: string, id: string, status: AgentCliStatus): boolean {
         const key = `${provider}:${id}`;
-        const next: Partial<AccountInfo> = { signedIn: status.signedIn, description: status.description, email: status.email, plan: status.plan, apiKey: status.apiKey };
+        const next: Partial<AccountInfo> = { signedIn: status.signedIn, description: status.description, email: status.email, plan: status.plan, apiKey: status.apiKey, ...(status.free ? { free: true } : {}) };
         if (JSON.stringify(next) === JSON.stringify(this.accountStatus.get(key))) return false;
         this.accountStatus.set(key, next);
         return true;
@@ -2331,6 +2762,8 @@ export class Engine {
     private async providersList(): Promise<ProviderInfo[]> {
         const out: ProviderInfo[] = [];
         for (const p of allProviders()) {
+            // A CLI's named instances are listed with it.
+            if (p.instanceOf) continue;
             if (p.auth === "gcloud") {
                 const v = readVertexConfig();
                 out.push({ id: p.id, name: p.name, kind: p.kind, configured: Boolean(v), source: v ? "gcloud" : undefined, masked: v ? `${v.project} · ${v.location}` : undefined, requiresKey: false });
@@ -2341,6 +2774,7 @@ export class Engine {
                 const def = agentCli(p.id)!;
                 const cli = def.cli;
                 const on = Boolean(readAgentConfig(p.id));
+                const bin = findCli(p.id, cli);
                 out.push({
                     id: p.id,
                     name: p.name,
@@ -2352,7 +2786,8 @@ export class Engine {
                     agentCli: {
                         accounts: await this.accountsList(p.id),
                         defaultAccount: def.account ? defaultAccount(p.id) : "default",
-                        installed: Boolean(findCli(p.id, cli)),
+                        installed: Boolean(bin),
+                        ...(bin ? { path: bin } : {}),
                         signIn: cli.signIn,
                         install: cli.install,
                         ...(cli.installCommand ? { installable: true } : {}),
@@ -2361,6 +2796,8 @@ export class Engine {
                         plan: def.planLabel,
                         multiAccount: Boolean(def.account),
                         planLimits: def.caps.planLimits !== "none",
+                        env: agentEnvInfo(p.id),
+                        instances: listInstances(p.id),
                     },
                 });
                 continue;
@@ -2750,6 +3187,30 @@ export class Engine {
         await this.accountsList(providerId, true).then(() => this.refreshListings(true)).then(() => this.broadcast({ type: "models.changed" })).catch(() => undefined);
     }
 
+    /**
+     * The user's saved models (default, small, reviewer) that `gone` matches go back to unset, as a provider is removed
+     * or turned off: a new session then starts as with none set, not on something that can't run. The settings reset.
+     */
+    private forgetModels(gone: (ref: { provider: string; id: string }) => boolean): ModelSetting[] {
+        try {
+            const reset = clearModelSettings(this.o.startCwd ?? homedir(), gone);
+            if (reset.length) this.reloadSettings();
+            return reset;
+        } catch (e) {
+            this.o.log?.(`settings: couldn't reset models of a removed provider: ${(e as Error).message}`);
+            return [];
+        }
+    }
+
+    /** A key removed or a CLI turned off: unless it can still be used (a key from the environment), what named it is reset. */
+    private async providerRemoved(id: string): Promise<{ reset: ModelSetting[] }> {
+        if (await clientFor(id).then(() => true, () => false)) return { reset: [] };
+        const reset = this.forgetModels((r) => r.provider === id);
+        for (const r of this.runtimes.values()) r.providerGone(id);
+        if (reset.length) this.broadcast({ type: "models.changed" });
+        return { reset };
+    }
+
     /** As /login does: with no default model yet, the newly connected provider's best one becomes it. */
     private adoptDefaultModel(providerId: string): string | undefined {
         if (this.guiSettings(this.o.startCwd).model) return undefined;
@@ -2774,8 +3235,10 @@ export class Engine {
 
     private guiSettings(cwd?: string): GuiSettings {
         const s = loadScope("user", cwd ?? homedir());
+        const auto = defaultModelFrom(this.listings);
         return {
             model: s.model,
+            ...(auto ? { autoModel: modelRef(auto) } : {}),
             smallModel: s.smallModel,
             reviewModel: s.reviewModel,
             effort: s.effort,
@@ -2792,6 +3255,9 @@ export class Engine {
             bypassAlways: onServer() || undefined,
             followUpBehavior: s.followUpBehavior,
             editor: s.editor,
+            autoSettleDays: autoSettleDays(s.autoSettleDays),
+            keepAwake: s.keepAwake !== false,
+            ...(keepAwake.available() ? {} : { keepAwakeUnavailable: true }),
         };
     }
 
@@ -2831,7 +3297,16 @@ export class Engine {
                 if (patch.editor && !EDITOR_IDS.includes(patch.editor)) throw new RpcError("Unknown editor", "invalid");
                 s.editor = patch.editor || undefined;
             }
+            if ("autoSettleDays" in patch) {
+                if (!AUTO_SETTLE_DAYS.includes(patch.autoSettleDays as (typeof AUTO_SETTLE_DAYS)[number])) throw new RpcError(`autoSettleDays must be one of ${AUTO_SETTLE_DAYS.join(", ")}`, "invalid");
+                s.autoSettleDays = patch.autoSettleDays;
+            }
+            // On is the default: stored only when off.
+            if ("keepAwake" in patch) s.keepAwake = patch.keepAwake === false ? false : undefined;
         });
+        if ("keepAwake" in patch) keepAwake.refresh();
+        // Shorter, or on: what's idle that long settles now.
+        if ("autoSettleDays" in patch) this.sweep();
         this.reloadSettings();
         // The Simulator turned off or on, or the mode its calls are held to changed: the servers this machine lends it to
         // hear now, and what waits here for it ends.
@@ -2961,6 +3436,81 @@ export class Engine {
         return { mediaType, data: bytes.toString("base64") };
     }
 
+    /**
+     * A branch name for Home's New worktree (no session yet): the project's small model (smallModel, else a small model of
+     * its model's provider), as a session's Generate would pick it. Its cost isn't a session's, so it's counted nowhere.
+     */
+    private async suggestBranch(cwd: string, text: string): Promise<GitBranchNameInfo> {
+        if (!text.trim()) throw new RpcError("Describe the work first.", "invalid");
+        const settings = this.workspaces.get(cwd)?.settings ?? loadSettings(cwd, { trusted: isTrusted(cwd) });
+        const none = () => new RpcError("Set a small model in Settings to suggest branch names.", "no_model");
+        // The small model set, on whichever provider (Claude Code and Codex answer one-offs too); one whose provider is gone is skipped.
+        const set = settings.smallModel ? resolveModelInfo(settings.smallModel) : undefined;
+        let target = set && (await clientFor(set.provider).then((client) => ({ model: set, client }), () => undefined));
+        if (!target) {
+            const main = (settings.model && resolveModelInfo(settings.model)) || (this.fallbackModel && resolveModelInfo(this.fallbackModel)) || defaultModelFrom(this.listings);
+            if (!main) throw none();
+            const model = smallModelFor(main.provider, this.listings) ?? main;
+            target = { model, client: await clientFor(model.provider).catch(() => { throw none(); }) };
+        }
+        const { model, client } = target;
+        const res = await client
+            .stream(
+                // A CLI starts a process of its own for it: a few seconds more than an API call.
+                { model, system: BRANCH_NAME_SYSTEM, messages: [{ role: "user", content: [{ type: "text", text: redact(branchPrompt(text)) }] }], tools: [], maxTokens: 100, effort: "low", lightweight: true, signal: AbortSignal.timeout(isAgentBackend(client) ? 60_000 : 30_000) },
+                () => {},
+            )
+            .catch((e) => {
+                // It runs whole turns only (an ACP agent, Antigravity).
+                if (e instanceof WholeTurnsOnly) throw new RpcError(`${providerLabel(model.provider)} can't suggest branch names. Choose ${set === model ? "another" : "a"} small model in Settings.`, "no_model");
+                // The provider's own words (a timeout's "aborted") go to the log, as a session's drafts do (runtime.ts).
+                this.log(`Suggest a branch name: ${(e as Error)?.message ?? e}`);
+                throw new RpcError(DRAFT_FAILED["suggest branch names"], "draft_failed");
+            });
+        const branch = branchName(textOf(res), worktreeSettings(settings).branchPrefix);
+        if (!branch) throw new RpcError(DRAFT_FAILED["suggest branch names"]);
+        return { branch, model: modelRef(model) };
+    }
+
+    /** Go to file: the session's folder's files (the @-mention listing, folders left out) best matching the query. */
+    private async findFiles(p: Record<string, any>): Promise<{ paths: string[] }> {
+        const { cwd, roots } = this.openScope(p);
+        const query = typeof p.query === "string" ? p.query.slice(0, 256) : "";
+        const limit = Math.max(1, Math.min(200, Number.isInteger(p.limit) ? p.limit : 50));
+        const files = p.sessionId !== undefined ? this.runtime(p.sessionId).ws.files : this.workspaces.get(cwd)?.files;
+        if (!files) throw new RpcError("That folder isn't open in Cavvy", "not_open");
+        // Folders are in the listing too ("src/"): asked for more, so as many files are left.
+        const found = (await files.searchSoon(query.trim(), limit * 2)).filter((f) => !f.endsWith("/"));
+        // A link out of the session's folders, which the viewer would refuse, isn't offered.
+        const opens = await Promise.all(found.map((f) => opensInside(f, cwd, roots)));
+        return { paths: found.filter((_, i) => opens[i]).slice(0, limit) };
+    }
+
+    /** Search in project: in the session's folder, the window's last search stopped first. */
+    private async searchFiles(client: EngineClient, p: Record<string, any>): Promise<ProjectSearchResult> {
+        const { cwd } = this.openScope(p);
+        const query = typeof p.query === "string" ? p.query : "";
+        if (!query || query.length > 1000 || query.includes("\0") || query.includes("\n")) throw new RpcError("Search for 1 to 1,000 characters on one line", "invalid");
+        this.fileSearches.get(client)?.abort();
+        const ctl = new AbortController();
+        this.fileSearches.set(client, ctl);
+        let root: string;
+        try {
+            root = realpathSync(cwd);
+        } catch {
+            throw new RpcError("The session's folder is gone", "not_found");
+        }
+        try {
+            const r = await searchProject(root, { query, caseSensitive: p.caseSensitive === true, wholeWord: p.wholeWord === true, regex: p.regex === true }, ctl.signal);
+            return ctl.signal.aborted ? { ...r, cancelled: true } : r;
+        } catch (e) {
+            if (ctl.signal.aborted) return { files: [], matches: 0, truncated: false, via: "js", cancelled: true };
+            throw new RpcError(e instanceof Error ? e.message : String(e), "invalid");
+        } finally {
+            if (this.fileSearches.get(client) === ctl) this.fileSearches.delete(client);
+        }
+    }
+
     private async commandProvider(cwd: string): Promise<string | undefined> {
         const usable = async (ref: string | undefined) => {
             const model = ref && resolveModelInfo(ref);
@@ -3003,6 +3553,7 @@ export class Engine {
             { name: "mode", description: "Switch the permission mode" },
             { name: "rewind", description: "Go back to before an earlier prompt" },
             { name: "fork", description: "Continue in a new session from the latest response, keeping this one as it is" },
+            { name: "btw", description: "Ask about this session in a side chat, without adding to it", args: "<question>", noAttachments: true },
             { name: "mcp", description: "MCP servers: status, approval, reconnect", args: "[server]" },
             { name: "tasks", description: "Background work: sub-agents, shells, monitors and delegated tasks (/tasks stop stops them)", args: "[stop <task-id|all> | restart]" },
             { name: "rename", description: "Rename this session", args: "<title>" },
@@ -3029,7 +3580,7 @@ export class Engine {
         const own = new Set([...named, ...prompts.map((p) => p.name)]);
         const name = provider ? (getProvider(provider)?.name ?? provider) : "";
         // All Codex reports are its skills (skills/list), for the $ menu too.
-        const skill = provider === "codex";
+        const skill = baseCli(provider) === "codex";
         const cli = [...(this.cliCommands(provider, cwd) ?? [])].filter((n) => !own.has(n)).map((n) => ({ name: n, description: `${name}'s own ${skill ? "skill" : "command"}`, ...(skill ? { skill } : {}) }));
         return [...builtin, ...custom, ...skills, ...prompts, ...cli];
     }
@@ -3184,6 +3735,8 @@ export class Engine {
             case "browser.choose":
                 await browserCall(() => this.runtime(p.id).browser.choose(typeof p.index === "number" ? p.index : undefined, typeof p.tab === "number" ? p.tab : undefined, typeof p.list === "number" ? p.list : undefined));
                 return null;
+            case "browser.find":
+                return await browserCall(() => this.runtime(p.id).browser.find(str(p.query, "query"), typeof p.step === "number" ? p.step : 0, typeof p.tab === "number" ? p.tab : undefined));
             case "browser.dialog":
                 if (typeof p.accept !== "boolean") throw new RpcError("accept must be a boolean");
                 await browserCall(() => this.runtime(p.id).browser.answerDialog(p.accept, typeof p.text === "string" ? p.text : undefined, typeof p.tab === "number" ? p.tab : undefined));
@@ -3194,7 +3747,12 @@ export class Engine {
             case "server.lag":
                 return (await import("./loop-lag")).loopLag({ reset: (p as { reset?: unknown } | undefined)?.reset === true });
             case "server.unsaved":
-                return { sessions: [...this.runtimes.values()].filter((rt) => rt.session.unsaved).map((rt) => ({ id: rt.id, title: rt.title ?? rt.firstPrompt() ?? "" })) };
+                return {
+                    sessions: [...this.runtimes.values()].filter((rt) => rt.session.unsaved).map((rt) => ({ id: rt.id, title: rt.title ?? rt.firstPrompt() ?? "" })),
+                    // What quitting the desktop app would stop: this computer's sessions that are working (a response, a
+                    // question, queued messages, shells or tasks running). None once an update restarts the app: Update asked first.
+                    working: this.updates.get().updating?.restarting ? 0 : [...this.runtimes.values()].filter((rt) => !rt.guest && !rt.idle).length,
+                };
             case "server.memory":
                 return (await import("./memory-probe")).serverMemory({ types: (p as { types?: unknown } | undefined)?.types === true });
             case "terminal.list":
@@ -3294,6 +3852,8 @@ export class Engine {
                 return { created: ensureKeybindingsFile(path), path };
             }
             case "sessions.list":
+                // The timer held back by a laptop's sleep: what's due wakes before it's listed.
+                if (this.alarm.due()) this.sweep();
                 return this.listSessions(num(p.limit, 200), Boolean(p.archived));
             case "sessions.trash": {
                 // `servers`: what was deleted on the servers this machine is connected to instead (the user's own
@@ -3329,8 +3889,8 @@ export class Engine {
                     await Promise.race([rt.ready.catch(() => undefined), new Promise((r) => (timer = setTimeout(r, OPEN_MODEL_WAIT_MS)))]);
                     clearTimeout(timer);
                 }
-                // Search can open a session beyond the sidebar list window.
-                client.send({ type: "sessions.upsert", session: this.summaryOf(rt) });
+                // Search can open a session beyond the sidebar list window. A side chat isn't listed.
+                if (!rt.side) client.send({ type: "sessions.upsert", session: this.summaryOf(rt) });
                 // Open in this window before its connection dropped: only what it missed, when that's all still here.
                 const since = p.since && typeof p.since === "object" ? (p.since as { epoch?: unknown; seq?: unknown }) : undefined;
                 const resumed = loaded && since && typeof since.epoch === "string" && typeof since.seq === "number" ? rt.resume(since.epoch, since.seq) : undefined;
@@ -3405,8 +3965,25 @@ export class Engine {
                 this.unloadIfUnused(id);
                 return null;
             }
+            case "session.sideChat": {
+                const rt = await this.openSideChat(this.runtime(p.id), typeof p.text === "string" ? p.text : undefined);
+                return { id: rt.id };
+            }
+            case "session.closeSideChat": {
+                const parent = this.runtimes.get(str(p.id, "id"));
+                if (parent) this.closeSideChat(parent);
+                return null;
+            }
+            case "session.reopenSideChat":
+                return { id: this.reopenSideChat(this.runtime(p.id)) };
             case "session.shown": {
                 client.shown = typeof p.id === "string" ? p.id : null;
+                // Opened: it no longer says it woke.
+                if (client.shown && readStore().woke?.includes(client.shown)) {
+                    const id = client.shown;
+                    updateStore((s) => forget(s, id));
+                    this.upsertRow(id);
+                }
                 const rt = client.shown ? this.runtimes.get(client.shown) : undefined;
                 rt?.flush();
                 // On screen, it's likely to be sent to: its folder's first snapshot taken now, not as the prompt waits.
@@ -3423,10 +4000,14 @@ export class Engine {
                 checkMedia(attached);
                 this.remember(rt.ws.cwd);
                 // Set aside, it's back in play once you send to it.
-                if ((readStore().settled ?? []).includes(rt.id)) {
+                // Snoozed, the same: it's being worked with now.
+                const store = readStore();
+                if ((store.settled ?? []).includes(rt.id) || store.snoozed?.[rt.id] || store.woke?.includes(rt.id)) {
                     updateStore((s) => {
                         s.settled = (s.settled ?? []).filter((x) => x !== rt.id);
+                        forget(s, rt.id);
                     });
+                    if (store.snoozed?.[rt.id]) this.armAlarm();
                     this.sessionChanged(rt);
                 }
                 if (p.mode !== undefined && !isFollowUp(p.mode)) throw new RpcError("mode must be steer or queue", "invalid");
@@ -3496,16 +4077,22 @@ export class Engine {
                 await rt.allTurns();
                 return rt.rewindTargets();
             }
+            case "session.rewindCanUndo":
+                return this.runtime(p.id).rewindCanUndo();
             case "session.rewindPlan": {
                 const rt = this.runtime(p.id);
                 if (rt.compactingWhileIdle) await rt.yieldIdleCompaction();
                 await rt.allTurns();
-                return rt.rewindPlan(num(p.index, -1));
+                return rt.rewindPlan(num(p.index, -1), this.workingFolders(rt));
             }
-            case "session.rewind":
-                await this.runtime(p.id).yieldIdleCompaction();
-                await this.runtime(p.id).allTurns();
-                return this.runtime(p.id).rewind(num(p.index, -1), str(p.planId, "planId"), Boolean(p.code), Boolean(p.conversation));
+            case "session.rewind": {
+                const rt = this.runtime(p.id);
+                await rt.yieldIdleCompaction();
+                await rt.allTurns();
+                return rt.rewind(num(p.index, -1), str(p.planId, "planId"), Boolean(p.code), Boolean(p.conversation), this.workingFolders(rt));
+            }
+            case "session.rewindUndo":
+                return this.runtime(p.id).rewindUndo(optStr(p.undo));
             case "session.fork": {
                 const original = this.runtime(p.id);
                 const text = str(p.text, "text");
@@ -3534,14 +4121,20 @@ export class Engine {
             case "session.changes":
                 return this.runtime(p.id).changes();
             case "session.gitChanges": {
-                if (!["uncommitted", "branch", "last-turn", "turn"].includes(p.scope)) throw new RpcError("Unknown changes scope", "invalid");
+                if (!["uncommitted", "branch", "commit", "last-turn", "turn"].includes(p.scope)) throw new RpcError("Unknown changes scope", "invalid");
+                if (p.commit !== undefined && (typeof p.commit !== "string" || !/^[0-9a-f]{4,64}$/i.test(p.commit))) throw new RpcError("commit must be a commit id", "invalid");
+                for (const key of ["ignoreWhitespace", "full"]) if (p[key] !== undefined && typeof p[key] !== "boolean") throw new RpcError(`${key} must be a boolean`, "invalid");
                 if (p.turnId !== undefined && (!Number.isSafeInteger(p.turnId) || p.turnId < 0)) throw new RpcError("turnId must be a checkpoint id", "invalid");
                 if (p.scope === "turn" && p.turnId === undefined) throw new RpcError("turnId is required for a turn scope", "invalid");
                 // A base must be one git lists (checked against for-each-ref); here it's only kept sane.
                 if (p.base !== undefined && (typeof p.base !== "string" || !p.base || p.base.length > 400)) throw new RpcError("base must be a branch name", "invalid");
                 if (p.path !== undefined && typeof p.path !== "string") throw new RpcError("path must be a string", "invalid");
                 if (p.worktree !== undefined && (typeof p.worktree !== "string" || !p.worktree || p.worktree.length > 4096 || p.worktree.includes("\0"))) throw new RpcError("worktree must be a folder path", "invalid");
-                return this.runtime(p.id).gitChanges({ scope: p.scope, base: p.base, baseToken: optStr(p.baseToken), path: p.path, pathToken: optStr(p.pathToken), turnId: p.turnId, worktree: p.worktree });
+                return this.runtime(p.id).gitChanges({ scope: p.scope, base: p.base, baseToken: optStr(p.baseToken), path: p.path, pathToken: optStr(p.pathToken), turnId: p.turnId, worktree: p.worktree, commit: p.scope === "commit" ? p.commit : undefined, ignoreWhitespace: p.ignoreWhitespace, full: p.full });
+            }
+            case "session.gitLog": {
+                if (p.worktree !== undefined && (typeof p.worktree !== "string" || !p.worktree || p.worktree.length > 4096 || p.worktree.includes("\0"))) throw new RpcError("worktree must be a folder path", "invalid");
+                return this.runtime(p.id).gitLog(p.worktree);
             }
             case "session.worktrees": {
                 const list = await this.runtime(p.id).worktrees();
@@ -3586,8 +4179,16 @@ export class Engine {
                         throw new RpcError("expectedHead must describe a branch or detached HEAD with its full SHA", "invalid");
                     }
                 }
-                return this.runtime(p.id).gitCommit(p.paths, p.message, p.expectedHead, tokens as string[]);
+                if (p.newBranch !== undefined && (typeof p.newBranch !== "string" || !p.newBranch || p.newBranch.length > 200 || p.newBranch.startsWith("-") || /[\x00-\x20\x7f]/.test(p.newBranch))) throw new RpcError("newBranch must be a branch name", "invalid");
+                return this.runtime(p.id).gitCommit(p.paths, p.message, p.expectedHead, tokens as string[], p.newBranch);
             }
+            case "session.gitPrText":
+                if (p.base !== undefined && (typeof p.base !== "string" || p.base.length > 400 || p.base.includes("\0"))) throw new RpcError("base must be a branch name", "invalid");
+                return this.runtime(p.id).gitPrText(p.base || undefined);
+            case "session.gitBranchName":
+                return this.runtime(p.id).gitBranchName(text(p.text, "text", 20_000));
+            case "projects.suggestBranch":
+                return this.suggestBranch(str(p.path, "path"), text(p.text, "text", 20_000));
             case "session.turn": {
                 const rt = this.runtimes.get(str(p.id, "id"));
                 if (!rt || !client.subs.has(rt.id)) throw new RpcError("The session isn't open.", "not_open");
@@ -3639,6 +4240,14 @@ export class Engine {
                 this.setFlag(id, key, on);
                 return null;
             }
+            case "session.snooze":
+                this.snooze(checkId(p.id), p.until);
+                return null;
+            case "session.regenerateTitle":
+                return { title: await this.regenerateTitle(checkId(p.id)) };
+            case "session.neverSettle":
+                this.neverSettle(checkId(p.id), p.on === true);
+                return null;
             case "session.archiveOffer":
                 return await this.archiveOffer(client, text(p.id, "id", 200));
             case "session.planInfo":
@@ -3652,8 +4261,7 @@ export class Engine {
                 return { path: writePlanFile({ cwd: rt.ws.cwd, home: cavvyHome(), input, text: plan.text, replace: p.replace === true }) };
             }
             case "session.delete":
-                await this.deleteSession(checkId(p.id));
-                return null;
+                return (await this.deleteSession(checkId(p.id))) ? null : { unsaved: true };
             case "session.restore": {
                 const id = checkId(p.id);
                 while (this.closing.has(id)) await this.afterClosing(id);
@@ -3662,11 +4270,17 @@ export class Engine {
                 } : undefined);
                 const saved = updateStore((s) => {
                     for (const key of STORE_FLAGS) if (flags[key]) s[key] = [...new Set([...(s[key] ?? []), id])];
+                    if (flags.neverSettle) s.neverSettle = [...new Set([...(s.neverSettle ?? []), id])];
+                    // Snoozed when deleted: snoozed again, while its time is still ahead (past it, it's back awake).
+                    if (flags.snoozedUntil !== undefined && flags.snoozedUntil > this.now()) s.snoozed = { ...s.snoozed, [id]: { until: flags.snoozedUntil } };
+                    // Brought back: not settled by itself straight away for having been idle.
+                    notePlay(s, id, this.now());
                 });
+                if (flags.snoozedUntil !== undefined) this.armAlarm();
                 // In whichever list it's in: without its flags saved, it's back as an active one.
                 const summary = this.listSessions(1000).find((s) => s.id === id) ?? this.listSessions(1000, true).find((s) => s.id === id);
                 if (summary) this.broadcast({ type: "sessions.upsert", session: summary });
-                if (!saved && STORE_FLAGS.some((key) => flags[key])) client.send({ type: "toast", level: "warn", message: `The session is back, but its pin and archived state couldn't be saved to ${storeFile()}.` });
+                if (!saved && (STORE_FLAGS.some((key) => flags[key]) || flags.neverSettle || flags.snoozedUntil !== undefined)) client.send({ type: "toast", level: "warn", message: `The session is back, but its pin and archived state couldn't be saved to ${storeFile()}.` });
                 return null;
             }
             case "session.killShell":
@@ -3762,6 +4376,61 @@ export class Engine {
                 return await this.addKey(optStr(p.provider), str(p.key, "key"));
             case "providers.connectCli":
                 return await this.connectCli(str(p.provider, "provider"));
+            case "providers.setEnv": {
+                const id = str(p.provider, "provider");
+                if (getProvider(id)?.auth !== "cli") throw new RpcError(`${id} isn't used through a CLI`, "invalid");
+                try {
+                    await saveAgentEnv(id, p.vars);
+                } catch (e) {
+                    throw new RpcError(redact((e as Error).message), "invalid");
+                }
+                // A running CLI keeps what it started with; its next turn starts a new one (its launch fingerprint changed).
+                forgetClient(id);
+                void this.refreshListings(false, [id]);
+                return null;
+            }
+            case "providers.addInstance": {
+                const base = str(p.base, "base");
+                let id: string;
+                try {
+                    id = await addInstance(base, instanceInput(p));
+                } catch (e) {
+                    throw new RpcError(redact((e as Error).message), "invalid");
+                }
+                // Its models, listed with its setup: only it is asked.
+                void this.refreshListings(false, [id]);
+                return { id };
+            }
+            case "providers.updateInstance": {
+                const id = str(p.id, "id");
+                const had = readAgentConfig(id)?.models ?? [];
+                try {
+                    await updateInstance(id, instanceInput(p));
+                } catch (e) {
+                    throw new RpcError(redact((e as Error).message), "invalid");
+                }
+                forgetClient(id);
+                // A model of its own taken off its list, that its CLI doesn't list either: what was set to it goes back to unset.
+                const kept = new Set([...(readAgentConfig(id)?.models ?? []), ...(this.listings.find((l) => l.provider.id === baseCli(id))?.models.map((m) => m.id) ?? [])]);
+                const dropped = new Set(had.filter((m) => !kept.has(m)));
+                const reset = dropped.size ? this.forgetModels((r) => r.provider === id && dropped.has(r.id)) : [];
+                void this.refreshListings(false, [id]);
+                if (reset.length) this.broadcast({ type: "models.changed" });
+                return { reset };
+            }
+            case "providers.removeInstance": {
+                const id = str(p.id, "id");
+                // A turn running on it goes on; its session's next message says to pick another model (cliEnv).
+                await removeInstance(id).catch((e) => {
+                    throw new RpcError(redact((e as Error).message), "invalid");
+                });
+                forgetClient(id);
+                const reset = this.forgetModels((r) => r.provider === id);
+                for (const r of this.runtimes.values()) r.providerGone(id);
+                void this.refreshListings(false, []);
+                this.broadcast({ type: "models.changed" });
+                return { reset };
+            }
             case "offers.set": {
                 // Only a server takes what another machine lends: the user's own machine is lent nothing by a client.
                 if (!this.o.away) throw new RpcError("This machine isn't lent tools.", "unsupported");
@@ -3984,23 +4653,54 @@ export class Engine {
                     // Keep account folders registered and protected until explicitly removed.
                     if ((readAgentConfig(id)?.accounts?.length ?? 0) > 0) throw new RpcError("Remove named accounts before turning off this CLI", "invalid");
                     // Turns it off here; the CLI stays signed in.
-                    removeAgentConfig(id);
+                    await turnOffAgent(id);
                     this.stopLimitChecks(id);
                     forgetClient(id);
                     await this.afterKeyChange(id);
-                    return null;
+                    return this.providerRemoved(id);
                 }
                 const k = await getKey(id);
                 if (k?.source === "env") throw new RpcError(`The ${id} key comes from $${k.envVar}; unset it in your shell.`);
                 await removeKey(id);
                 forgetClient(id);
                 await this.afterKeyChange(id);
-                return null;
+                return this.providerRemoved(id);
             }
             case "projects.recent":
                 return this.recentProjects();
             case "projects.inspect":
                 return this.inspectProject(str(p.path, "path"));
+            case "git.sync": {
+                const cwd = this.gitFolder(p.cwd);
+                const info = await gitSyncInfo(cwd);
+                // A read as a turn ends, on focus or after a Git action: what it finds, every session there shows.
+                this.branchMoved(cwd);
+                return info;
+            }
+            case "git.branches": {
+                const list = await gitBranches(this.gitFolder(p.cwd));
+                const suggested = typeof p.sessionId === "string" ? this.runtimes.get(p.sessionId)?.branchFromTitle() : undefined;
+                return suggested && !list.local.some((b) => b.name === suggested) ? { ...list, suggested } : list;
+            }
+            case "git.fetch":
+                return await this.gitAction(p.cwd, false, (cwd) => gitFetch(cwd));
+            case "git.pull":
+                return await this.gitAction(p.cwd, true, (cwd) => gitPull(cwd));
+            case "git.switch": {
+                const branch = text(p.branch, "branch", 400);
+                return await this.gitAction(p.cwd, true, (cwd) => gitSwitch(cwd, { branch, remote: p.remote === true }));
+            }
+            case "git.createBranch": {
+                // Longer than a branch name may be, and gitCreateBranch says so in its own words.
+                const name = text(p.name, "name", 1000);
+                return await this.gitAction(p.cwd, true, (cwd) => gitCreateBranch(cwd, name));
+            }
+            case "git.pullRequests":
+                return await gitPullRequests(this.gitFolder(p.cwd));
+            case "git.prWorktree": {
+                const pr = text(p.pr, "pr", 400);
+                return await this.gitAction(p.cwd, false, (cwd) => gitPrWorktree(cwd, pr, this.o.log));
+            }
             case "projects.worktrees":
                 return listWorktrees(resolve(expandHome(str(p.path, "path"))));
             case "projects.createWorktree": {
@@ -4067,6 +4767,18 @@ export class Engine {
                 return this.pathsExist(p);
             case "fs.image":
                 return this.readImage(p);
+            case "fs.files":
+                return this.findFiles(p);
+            case "fs.search":
+                return this.searchFiles(client, p);
+            case "fs.searchCancel":
+                this.fileSearches.get(client)?.abort();
+                this.fileSearches.delete(client);
+                return null;
+            case "fs.read": {
+                const { cwd, roots } = this.openScope(p);
+                return readProjectFile(checkPathInput(p.path), cwd, roots);
+            }
             case "commands.list": {
                 const cwd = resolve(expandHome(str(p.cwd, "cwd")));
                 const provider = optStr(p.provider) ?? await this.commandProvider(cwd);
@@ -4075,7 +4787,7 @@ export class Engine {
                 // An uninitialized Claude Code workspace resolves its own skills, just as session.send does.
                 // A bare /name may be a plugin's command (/plugin:name) when only one plugin has it.
                 const plugin = () => pluginCommandFor(this.workspaces.get(cwd)?.commands ?? loadCustomCommands(cwd, isTrusted(cwd)), command!);
-                if (command && !commands.some((c) => c.name === command) && !(provider === "claude-code" && this.cliCommands(provider, cwd) === undefined) && !plugin()) {
+                if (command && !commands.some((c) => c.name === command) && !(baseCli(provider) === "claude-code" && this.cliCommands(provider, cwd) === undefined) && !plugin()) {
                     throw new RpcError(`Unknown command /${command}`, "unknown_command");
                 }
                 return commands;
@@ -4271,10 +4983,6 @@ async function launchEditor(argv: string[]): Promise<void> {
     if (code !== undefined && code !== 0) throw new RpcError(`${basename(argv[0] ?? "")} exited with status ${code}`);
 }
 
-function validImage(i: { mediaType: unknown; data: unknown }): boolean {
-    return /^image\/(png|jpeg|gif|webp)$/.test(String(i?.mediaType)) && typeof i?.data === "string" && i.data.length < 20_000_000 && /^[A-Za-z0-9+/=]+$/.test(i.data.slice(0, 100));
-}
-
 /** The fingerprints a window sends back as the user's yes to an unknown host's key. */
 function fingerprints(v: unknown): string[] | undefined {
     return Array.isArray(v) && v.length > 0 && v.length <= 8 && v.every((x) => typeof x === "string" && x.length <= 200) ? (v as string[]) : undefined;
@@ -4355,4 +5063,7 @@ function num(v: unknown, d: number): number {
     return typeof v === "number" && Number.isFinite(v) ? v : d;
 }
 
-
+/** An instance's fields as a window sends them (instances.ts checks them). */
+function instanceInput(p: Record<string, unknown>): InstanceInput {
+    return { name: typeof p.name === "string" ? p.name : "", path: typeof p.path === "string" ? p.path : undefined, args: p.args as string[] | undefined, env: p.env as InstanceInput["env"], models: p.models as string[] | undefined };
+}

@@ -25,7 +25,8 @@ export type ImagePart = { type: "image"; mediaType: string; data: string /* base
  * model is told where, to open it with its own tools.
  */
 export type FilePart =
-    | { type: "file"; kind: "text"; name: string; size: number; lines: number; text: string; pasted?: boolean }
+    /** `from`: text brought back from a side chat (src/agent/side-chat.ts), not a file. */
+    | { type: "file"; kind: "text"; name: string; size: number; lines: number; text: string; pasted?: boolean; from?: "side-chat" }
     | { type: "file"; kind: "pdf"; name: string; size: number; mediaType: "application/pdf"; data: string /* base64 */ }
     | { type: "file"; kind: "saved"; name: string; size: number; path: string };
 
@@ -89,6 +90,8 @@ export interface UserMessage {
         background?: true;
         /** Messages from other sessions' agents that joined the turn here (a reminder, or tool results): who, and what they said. */
         peers?: { from: { id: string; title: string }; text: string }[];
+        /** A reminder written as its turn ended, after the reply: the turn is as the reply left it. Kept last, where a session's list reads it (session.ts). */
+        ended?: true;
     };
 }
 
@@ -189,7 +192,7 @@ export type StreamEvent =
     | { type: "tool_call_start"; id: string; name: string }
     | { type: "tool_call_delta"; id: string; partial: string }
     | { type: "server_tool"; name: string; detail: string }
-    | { type: "retry"; attempt: number; delayMs: number; reason: string }
+    | { type: "retry"; attempt: number; delayMs: number; reason: string; /** What it streamed stands: it goes on with the same response. */ keep?: boolean }
     /** `resent`: the request was sent again (a feature or reasoning dropped, tool JSON malformed). */
     | { type: "notice"; message: string; resent?: true }
     | { type: "usage"; usage: Usage };

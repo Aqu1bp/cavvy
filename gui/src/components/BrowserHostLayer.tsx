@@ -8,6 +8,7 @@
 import { createEffect, For, onCleanup, onMount } from "solid-js";
 import { electron } from "../lib/platform";
 import { keepFocus } from "../lib/page-focus";
+import { painted } from "../lib/page-painted";
 import { hostedTabs, hostedTargets, setHostedTabs, setHostedTargets, shownBrowser, type HostedTab } from "../state/browser-host";
 
 /** The size of a tab no pane shows (or the floating view shows, scaled): the agent's, as a headless browser's would be. */
@@ -52,6 +53,10 @@ export function BrowserHostLayer() {
 function HostedWebview(p: { tab: HostedTab }) {
     let wrap!: HTMLDivElement;
     let reported = "";
+    /** How the pane last showed it: "" (it didn't), "fill", or "fit" and the size it was given. */
+    let placedAs = "";
+    /** Each time the page is kept out of sight for a new size: only the latest shows it again. */
+    let holding = 0;
     onMount(() => {
         // Made by hand, so the partition is set before it loads anything (it can't change after).
         const view = document.createElement("webview");
@@ -68,11 +73,13 @@ function HostedWebview(p: { tab: HostedTab }) {
             const shown = s && targetId && s.targetId === targetId ? s : undefined;
             const box = shown?.box;
             // In the pane the page is the box's size (or the one it's keeping for now: lib/page-size.ts), drawn in
-            // as much of the box as shows; watched in the floating view, or not shown, it's the agent's.
-            const size = box && !shown.fit ? (shown.page ?? { width: box.width, height: box.height }) : AGENT_SIZE;
+            // as much of the box as shows, or a device's picked in the pane's menu, scaled to fit (`fit`); watched in
+            // the floating view (scaled), or not shown, it's the agent's.
+            const size = box ? (shown.page ?? (shown.fit ? AGENT_SIZE : { width: box.width, height: box.height })) : AGENT_SIZE;
             const scale = box && shown.fit ? Math.min(box.width / size.width, box.height / size.height) : 1;
             wrap.classList.toggle("shown", box !== undefined);
-            wrap.classList.toggle("fit", shown?.fit === true);
+            // Watched in the floating view (the pane's device size is scaled too, and used: it isn't this).
+            wrap.classList.toggle("fit", shown?.fit === true && shown.by === "float");
             wrap.classList.toggle("entering", shown?.motion === "enter");
             wrap.classList.toggle("leaving", shown?.motion === "leave");
             wrap.style.transformOrigin = shown?.origin ? `${shown.origin.x}px ${shown.origin.y}px` : "";
@@ -82,6 +89,19 @@ function HostedWebview(p: { tab: HostedTab }) {
             Object.assign(wrap.style, box && frame ? { left: `${box.x}px`, top: `${box.y}px`, width: `${frame.width}px`, height: `${frame.height}px` } : { left: "0px", top: "0px", width: "1px", height: "1px" });
             Object.assign(view.style, { width: `${size.width}px`, height: `${size.height}px`, transform: scale === 1 ? "" : `scale(${scale})` });
             const key = `${size.width}x${size.height}`;
+            // A size picked in the pane's menu (or back to filling it): the page draws at it a moment after it's given
+            // it, and until then the window shows its old picture stretched or cut to the new box. It's kept out of
+            // sight (its canvas colour shows: BrowserHostLayer's parent) until it has drawn at the new size.
+            const as = shown?.by === "pane" ? (shown.fit ? `fit ${key}` : "fill") : "";
+            if (as && placedAs && as !== placedAs && key !== reported) {
+                const mine = ++holding;
+                view.style.opacity = "0";
+                void painted(p.tab.key, size).then(() => requestAnimationFrame(() => mine === holding && (view.style.opacity = "")));
+            } else if (!as && view.style.opacity) {
+                holding++;
+                view.style.opacity = "";
+            }
+            placedAs = as;
             if (key !== reported) {
                 reported = key;
                 electron!.browserSized(p.tab.key, { ...size, scale: window.devicePixelRatio || 1 });

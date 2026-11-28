@@ -11,6 +11,7 @@ import { desktopHost } from "./host";
 import type { Owner } from "./control";
 import { FrameFeed } from "./feed";
 import { forward, parseInput, usesTab } from "./interact";
+import { findInPage, type FindResult } from "./find";
 import { AGENT_VIEWPORT, BrowserError, MAX_SIDE, MIN_SIDE, type Frame, type Page, type PageHooks, type Viewport } from "./page";
 import { acquirePool, lostBrowser, releasePool, type BrowserPool, type PoolClient, type PoolOptions } from "./pool";
 import { addressToUrl, checkUrl, hostOf, type BrowserApproval } from "./url-policy";
@@ -445,7 +446,7 @@ export class BrowserSession implements PoolClient {
         const refused = this.refuse(checked.url, { host: hostOf(checked.url) });
         if (refused) throw new BrowserError(`${redact(checked.url).slice(0, 100)} can't be opened: ${refused}`);
         this.touched(page);
-        await this.run(() => page.goto(checked.url));
+        await this.run(() => page.goto(checked.url, undefined, undefined, true));
     }
 
     async answerDialog(accept: boolean, promptText?: string, tab?: number) {
@@ -459,6 +460,15 @@ export class BrowserSession implements PoolClient {
         const page = this.tab(tab);
         this.touched(page);
         await page.choose(index, list);
+    }
+
+    /**
+     * The pane's find bar: `query` in the tab ("" clears), `step` 0 for a new search, 1 or -1 for the next or previous
+     * match. Reading, not using the page: the agent isn't told of it.
+     */
+    async find(query: string, step: number, tab?: number): Promise<FindResult> {
+        const page = this.tab(tab);
+        return this.run(() => findInPage(page, query, step));
     }
 
     // -----------------------------------------------------------------------

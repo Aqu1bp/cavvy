@@ -36,7 +36,7 @@ function mount(options: { plan?: number; reached?: boolean; unknown?: boolean; h
     let settingsTab: string | undefined;
     const Meter = component(source("components/ComposerMeter.tsx"), "ComposerMeter", {
         app: { settings: { autoCompact: options.autoCompact ?? false }, providers: [{ id: "cli", name: "CLI", agentCli: { plan: "Pro", defaultAccount: "work", get accounts() { return catalog(); } } }], get limits() { return limits(); }, get activeId() { return activeId(); } },
-        handleFor: () => ({ view: { get state() { return state(); } } }), contextCardOpen: open, setContextCardOpen: setOpen, usePane: () => ({ focused: () => true, parked: () => false, split: () => false, rightmost: () => true, share: () => 1, wasFocused: () => true }),
+        handleFor: () => ({ view: { get state() { return state(); } } }), contextCardOpen: open, setContextCardOpen: setOpen, keysHere: (pane: { focused: () => boolean }) => pane.focused(), usePane: () => ({ focused: () => true, parked: () => false, split: () => false, rightmost: () => true, share: () => 1, wasFocused: () => true }),
         rpc: { call: (...args: any[]) => { calls.push(args); return args[0] === "accounts.list" ? pending.promise : Promise.resolve(); } },
         now: () => timestamp, planLimitKey, limitAlternatives, limitFor, limitName, meterOf, nearLimit, planTitle, resolvedOn, servedFor: () => ({}), windowLine, contextView, cost, tokens,
         // Another machine's session has that machine's providers and limits, asked over the connection to it.

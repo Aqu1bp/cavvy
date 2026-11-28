@@ -93,6 +93,7 @@ export function checkFiles(raw: unknown, save?: SaveFile): FilePart[] {
     for (const f of raw as Partial<WireFile>[]) {
         if (typeof f?.name !== "string" || typeof f.data !== "string") throw new RpcError("Each file needs a name and its data");
         const pasted = f.pasted === true;
+        const from = !pasted && f.from === "side-chat" ? f.from : undefined;
         const name = pasted ? "Pasted text" : sanitizeName(f.name);
         // Over every file's cap, don't even decode it.
         if (f.data.length > Math.ceil((ATTACH_LIMITS.totalBytes * 4) / 3) + 4) throw new RpcError(`${name} is too large to attach (files in one message can come to ${formatBytes(ATTACH_LIMITS.totalBytes)} at most).`);
@@ -139,7 +140,7 @@ export function checkFiles(raw: unknown, save?: SaveFile): FilePart[] {
         }
         stored += Buffer.byteLength(text) - bytes.length;
         storedFits();
-        out.push({ type: "file", kind: "text", name, size: bytes.length, lines: lineCount(text), text, ...(pasted ? { pasted: true } : {}) });
+        out.push({ type: "file", kind: "text", name, size: bytes.length, lines: lineCount(text), text, ...(pasted ? { pasted: true } : {}), ...(from ? { from } : {}) });
     }
     for (const { part, bytes } of toSave) part.path = save!(part.name, bytes);
     return out;
@@ -156,7 +157,7 @@ export function fileChips(parts: readonly { type: string }[]): FileChip[] {
     return parts.flatMap((p) => {
         if (p.type !== "file") return [];
         const f = p as FilePart;
-        return [{ name: f.name, kind: f.kind, size: f.size, ...(f.kind === "text" ? { lines: f.lines } : {}), ...(f.kind === "text" && f.pasted ? { pasted: true } : {}) }];
+        return [{ name: f.name, kind: f.kind, size: f.size, ...(f.kind === "text" ? { lines: f.lines } : {}), ...(f.kind === "text" && f.pasted ? { pasted: true } : {}), ...(f.kind === "text" && f.from ? { from: f.from } : {}) }];
     });
 }
 
@@ -238,9 +239,47 @@ export function toWire(parts: readonly AttachedPart[] | undefined): { images?: {
             }
         }
         const data = p.kind === "pdf" ? p.data : Buffer.from(p.text, "utf-8").toString("base64");
-        return [{ name: p.name, data, ...(p.kind === "text" && p.pasted ? { pasted: true } : {}) }];
+        return [{ name: p.name, data, ...(p.kind === "text" && p.pasted ? { pasted: true } : {}), ...(p.kind === "text" && p.from ? { from: p.from } : {}) }];
     });
     return { ...(images.length ? { images } : {}), ...(files.length ? { files } : {}) };
+}
+
+/** session.send's check of an image as it comes over the wire. */
+export function validImage(i: { mediaType: unknown; data: unknown }): boolean {
+    return /^image\/(png|jpeg|gif|webp)$/.test(String(i?.mediaType)) && typeof i?.data === "string" && i.data.length < 20_000_000 && /^[A-Za-z0-9+/=]+$/.test(i.data.slice(0, 100));
+}
+
+/**
+ * How what's attached to an answer reaches the agent that asked: as content it takes (`content`: images as images,
+ * text framed in, anything else saved, PDFs too, which a tool's result can't carry), or, where its answer is text
+ * only (an agent CLI's), each saved in the project but text, which is framed in (`paths`).
+ */
+export type AnswerAttach = "content" | "paths";
+
+const IMAGE_EXT: Record<string, string> = { "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp" };
+
+/**
+ * The images and files of an answer to a question, checked as session.send's are. PDFs are saved by `save` too,
+ * and with `paths` images as well, so each is an image, text or a saved file the answer names.
+ */
+export function answerAttachments(raw: { images?: unknown; files?: unknown }, save: SaveFile, as: AnswerAttach): AttachedPart[] {
+    if (raw.images !== undefined && !Array.isArray(raw.images)) throw new RpcError("images must be a list");
+    const images = ((raw.images as { mediaType: unknown; data: unknown }[] | undefined) ?? []).map((i): ImagePart => {
+        if (!validImage(i)) throw new RpcError("Images must be PNG, JPEG, GIF or WebP, under 15 MB.");
+        return { type: "image", mediaType: String(i.mediaType), data: String(i.data) };
+    });
+    const files = checkFiles(raw.files, save);
+    const parts: AttachedPart[] = [...images, ...files];
+    checkMedia(parts);
+    return parts.map((p, n): AttachedPart => {
+        if (p.type === "image" && as === "paths") {
+            const name = `image-${n + 1}.${IMAGE_EXT[p.mediaType] ?? "png"}`;
+            const bytes = Buffer.from(p.data, "base64");
+            return { type: "file", kind: "saved", name, size: bytes.length, path: save(name, bytes) };
+        }
+        if (p.type === "file" && p.kind === "pdf") return { type: "file", kind: "saved", name: p.name, size: p.size, path: save(p.name, Buffer.from(p.data, "base64")) };
+        return p;
+    });
 }
 
 /** A queued message's attachments in a few words, for the queue row. */

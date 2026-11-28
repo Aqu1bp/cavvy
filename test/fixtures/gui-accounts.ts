@@ -46,7 +46,7 @@ function fixture(initial = [defaultAccount], provider = "claude-code", extra: { 
         terminalActions: { loginAccount: (...args: any[]) => logins.push(args) },
         Menu: (p: any) => { menus.push(p); return solid.createMemo(() => p.open ? p.children : null); },
         Dialog: (p: any) => solid.createMemo(() => p.open ? p.children : null),
-        MoreHorizontal: () => null, Check: () => null, ExternalLink: () => null, Info: () => null, ProviderIcon: () => null, Spinner: () => node("spinner"),
+        MoreHorizontal: () => null, Check: () => null, ChevronRight: () => null, ExternalLink: () => null, Info: () => null, ProviderIcon: () => null, Spinner: () => node("spinner"),
         openExternal: (url: string) => opened.push(url),
         addAccountFor, setAddAccountFor, requestAnimationFrame: () => 0,
     });
@@ -85,7 +85,7 @@ for (const provider of ["claude-code", "codex"]) test(`${provider}: one account 
         trigger.props.onClick();
         expect(trigger.props["aria-expanded"]).toBe(true);
         expect(f.menus[0].label).toBe(`${name} actions`);
-        expect(f.nodes().filter((n) => n.props.role === "menuitem").map((n) => text(n))).toEqual(["Add account…", "Sign in", "Refresh status", "Learn more…"]);
+        expect(f.nodes().filter((n) => n.props.role === "menuitem").map((n) => text(n))).toEqual(["Add account…", "Sign in", `Add another ${name}…`, "Refresh status", "Learn more…"]);
         f.button("Sign in").props.onClick();
         expect(f.logins[0].slice(0, 2)).toEqual([provider, "default"]);
         expect(trigger.props["aria-expanded"]).toBe(false);
@@ -119,7 +119,7 @@ test("a connected provider shows its plan, a status dot and its one account's em
         expect(f.nodes().find((n) => n.props.class === "cli-dot")?.props["aria-label"]).toBe("Signed in");
         expect(text(f.nodes().find((n) => n.props.class?.startsWith("prov-sub"))!)).toBe("me@example.test");
         f.button("Claude Code actions").props.onClick();
-        expect(f.nodes().filter((n) => n.props.role === "menuitem").map((n) => text(n))).toEqual(["Add account…", "Sign in again", "Refresh status", "Learn more…", "Turn off…"]);
+        expect(f.nodes().filter((n) => n.props.role === "menuitem").map((n) => text(n))).toEqual(["Add account…", "Sign in again", "Environment variables…", "Add another Claude Code…", "Refresh status", "Learn more…", "Turn off…"]);
         f.button("Turn off…").props.onClick();
         expect(offs).toEqual([1]);
         f.calls.length = 0;
@@ -174,8 +174,11 @@ test("not installed offers Install and no menu; installed but off offers to use 
     } finally { missing.dispose(); }
     let connects = 0;
     const [connecting, setConnecting] = solid.createSignal(false);
-    const off = fixture(undefined, "claude-code", { cli: { installed: true }, props: { get connecting() { return connecting(); }, onConnect: () => connects++ } });
+    const off = fixture([{ ...defaultAccount, signedIn: true, plan: "max" }], "claude-code", { cli: { installed: true }, props: { get connecting() { return connecting(); }, onConnect: () => connects++ } });
     try {
+        // Turned off, it shows no plan, though it's still signed in to one.
+        expect(off.nodes().some((n) => n.props.class === "tag")).toBe(false);
+        expect(text(off.root)).toContain("Not set up");
         const use = off.button("Use my Claude subscription");
         use.props.onClick();
         expect(connects).toBe(1);
@@ -262,7 +265,7 @@ test("Cancel and Escape clear the card and return focus to the provider's menu b
 });
 
 test("two accounts list as rows: identity, sign in again, make default, rename and confirmed removal", async () => {
-    const f = fixture([defaultAccount, personal]);
+    const f = fixture([defaultAccount, personal], "claude-code", { info: { configured: true } });
     try {
         await settle(); f.calls.length = 0;
         const rows = () => f.nodes().filter((n) => n.props.role === "listitem");

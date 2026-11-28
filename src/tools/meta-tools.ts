@@ -1,6 +1,7 @@
 import type { TodoItem, Tool } from "./types";
 import { MODE_INFO } from "../permissions/modes";
 import { redact } from "../util/redact";
+import { answerWithAttachments } from "../providers/files";
 import { cleanPurpose, requestSecret, secretNameError, SECRET_NAME_RULE } from "../agent/secrets";
 
 export const TodoWriteTool: Tool<{ todos: TodoItem[] }> = {
@@ -95,6 +96,14 @@ Only use this for tasks that require writing code or making changes, not for res
     },
 };
 
+/** A question's answer as its row says it: what was picked or typed, then what was attached, by name ("SAML · attached notes.md and an image"). */
+export function answerSummary(answers: readonly string[], attached: readonly { type: string; name?: string }[]): string {
+    const images = attached.filter((p) => p.type === "image").length;
+    const named = [...attached.flatMap((p) => (p.type === "file" && p.name ? [p.name] : [])), ...(images ? [images === 1 ? "an image" : `${images} images`] : [])];
+    const list = named.length > 1 ? `${named.slice(0, -1).join(", ")} and ${named.at(-1)}` : named[0];
+    return [answers.join(", "), list && `attached ${list}`].filter(Boolean).join(" · ");
+}
+
 export const AskUserQuestionTool: Tool<{ question: string; options: { label: string; description?: string }[]; multi_select?: boolean }> = {
     name: "AskUserQuestion",
     category: "meta",
@@ -123,6 +132,12 @@ export const AskUserQuestionTool: Tool<{ question: string; options: { label: str
     title: (i) => `AskUserQuestion(${(i.question ?? "").slice(0, 60)})`,
     async run(input, ctx) {
         if (!ctx.ui.askQuestion) return { content: "The user is not available to answer questions (non-interactive session). Make a reasonable assumption and state it.", isError: true };
+        if (ctx.ui.askQuestionAttaching) {
+            const r = await ctx.ui.askQuestionAttaching(input.question, input.options ?? [], Boolean(input.multi_select), "content");
+            if (!r || (!r.answers.length && !r.attached.length)) return { content: "The user dismissed the question without answering. Proceed with your best judgment and state your assumption.", display: { summary: "Dismissed" } };
+            const { text, images } = answerWithAttachments(r.answers, r.attached);
+            return { content: text, ...(images.length ? { images } : {}), display: { summary: answerSummary(r.answers, r.attached) } };
+        }
         const answer = await ctx.ui.askQuestion(input.question, input.options ?? [], Boolean(input.multi_select));
         if (!answer) return { content: "The user dismissed the question without answering. Proceed with your best judgment and state your assumption.", display: { summary: "Dismissed" } };
         return { content: `The user answered: ${answer.join(", ")}`, display: { summary: answer.join(", ") } };

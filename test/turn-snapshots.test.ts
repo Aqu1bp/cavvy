@@ -307,6 +307,24 @@ describe("per-turn snapshots", () => {
         expect(changes.files[0]?.hunks.flatMap((h) => h.lines).map((l) => l.text).join("\n")).toContain("cut off here");
     });
 
+    test("turns a rewind took away leave the list, last-turn too, and stay gone after reopening", async () => {
+        const { cwd, dir, snapshots } = setup({ "a.txt": "before\n" });
+        for (const id of [201, 202, 203]) {
+            await snapshots.begin(id, `prompt ${id}`);
+            write(cwd, "a.txt", `turn ${id}\n`);
+            await snapshots.end();
+        }
+        snapshots.rewound(202);
+        expect(snapshots.shown().map((t) => t.id)).toEqual([201]);
+        expect(snapshots.list().map((t) => t.id)).toEqual([201, 202, 203]);
+        expect(await snapshots.changes({ scope: "last-turn" })).toMatchObject({ turnId: 201, turns: [{ id: 201 }] });
+        const reopened = new TurnSnapshots(dir, cwd);
+        expect(reopened.shown().map((t) => t.id)).toEqual([201]);
+        await reopened.begin(204, "after the rewind");
+        await reopened.end();
+        expect(reopened.shown().map((t) => t.id)).toEqual([201, 204]);
+    });
+
     test("closing right after a turn waits for its end, which is kept", async () => {
         const { cwd, dir, snapshots } = setup({ "a.txt": "before\n" });
         await snapshots.begin(1, "Edit");

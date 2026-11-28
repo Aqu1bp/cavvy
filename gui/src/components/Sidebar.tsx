@@ -13,8 +13,8 @@ import { archive, archiveSessions, chooseProject, deleteSessions, newSession, op
 import { prefs, setPrefs } from "../state/prefs";
 import { agentFocus, railFree, requestComposerFocus, setDeletedOpen, setPaletteOpen, setRailDrag, setSettingsTab, settingsTab } from "../state/ui";
 import { frameDrag } from "../lib/drag";
-import { ago, monogram, projectColor, since } from "../lib/format";
-import { dayOf, folderOf, holdSidebar, listedOnce, machineLabel, projectOf, revealDay, revealProject, sidebarEntries, sidebarIds, SESSION_PAGE, toggleProject, type DayLabel, type SidebarEntry } from "../lib/session-order";
+import { ago, monogram, projectColor, since, wakeTime } from "../lib/format";
+import { dayOf, folderOf, holdSidebar, isSnoozed, listedOnce, machineLabel, projectOf, revealDay, revealProject, sidebarEntries, sidebarIds, SESSION_PAGE, toggleProject, type DayLabel, type SidebarEntry } from "../lib/session-order";
 import { sessionStatus } from "../lib/session-status";
 import { groupCounts, inFront, needsRowLine, needsYou } from "../lib/rail";
 import { railSelection, setRailSelection, setSidebarOrder } from "../state/sidebar";
@@ -27,6 +27,9 @@ import { ProviderIcon } from "./ui/ProviderIcon";
 import { Logo } from "./ui/bits";
 import { actionOf, keyText, shortcut, withShortcut } from "../state/keybindings";
 import { besideInFront, inSplit, setDraggedSession, SESSION_DRAG } from "../state/split";
+
+/** Snooze and Wake now in a row's menu, and the menu of several picked rows: loaded as the rail is first pointed at or focused. */
+const RowExtras = lazy(() => import("./RowExtras"));
 
 /** Cards shown before "Show more". */
 const PAGE = SESSION_PAGE;
@@ -91,45 +94,6 @@ interface RailPick {
     clear: () => void;
 }
 
-/** The actions on several selected sessions, as menu items (a selected row's context menu). */
-function BulkItems(p: { plan: BulkPlan; close: () => void; clear: () => void }) {
-    // Read once: closing the menu ends the selection it was opened on before an item's action runs.
-    const plan = p.plan;
-    const n = (ids: readonly string[]) => sessionCount(ids.length);
-    return (
-        <>
-            <div class="menu-head">{n(plan.delete)} selected</div>
-            <Show when={plan.settle.length}>
-                <button role="menuitem" class="menu-item compact" onClick={() => (p.close(), void settleSessions(plan.settle, true))}>
-                    <CheckCheck size={14} /> Settle {n(plan.settle)}
-                </button>
-            </Show>
-            <Show when={plan.unsettle.length}>
-                <button role="menuitem" class="menu-item compact" onClick={() => (p.close(), void settleSessions(plan.unsettle, false))}>
-                    <Undo2 size={14} /> Back in play
-                </button>
-            </Show>
-            <Show when={plan.archive.length}>
-                <button role="menuitem" class="menu-item compact" onClick={() => (p.close(), void archiveSessions(plan.archive, true))}>
-                    <Archive size={14} /> Archive {n(plan.archive)}
-                </button>
-            </Show>
-            <Show when={plan.restore.length}>
-                <button role="menuitem" class="menu-item compact" onClick={() => (p.close(), void archiveSessions(plan.restore, false))}>
-                    <ArchiveRestore size={14} /> Restore {n(plan.restore)}
-                </button>
-            </Show>
-            <button role="menuitem" class="menu-item compact" onClick={() => (p.close(), p.clear())}>
-                <X size={14} /> Clear selection
-            </button>
-            <div class="menu-sep" />
-            <button role="menuitem" class="menu-item compact danger" onClick={() => (p.close(), void deleteSessions(plan.delete))}>
-                <Trash2 size={14} /> Delete {n(plan.delete)}
-            </button>
-        </>
-    );
-}
-
 function RowMenu(p: { s: SessionSummary; pick: RailPick; open: boolean; setOpen: (v: boolean) => void; anchor: () => HTMLElement | undefined; returnFocus: () => HTMLElement | undefined; onRename: () => void }) {
     const close = () => p.setOpen(false);
     // Taken as the menu opens, so it doesn't change under the pointer.
@@ -139,7 +103,7 @@ function RowMenu(p: { s: SessionSummary; pick: RailPick; open: boolean; setOpen:
         // menu in one place, inside the rail, and what's behind doesn't peek out at its edge.
         <Menu label={group() ? "Selected sessions actions" : "Session actions"} returnFocus={p.returnFocus} open={p.open} anchor={p.anchor} span={() => p.anchor()?.closest<HTMLElement>(".card, .slim") ?? undefined} onClose={close} align="end" width={220}>
             <Show when={group()} fallback={<SingleItems s={p.s} close={close} onRename={p.onRename} />}>
-                {(ids) => <BulkItems plan={p.pick.plan(ids())} close={close} clear={p.pick.clear} />}
+                {(ids) => <RowExtras ids={ids()} plan={p.pick.plan(ids())} close={close} clear={p.pick.clear} />}
             </Show>
         </Menu>
     );
@@ -155,15 +119,14 @@ function SingleItems(p: { s: SessionSummary; close: () => void; onRename: () => 
             <button role="menuitem" class="menu-item compact" onClick={() => (close(), void pin(p.s.id, !p.s.pinned))}>
                 {p.s.pinned ? <PinOff size={14} /> : <Pin size={14} />} {p.s.pinned ? "Unpin" : "Pin"}
             </button>
-            <Show when={!p.s.archived}>
+            {/* Snoozed, it's off the list already: Wake now (below) brings it back. */}
+            <Show when={!p.s.archived && !isSnoozed(p.s)}>
                 <button role="menuitem" class="menu-item compact" onClick={() => (close(), void settle(p.s.id, !p.s.settled))}>
                     {p.s.settled ? <Undo2 size={14} /> : <CheckCheck size={14} />} {p.s.settled ? "Back in play" : "Settle"}
                 </button>
             </Show>
-            <button role="menuitem" class="menu-item compact" title={`New session in ${p.s.projectName}`} onClick={() => (close(), newSession(p.s.cwd, p.s))}>
-                {/* Short enough for the narrowest rail at the largest text: the menu is the row's width. Where: its tooltip. */}
-                <Plus size={14} /> New session
-            </button>
+            {/* Wake now, Snooze ▸ and More ▸ (Regenerate title, Never auto-settle, New session in its folder). */}
+            <RowExtras ids={[p.s.id]} close={close} />
             <div class="menu-sep" />
             <button role="menuitem" class="menu-item compact" onClick={() => (close(), void archive(p.s.id, !p.s.archived))}>
                 {p.s.archived ? <ArchiveRestore size={14} /> : <Archive size={14} />} {p.s.archived ? "Restore" : "Archive"}
@@ -199,7 +162,7 @@ function useRowMenu(more: () => HTMLElement | undefined) {
 /** What a screen reader hears for a row: its title, then how it's doing, and whether it's selected. */
 function rowLabel(s: SessionSummary, unread: boolean, picked = false): string {
     const word = s.making ? "forking" : sessionStatus(s, now())?.text;
-    return [s.run ? `${s.run.modelName} · ${s.title}` : s.title, s.machine && `on ${s.machine}`, s.status === "idle" && !s.making ? (unread ? "unread" : undefined) : word, s.pinned ? "pinned" : undefined, picked ? "selected" : undefined].filter(Boolean).join(", ");
+    return [s.run ? `${s.run.modelName} · ${s.title}` : s.title, s.machine && `on ${s.machine}`, s.status === "idle" && !s.making ? (unread ? (s.stopped ? "stopped, unread" : "unread") : undefined) : word, s.pinned ? "pinned" : undefined, picked ? "selected" : undefined].filter(Boolean).join(", ");
 }
 
 /** Just before a row's title: a check while it's picked, a pin when pinned. How it's doing is at its end (RowEnd). */
@@ -220,15 +183,17 @@ function RowLead(p: { s: SessionSummary; picked?: boolean }) {
 
 /**
  * The end of a row, one thing: how it's doing when that's news ("Working 8m", "Done" when it finished and you haven't
- * looked, "Stopped" on an error), otherwise when it last moved ("2m", "1h", "3d"), amber while it waits on you.
+ * looked, "Stopped" on an error or when its turn didn't finish: stopped, or cut off by quitting), otherwise when it last
+ * moved ("2m", "1h", "3d"), amber while it waits on you.
  */
 function RowEnd(p: { s: SessionSummary; unread: boolean }) {
     // Set again only when it changes, not at each tick of the clock it's worked out from.
     const word = createMemo(() =>
-        p.s.making ? "Forking" : p.s.status === "running" ? sessionStatus(p.s, now())?.text : p.s.status === "error" ? "Stopped" : p.s.status !== "waiting" && p.unread ? "Done" : undefined,
+        p.s.making ? "Forking" : p.s.status === "running" ? sessionStatus(p.s, now())?.text : p.s.status === "error" ? "Stopped" : p.s.status !== "waiting" && p.unread ? (p.s.stopped ? "Stopped" : "Done") : p.s.woke ? "Woke" : undefined,
     );
-    const tone = () => (p.s.making || p.s.status === "running" ? "working" : p.s.status === "error" ? "stopped" : p.s.status === "waiting" ? "waiting" : word() ? "done" : "");
-    return <span class={`when ${tone()}`}>{word() ?? (now(), since(p.s.updatedAt))}</span>;
+    const tone = () => (p.s.making || p.s.status === "running" ? "working" : p.s.status === "error" || word() === "Stopped" ? "stopped" : p.s.status === "waiting" ? "waiting" : word() ? "done" : "");
+    // Snoozed: when it wakes.
+    return <span class={`when ${tone()}`}>{word() ?? (isSnoozed(p.s) ? wakeTime(p.s.snoozedUntil!, now()) : (now(), since(p.s.updatedAt)))}</span>;
 }
 
 /** The plans' chips and their card (PlanFooter.tsx): loaded a moment after the window, not with it. */
@@ -366,8 +331,10 @@ function SessionRow(p: { s: SessionSummary; hold: (id: string, held: boolean) =>
     const current = () => app.activeId === p.s.id;
     const unread = () => isUnread(p.s) && !current();
     const picked = () => p.pick.picked(p.s.id);
+    // Snoozed: when it wakes stays in sight beside More, pointed at or not (Pin is in its menu).
+    const snoozed = () => isSnoozed(p.s);
     return (
-        <div data-session-id={p.s.id} draggable={draggable(p.s, r.editing())} class={`slim ${current() ? "cur" : ""} ${beside(p.s.id) ? "beside" : ""} ${picked() ? "picked" : ""} ${menu() ? "menu-open" : ""}`} onContextMenu={contextMenu} onKeyDown={contextKey}>
+        <div data-session-id={p.s.id} draggable={draggable(p.s, r.editing())} class={`slim ${current() ? "cur" : ""} ${beside(p.s.id) ? "beside" : ""} ${picked() ? "picked" : ""} ${menu() ? "menu-open" : ""} ${snoozed() ? "snz" : ""}`} onContextMenu={contextMenu} onKeyDown={contextKey}>
             <Show
                 when={!r.editing()}
                 fallback={
@@ -380,7 +347,7 @@ function SessionRow(p: { s: SessionSummary; hold: (id: string, held: boolean) =>
                     onDblClick={(e) => !e.shiftKey && !e.metaKey && !e.ctrlKey && r.setEditing(true)}
                     aria-current={current() ? "page" : undefined}
                     aria-label={rowLabel(p.s, unread(), picked())}
-                    title={`${p.s.title}\n${p.s.machine ? `${p.s.machine}: ` : ""}${p.s.cwd}\nUpdated ${(now(), ago(p.s.updatedAt))}`}
+                    title={`${p.s.title}\n${p.s.machine ? `${p.s.machine}: ` : ""}${p.s.cwd}\n${snoozed() ? `Wakes ${wakeTime(p.s.snoozedUntil!, now(), true)}` : `Updated ${(now(), ago(p.s.updatedAt))}`}`}
                 >
                     <RowLead s={p.s} picked={picked()} />
                     <span class="truncate">{p.s.run ? `${p.s.run.modelName} · ${p.s.title}` : p.s.title}</span>
@@ -393,12 +360,14 @@ function SessionRow(p: { s: SessionSummary; hold: (id: string, held: boolean) =>
                         <RowEnd s={p.s} unread={unread()} />
                     </span>
                     <span class="slim-acts">
-                        <button class="hb sm" title={p.s.pinned ? "Unpin" : "Pin"} aria-label={p.s.pinned ? "Unpin" : "Pin"} onClick={() => void pin(p.s.id, !p.s.pinned)}>
-                            <Show when={p.s.pinned} fallback={<Pin size={13} />}>
-                                <PinOff size={13} />
-                            </Show>
-                        </button>
-                        <button ref={more} class="hb sm" title="More" aria-label="More" aria-haspopup="menu" aria-expanded={menu()} onClick={toggleMenu}>
+                        <Show when={!snoozed()}>
+                            <button class="hb sm" title={p.s.pinned ? "Unpin" : "Pin"} aria-label={`${p.s.pinned ? "Unpin" : "Pin"} ${p.s.title}`} onClick={() => void pin(p.s.id, !p.s.pinned)}>
+                                <Show when={p.s.pinned} fallback={<Pin size={13} />}>
+                                    <PinOff size={13} />
+                                </Show>
+                            </button>
+                        </Show>
+                        <button ref={more} class="hb sm" title="More" aria-label={`More for ${p.s.title}`} aria-haspopup="menu" aria-expanded={menu()} onClick={toggleMenu}>
                             <MoreHorizontal size={14} />
                         </button>
                     </span>
@@ -509,6 +478,7 @@ export function Sidebar() {
     const [viewOpen, setViewOpen] = createSignal(false);
     const [shown, setShown] = createSignal(PAGE);
     const [settledShown, setSettledShown] = createSignal(PAGE);
+    const [snoozedOpen, setSnoozedOpen] = createSignal(false);
     const [archiveShown, setArchiveShown] = createSignal(PAGE);
     const [hovered, setHovered] = createSignal(false);
     const [manualLayout, setManualLayout] = createSignal(false);
@@ -524,10 +494,12 @@ export function Sidebar() {
     let listEl: HTMLElement | undefined;
     let frame = 0;
     const animations = new Set<Animation>();
+    /** Those that end rather than stop where they are when the rail holds still: fades, and the slides of a change asked for. */
     const fades = new WeakSet<Animation>();
     const all = createMemo(() => [...app.sessions, ...app.archived]);
     const sessions = createMemo(() => new Map(all().map((s) => [s.id, s])));
-    const settledCount = () => app.sessions.filter((s) => s.settled).length;
+    const settledCount = () => app.sessions.filter((s) => s.settled && !isSnoozed(s)).length;
+    const snoozedCount = () => app.sessions.filter(isSnoozed).length;
     // Providers by the sessions that used them, most recent first: the plan used last leads when no session is open.
     const recent = createMemo(() => [...new Set([...app.sessions].sort((a, b) => b.updatedAt - a.updatedAt).map((s) => modelOf(s)?.split(":")[0]).filter((p): p is string => Boolean(p)))]);
     // While rows are picked they stay put too, so a range never jumps under the pointer or the keys.
@@ -542,7 +514,7 @@ export function Sidebar() {
     const heldLayout = createMemo<SidebarEntry[]>((previous) => {
         const next = sidebarEntries(app.sessions, app.archived, {
             activeId: app.activeId, groupBy: prefs.groupBy, archived: showArchived(),
-            settledOpen: prefs.settledOpen, cards: shown(), settled: settledShown(), archive: archiveShown(),
+            settledOpen: prefs.settledOpen, snoozedOpen: snoozedOpen(), cards: shown(), settled: settledShown(), archive: archiveShown(),
             collapsed: prefs.collapsedProjects, foldedDays: prefs.foldedDays, needs: needs(), now: prefs.groupBy === "date" ? today() : undefined,
         });
         return holdSidebar(previous ?? [], next, held(), all(), app.activeId, pinnedHeld());
@@ -558,6 +530,8 @@ export function Sidebar() {
         // The first list isn't a change, and one held under the pointer doesn't move. One let go (the user's own
         // settle or pin, with the pointer still here) moves now, so it's decided now, not when the frame comes.
         if (!previous || held()) return next;
+        // Let go for a change the user asked for (snoozing, a snooze's time come): its slides run to their end, held or not.
+        const asked = untrack(() => railFree() || manualLayout());
         // Where each row and heading was, and in what shape (a card or a one-line row).
         const before = new Map<string, { top: number; card: boolean }>();
         for (const el of listEl?.querySelectorAll<HTMLElement>("[data-session-row], [data-head]") ?? [])
@@ -571,7 +545,7 @@ export function Sidebar() {
             const run = (el: HTMLElement, frames: Keyframe[]) => {
                 const animation = el.animate(frames, { duration, easing: "ease-out" });
                 animations.add(animation);
-                if ("opacity" in frames[0]!) fades.add(animation);
+                if ("opacity" in frames[0]! || asked) fades.add(animation);
                 animation.onfinish = () => animations.delete(animation);
             };
             for (const el of listEl?.querySelectorAll<HTMLElement>("[data-session-row], [data-head]") ?? []) {
@@ -599,7 +573,8 @@ export function Sidebar() {
     createEffect(() => {
         const pause = held();
         for (const animation of animations) {
-            // Held, a slide stops where it is; a fade ends, so nothing is left half there.
+            // Held, a slide stops where it is; a fade ends, so nothing is left half there. So does the slide of a change
+            // the user asked for: stopped, it left a row's gap above the rows it was moving up for as long as the pointer stayed.
             if (pause) fades.has(animation) ? animation.finish() : animation.pause();
             else animation.play();
         }
@@ -609,6 +584,11 @@ export function Sidebar() {
         for (const animation of animations) animation.cancel();
         setSidebarOrder(undefined);
     });
+    // A snoozed session waking (its time come, or it needs you) leaves Snoozed then, the pointer on the rail or not: the
+    // user chose the time. The one on screen too: it was held in the shelf, where the rail had it, until the pointer left.
+    createEffect(on(() => app.sessions.filter(isSnoozed).map((s) => s.id), (ids, was) => {
+        if (was?.some((id) => !ids.includes(id))) allowLayout();
+    }, { defer: true }));
     const showMore = (page: "cards" | "settled" | "archived") => {
         if (page === "cards") setShown((n) => n + PAGE);
         else if (page === "settled") setSettledShown((n) => n + PAGE);
@@ -867,7 +847,8 @@ export function Sidebar() {
             <nav ref={listEl} class="side-list" data-group={prefs.groupBy} aria-label="Session list" onKeyDown={onRailKey}
                 onDragStart={dragRow}
                 onDragEnd={() => setDraggedSession(undefined)}
-                onPointerEnter={() => setHovered(true)}
+                onPointerEnter={() => (setHovered(true), RowExtras.preload())}
+                onFocusIn={() => RowExtras.preload()}
                 onPointerLeave={() => setHovered(false)}
                 // Another machine's session: connected to as the pointer comes to it (warmFor), not as it's clicked.
                 onPointerOver={(e) => {
@@ -943,17 +924,22 @@ export function Sidebar() {
                         </button>;
                     }
                     // At the foot of the list, under a gap that takes the room left: it stays put as sessions come and go above it.
-                    if (kind === "settled") return <><div class="settled-gap" aria-hidden="true" /><button class="shelf settled-head" data-head={key} aria-expanded={prefs.settledOpen} onClick={() => { allowLayout(); setPrefs("settledOpen", !prefs.settledOpen); }}>
-                        <span>Settled</span>
-                        {/* Folded, how many are under it; open, its rows say so (as a project's heading does). */}
-                        <Show when={!prefs.settledOpen}><span class="n">{settledCount()}</span></Show>
-                        <ChevronRight size={14} class={`settled-chev ${prefs.settledOpen ? "" : "closed"}`} />
-                    </button></>;
+                    // Snoozed (above Settled) the same, folded until opened: the gap goes above whichever comes first.
+                    if (kind === "settled" || kind === "snoozed") {
+                        const z = kind === "snoozed";
+                        const open = () => (z ? snoozedOpen() : prefs.settledOpen);
+                        return <><Show when={z || !snoozedCount()}><div class="settled-gap" aria-hidden="true" /></Show><button class="shelf settled-head" data-head={key} aria-expanded={open()} onClick={() => { allowLayout(); z ? setSnoozedOpen(!open()) : setPrefs("settledOpen", !open()); }}>
+                            <span>{z ? "Snoozed" : "Settled"}</span>
+                            {/* Folded, how many are under it; open, its rows say so (as a project's heading does). */}
+                            <Show when={!open()}><span class="n">{z ? snoozedCount() : settledCount()}</span></Show>
+                            <ChevronRight size={14} class={`settled-chev ${open() ? "" : "closed"}`} />
+                        </button></>;
+                    }
                     if (kind === "archived") return <div class="shelf"><span>Archived</span><span class="n">{app.archived.length}</span><button class="shelf-btn" onClick={() => { allowLayout(); setShowArchived(false); }}>Done</button></div>;
                     const more = () => entry() as Extract<SidebarEntry, { kind: "more" }>;
                     return <button class="slim more" onClick={() => showMore(more().page)}><span class="lead" aria-hidden="true" /><span>Show {Math.min(PAGE, more().remaining)} more</span></button>;
                 }}</For>
-                <Show when={app.sessionsError || (!sidebarIds(layout()).length && !layout().some((e) => e.kind === "settled" || ((e.kind === "day" || e.kind === "project") && e.collapsed)))}>
+                <Show when={app.sessionsError || (!sidebarIds(layout()).length && !layout().some((e) => e.kind === "settled" || e.kind === "snoozed" || ((e.kind === "day" || e.kind === "project") && e.collapsed)))}>
                     {/* In the place of the first day's heading, the size of one: where the first session's "Today" comes. */}
                     <div class="side-empty">
                         <Show when={app.sessionsError} fallback={!app.sessionsLoaded ? app.conn === "open" ? "Loading sessions…" : "Connecting…" : showArchived() ? "Nothing archived" : "No sessions yet"}>

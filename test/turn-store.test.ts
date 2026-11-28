@@ -116,7 +116,7 @@ async function fillThoughts(id: string) {
 }
 
 /** Less the notice each open shows on its own (Claude Code isn't installed here: the session says so as it opens). */
-const lessOpenNotice = (turns: Turn[]) => turns.filter((t) => t.prompt || t.blocks.some((b) => b.t !== "notice" || !b.text.includes("isn't available now")));
+const lessOpenNotice = (turns: Turn[]) => turns.filter((t) => t.prompt || t.blocks.some((b) => b.t !== "notice" || !b.text.includes(", so this session uses ")));
 
 /** All of what the window has of it once opened (its ops since included), the sub-agents whole too. */
 async function everything(id: string) {

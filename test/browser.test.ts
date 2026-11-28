@@ -413,6 +413,11 @@ describe.skipIf(!chromePath)("the browser tools, with Chrome", () => {
         await session.command({ command: "back", tab });
         expect(session.state().tabs.find((t) => t.id === tab)!.url).toBe(`${site.url}/`);
         expect(session.state().tabs.find((t) => t.id === tab)!.canGoForward).toBe(true);
+        // Nothing there: said plainly, with no advice meant for the agent.
+        const gone = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response("") });
+        const port = gone.port;
+        gone.stop(true);
+        await expect(session.command({ command: "goto", url: `http://127.0.0.1:${port}/`, tab })).rejects.toThrow(/^Nothing is running at \S+\.$/);
         await nav({ action: "close_tab", tab });
         // a tab the person opens is theirs to begin with; the agent can still act in it
         await session.command({ command: "new_tab", url: `${site.url}/other` });
@@ -464,6 +469,34 @@ describe.skipIf(!chromePath)("the browser tools, with Chrome", () => {
         // with nobody watching, the page is back at the agent's size
         await until(() => (session as any).tabs.get(tab).viewport.width === 1280, "the agent's size");
         expect((await run(BrowserEvalTool, { expression: "[innerWidth, innerHeight]" })).content.replace(/\s/g, "")).toBe("[1280,800]");
+        await nav({ action: "close_tab", tab });
+    });
+
+    test("sizes picked one after another, however fast, end with the page laid out at the last one, screenshots or not", async () => {
+        const { tab } = await openMain();
+        const page = (session as any).tabs.get(tab);
+        const frames: { width: number; height: number }[] = [];
+        const key = {};
+        session.watch(key, (f, frameId) => {
+            frames.push(f);
+            queueMicrotask(() => session.ack(key, frameId));
+        }, { width: 974, height: 645, scale: 1 });
+        await until(() => frames.at(-1)?.width === 974, "the pane's size");
+        const inner = async () => (await run(BrowserEvalTool, { expression: "innerWidth + 'x' + innerHeight" })).content;
+        // Fill pane, Phone, Tablet, Laptop, rotated, in the orders a person clicks them; a still being taken as each
+        // starts (the pane's own, or the agent's screenshot), which Chrome would undo a size with as it ends.
+        const sizes = { fill: [974, 645], phone: [390, 844], tablet: [820, 1180], laptop: [1280, 800], rotated: [800, 1280] } as const;
+        for (const order of [["tablet", "laptop"], ["fill", "tablet", "laptop"], ["laptop", "tablet"], ["phone", "tablet", "laptop", "rotated", "laptop"], ["tablet", "fill"]] as const) {
+            const shot = page.capture({ format: "jpeg", quality: 90, captureBeyondViewport: false });
+            for (const name of order) session.resize({ width: sizes[name][0], height: sizes[name][1], scale: 1 });
+            await shot;
+            const [w, h] = sizes[order.at(-1)!];
+            await until(async () => frames.at(-1)!.width === w && frames.at(-1)!.height === h && (await inner()) === `"${w}x${h}"`, `${order.join(" → ")} to end at ${w}×${h}`);
+            // and stays there once everything under way has finished
+            await Bun.sleep(400);
+            expect(await inner()).toBe(`"${w}x${h}"`);
+        }
+        session.unwatch(key);
         await nav({ action: "close_tab", tab });
     });
 

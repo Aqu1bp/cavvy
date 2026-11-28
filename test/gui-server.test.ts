@@ -15,7 +15,7 @@ const { slimEdits } = await import("../src/server/runtime");
 const { startMockLlm } = await import("../scripts/mock-llm");
 const { createDemoProject } = await import("../scripts/demo-project");
 const { gitArgv, gitEnv } = await import("../src/util/git");
-import type { AgentRun, Block, CliSessionsList, InteractionResponse, McpListInfo, McpStatus, ProjectScript, ServerEvent, SessionSearchResult, SessionSnapshot, SessionState, ToolBlock, Turn } from "../src/server/protocol";
+import type { AgentRun, Block, CliSessionsList, GuiSettings, InteractionResponse, McpListInfo, McpStatus, ProjectScript, ServerEvent, SessionSearchResult, SessionSnapshot, SessionState, ToolBlock, Turn } from "../src/server/protocol";
 import type { AgentEvent } from "../src/agent/agent";
 import type { SnapshotTurn } from "../src/agent/turn-snapshots";
 import { fakeLog } from "./helpers/fake-env";
@@ -725,36 +725,61 @@ describe("connecting", () => {
         }
     });
 
-    test("agent backends explain the small-model setting and generate messages with another provider", async () => {
+    test("agent backends generate messages on their own small model, or on the small model set", async () => {
         const { engine, c, cwd, id, rt } = await engineWithSession();
         const git = commitRepo(cwd);
         writeFileSync(join(cwd, "selected.txt"), "selected\n");
         const head = git("rev-parse", "HEAD");
         const original = rt.complete;
-        let calls = 0;
+        const asked: string[] = [];
         rt.complete = async (_system, _prompt, _signal, opts) => {
-            calls++;
-            expect(opts?.target?.model).toMatchObject({ provider: "mock", id: "mock-haiku" });
-            expect((opts?.target?.client as { agentBackend?: boolean }).agentBackend).not.toBe(true);
+            asked.push(`${opts?.target?.model.provider}:${opts?.target?.model.id}`);
             return "feat: add selected file";
         };
         try {
             await rt.ready;
-            // The same capability flag exposed by both Claude Code and Codex clients.
+            // The same capability flag exposed by both Claude Code and Codex clients: they answer one-offs, as titles.
             rt.client = Object.assign({}, rt.client, { agentBackend: true });
             for (const provider of ["claude-code", "codex"]) {
                 rt.model = { ...rt.model!, provider, id: "default" };
                 rt.ws.settings = { ...rt.ws.settings, smallModel: undefined };
-                const before = calls;
-                await expect(engine.handle(c, "session.gitCommitMessage", { id, paths: ["selected.txt"] })).rejects.toMatchObject({ code: "no_model", message: "Set a small model from another provider in Settings to generate messages." });
-                expect(calls).toBe(before);
+                expect(await engine.handle(c, "session.gitCommitMessage", { id, paths: ["selected.txt"] })).toMatchObject({ message: "feat: add selected file" });
+                expect(asked.at(-1)!.startsWith(`${provider}:`)).toBe(true);
                 rt.ws.settings = { ...rt.ws.settings, smallModel: "mock:mock-haiku" };
                 expect(await engine.handle(c, "session.gitCommitMessage", { id, paths: ["selected.txt"] })).toEqual({ message: "feat: add selected file", model: "mock:mock-haiku" });
-                expect(calls).toBe(before + 1);
+                expect(asked.at(-1)).toBe("mock:mock-haiku");
             }
             expect(git("rev-parse", "HEAD")).toBe(head);
         } finally {
             rt.complete = original;
+            await engine.stop();
+        }
+    });
+
+    test("drafted pull request text and branch names come from the small model, after the branch prefix", async () => {
+        const { engine, c, cwd, id, rt } = await engineWithSession();
+        const git = commitRepo(cwd);
+        git("switch", "-q", "-c", "feat/sso");
+        writeFileSync(join(cwd, "sso.ts"), "export const sso = true;\n");
+        git("add", "-A");
+        git("commit", "-q", "-m", "Add the SSO flag");
+        mkdirSync(join(cwd, ".github"), { recursive: true });
+        writeFileSync(join(cwd, ".github", "pull_request_template.md"), "## Summary\n\n## Testing\n");
+        try {
+            await rt.ready;
+            // Through the mock model: its draft from the branch's first commit, with the template's sections.
+            const pr = await engine.handle(c, "session.gitPrText", { id, base: "main" }) as { title: string; body: string; model: string };
+            expect(pr.title).toBe("Add the SSO flag");
+            expect(pr.body).toContain("## Summary");
+            expect(pr.body).toContain("`sso.ts`");
+            expect(pr.model).toMatch(/^mock:/);
+            const named = await engine.handle(c, "session.gitBranchName", { id, text: "Fix the login redirect" }) as { branch: string };
+            expect(named.branch).toBe("cavvy/fix-login-redirect");
+            // From Home, with the project's prefix.
+            const home = await engine.handle(c, "projects.suggestBranch", { path: cwd, text: "Add dark mode to settings" }) as { branch: string };
+            expect(home.branch).toBe("cavvy/add-dark-mode-settings");
+            await expect(engine.handle(c, "projects.suggestBranch", { path: cwd, text: "  " })).rejects.toThrow(/Describe the work first/);
+        } finally {
             await engine.stop();
         }
     });
@@ -1751,10 +1776,13 @@ describe("sessions", () => {
         const id = await c.open("session.create", { cwd: dir, mode: "acceptEdits" });
         await c.call("session.send", { id, text: "first prompt" });
         await c.until(id, done);
+        const contextThen = c.view(id).state.contextTokens;
+        expect(contextThen).toBeGreaterThan(0);
         await c.call("session.send", { id, text: "demo" });
         await c.answer(id, { kind: "permission", choice: "yes" }); // the shell command
         await c.until(id, done, 15_000);
         expect(existsSync(join(dir, "src/auth/sso.ts"))).toBe(true);
+        expect(c.view(id).state.contextTokens).toBeGreaterThan(contextThen);
 
         const targets = await c.call("session.rewindTargets", { id });
         expect(targets.map((t: { text: string }) => t.text)).toEqual(["demo", "first prompt"]);
@@ -1768,6 +1796,85 @@ describe("sessions", () => {
         expect(existsSync(join(dir, "src/auth/sso.ts"))).toBe(false);
         expect(readFileSync(join(dir, "src/auth/index.ts"), "utf-8")).toBe(before);
         await c.until(id, (v) => v.turns.filter((t) => t.prompt).length === 1);
+        // The context as it was after the first prompt's reply, not 0 until the next reply.
+        await c.until(id, (v) => v.state.contextTokens === contextThen);
+        c.close();
+    }, 30_000);
+
+    test("in a trusted Git folder, rewind restores what shell commands changed too, and Undo (or /rewind undo) puts it back", async () => {
+        const dir = project();
+        await snapshotRepo(dir);
+        const before = readFileSync(join(dir, "src/auth/index.ts"), "utf-8");
+        const c = await client();
+        await c.call("projects.trust", { path: dir, trust: true });
+        const id = await c.open("session.create", { cwd: dir, mode: "acceptEdits" });
+        await c.call("session.send", { id, text: "demo" });
+        await c.answer(id, { kind: "permission", choice: "yes" });
+        await c.until(id, done, 15_000);
+        await c.call("session.send", { id, text: "justrun: echo made by a shell > shell.txt" });
+        await c.answer(id, { kind: "permission", choice: "yes" });
+        await c.until(id, (v) => done(v) && v.turns.filter((t) => t.prompt).length === 2, 15_000);
+        expect(existsSync(join(dir, "shell.txt"))).toBe(true);
+
+        const targets = await c.call("session.rewindTargets", { id });
+        const demo = targets.find((t: { text: string }) => t.text === "demo");
+        expect(demo.whole).toBe(true);
+        const plan = await c.call("session.rewindPlan", { id, index: demo.index });
+        expect(plan.whole).toBe(true);
+        const listed = plan.restore.map((r: { path: string; action: string }) => `${r.path}:${r.action}`);
+        expect(listed).toContain("shell.txt:delete");
+        expect(listed).toContain("src/auth/sso.ts:delete");
+        expect(listed).toContain("src/auth/index.ts:write");
+        const r = await c.call("session.rewind", { id, index: demo.index, planId: plan.planId, code: true, conversation: false });
+        expect(r.failed).toEqual([]);
+        expect(r.undo).toBeString();
+        expect(existsSync(join(dir, "shell.txt"))).toBe(false);
+        expect(existsSync(join(dir, "src/auth/sso.ts"))).toBe(false);
+        expect(readFileSync(join(dir, "src/auth/index.ts"), "utf-8")).toBe(before);
+
+        // Without the toast's id (`/rewind undo` in the window): the session's last restore.
+        const u = await c.call("session.rewindUndo", { id });
+        expect(u.failed).toEqual([]);
+        expect(readFileSync(join(dir, "shell.txt"), "utf-8")).toBe("made by a shell\n");
+        expect(existsSync(join(dir, "src/auth/sso.ts"))).toBe(true);
+        const again = await c.call("session.rewindUndo", { id, undo: r.undo }).then(() => "ok", (e: unknown) => e);
+        expect((again as Error).message).toMatch(/can't be undone/);
+        const none = await c.call("session.rewindUndo", { id }).then(() => "ok", (e: unknown) => e);
+        expect((none as Error).message).toBe("There's no file restore to undo.");
+        c.close();
+    }, 30_000);
+
+    test("rewind: each prompt says when it was sent; files alone keep the context; a rewound turn leaves Recorded turns", async () => {
+        const dir = project();
+        await snapshotRepo(dir);
+        const c = await client();
+        await c.call("projects.trust", { path: dir, trust: true });
+        const id = await c.open("session.create", { cwd: dir, mode: "acceptEdits" });
+        for (const n of [1, 2]) {
+            await c.call("session.send", { id, text: "justrun: echo made > shell.txt" });
+            // Allowed once: the same command asks again the second time.
+            await c.answer(id, { kind: "permission", choice: "yes" });
+            await c.until(id, (v) => done(v) && v.turns.filter((t) => t.prompt).length === n, 15_000);
+        }
+        const targets = await c.call("session.rewindTargets", { id });
+        expect(targets.length).toBe(2);
+        // The same prompt twice: told apart by when it was sent.
+        for (const t of targets) expect(t.at).toBeNumber();
+        expect(targets[0].at).toBeGreaterThanOrEqual(targets[1].at);
+        const context = c.view(id).state.contextTokens;
+        expect(context).toBeGreaterThan(0);
+        const turnsListed = async () => ((await c.call("session.gitChanges", { id, scope: "uncommitted" })).turns ?? []).length;
+        expect(await turnsListed()).toBe(2);
+
+        const first = targets[1];
+        let plan = await c.call("session.rewindPlan", { id, index: first.index });
+        await c.call("session.rewind", { id, index: first.index, planId: plan.planId, code: true, conversation: false });
+        expect(c.view(id).state.contextTokens).toBe(context);
+
+        const second = (await c.call("session.rewindTargets", { id }))[0];
+        plan = await c.call("session.rewindPlan", { id, index: second.index });
+        await c.call("session.rewind", { id, index: second.index, planId: plan.planId, code: false, conversation: true });
+        expect(await turnsListed()).toBe(1);
         c.close();
     }, 30_000);
 
@@ -2035,6 +2142,13 @@ describe("sessions", () => {
         expect(b.base.ref).toBe("main");
         await expect(c.call("session.gitChanges", { id, scope: "branch", base: "--output=x" })).rejects.toThrow(/isn't a branch/);
         await expect(c.call("session.gitChanges", { id, scope: "sideways" })).rejects.toThrow(/scope/);
+        // The Commit view and its list: the last commit by default; a commit id and the flags checked.
+        const log = await c.call("session.gitLog", { id });
+        expect(log.commits.map((x: { subject: string }) => x.subject)).toEqual(["Initial commit"]);
+        const one = await c.call("session.gitChanges", { id, scope: "commit" });
+        expect([one.scope, one.commit.sha]).toEqual(["commit", log.commits[0].sha]);
+        await expect(c.call("session.gitChanges", { id, scope: "commit", commit: "HEAD~1" })).rejects.toThrow(/commit id/);
+        await expect(c.call("session.gitChanges", { id, scope: "uncommitted", ignoreWhitespace: "yes" })).rejects.toThrow(/boolean/);
 
         const plain = await c.open("session.create", { cwd: project() });
         const p = await c.call("session.gitChanges", { id: plain, scope: "uncommitted" });
@@ -2362,8 +2476,36 @@ describe("using a plan through an installed CLI", () => {
         pr = await claudeCode(c);
         expect(pr).toMatchObject({ configured: true, source: "your plan" });
 
-        await c.call("providers.removeKey", { provider: "claude-code" });
+        // Defaults that name it go back to unset as it's turned off, and the window is told which.
+        const was = await c.call<GuiSettings>("settings.get", {});
+        await c.call("settings.update", { patch: { model: "claude-code:default", smallModel: "claude-code:sonnet" } });
+        expect(await c.call("providers.removeKey", { provider: "claude-code" })).toEqual({ reset: ["model", "smallModel"] });
         expect((await claudeCode(c)).configured).toBe(false);
+        const s = await c.call<GuiSettings>("settings.get", {});
+        expect([s.model ?? null, s.smallModel ?? null]).toEqual([null, null]);
+        // As the other tests expect them.
+        await c.call("settings.update", { patch: { model: was.model, smallModel: was.smallModel } });
+        c.close();
+    });
+
+    test("removing an instance resets the defaults that name it, and its sessions' refusal names it as the user did", async () => {
+        const c = await client();
+        process.env.PATH = `${bin}:${PATH}`;
+        await c.call("providers.connectCli", { provider: "claude-code" });
+        const was = await c.call<GuiSettings>("settings.get", {});
+        const { id } = await c.call<{ id: string }>("providers.addInstance", { base: "claude-code", name: "My Router", models: ["router/model-a", "router/model-b"] });
+        expect(id).toBe("claude-code@my-router");
+        expect((await claudeCode(c)).agentCli.path).toBe(join(bin, "claude"));
+        // A model taken off its list resets what was set to it; one still there stays.
+        await c.call("settings.update", { patch: { model: `${id}:router/model-a`, smallModel: `${id}:router/model-b` } });
+        expect(await c.call("providers.updateInstance", { id, name: "My Router", models: ["router/model-a"] })).toEqual({ reset: ["smallModel"] });
+        expect((await c.call<GuiSettings>("settings.get", {})).model).toBe(`${id}:router/model-a`);
+        expect(await c.call("providers.removeInstance", { id })).toEqual({ reset: ["model"] });
+        expect((await c.call<GuiSettings>("settings.get", {})).model ?? null).toBeNull();
+        const { clientFor } = await import("../src/providers/models");
+        await expect(clientFor(id)).rejects.toThrow(/^Claude Code · My Router was removed\. Pick another model\.$/);
+        await c.call("providers.removeKey", { provider: "claude-code" });
+        await c.call("settings.update", { patch: { model: was.model, smallModel: was.smallModel } });
         c.close();
     });
 
@@ -3591,7 +3733,8 @@ describe("reopening a Claude Code session", () => {
                 await c2.call("session.send", { id, text: "and then?" });
                 await c2.answer(id, { kind: "permission", choice: "yes" }); // its Write, in Manual
                 await c2.until(id, (v) => done(v) && v.turns.filter((t) => t.prompt).length === 3, 30_000);
-                expect(sentPrompts(log).at(-1)).toContain("switched the permission mode");
+                // By name only: Claude Code runs in its own Manual, which isn't Cavvy's to describe.
+                expect(sentPrompts(log).at(-1)).toContain(String.raw`switched the permission mode to \"Manual\".\n`);
                 c2.close();
             } finally {
                 await again.stop();

@@ -24,6 +24,7 @@ class FakeWorker {
     }
 }
 
+/** The worker's idle timers (a minute); each job's answer timer (3 s) is left out of them. */
 const timers = new Map<number, () => void>();
 let nextTimer = 0;
 const saved = { Worker: globalThis.Worker, OffscreenCanvas: (globalThis as Record<string, unknown>).OffscreenCanvas, createImageBitmap: globalThis.createImageBitmap, setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout };
@@ -31,7 +32,7 @@ Object.assign(globalThis, {
     Worker: FakeWorker,
     OffscreenCanvas: class {},
     createImageBitmap: () => undefined,
-    setTimeout: (fn: () => void) => (timers.set(++nextTimer, fn), nextTimer),
+    setTimeout: (fn: () => void, ms?: number) => (++nextTimer, ms === 60_000 && timers.set(nextTimer, fn), nextTimer),
     clearTimeout: (id?: number) => void (id !== undefined && timers.delete(id)),
 });
 const { thumbnail } = await import("../gui/src/lib/thumbnail");
@@ -44,7 +45,8 @@ const runTimers = () => {
 };
 
 test("the worker goes once it's idle, not while a job is out, and comes back for the next", async () => {
-    const image = { data: "AAAA", mediaType: "image/png" };
+    // Over the size shown as it is (16 KB).
+    const image = { data: "A".repeat(32_000), mediaType: "image/png" };
     const a = thumbnail(image);
     const b = thumbnail(image);
     expect(made).toHaveLength(1);

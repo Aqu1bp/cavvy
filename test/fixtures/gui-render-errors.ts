@@ -158,7 +158,9 @@ for (const target of ["SettingsPage", "AgentView", "ReviewPane"]) {
     ...noTerminal,
             RenderBoundary: boundary(), app: { conn: "open", activeId: "session" }, handleFor: () => handle,
             prefs: { sidebar: true }, isTauri: false, isDesktop: false, isElectron: false, machine: undefined, connNote: () => undefined, serversUi: () => new Promise(() => {}), document: {}, onMount() {}, setEnterSends() {}, actionOf: () => undefined, skipCovered() {},
+            gitDialog: () => undefined,
             railDrag: () => undefined, inspectorDocking: () => false, tracksSliding: () => false, following: () => false, columnSteps, COLUMN_NARROW, COLUMN_SHORT, shellLayout: () => ({ railMode: "dock", railShown: true, sheet: { w: 1100, h: 860 }, column: { w: 1100, h: 860 }, inspector: { open: false, mode: "dock", width: 360, short: false, bottom: 8 }, terminal: { shown: false, height: 0, maximized: false, most: 560 } }), settingsTab, agentFocus, review, mcpOpen: () => undefined, planDialog: () => undefined, commitRequest: () => undefined, rewindOpen: () => false, archiveRequest: () => undefined, folderPickerOpen: () => undefined, viewedImage: () => undefined, setAgentFocus() {}, setReview() {}, panelFull: () => false, setPanelFull() {}, attentionCount: () => 0,
+            deletedOpen: () => false,
             ...Object.fromEntries(tags.map((tag) => [tag, () => { if (tag === target) throw Error("injected " + target); return node(tag); }])),
             ...noSplit, Panes: singlePane(),
         });

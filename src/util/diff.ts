@@ -2,31 +2,39 @@
 
 export type DiffOp = { type: "equal" | "add" | "del"; line: string; oldNo?: number; newNo?: number };
 
-export function diffLines(a: string, b: string): DiffOp[] {
+/**
+ * `ignoreWhitespace`: lines that differ only in whitespace are equal (as `git diff -w`); an equal line is the new
+ * side's text, so what's shown is what's there now.
+ */
+export function diffLines(a: string, b: string, o: { ignoreWhitespace?: boolean } = {}): DiffOp[] {
     const A = splitLines(a);
     const B = splitLines(b);
+    const ka = o.ignoreWhitespace ? A.map(noSpace) : A;
+    const kb = o.ignoreWhitespace ? B.map(noSpace) : B;
     // Trim common prefix/suffix: cheap and makes the O(ND) part small.
     let start = 0;
-    while (start < A.length && start < B.length && A[start] === B[start]) start++;
+    while (start < A.length && start < B.length && ka[start] === kb[start]) start++;
     let endA = A.length;
     let endB = B.length;
-    while (endA > start && endB > start && A[endA - 1] === B[endB - 1]) {
+    while (endA > start && endB > start && ka[endA - 1] === kb[endB - 1]) {
         endA--;
         endB--;
     }
     const ops: DiffOp[] = [];
-    for (let i = 0; i < start; i++) ops.push({ type: "equal", line: A[i]!, oldNo: i + 1, newNo: i + 1 });
-    const mid = myers(A.slice(start, endA), B.slice(start, endB));
+    for (let i = 0; i < start; i++) ops.push({ type: "equal", line: B[i]!, oldNo: i + 1, newNo: i + 1 });
+    const mid = myers(ka.slice(start, endA), kb.slice(start, endB));
     let oi = start;
     let ni = start;
     for (const op of mid) {
-        if (op === "=") ops.push({ type: "equal", line: A[oi]!, oldNo: ++oi, newNo: ++ni });
+        if (op === "=") ops.push({ type: "equal", line: B[ni]!, oldNo: ++oi, newNo: ++ni });
         else if (op === "-") ops.push({ type: "del", line: A[oi]!, oldNo: ++oi });
         else ops.push({ type: "add", line: B[ni]!, newNo: ++ni });
     }
-    for (let i = endA, j = endB; i < A.length; i++, j++) ops.push({ type: "equal", line: A[i]!, oldNo: i + 1, newNo: j + 1 });
+    for (let i = endA, j = endB; i < A.length; i++, j++) ops.push({ type: "equal", line: B[j]!, oldNo: i + 1, newNo: j + 1 });
     return ops;
 }
+
+const noSpace = (line: string) => line.replace(/\s+/g, "");
 
 function splitLines(s: string): string[] {
     if (s === "") return [];

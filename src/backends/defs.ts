@@ -188,8 +188,10 @@ const CODEX: AgentCliDef = {
     cli: {
         command: "codex",
         product: "Codex",
-        install: "Install the Codex CLI (npm install -g @openai/codex)",
-        installCommand: 'command -v npm >/dev/null 2>&1 || { echo "Codex installs with npm: install Node.js first."; exit 1; }; npm install -g --prefix "$HOME/.local" @openai/codex',
+        install: "Install the Codex CLI (curl -fsSL https://chatgpt.com/codex/install.sh | sh)",
+        // Its own installer: a binary in ~/.local/bin, without Node (a server rarely has it). With no terminal it asks nothing.
+        // Fetched first: piped, a failed download would still end as `sh` does, with 0.
+        installCommand: 'script="$(curl -fsSL https://chatgpt.com/codex/install.sh)" && printf "%s\n" "$script" | CODEX_NON_INTERACTIVE=1 sh',
         signIn: "codex login",
         // `codex login` waits for the browser on a port of its own machine, and says to use this where there's none.
         signInAway: "codex login --device-auth",
@@ -368,8 +370,23 @@ const ANTIGRAVITY: AgentCliDef = {
 
 export const AGENT_CLIS: readonly AgentCliDef[] = [CLAUDE_CODE, CODEX, OPENCODE, GROK, ANTIGRAVITY];
 
+/**
+ * The CLI a provider id runs: a named instance's (claude-code@openrouter → claude-code: the same CLI, set up
+ * otherwise, src/providers/instances.ts), or the id as it is. Undefined stays undefined.
+ */
+export function baseCli<T extends string | undefined>(provider: T): T {
+    if (!provider) return provider;
+    const at = provider.indexOf(INSTANCE_SEPARATOR);
+    return (at > 0 ? provider.slice(0, at) : provider) as T;
+}
+
+/** Between a CLI's id and an instance's own name in the instance's provider id. */
+export const INSTANCE_SEPARATOR = "@";
+
+/** An agent CLI's def, by its id or one of its instances' (which run it). */
 export function agentCli(id: string): AgentCliDef | undefined {
-    return AGENT_CLIS.find((d) => d.id === id);
+    const base = baseCli(id);
+    return AGENT_CLIS.find((d) => d.id === base);
 }
 
 /** Whether a message sent while a turn runs can join it (steer) on this provider: Cavvy's own API models always can. */

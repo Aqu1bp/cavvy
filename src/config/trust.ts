@@ -9,9 +9,9 @@
 // read more of it than Cavvy checks at startup, and `claude -p` shows
 // no trust prompt of its own.
 
-import { existsSync } from "fs";
+import { existsSync, realpathSync } from "fs";
 import { homedir } from "os";
-import { join, resolve } from "path";
+import { basename, dirname, join, resolve } from "path";
 import { readJsonCached, readJsonForUpdate, writeJson } from "./settings";
 import { cavvyHome, paths } from "./paths";
 import { LEGACY } from "./legacy";
@@ -31,8 +31,28 @@ const userTrusted = new Set<string>();
  */
 const emptyTrusted = new Set<string>();
 
+interface TrustFile {
+    dirs?: string[];
+    /** Folders whose trust is their own (someone else's code checked out inside a trusted folder): see trustOwnOnly. */
+    own?: string[];
+}
 /** Asked for every turn, MCP server and permission check: read again only once the file has changed. */
-const saved = () => readJsonCached<{ dirs?: string[] }>(file())?.dirs ?? [];
+const saved = () => readJsonCached<TrustFile>(file())?.dirs ?? [];
+const ownOnly = () => readJsonCached<TrustFile>(file())?.own ?? [];
+
+/**
+ * The folder as the disk has it: links followed, its letters as stored (a disk that ignores case takes any spelling).
+ * One that doesn't exist (removed, or not made yet), by its parent's. For folders whose trust is their own: another
+ * spelling of one mustn't escape it.
+ */
+function onDisk(p: string): string {
+    try {
+        return realpathSync.native(p);
+    } catch {
+        const up = dirname(p);
+        return up === p ? p : join(onDisk(up), basename(p));
+    }
+}
 
 export function isTrusted(dir: string): boolean {
     const d = resolve(dir);
@@ -42,8 +62,31 @@ export function isTrusted(dir: string): boolean {
 /** The user said they trust this folder (now or before); a folder trusted only for having nothing to protect doesn't count. */
 export function trustedByUser(dir: string): boolean {
     const d = resolve(dir);
-    if ([...userTrusted].some((t) => isInside(d, t))) return true;
-    return saved().some((t) => isInside(d, t));
+    // Inside a folder whose trust is its own, trust from around it doesn't reach in, however either is spelled.
+    const all = ownOnly();
+    const own = all.length ? all.filter((o) => isInside(onDisk(d), o)) : all;
+    const counts = (t: string) => isInside(d, t) && own.every((o) => isInside(onDisk(t), o));
+    if ([...userTrusted].some(counts)) return true;
+    return saved().some(counts);
+}
+
+/** Inside a folder whose trust is its own (trustOwnOnly) that the user hasn't trusted: someone else's code. */
+export function othersCode(dir: string): boolean {
+    const d = resolve(dir);
+    const all = ownOnly();
+    return all.length > 0 && all.some((o) => isInside(onDisk(d), o)) && !trustedByUser(d);
+}
+
+/**
+ * Trust of the folders around `dir` doesn't reach into it: it's trusted only when the user trusts it (or a folder
+ * inside it) themselves. For someone else's code checked out inside a trusted repository, such as a fork's pull
+ * request in a worktree under it. Saved, so it holds after a restart; forgotten with the folder (forgetTrustInside).
+ */
+export function trustOwnOnly(dir: string) {
+    const d = onDisk(resolve(dir));
+    const cur = readJsonForUpdate<TrustFile>(file()) ?? {};
+    if ((cur.own ?? []).includes(d)) return;
+    writeJson(file(), { ...cur, own: [...(cur.own ?? []), d].sort() }, 0o600);
 }
 
 export function trustFolder(dir: string) {
@@ -53,9 +96,9 @@ export function trustFolder(dir: string) {
         userTrusted.add(d);
         return;
     }
-    let cur: { dirs?: string[] };
+    let cur: TrustFile;
     try {
-        cur = readJsonForUpdate<{ dirs?: string[] }>(file()) ?? {};
+        cur = readJsonForUpdate<TrustFile>(file()) ?? {};
     } catch (e) {
         // Don't drop the other trusted folders; trust this one until exit.
         userTrusted.add(d);
@@ -63,7 +106,7 @@ export function trustFolder(dir: string) {
     }
     const dirs = new Set(cur.dirs ?? []);
     dirs.add(d);
-    writeJson(file(), { dirs: [...dirs].sort() }, 0o600);
+    writeJson(file(), { ...cur, dirs: [...dirs].sort() }, 0o600);
 }
 
 /**
@@ -74,9 +117,11 @@ export function trustFolder(dir: string) {
 export function forgetTrustInside(dir: string) {
     const d = resolve(dir);
     for (const t of [...userTrusted]) if (isInside(t, d)) userTrusted.delete(t);
-    const cur = readJsonForUpdate<{ dirs?: string[] }>(file()) ?? {};
+    for (const t of [...emptyTrusted]) if (isInside(t, d)) emptyTrusted.delete(t);
+    const cur = readJsonForUpdate<TrustFile>(file()) ?? {};
     const dirs = (cur.dirs ?? []).filter((t) => !isInside(resolve(t), d));
-    if (dirs.length !== (cur.dirs ?? []).length) writeJson(file(), { dirs }, 0o600);
+    const own = (cur.own ?? []).filter((t) => !isInside(t, onDisk(d)));
+    if (dirs.length !== (cur.dirs ?? []).length || own.length !== (cur.own ?? []).length) writeJson(file(), { ...cur, dirs, ...(cur.own ? { own } : {}) }, 0o600);
 }
 
 /** The user's own trust in this folder (and the ones inside it), for this session only: not saved. */
@@ -120,5 +165,8 @@ export function projectConfigSummary(cwd: string, has: (path: string) => boolean
     // Only on disk: `has` for a commit's tree can't read what the files say, so a caller checking
     // a commit reads its memory files itself (committedExternalImports, in src/server/runs.ts).
     if (has === existsSync) found.push(...externalImports(cwd));
+    // Someone else's code in a trusted repository (a fork's pull request): the repository's Git hooks can run its
+    // files as you commit, so it's asked about even with nothing of the above.
+    if (has === existsSync && othersCode(cwd)) found.push("Git hooks");
     return [...new Set(found)];
 }

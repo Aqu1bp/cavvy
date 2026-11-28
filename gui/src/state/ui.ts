@@ -6,6 +6,7 @@ import type { ReviewScope } from "./changes";
 import { coversConversation, INSPECTOR_DEFAULT, type Held, type WindowLayout } from "../lib/layout";
 import type { InspectorPane } from "../lib/inspector";
 import type { Rpc } from "../lib/rpc";
+import type { Attachment } from "../lib/attachments";
 
 export type SettingsTab = "general" | "appearance" | "providers" | "plugins" | "usage" | "shortcuts" | "about";
 
@@ -26,6 +27,12 @@ export const rewindTarget = { get: rewindTargetAt, set: setRewindTargetAt };
 export type ViewerImage = { name: string; full: string | { mediaType: string; data: string }; preview?: string; size?: { width: number; height: number } };
 /** The image shown full size over everything, the others it steps to (a prompt's, a reply's, the composer's), and what it was opened from. */
 export const [viewedImage, setViewedImage] = createSignal<{ images: ViewerImage[]; index: number; from?: Element } | undefined>();
+/** The branch dialog (GitBranches.tsx) for a folder; `sessionId`: the session it was opened from (its machine's). */
+/** `kind: "pr"`: work on a pull request; `start` checks out the one `query` names at once. */
+export const [gitDialog, setGitDialog] = createSignal<{ kind: "branch" | "pr"; cwd: string; sessionId?: string; query?: string; start?: boolean } | undefined>();
+/** The chunk with the branch chip and dialogs; `open`: one of its dialogs, for the session in front or Home. */
+export const gitModule = () => import("../components/GitBranches");
+export const openGit = (open: "openBranches" | "openPullRequests") => void gitModule().then((m) => m[open]());
 /** The files the review pane listed when Commit was clicked; the Commit dialog picks from them. */
 export const [commitRequest, setCommitRequest] = createSignal<{ id: string; paths: string[] } | undefined>();
 /** The browser's folder picker; `then` gets undefined when it's cancelled. */
@@ -61,10 +68,22 @@ export const [agentFocus, setAgentFocus] = createSignal<string | undefined>();
 /** The review pane docked on the right, and the file (and view) it opens on. */
 /** `token`: the file's handle when its name was shown redacted (GitFileDiff.pathToken); `path` stays the name shown. */
 /** `worktree`: another worktree of the session's repository, looked at on its branch (a turn's card naming where it worked). */
-export const [review, setReview] = createSignal<{ path?: string; token?: string; scope?: ReviewScope; turnId?: number; worktree?: string } | undefined>();
+/** `file`: the file viewer in its place instead (components/FileViewer.tsx), on a file of the session's (at `line`). */
+/** `back`: the diff reader the viewer was opened over, shown again when it closes (closeReview). */
+type ReviewTarget = { path?: string; token?: string; scope?: ReviewScope; turnId?: number; worktree?: string };
+export const [review, setReview] = createSignal<(ReviewTarget & { file?: { path: string; line?: number }; back?: ReviewTarget }) | undefined>();
+/** Close the diff reader, or the file viewer: back to the diff reader it was opened over, if it was. */
+export const closeReview = () => setReview((r) => (r?.file ? r.back : undefined));
 /** Bumped to ask the composer to take focus. */
 export const [focusComposer, setFocusComposer] = createSignal(0);
 export const requestComposerFocus = () => setFocusComposer((n) => n + 1);
+/**
+ * The session whose side chat was just asked for (/btw, or a question typed into its empty tab): its box takes the
+ * keyboard once it's shown (SideChatPane), and only then; opening a session that has one leaves it with the session.
+ */
+export const [askSideChat, setAskSideChat] = createSignal<string | undefined>(undefined, { equals: false });
+/** For a session's composer (Home's: no `sessionId`) to take and focus: text to add at its end, or an attachment made against its list. */
+export const [composerAdd, setComposerAdd] = createSignal<{ sessionId?: string; text?: string; attach?: (list: readonly Attachment[]) => Attachment }>();
 
 /**
  * A plan of a session's, open in a dialog: to read it, save it, or carry it out
@@ -92,15 +111,31 @@ export interface SetupRun { ticket: string; label: string; command: string }
 export const splitActions: { leave?: (id: string) => boolean; closeBesideReader?: () => boolean } = {};
 
 /**
- * An account's sign-in tab (Settings) is showing: the window's own machine's terminal shows though a session of
- * another machine is in view, until another session or Home is (App.tsx).
+ * An account's sign-in tab (Settings) is showing, on the machine whose terminal panel has it (`on`, as App.tsx's panels
+ * name them): that terminal shows though a session of another machine is in view, until another session or Home is.
  */
-export const [terminalLogin, setTerminalLogin] = createSignal(false);
+export const [terminalLogin, setTerminalLogin] = createSignal<false | { on: string | undefined }>(false);
+
+/** A sign-in or install for the terminal on the user's own computer, in a window on a server (Settings → Providers). */
+export interface HomeLogin {
+    provider: string;
+    accountId: string;
+    name: string;
+    /** One of the user's servers, reached from their computer, as in a window there. */
+    server?: string;
+    install?: boolean;
+}
+/** Asked for and not yet opened: the user's computer's terminal panel opens it once it's ready (TerminalPanel.tsx). */
+export const [homeLogin, setHomeLogin] = createSignal<HomeLogin>();
 
 /** Set while the terminal panel is mounted: opens it on a new tab that runs a project script there (`setup`: a new worktree's setup run). */
 export const terminalActions: {
     /** A sign-in on a server ended in a terminal here: what shows that server follows (state/servers.ts, which sets this). */
     serverSignedIn?: (server: string) => void;
+    /** A sign-in on a machine other than the window's ended: what shows its accounts reads them again (state/servers.ts). */
+    accountsChanged?: () => void;
+    /** In a window on a server: `ask` in a terminal on the user's own computer, its panel made if there's none (App.tsx). */
+    loginOnHome?: (ask: HomeLogin) => void;
     /** `server`: the sign-in is that CLI's on one of the user's servers, in a terminal here. */
     loginAccount?: (provider: string, accountId: string, name: string, server?: string) => void;
     /** Installs an agent CLI on this machine or a server, in a terminal tab (CliInfo.installCommand). */

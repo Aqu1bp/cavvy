@@ -28,3 +28,12 @@ export function placePopover(
     const useTop = o.placement === "top" ? above >= o.least || above > below : below < o.least && above > below;
     return useTop ? { left, width, bottom: o.vh - anchor.top + 6, maxHeight: Math.max(160, above) } : { left, width, top: anchor.bottom + 6, maxHeight: Math.max(160, below) };
 }
+
+/**
+ * Out of sight: nothing of `el` is at its middle, as the page is drawn (a shorter window or a list's end cut it off, or
+ * it's outside the window). One with no box isn't: it has no place to be out of.
+ */
+export function outOfSight(el: Element): boolean {
+    const r = el.getBoundingClientRect();
+    return el.getClientRects().length > 0 && !el.ownerDocument.elementsFromPoint((r.left + r.right) / 2, (r.top + r.bottom) / 2).includes(el);
+}

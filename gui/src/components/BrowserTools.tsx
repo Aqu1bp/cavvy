@@ -1,0 +1,430 @@
+// The Browser pane's menu and the bars it opens: find in page, the page's size (the pane's own, a device's, or one typed
+// in) and zoom, and in the desktop app the page's DevTools. Nothing here runs, and nothing is asked of the page, until
+// one of them is used: a pane that fills and isn't searched asks the page for what it always did.
+//
+// Two kinds of page (docs/browser.md): in the desktop app, the tab's own Chromium page (a <webview>, BrowserHostLayer),
+// which finds and zooms itself and has DevTools; otherwise a headless Chrome's, drawn from frames, where a script finds
+// (src/browser/find.ts) and the size and zoom are the page's emulated metrics (lib/browser-view.ts). Its DevTools
+// aren't offered there: Chrome is driven over a pipe and opens no DevTools port for a frontend to reach.
+
+import { createEffect, createSignal, For, on, onCleanup, onMount, Show, type Accessor, type JSX, type Setter } from "solid-js";
+import { Check, ChevronDown, ChevronUp, Ellipsis, Laptop, Maximize, RotateCwSquare, Ruler, Scan, Search, Smartphone, SquareTerminal, Tablet, X, ZoomIn, ZoomOut } from "lucide-solid";
+import type { BrowserTabInfo } from "@shared/protocol";
+import { reportError, rpc } from "../state/app";
+import { hostedTargets, shownBrowser } from "../state/browser-host";
+import { electron, isMod, mod } from "../lib/platform";
+import { DEVICES, deviceOf, fitScale, side, viewLabel, zoomStep, MAX_SIDE, MIN_SIDE, type PageView } from "../lib/browser-view";
+import type { PaneStatus, Size } from "../lib/browser";
+import { addressMark, backToAddress, keepsDraft, type AddressMark } from "../lib/find-return";
+import { Menu } from "./ui/Menu";
+
+/** Each session's size and zoom while the window is open: the pane shows it again when it comes back. */
+const views = new Map<string, PageView>();
+export const savedView = (id: string) => views.get(id);
+
+const DEVICE_ICONS = { Phone: Smartphone, Tablet, Laptop } as Record<string, typeof Smartphone>;
+/** A search typed is run once typing pauses this long. */
+const TYPED_MS = 120;
+
+interface Webview extends HTMLElement {
+    findInPage(text: string, o?: { forward?: boolean; findNext?: boolean }): number;
+    stopFindInPage(action: "clearSelection" | "keepSelection" | "activateSelection"): void;
+    setZoomFactor(factor: number): void;
+}
+
+export interface PaneToolsOptions {
+    id: Accessor<string>;
+    /** The desktop app's own page, not frames from a headless Chrome. */
+    native: boolean;
+    tab: Accessor<BrowserTabInfo | undefined>;
+    status: Accessor<PaneStatus>;
+    view: Accessor<PageView | undefined>;
+    /** The pane's page box, as it is now: a device's page is drawn scaled down to fit it. */
+    box: Accessor<Size>;
+    setView: Setter<PageView | undefined>;
+    root: () => HTMLElement | undefined;
+    address: () => HTMLInputElement | undefined;
+    keyboard: () => HTMLElement | undefined;
+    /** A bar closes, giving its height back to the page: `close` runs once the page can take it without a blank strip. */
+    giveBack: (px: number, close: () => void) => void;
+    /** Reloads the current tab (F5, Ctrl+R / ⌘R in the pane, as in a browser). */
+    reload: () => void;
+    /** What was typed in the address bar, dropped: the keyboard left the find bar it went to from there. */
+    dropDraft: () => void;
+}
+
+export function paneTools(o: PaneToolsOptions): { menu: () => JSX.Element; bars: () => JSX.Element; keepsDraft: (next: EventTarget | null) => boolean } {
+    const [menuOpen, setMenuOpen] = createSignal(false);
+    const [finding, setFinding] = createSignal(false);
+    const [query, setQuery] = createSignal("");
+    const [found, setFound] = createSignal<{ matches: number; active: number }>();
+    let menuButton: HTMLButtonElement | undefined;
+    let findInput: HTMLInputElement | undefined;
+    let widthInput: HTMLInputElement | undefined;
+
+    // The view is the session's: kept for it, and another session's shown when the pane moves to it.
+    createEffect(on(o.id, (id) => o.setView(views.get(id)), { defer: true }));
+    const setView = (v: PageView | undefined) => {
+        const kept = v && (v.device || v.zoom !== 1) ? v : undefined;
+        if (kept) views.set(o.id(), kept);
+        else views.delete(o.id());
+        o.setView(kept);
+    };
+    const zoom = () => o.view()?.zoom ?? 1;
+
+    /** The desktop app's page for the current tab, when it has one. */
+    const webview = (): Webview | undefined => {
+        const target = o.tab()?.targetId;
+        if (!o.native || !target) return undefined;
+        const key = Object.entries(hostedTargets()).find(([, t]) => t === target)?.[0];
+        return (key ? document.querySelector<Webview>(`webview[data-key="${key}"]`) : null) ?? undefined;
+    };
+    const keyOf = (target: string | undefined) => Object.entries(hostedTargets()).find(([, t]) => t === target)?.[0];
+
+    // -----------------------------------------------------------------------
+    // Find in page
+
+    /** Each search, so an answer to one before it isn't shown. */
+    let asked = 0;
+    let typed: ReturnType<typeof setTimeout> | undefined;
+    onCleanup(() => clearTimeout(typed));
+    /** The desktop app's page answers its finds as events: the last request's is shown. */
+    let nativeRequest = -1;
+    const onFound = (e: Event) => {
+        const r = (e as Event & { result: { requestId: number; matches: number; activeMatchOrdinal: number } }).result;
+        if (r.requestId === nativeRequest) setFound({ matches: r.matches, active: r.activeMatchOrdinal });
+    };
+    let listening: Webview | undefined;
+    const listen = (view: Webview | undefined) => {
+        if (listening === view) return;
+        listening?.removeEventListener("found-in-page", onFound);
+        listening = view;
+        view?.addEventListener("found-in-page", onFound);
+    };
+    onCleanup(() => listen(undefined));
+
+    /** `step` 0: a new search (or the same one again); 1 and -1: the next and previous match. */
+    const search = async (step: number) => {
+        const text = query();
+        const mine = ++asked;
+        if (!text) {
+            setFound(undefined);
+            return clearFound();
+        }
+        if (o.native) {
+            const view = webview();
+            if (!view) return;
+            listen(view);
+            nativeRequest = view.findInPage(text, { forward: step >= 0, findNext: step === 0 });
+            return;
+        }
+        const tab = o.tab()?.id;
+        if (tab === undefined) return;
+        try {
+            const r = await rpc.call("browser.find", { id: o.id(), tab, query: text, step });
+            if (mine === asked) setFound(r);
+        } catch (e) {
+            if (mine === asked) setFound(undefined);
+            reportError(e);
+        }
+    };
+    /** What a search marked in the page, gone. */
+    const clearFound = () => {
+        if (o.native) return webview()?.stopFindInPage("clearSelection");
+        const tab = o.tab()?.id;
+        if (tab !== undefined) void rpc.call("browser.find", { id: o.id(), tab, query: "" }).catch(() => undefined);
+    };
+    /** The address bar's caret, when the find bar took the keyboard from there: it goes back there as the bar closes. */
+    let fromAddress: AddressMark | undefined;
+    const openFind = () => {
+        // Opened again from the bar itself: it goes back to where it was first opened from.
+        const mark = addressMark(o.address(), document.activeElement);
+        if (mark || !finding()) fromAddress = mark;
+        // Where they were in the page, to go back to as it closes (the search moves the page's focus to what it finds).
+        const key = o.native && !finding() && !fromAddress ? keyOf(o.tab()?.targetId) : undefined;
+        if (key) electron?.browserPageFocus?.(key, "keep");
+        findOpens++;
+        setMenuOpen(false);
+        setFinding(true);
+        requestAnimationFrame(() => (findInput?.focus(), findInput?.select()));
+        // Opened again on what it last looked for: found again, in the page as it is now.
+        if (query() && !found()) void search(0);
+    };
+    let findBar: HTMLDivElement | undefined;
+    /** Each opening and closing of the bar: one opened again before it has gone stays. */
+    let findOpens = 0;
+    const closeFind = () => {
+        clearTimeout(typed);
+        asked++;
+        setFound(undefined);
+        if (query()) clearFound();
+        // Back to where they were, as a browser's find bar does: the address bar with what they typed, or the page.
+        const mark = fromAddress;
+        fromAddress = undefined;
+        if (!backToAddress(o.address(), mark)) {
+            if (o.native) {
+                webview()?.focus();
+                const key = keyOf(o.tab()?.targetId);
+                if (key) electron?.browserPageFocus?.(key, "restore");
+            } else o.keyboard()?.focus({ preventScroll: true });
+        }
+        const closing = ++findOpens;
+        o.giveBack(findBar?.offsetHeight ?? 0, () => closing === findOpens && setFinding(false));
+    };
+    // Another tab: what was found was the one before's.
+    createEffect(on(() => o.tab()?.id, () => {
+        asked++;
+        setFound(undefined);
+    }, { defer: true }));
+
+    // Ctrl+F (⌘F) with the keyboard in the pane: the page's find, not the conversation's; F5 or Ctrl+R (⌘R) reloads the
+    // page, as in a browser. Taken before the page's own keyboard field sends them to the page.
+    onMount(() => {
+        const root = o.root();
+        const key = (e: KeyboardEvent) => {
+            if (o.status() === "unavailable" || e.altKey) return;
+            const find = e.key.toLowerCase() === "f" && isMod(e) && !e.shiftKey;
+            const reload = (e.key === "F5" && !isMod(e)) || (e.key.toLowerCase() === "r" && isMod(e));
+            if (!find && !(reload && o.tab())) return;
+            e.preventDefault();
+            e.stopPropagation();
+            if (find) openFind();
+            else o.reload();
+        };
+        root?.addEventListener("keydown", key, true);
+        // In the desktop app the page has the keyboard itself: the app tells which page was asked (browser-host.ts).
+        const off = o.native ? electron?.onBrowser((e) => {
+            if (e.key !== keyOf(o.tab()?.targetId)) return;
+            if (e.type === "find") openFind();
+            else if (e.type === "reload") o.reload();
+        }) : undefined;
+        onCleanup(() => {
+            root?.removeEventListener("keydown", key, true);
+            off?.();
+        });
+    });
+
+    // -----------------------------------------------------------------------
+    // Size and zoom
+
+    const pick = (device: PageView["device"]) => {
+        setMenuOpen(false);
+        setView({ device, zoom: zoom() });
+    };
+    const rotate = () => {
+        const d = o.view()?.device;
+        if (d) setView({ device: { width: d.height, height: d.width }, zoom: zoom() });
+    };
+    const zoomBy = (dir: 1 | -1 | 0) => setView({ device: o.view()?.device, zoom: dir ? zoomStep(zoom(), dir) : 1 });
+    const clamp = (n: number) => Math.min(MAX_SIDE, Math.max(MIN_SIDE, Math.round(n)));
+    /** A custom size just taken from the pane: the size strip that comes with it takes some of the pane's height. */
+    let seeded = false;
+    const custom = () => {
+        setMenuOpen(false);
+        const box = o.root()?.querySelector(".br-view")?.getBoundingClientRect();
+        if (!o.view()?.device) {
+            seeded = true;
+            setTimeout(() => (seeded = false), 1000);
+        }
+        setView({ device: o.view()?.device ?? { width: clamp(box?.width ?? 800), height: clamp(box?.height ?? 600) }, zoom: zoom() });
+        requestAnimationFrame(() => (widthInput?.focus(), widthInput?.select()));
+    };
+    // …so it's made to fit what's left, rather than shown at 92% from the start.
+    createEffect(
+        on(o.box, (b) => {
+            const d = o.view()?.device;
+            if (!seeded || !d) return;
+            const w = clamp(b.width), h = clamp(b.height);
+            if (w < d.width || h < d.height) setView({ device: { width: Math.min(d.width, w), height: Math.min(d.height, h) }, zoom: zoom() });
+        }, { defer: true }),
+    );
+    /** A side typed that a page can't have: kept in its field, marked, with what it takes beside it. */
+    const [refused, setRefused] = createSignal<"width" | "height">();
+    createEffect(on(() => o.view()?.device, () => setRefused(undefined), { defer: true }));
+    const typeSide = (which: "width" | "height", text: string) => {
+        const d = o.view()?.device;
+        if (!d) return;
+        const n = side(text);
+        if (n === undefined) return setRefused(which);
+        if (refused() === which) setRefused(undefined);
+        if (n !== d[which]) setView({ device: { ...d, [which]: n }, zoom: zoom() });
+    };
+    const sideField = (which: "width" | "height", d: Accessor<Size>, ref?: (el: HTMLInputElement) => void) => (
+        <input
+            ref={ref}
+            class="br-side"
+            type="text"
+            inputMode="numeric"
+            aria-label={which === "width" ? "Width" : "Height"}
+            aria-invalid={refused() === which}
+            aria-describedby={refused() === which ? sideNote : undefined}
+            value={d()[which]}
+            onInput={() => refused() === which && setRefused(undefined)}
+            onChange={(e) => typeSide(which, e.currentTarget.value)}
+            onKeyDown={(e) => {
+                if (e.key === "Enter") typeSide(which, e.currentTarget.value);
+                else if (e.key === "Escape" && refused() === which) {
+                    // Back to the size the page has.
+                    e.preventDefault();
+                    e.stopPropagation();
+                    e.currentTarget.value = String(d()[which]);
+                    setRefused(undefined);
+                }
+            }}
+        />
+    );
+    const sideNote = `br-side-note-${Math.random().toString(36).slice(2)}`;
+    /** How much smaller than its size a device's page is drawn, as a percentage; undefined when it's drawn at its size. */
+    const shownAt = () => {
+        const d = o.view()?.device;
+        // The desktop app's page is placed clear of the panel's edge handle (lib/page-follow.ts): its scale as placed.
+        const s = o.native ? shownBrowser() : undefined;
+        const placed = s?.by === "pane" && s.fit && s.page ? Math.min(s.box.width / s.page.width, s.box.height / s.page.height) : undefined;
+        const pct = d ? Math.round((placed ?? fitScale(o.box(), d)) * 100) : 100;
+        return pct > 0 && pct < 100 ? pct : undefined;
+    };
+    // The desktop app's page zooms itself (as its browser would); the headless one is asked for a zoomed size. Set on
+    // each tab as it's shown (Chromium keeps a zoom per site, which a page here mustn't pick up unasked), and the one
+    // left is put back to 100% for the agent, as a headless page is once the pane stops watching it.
+    let zoomed: Webview | undefined;
+    const setZoom = (view: Webview | undefined, z: number) => {
+        try {
+            view?.setZoomFactor(z);
+        } catch {
+            // Not attached yet, or gone: the next change sets it.
+        }
+    };
+    createEffect(() => {
+        if (!o.native) return;
+        const view = webview();
+        if (zoomed && zoomed !== view) setZoom(zoomed, 1);
+        zoomed = view;
+        setZoom(view, zoom());
+    });
+    onCleanup(() => setZoom(zoomed, 1));
+
+    const devTools = () => {
+        setMenuOpen(false);
+        const key = keyOf(o.tab()?.targetId);
+        const r = o.root()?.getBoundingClientRect();
+        if (key) electron?.browserDevTools?.(key, r && { x: r.x, y: r.y, width: r.width, height: r.height });
+    };
+
+    /** A row of the menu; `extra` is read as things change (zooming keeps the menu open). */
+    const item = (Icon: typeof Search, label: () => string, run: () => void, extra: () => { disabled?: boolean; kbd?: string; checked?: boolean } = () => ({})) => (
+        <button role={extra().checked === undefined ? "menuitem" : "menuitemradio"} aria-checked={extra().checked} class="menu-item compact" disabled={extra().disabled} onClick={run}>
+            <Icon size={14} />
+            <span class="menu-label grow">{label()}</span>
+            <Show when={extra().kbd}><kbd class="menu-kbd">{extra().kbd}</kbd></Show>
+            <Show when={extra().checked}><Check size={14} /></Show>
+        </button>
+    );
+
+    const menu = () => (
+        <>
+            <button ref={menuButton} class="hb sm" aria-label="Page tools" title="Find, size, zoom" aria-haspopup="menu" aria-expanded={menuOpen()} onClick={() => setMenuOpen(!menuOpen())}>
+                <Ellipsis size={14} />
+            </button>
+            <Menu label="Page tools" open={menuOpen()} anchor={() => menuButton} onClose={() => setMenuOpen(false)} align="end" width={244}>
+                {item(Search, () => "Find in page", openFind, () => ({ disabled: !o.tab(), kbd: mod === "⌘" ? "⌘F" : "Ctrl+F" }))}
+                <Show when={o.native && electron?.browserDevTools}>{item(SquareTerminal, () => "Open DevTools", devTools, () => ({ disabled: !o.tab() }))}</Show>
+                <div class="menu-sep" />
+                {item(Maximize, () => "Fill pane", () => pick(undefined), () => ({ checked: !o.view()?.device }))}
+                <For each={DEVICES}>
+                    {(d) => item(DEVICE_ICONS[d.name] ?? Smartphone, () => `${d.name} · ${d.size.width} × ${d.size.height}`, () => pick(d.size), () => ({ checked: deviceOf(o.view()?.device) === d }))}
+                </For>
+                {item(Ruler, () => "Custom size…", custom, () => ({ checked: !!o.view()?.device && !deviceOf(o.view()?.device) }))}
+                {item(RotateCwSquare, () => "Rotate", rotate, () => ({ disabled: !o.view()?.device }))}
+                <div class="menu-sep" />
+                {item(ZoomIn, () => "Zoom in", () => zoomBy(1), () => ({ disabled: zoom() >= 2 }))}
+                {item(ZoomOut, () => "Zoom out", () => zoomBy(-1), () => ({ disabled: zoom() <= 0.5 }))}
+                {item(Scan, () => "Actual size", () => zoomBy(0), () => ({ disabled: zoom() === 1 }))}
+            </Menu>
+        </>
+    );
+
+    const bars = () => (
+        <>
+            <Show when={finding()}>
+                <div
+                    ref={findBar}
+                    class="br-strip"
+                    role="search"
+                    aria-label="Find in page"
+                    onFocusOut={() => {
+                        // Out to somewhere other than the address bar it came from (the page's view says so only once
+                        // it has the focus): what was typed there goes, as it does when the address bar itself is left.
+                        if (fromAddress) setTimeout(() => {
+                            const now = document.activeElement;
+                            if (!fromAddress || keepsDraft(findBar, now) || now === o.address() || !document.hasFocus()) return;
+                            fromAddress = undefined;
+                            o.dropDraft();
+                        });
+                    }}
+                >
+                    <Search size={13} class="br-strip-ic" />
+                    <input
+                        ref={findInput}
+                        class="br-find-input"
+                        type="text"
+                        aria-label="Find in page"
+                        placeholder="Find in page"
+                        spellcheck={false}
+                        autocomplete="off"
+                        value={query()}
+                        onInput={(e) => {
+                            setQuery(e.currentTarget.value);
+                            clearTimeout(typed);
+                            typed = setTimeout(() => void search(0), TYPED_MS);
+                        }}
+                        onKeyDown={(e) => {
+                            if (e.key === "Escape") {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                closeFind();
+                            } else if (e.key === "Enter") {
+                                e.preventDefault();
+                                clearTimeout(typed);
+                                // The first Enter after typing searches; the next ones move along.
+                                void search(found() ? (e.shiftKey ? -1 : 1) : 0);
+                            }
+                        }}
+                    />
+                    <span class="br-strip-count" aria-live="polite">{found() ? (found()!.matches ? `${found()!.active} of ${found()!.matches}` : "No matches") : ""}</span>
+                    <button class="hb sm" aria-label="Previous match" title="Previous (Shift+Enter)" disabled={!found()?.matches} onClick={() => void search(-1)}><ChevronUp size={14} /></button>
+                    <button class="hb sm" aria-label="Next match" title="Next (Enter)" disabled={!found()?.matches} onClick={() => void search(1)}><ChevronDown size={14} /></button>
+                    <button class="hb sm" aria-label="Close find" title="Close (Esc)" onClick={closeFind}><X size={14} /></button>
+                </div>
+            </Show>
+            <Show when={o.view()}>
+                {(v) => (
+                    <div class="br-strip br-size" aria-label="Page size">
+                        <Show when={v().device} fallback={<span class="br-strip-label">Fill pane</span>}>
+                            {(d) => (
+                                <>
+                                    {sideField("width", d, (el) => (widthInput = el))}
+                                    <span class="br-strip-x">×</span>
+                                    {sideField("height", d)}
+                                    <button class="hb sm" aria-label="Rotate" title="Rotate" onClick={rotate}><RotateCwSquare size={14} /></button>
+                                    <Show
+                                        when={refused()}
+                                        fallback={<Show when={shownAt()}>{(pct) => <><span class="br-strip-note" title="Drawn smaller to fit the pane">Shown at</span><span class="br-strip-count" title="Drawn smaller to fit the pane">{pct()}%</span></>}</Show>}
+                                    >
+                                        <span id={sideNote} class="br-strip-note refused" role="alert">{`${MIN_SIDE}–${MAX_SIDE} px`}</span>
+                                    </Show>
+                                </>
+                            )}
+                        </Show>
+                        <span class="br-strip-end">
+                            <button class="hb sm" aria-label="Zoom out" title="Zoom out" disabled={zoom() <= 0.5} onClick={() => zoomBy(-1)}><ZoomOut size={14} /></button>
+                            <button class="br-strip-zoom" title="Actual size" aria-label={`Zoom ${Math.round(zoom() * 100)}%: actual size`} onClick={() => zoomBy(0)}>{Math.round(zoom() * 100)}%</button>
+                            <button class="hb sm" aria-label="Zoom in" title="Zoom in" disabled={zoom() >= 2} onClick={() => zoomBy(1)}><ZoomIn size={14} /></button>
+                            <button class="hb sm" aria-label="Fill pane" title="Fill pane" onClick={() => setView(undefined)}><X size={14} /></button>
+                        </span>
+                    </div>
+                )}
+            </Show>
+        </>
+    );
+    return { menu, bars, keepsDraft: (next) => !!fromAddress && keepsDraft(findBar, next) };
+}

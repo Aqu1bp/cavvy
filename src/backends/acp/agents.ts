@@ -11,18 +11,24 @@ import type { PermissionMode } from "../../permissions/modes";
 import type { ModelInfo, Usage } from "../../providers/types";
 import { canonical, expandPath } from "../../util/files";
 import { cliMessage, runCli } from "../cli";
+import { baseCli } from "../defs";
 import type { SpawnConfig } from "../live/types";
 
 export interface AcpAgent {
     /** Arguments after the def's acpArgs, and environment, for a process: only what's fixed for its life. */
     spawn(cfg: SpawnConfig): { args: string[]; env: Record<string, string> };
     /** Its models' ids (passed to it verbatim), without opening a session (which would land in its history). */
-    listModels(bin: string, signal?: AbortSignal): Promise<{ id: string; name?: string }[]>;
+    listModels(bin: string, signal?: AbortSignal, env?: Record<string, string>): Promise<{ id: string; name?: string }[]>;
     /**
      * Whether it's signed in, without reading its sign-in (its own status command). Left out: it's signed in when it
      * starts and answers initialize.
      */
-    status?(bin: string, signal?: AbortSignal): Promise<{ signedIn: boolean; description: string }>;
+    status?(bin: string, signal?: AbortSignal, env?: Record<string, string>): Promise<{ signedIn: boolean; description: string; free?: boolean }>;
+    /**
+     * A line of its stderr that says the running prompt hit an error it's waiting out by itself, unsaid over ACP: why.
+     * `sessionId`: the session Cavvy opened.
+     */
+    stalled?(line: string, sessionId: string): string | undefined;
     /**
      * Its own plan mode, set to `plan` in Cavvy's plan mode and back to `normal` outside it: a config option
      * (`configId`), or its session mode (session/set_mode) when there's none.
@@ -211,13 +217,44 @@ export function opencodeEnv(trusted: boolean): Record<string, string> {
     };
 }
 
+/**
+ * OpenCode 1.19.6 on a model that refuses (its free models past their limit: "Free usage limit reached…") logs a
+ * stream error and waits to try again, saying nothing over ACP: session/prompt doesn't answer. Its log line, printed
+ * to stderr by --print-logs: `… message="stream error" … session.id=ses_… small=false … error.error="AI_APICallError: …"`.
+ * `small=true` is its title's request, not the reply.
+ */
+export function opencodeStalled(line: string, sessionId: string): string | undefined {
+    if (!line.includes('message="stream error"') || !line.includes(` session.id=${sessionId} `) || !/ small=false( |$)/.test(line)) return undefined;
+    const said = line.match(/ error\.error="((?:[^"\\]|\\.)*)"/)?.[1];
+    if (!said) return undefined;
+    return said.replace(/\\(.)/g, "$1").replace(/^AI_\w+Error: /, "").trim() || undefined;
+}
+
+/** `opencode auth list`: its stored credentials and the provider keys it finds in its environment, counted. */
+async function opencodeStatus(bin: string, signal?: AbortSignal, env?: Record<string, string>): Promise<{ signedIn: boolean; description: string; free?: boolean }> {
+    const r = await runCli(bin, ["auth", "list"], { signal, timeoutMs: 30_000, env });
+    if (r.code !== 0) throw new Error(`opencode auth list failed: ${cliMessage(r.stderr) || `exit code ${r.code}`}`);
+    // "└  0 credentials", then "└  1 environment variable" when it has one (ANSI colours stripped).
+    // Written to stdout or stderr, as it finds them.
+    const out = `${r.stdout}\n${r.stderr}`.replace(/\x1b\[[0-9;]*m/g, "");
+    const stored = Number(out.match(/(\d+) credentials?\b/)?.[1] ?? NaN);
+    const fromEnv = Number(out.match(/(\d+) environment variables?\b/)?.[1] ?? 0);
+    // Said otherwise (a later version): usable, as before.
+    if (Number.isNaN(stored)) return { signedIn: true, description: "answering" };
+    if (stored + fromEnv === 0) return { signedIn: true, free: true, description: "free models only, not signed in" };
+    return { signedIn: true, description: `signed in (${stored + fromEnv} provider${stored + fromEnv === 1 ? "" : "s"})` };
+}
+
 const OPENCODE: AcpAgent = {
     // The same in every mode: a mode change needs no restart. Cavvy decides each ask by its mode then.
-    spawn: (cfg) => ({ args: ["--cwd", cfg.cwd], env: opencodeEnv(cfg.trusted) }),
+    // Its log on stderr, errors only: what `stalled` reads.
+    spawn: (cfg) => ({ args: ["--print-logs", "--log-level", "ERROR", "--cwd", cfg.cwd], env: opencodeEnv(cfg.trusted) }),
     keepsFolder: true,
+    status: opencodeStatus,
+    stalled: opencodeStalled,
     // `opencode models`: provider/model, one a line (about half a second).
-    async listModels(bin, signal) {
-        const r = await runCli(bin, ["models"], { signal, timeoutMs: 30_000 });
+    async listModels(bin, signal, env) {
+        const r = await runCli(bin, ["models"], { signal, timeoutMs: 30_000, env });
         if (r.code !== 0) throw new Error(`opencode models failed: ${r.stderr.trim().split("\n").pop() ?? `exit code ${r.code}`}`);
         return r.stdout
             .split("\n")
@@ -229,8 +266,8 @@ const OPENCODE: AcpAgent = {
 };
 
 /** `grok models`: whether it's signed in (its first line), and its models (about a second and a half). */
-async function grokModels(bin: string, signal?: AbortSignal): Promise<{ said: string; models: string[] }> {
-    const r = await runCli(bin, ["models"], { signal, timeoutMs: 30_000 });
+async function grokModels(bin: string, signal?: AbortSignal, env?: Record<string, string>): Promise<{ said: string; models: string[] }> {
+    const r = await runCli(bin, ["models"], { signal, timeoutMs: 30_000, env });
     if (r.code !== 0) throw new Error(`grok models failed: ${cliMessage(r.stderr) || `exit code ${r.code}`}`);
     const lines = r.stdout.split("\n");
     // "You are logged in with grok.com." or "You are not authenticated.", then "  * grok-4.7 (default)", "  - grok-4.6".
@@ -481,11 +518,11 @@ function grokTool(call: GateCall, cwd: string): GateTool | undefined {
  */
 const GROK: AcpAgent = {
     spawn: () => ({ args: [], env: {} }),
-    async listModels(bin, signal) {
-        return (await grokModels(bin, signal)).models.map((id) => ({ id }));
+    async listModels(bin, signal, env) {
+        return (await grokModels(bin, signal, env)).models.map((id) => ({ id }));
     },
-    async status(bin, signal) {
-        const { said } = await grokModels(bin, signal);
+    async status(bin, signal, env) {
+        const { said } = await grokModels(bin, signal, env);
         // Signed out it says "You are not authenticated." (with an empty GROK_HOME), and session/new answers -32000.
         if (/not (authenticated|logged in|signed in)/i.test(said)) return { signedIn: false, description: "not signed in" };
         const m = said.match(/logged in with (.+?)\.?$/i);
@@ -559,9 +596,9 @@ const AGY_LIST_MS = 30_000;
 export const AGY_SIGNED_OUT = /\b(please sign in|sign in to|not signed in|not logged in|log ?in required|authentication required)\b/i;
 
 /** `agy models`: its models (id, a tab, its name), one a line; signed out, it says so and lists none. */
-export async function agyModels(bin: string, signal?: AbortSignal): Promise<{ signedIn: boolean; models: { id: string; name: string }[] }> {
+export async function agyModels(bin: string, signal?: AbortSignal, env?: Record<string, string>): Promise<{ signedIn: boolean; models: { id: string; name: string }[] }> {
     const started = Date.now();
-    const r = await runCli(bin, ["models"], { signal, timeoutMs: AGY_LIST_MS });
+    const r = await runCli(bin, ["models"], { signal, timeoutMs: AGY_LIST_MS, env });
     const said = `${r.stdout}\n${r.stderr}`;
     if (AGY_SIGNED_OUT.test(said)) return { signedIn: false, models: [] };
     // Stopped when it took too long, it says nothing.
@@ -593,13 +630,13 @@ const ANTIGRAVITY: AcpAgent = {
     }),
     modeArgs: (mode) => (mode === "bypassPermissions" ? ["--dangerously-skip-permissions"] : []),
     sessionModes: { default: "default", acceptEdits: "accept-edits", auto: "auto", plan: "plan", bypassPermissions: "default" },
-    async listModels(bin, signal) {
-        const l = await agyModels(bin, signal);
+    async listModels(bin, signal, env) {
+        const l = await agyModels(bin, signal, env);
         if (!l.signedIn) throw new Error("Antigravity isn't signed in. Run `agy` in a terminal to sign in.");
         return l.models;
     },
-    async status(bin, signal) {
-        const l = await agyModels(bin, signal);
+    async status(bin, signal, env) {
+        const l = await agyModels(bin, signal, env);
         return l.signedIn ? { signedIn: true, description: `signed in, ${l.models.length} model${l.models.length === 1 ? "" : "s"}` } : { signedIn: false, description: "not signed in" };
     },
     ownAsks: true,
@@ -623,13 +660,14 @@ const AGENTS: Record<string, AcpAgent> = { opencode: OPENCODE, grok: GROK, antig
 
 /** What its model `modelId` is like, listed or not: effort named in its id, whether it reads a PDF. */
 export function acpModelTraits(id: string, modelId: string): Partial<ModelInfo> {
-    const agent = AGENTS[id];
+    // A named instance (antigravity@work) runs its CLI's agent.
+    const agent = AGENTS[baseCli(id)];
     if (!agent) return {};
     return { ...(agent.effortInModel ? { supportsReasoning: false } : {}), ...(agent.readsPdf ? { supportsPdf: agent.readsPdf(modelId) } : {}) };
 }
 
 export function acpAgent(id: string): AcpAgent {
-    const a = AGENTS[id];
+    const a = AGENTS[baseCli(id)];
     if (!a) throw new Error(`No ACP agent ${id}`);
     return a;
 }

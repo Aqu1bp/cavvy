@@ -133,7 +133,7 @@ test("the model picker's effort: a change the server refuses goes back to the le
     mock.module("../../gui/src/lib/platform", () => ({ ...names(["copyText", "pickFolder"]), machine: undefined }));
     mock.module("../../gui/src/state/prefs", () => ({ prefs: {}, setPrefs: stub }));
     mock.module("../../gui/src/state/ui", () => ({
-        ...names(["freeRail", "railOpen", "requestComposerFocus", "setAgentFocus", "setArchiveRequest", "setContextCardOpen", "setFolderPickerOpen", "setMcpOpen", "setModePickerOpen", "setModelPickerOpen", "setRailOpen", "review", "setReview", "setRewindOpen", "setSettingsTab", "setTerminalMax"]),
+        ...names(["freeRail", "railOpen", "requestComposerFocus", "setAgentFocus", "setArchiveRequest", "setContextCardOpen", "setFolderPickerOpen", "setMcpOpen", "setModePickerOpen", "setModelPickerOpen", "setRailOpen", "review", "setReview", "setRewindOpen", "setSettingsTab", "setTerminalMax", "setInspectorPane", "setAskSideChat"]),
         shellLayout: () => ({ railMode: "dock" }),
         splitActions: {},
     }));

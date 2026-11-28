@@ -12,12 +12,13 @@ const MAX_LINE_CHARS = 2000;
 /** Bigger inputs aren't diffed at all. */
 export const MAX_DIFF_INPUT = 2 * 1024 * 1024;
 
-export function fileDiff(path: string, before: string | null, after: string | null, opts: { context?: number; maxLines?: number } = {}): FileDiff {
+/** `ignoreWhitespace`: lines that differ only in whitespace count as unchanged; a file whose changes all do says so. */
+export function fileDiff(path: string, before: string | null, after: string | null, opts: { context?: number; maxLines?: number; ignoreWhitespace?: boolean } = {}): FileDiff {
     const status: FileDiff["status"] = before === null ? "added" : after === null ? "deleted" : "modified";
     const a = before ?? "";
     const b = after ?? "";
     if (a.length + b.length > MAX_DIFF_INPUT) return { path, status, added: 0, removed: 0, hunks: [], note: "Too large to show" };
-    const ops = diffLines(a, b);
+    const ops = diffLines(a, b, { ignoreWhitespace: opts.ignoreWhitespace });
     let added = 0;
     let removed = 0;
     for (const o of ops) {
@@ -44,7 +45,8 @@ export function fileDiff(path: string, before: string | null, after: string | nu
         lines += hl.length;
         out.push({ oldStart: h.oldStart, oldLines: h.oldLines, newStart: h.newStart, newLines: h.newLines, lines: hl });
     }
-    return { path, status, added, removed, hunks: out, ...(truncated ? { truncated } : {}) };
+    const spaceOnly = opts.ignoreWhitespace && !out.length && a !== b;
+    return { path, status, added, removed, hunks: out, ...(truncated ? { truncated } : {}), ...(spaceOnly ? { note: "Only whitespace changed" } : {}) };
 }
 
 /** Text from bytes, or undefined when it looks binary. */

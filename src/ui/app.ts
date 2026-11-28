@@ -58,6 +58,7 @@ import { isShellTool } from "../tools/types";
 import { killAllShells, runShell, childEnv } from "../tools/bash";
 import { availableSearchBackend, formatHits, searchWeb } from "../tools/web-tools";
 import { clientFor, listAllModels, cachedListings, defaultModelFrom, resolveModelInfo, reviewTarget, smallModelFor, lookupModel, type ProviderListing } from "../providers/models";
+import { fallbackNotice, unavailableReason } from "../providers/model-refs";
 import { getProvider, resolveBaseUrl } from "../providers/registry";
 import { account, accountSwitch, catalogNote, removedAccount, removedAccountNote, switchHow } from "../providers/accounts";
 import { RpcError } from "../server/rpc-error";
@@ -66,7 +67,7 @@ import { formatCost, formatTokens } from "../providers/pricing";
 import { attachmentsNote } from "../providers/files";
 import { configuredProviders, storageDescription } from "../auth/credentials";
 import { findCli } from "../backends/cli";
-import { AGENT_CLIS, agentCli } from "../backends/defs";
+import { AGENT_CLIS, agentCli, baseCli } from "../backends/defs";
 import { commandList, commandRefusesImages, openInBrowser, runCommand, type Command } from "../commands/index";
 import { loadCustomCommands, type CustomCommand } from "../commands/custom";
 import { loadSkills, skillMentions, withSkills, type Skill } from "../agent/skills";
@@ -88,6 +89,7 @@ import { planLimitKey } from "../server/protocol";
 import { mergeLimits } from "../backends/limits";
 import { steersMidTurn } from "../backends/defs";
 import type { PlanLimits, StoppedTask } from "../server/protocol";
+import { keepAwake } from "../agent/keep-awake";
 
 export interface AppInit {
     cwd: string;
@@ -520,15 +522,23 @@ export class App {
     private async pickStartupModel() {
         // --model, then a resumed session's own model, then the saved default.
         const candidates = [this.init.modelRef, this.resumedModel, this.settings.model ?? this.init.fallbackModel].filter((r): r is string => Boolean(r && parseModelRef(r)));
+        // The resumed session's model, else the saved default, when it couldn't be used: said once, by name.
+        let missed: string | undefined;
+        const tell = async () => {
+            if (!missed || !this.model) return;
+            const why = (await unavailableReason(missed)) ?? (missed === this.resumedModel ? "The model this session used isn't available" : "The default model isn't available");
+            this.notice(fallbackNotice(why, this.model), "warn");
+        };
         for (const ref of new Set(candidates)) {
             // An explicit --model should say why it can't be used.
             const ok = await this.setModel(ref, { quiet: ref !== this.init.modelRef, persist: false });
             if (ok) {
-                if (ref !== this.resumedModel && this.resumedModel) this.notice(`This session used ${this.resumedModel}, which isn't available now.`, "warn");
+                await tell();
                 this.printModelLine();
                 void this.refreshListings();
                 return;
             }
+            if (ref !== this.init.modelRef) missed ??= ref;
         }
         this.listings = cachedListings();
         let pick = defaultModelFrom(this.listings);
@@ -541,7 +551,7 @@ export class App {
             pick = defaultModelFrom(this.listings);
         } else void this.refreshListings();
         if (pick && (await this.setModel(modelRef(pick), { quiet: true, persist: false }))) {
-            if (this.resumedModel) this.notice(`This session used ${this.resumedModel}, which isn't available now.`, "warn");
+            await tell();
             this.printModelLine();
             return;
         }
@@ -850,19 +860,17 @@ export class App {
             if (r) ({ model, client } = r);
         } else if (opts?.main) {
             // the session's own model
-        } else if (smallRef) {
-            const p = parseModelRef(smallRef);
-            if (p) {
-                try {
-                    client = await clientFor(p.provider);
-                    model = resolveModelInfo(smallRef) ?? model;
-                } catch {
-                    // fall back to the main model
-                }
-            }
         } else {
-            const small = smallModelFor(model.provider, this.listings);
-            if (small) model = small;
+            const p = smallRef ? parseModelRef(smallRef) : undefined;
+            const chosen = p && (await clientFor(p.provider).then((c) => c, () => undefined));
+            if (chosen) {
+                client = chosen;
+                model = resolveModelInfo(smallRef!) ?? model;
+            } else {
+                // None set, or its provider was removed or turned off: a small model of the session's provider.
+                const small = smallModelFor(model.provider, this.listings);
+                if (small) model = small;
+            }
         }
         const res = await client.stream(
             // Not a session message, so redact here (WebFetch pages, reviewer prompts).
@@ -1255,7 +1263,7 @@ export class App {
             this.notice(c.message, "error");
             return true;
         }
-        if (this.model?.provider === "claude-code" && (c.kind === "pause" || c.kind === "resume")) {
+        if (baseCli(this.model?.provider) === "claude-code" && (c.kind === "pause" || c.kind === "resume")) {
             this.notice(c.kind === "pause" ? "Claude Code's goals don't pause: press esc to stop the turn (it carries on with your next message), or /goal clear." : "Claude Code carries on with the goal when you send a message.");
             return true;
         }
@@ -1463,7 +1471,7 @@ export class App {
         if (this.settings.showThinking) return true;
         // Anthropic "updates" display: short progress notes, always shown (Claude Code's too).
         const provider = this.model?.provider ?? "";
-        return getProvider(provider)?.kind === "anthropic" || provider === "claude-code";
+        return getProvider(provider)?.kind === "anthropic" || baseCli(provider) === "claude-code";
     }
 
     private flushThinking() {
@@ -1578,6 +1586,11 @@ export class App {
                 this.notice(e.message, e.level);
                 break;
             case "retry":
+                // It goes on with the same response (`keep`): what's shown stays.
+                if (e.keep) {
+                    this.status = `${e.reason.slice(0, 80)} · retrying (attempt ${e.attempt})`;
+                    break;
+                }
                 if (this.md?.hasContent || this.mdLines) this.notice("(connection problem; the partial response above was discarded and is being retried)", "warn");
                 // A retry discards only this request's partial output. Rebuild the
                 // renderer with the accepted prefix, including its open Markdown state.
@@ -2523,7 +2536,7 @@ export class App {
             const taken = new Set(listed.flatMap((c) => [c.name, ...(c.aliases ?? [])]));
             const provider = this.model?.provider;
             const own: Pick<Command, "name" | "description" | "args" | "aliases">[] =
-                provider && provider !== "codex" && this.cliCommands?.provider === provider
+                provider && baseCli(provider) !== "codex" && this.cliCommands?.provider === provider
                     ? [...this.cliCommands.names].filter((n) => !taken.has(n)).map((n) => ({ name: n, description: `${getProvider(provider)?.name ?? provider}'s own command` }))
                     : [];
             const items = [...listed, ...own]
@@ -2538,7 +2551,7 @@ export class App {
         if (/^\$[a-zA-Z0-9:_-]*$/.test(tok.text) && !/[A-Z]/.test(tok.text)) {
             const q = tok.text.slice(1);
             // Codex's own skills too, once it has listed them.
-            const cli = this.cliCommands?.provider === "codex" && this.model?.provider === "codex" ? [...this.cliCommands.names].filter((n) => !this.skills.some((s) => s.name === n)).map((n) => ({ name: n, description: "Codex's own skill", userInvocable: true })) : [];
+            const cli = this.cliCommands && baseCli(this.cliCommands.provider) === "codex" && baseCli(this.model?.provider) === "codex" ? [...this.cliCommands.names].filter((n) => !this.skills.some((s) => s.name === n)).map((n) => ({ name: n, description: "Codex's own skill", userInvocable: true })) : [];
             const found = [...this.skills, ...cli]
                 .filter((s) => s.userInvocable && (s.name.startsWith(q) || (q.length > 1 && s.name.includes(q))))
                 .sort((a, b) => Number(!a.name.startsWith(q)) - Number(!b.name.startsWith(q)) || a.name.localeCompare(b.name))
@@ -2672,6 +2685,8 @@ export class App {
         // Busy from here on, so prompts typed while MCP servers finish connecting queue up.
         const agent = this.agent;
         this.busy = true;
+        // The computer stays awake while it works (src/agent/keep-awake.ts).
+        keepAwake.set(this, true);
         // Busy now: what's sent waits behind this turn, and the rest released for an account follows it.
         this.draining = undefined;
         this.idleCompact.disarm();
@@ -2727,6 +2742,7 @@ export class App {
             reason = "error";
         } finally {
             this.busy = false;
+            keepAwake.set(this, false);
             this.persistBackground();
             this.takeBackBlockedAt = 0;
             this.abort = undefined;

@@ -17,6 +17,7 @@
 //                    time; "fastdemo N short": a two-line reply)
 //   "agents"         hands two reviews to sub-agents on other models (Task), then sums up
 //   "note"           a sub-agent that writes a file (asks permission in Manual mode)
+//   "writenote"      writes SIDE-NOTE.md itself (asks permission in Manual mode)
 //   "background"     a sub-agent in the background (Task run_in_background), and a turn that goes on meanwhile
 //   "first message"  says what the user's first message was, and how many they've sent
 //   "pause"          a short answer after a moment's wait (time to queue a message meanwhile)
@@ -24,7 +25,7 @@
 //   "reject400"      the request is refused (HTTP 400, as for a bad request)
 //   "hangforever"    nothing is ever sent back (until the request is cancelled)
 //   "emptyreply"     a response with no text and no tool calls
-//   "untitled"       the request for the session's title is refused (HTTP 400)
+//   "untitled"       the request for the session's title is refused (HTTP 400); so is Regenerate title's, once it's in the conversation
 //   "stubborn"       runs a command that ignores being told to stop (SIGTERM)
 //   "tooldemo"       a turn whose calls arrive slowly (a 4k-character Write, an Edit), between thoughts and a command:
 //                    the states a call goes through, and the moves between them
@@ -57,6 +58,8 @@
 // Register it as a provider (no key needed) in ~/.cavvy/providers.json:
 //   { "custom": [{ "id": "mock", "name": "Mock", "baseUrl": "http://127.0.0.1:4010/v1", "requiresKey": false }] }
 
+import { appendFileSync } from "fs";
+
 type Json = Record<string, any>;
 
 interface Step {
@@ -77,6 +80,8 @@ export interface MockOptions {
     site?: string;
     /** Milliseconds between streamed chunks. */
     delayMs?: number;
+    /** A file each request's body is added to, a line each: what the model was sent, to read while trying the GUI. */
+    dumpTo?: string;
 }
 
 const MODELS = [
@@ -274,6 +279,10 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
         if (toolRounds === 1) return { text: "While it works, the auth module:", calls: [{ name: "Read", args: { file_path: "src/auth/index.ts" } }] };
         return { text: "Strategies are registered in `src/auth/index.ts`. The test review is still running in the background; its findings come with your next message." };
     }
+    if (/\bwritenote\b/.test(p)) {
+        if (toolRounds === 0) return { text: "Writing it.", calls: [{ name: "Write", args: { file_path: "SIDE-NOTE.md", content: "# Side note\n" } }] };
+        return { text: /^(File created|The file)/.test(lastResult) ? "Wrote `SIDE-NOTE.md`." : "I didn't write it." };
+    }
     if (/\bnote\b/.test(p)) {
         if (toolRounds === 0)
             return {
@@ -403,7 +412,11 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
     }
     if (/\bquestion\b/.test(p)) {
         if (toolRounds === 0) return { text: "Before I start, one decision:", calls: [{ name: "AskUserQuestion", args: { question: "Which identity protocol should we support first?", options: [{ label: "SAML 2.0", description: "Most enterprise IdPs (Okta, Azure AD)" }, { label: "OpenID Connect", description: "Simpler, modern, JSON-based" }, { label: "Both", description: "More work up front" }] } }] };
-        return { text: `Great, going with that. (${lastResult.replace(/^The user answered: /, "")})` };
+        // What came attached to the answer: framed files, saved ones, images.
+        const got = [...lastResult.matchAll(/<attached-file name="([^"]+)"|The user attached "([^"]+)"/g)].map((m) => m[1] ?? m[2]);
+        const images = /^(An image|\d+ images) the user attached/m.exec(lastResult)?.[1]?.toLowerCase();
+        const also = [...got, ...(images ? [images] : [])];
+        return { text: `Great, going with that. (${lastResult.split("\n")[0]!.replace(/^The user answered: /, "")})${also.length ? ` I have ${also.join(", ")}.` : ""}` };
     }
     if (/\bplan\b/.test(p)) {
         if (toolRounds === 0) return { reasoning: "I'll research first, then propose.", calls: [{ name: "Glob", args: { pattern: "**/*.ts" } }] };
@@ -574,6 +587,27 @@ function goalVerdict(prompt: string): string {
     return JSON.stringify({ verdict: "met", reason: "The output shows 12 auth tests passing with 0 failures, and the linter is clean." });
 }
 
+/** A pull request's title and description, as a small model would draft it from what it's shown. */
+function prText(prompt: string): string {
+    const subject = /^- (.+)$/m.exec(prompt)?.[1]?.trim() ?? "Update the project";
+    const templated = /pull request template:\n/.test(prompt);
+    const files = [...prompt.matchAll(/^ (\S+) +\| /gm)].map((m) => m[1]).slice(0, 4);
+    const summary = `${subject}.${files.length ? ` Touches ${files.map((f) => `\`${f}\``).join(", ")}.` : ""}`;
+    return templated ? `${subject}\n\n## Summary\n\n${summary}\n\n## Testing\n\nNot stated in the commits.` : `${subject}\n\n${summary}`;
+}
+
+/** A branch name from the first words of the work described. */
+function branchFor(prompt: string): string {
+    const words = prompt.replace(/^The work:\n/, "").toLowerCase().match(/[a-z0-9]+/g) ?? ["update"];
+    return words.filter((w) => !["the", "a", "an", "to", "and", "of", "for", "in", "please"].includes(w)).slice(0, 4).join("-") || "update";
+}
+
+/** A title asked again from the conversation so far (Regenerate title): named after the user's latest request in it. */
+function latestAsk(prompt: string): string {
+    if (!prompt.startsWith("First request:")) return prompt;
+    return prompt.split("\n").filter((l) => l.startsWith("User: ")).at(-1)?.slice(6) ?? prompt;
+}
+
 function titleFor(prompt: string): string {
     const p = prompt.toLowerCase();
     if (/\bperfturn 9\d\d\b/.test(p)) return "Short session";
@@ -725,6 +759,14 @@ export function startMockLlm(o: MockOptions = {}) {
     let calls = 0;
     /** Each completion asked for, including the prompt/attachments and raw body sent. */
     const requests: { model: string; kind: "title" | "summary" | "turn"; body: string; prompt: string; images: number }[] = [];
+    if (o.dumpTo) {
+        const file = o.dumpTo;
+        const push = requests.push.bind(requests);
+        requests.push = (...rs) => {
+            for (const r of rs) appendFileSync(file, `${r.body}\n`);
+            return push(...rs);
+        };
+    }
     /** The latest requests' bodies as they arrived, for tests that check what the model was sent. */
     const bodies: Json[] = [];
     const server = Bun.serve({
@@ -791,7 +833,7 @@ export function startMockLlm(o: MockOptions = {}) {
             }
 
             let step: Step;
-            if (/name coding-assistant sessions/.test(system)) step = { text: titleFor(prompt) };
+            if (/name coding-assistant sessions/.test(system)) step = { text: titleFor(latestAsk(prompt)) };
             else if (/check whether a coding agent has reached a goal/.test(system)) {
                 // A real check takes a moment: long enough to see it (not in tests, which run with no delay).
                 if (delay) await Bun.sleep(delay * 100);
@@ -799,6 +841,9 @@ export function startMockLlm(o: MockOptions = {}) {
             }
             // A permission popup's one-line summary: none from the mock (its canned line said nothing about the action).
             else if (/for a permission popup/.test(system)) step = { text: "" };
+            // Drafted git text (src/server/git-generate.ts): a pull request, from its first commit's subject; a branch name.
+            else if (/Write a GitHub pull request title/.test(system)) step = { text: prText(prompt) };
+            else if (/Suggest a Git branch name/.test(system)) step = { text: branchFor(prompt) };
             else if (!body.tools?.length) step = { text: "Summary: the user asked for help; the work is in progress." };
             else if (/what was my first message/i.test(prompt)) step = { text: recall(messages) };
             else if (/\bfinishat (\d+)\b/.test(prompt)) {

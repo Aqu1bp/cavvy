@@ -10,13 +10,14 @@ import type { Effort, McpServerConfig, Settings } from "../config/settings";
 import { approvalOf, serverCwd } from "../mcp/approval";
 import { paths } from "../config/paths";
 import { serverSegment } from "../mcp/manager";
-import type { PermissionMode } from "../permissions/modes";
+import { STRICTNESS, type PermissionMode } from "../permissions/modes";
 import { parseModelRef } from "../providers/types";
 import { findSkill, type AgentDef } from "../agent/agents";
 import { MCP_SERVER_NAME } from "../agent/delegation";
 import { matcherOr } from "../agent/hooks";
 import { APP_NAME } from "../config/name";
 import { legacyMcpMatcher } from "../config/legacy";
+import { baseCli } from "./defs";
 
 /** One entry of --agents: the fields Claude Code reads from a sub-agent file, plus its prompt. */
 export interface ClaudeAgentDefinition {
@@ -36,15 +37,10 @@ export interface ClaudeAgentDefinition {
     memory?: "user" | "project" | "local";
 }
 
-/**
- * Claude Code's mode for each Cavvy mode, as for the session (MODES in
- * claude-code.ts): its acceptEdits also runs file commands without asking, so
- * an acceptEdits agent runs in default there, and Cavvy approves its
- * edits with the agent's own mode (its asks name it: Agent.backendPermission).
- */
+/** Claude Code's mode for each Cavvy mode, as for the session (MODES in claude-code.ts). */
 const CLAUDE_MODES: Record<PermissionMode, string> = {
     default: "default",
-    acceptEdits: "default",
+    acceptEdits: "acceptEdits",
     plan: "plan",
     auto: "auto",
     bypassPermissions: "bypassPermissions",
@@ -55,7 +51,7 @@ export function claudeModel(model: string | undefined): string | undefined {
     if (!model) return "inherit";
     const ref = parseModelRef(model);
     if (!ref) return "inherit";
-    if (ref.provider === "claude-code" || ref.provider === "anthropic") return ref.id === "default" ? "inherit" : ref.id;
+    if (baseCli(ref.provider) === "claude-code" || ref.provider === "anthropic") return ref.id === "default" ? "inherit" : ref.id;
     if (ref.provider === "openrouter" && ref.id.startsWith("anthropic/")) return ref.id.slice("anthropic/".length);
     return undefined;
 }
@@ -107,7 +103,8 @@ function claudeAgent(def: AgentDef, model: string, o: ClaudeAgentsOptions): Clau
     const disallowed = [...(def.disallowedTools ?? []), ...(def.permissionMode ? [`mcp__${MCP_SERVER_NAME}`] : [])];
     if (disallowed.length) a.disallowedTools = disallowed;
     if (def.effort) a.effort = def.effort;
-    if (def.permissionMode && !["plan", "auto", "bypassPermissions"].includes(o.mode)) a.permissionMode = CLAUDE_MODES[def.permissionMode];
+    // Its own mode only where that's stricter than the session's: a definition never makes an agent looser.
+    if (def.permissionMode && STRICTNESS[def.permissionMode] > STRICTNESS[o.mode]) a.permissionMode = CLAUDE_MODES[def.permissionMode];
     if (def.maxTurns) a.maxTurns = def.maxTurns;
     if (unknown.length) a.skills = unknown;
     if (def.background) a.background = true;

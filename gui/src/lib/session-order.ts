@@ -43,7 +43,7 @@ export type SidebarEntry =
     /** A project heading; `collapsed`: its sessions in play (`ids`) are folded under it. */
     /** `cwd`: the project (projectOf). `machine`: the server it's on. */
     | { key: string; kind: "project"; cwd: string; name: string; machine?: string; collapsed?: boolean; ids?: string[] }
-    | { key: string; kind: "settled" | "archived" }
+    | { key: string; kind: "settled" | "archived" | "snoozed" }
     /** Listed by date: the day its sessions below were last at work (dayOf); `collapsed`: they're folded under it (`ids`). */
     | { key: string; kind: "day"; label: DayLabel; collapsed?: boolean; ids?: string[] }
     | { key: string; kind: "more"; page: "cards" | "settled" | "archived"; remaining: number }
@@ -60,6 +60,8 @@ export interface SidebarOptions {
     groupBy: "date" | "project";
     archived: boolean;
     settledOpen: boolean;
+    /** Snoozed's rows are shown (folded by default). */
+    snoozedOpen?: boolean;
     cards: number;
     settled: number;
     archive: number;
@@ -112,8 +114,8 @@ export function toggleProject<T extends string>(collapsed: readonly T[], cwd: T)
  * The same array when there's nothing to unfold (a settled or archived one is
  * listed elsewhere; listed by date, nothing folds).
  */
-export function revealProject(collapsed: readonly string[], s: Pick<SessionSummary, "cwd" | "run" | "settled" | "archived"> | undefined, groupBy: "date" | "project"): readonly string[] {
-    if (!s || groupBy !== "project" || s.settled || s.archived || !collapsed.includes(projectOf(s))) return collapsed;
+export function revealProject(collapsed: readonly string[], s: Pick<SessionSummary, "cwd" | "run" | "settled" | "archived" | "snoozedUntil" | "status"> | undefined, groupBy: "date" | "project"): readonly string[] {
+    if (!s || groupBy !== "project" || s.settled || s.archived || isSnoozed(s) || !collapsed.includes(projectOf(s))) return collapsed;
     return collapsed.filter((c) => c !== projectOf(s));
 }
 
@@ -123,6 +125,9 @@ export function revealDay(folded: readonly DayLabel[], s: Pick<SessionSummary, "
     const day = dayOf(s, now);
     return folded.includes(day) ? folded.filter((d) => d !== day) : folded;
 }
+
+/** Out of the list until it wakes, under Snoozed. Waiting on you, it's back (the server wakes it, a moment later). */
+export const isSnoozed = (s: Pick<SessionSummary, "snoozedUntil" | "status">) => s.snoozedUntil !== undefined && s.status !== "waiting";
 
 /** A single projection drives the DOM and keyboard navigation, including paging. */
 export function sidebarEntries(sessions: readonly SessionSummary[], archived: readonly SessionSummary[], o: SidebarOptions): SidebarEntry[] {
@@ -150,7 +155,7 @@ export function sidebarEntries(sessions: readonly SessionSummary[], archived: re
     }
     if (o.needs?.length) entries.push({ key: "heading:needs", kind: "needs", ids: [...o.needs] });
     requiredElsewhere(archived);
-    const all = orderSessions(sessions.filter((s) => !s.settled));
+    const all = orderSessions(sessions.filter((s) => !s.settled && !isSnoozed(s)));
     // A folded project's sessions take no page slots: only its heading shows, where its latest session would be.
     const folded = new Set(o.groupBy === "project" ? o.collapsed ?? [] : []);
     let cards = folded.size ? all.filter((s) => !folded.has(projectOf(s))) : all;
@@ -209,7 +214,13 @@ export function sidebarEntries(sessions: readonly SessionSummary[], archived: re
             if (label === last) more("cards", remaining());
         }
     }
-    const settled = orderSessions(sessions.filter((s) => s.settled));
+    // The next to wake first. Folded, only the open one shows under it.
+    const snoozed = sessions.filter(isSnoozed).sort((a, b) => a.snoozedUntil! - b.snoozedUntil!);
+    if (snoozed.length) {
+        entries.push({ key: "heading:snoozed", kind: "snoozed" });
+        rows(pageSessions(snoozed, o.snoozedOpen ? Infinity : 0, o.activeId), "row", "snoozed");
+    }
+    const settled = orderSessions(sessions.filter((s) => s.settled && !isSnoozed(s)));
     if (settled.length) {
         entries.push({ key: "heading:settled", kind: "settled" });
         const visibleSettled = pageSessions(settled, o.settledOpen ? o.settled : 0, o.activeId);
@@ -223,7 +234,8 @@ export function sidebarEntries(sessions: readonly SessionSummary[], archived: re
 export const machineLabel = (name: string) => (name.length > 18 ? `${name.slice(0, 17)}…` : name);
 
 /** Hold the entire layout, not just sorting: moving between shelves also moves targets.
- * New attention/open rows append while held, without displacing any existing row.
+ * New attention/open rows join while held without reordering any existing row: each goes at
+ * the end of its own heading's rows (with the heading, if it's new), not under a shelf below.
  * Needs you (pinned above it all) is held only while `pinnedHeld` (the pointer on the
  * rail, a row's menu open): its ids aren't the list's order, so a selection alone
  * needn't keep it from following who's waiting. */
@@ -240,17 +252,36 @@ export function holdSidebar(previous: readonly SidebarEntry[], next: SidebarEntr
         return "id" in e && !live.has(e.id) ? [] : [e];
     });
     const ids = new Set(sidebarIds(kept));
-    const added = next.flatMap((e): SidebarEntry[] => {
+    const out = [...pinned, ...kept];
+    next.forEach((e, i) => {
+        let add: SidebarEntry;
         if (e.kind === "run") {
             const missing = e.ids.filter((id) => !ids.has(id));
-            if (!missing.some((id) => requiredSession(live.get(id)!, activeId))) return [];
+            if (!missing.some((id) => requiredSession(live.get(id)!, activeId))) return;
             // A newly required member must not move targets below its held group.
-            return [{ ...e, key: `${e.key}:pending:${missing[0]}`, ids: missing }];
+            add = { ...e, key: `${e.key}:pending:${missing[0]}`, ids: missing };
+        } else if ("id" in e && !ids.has(e.id) && requiredSession(live.get(e.id)!, activeId)) add = e;
+        else return;
+        // Its heading (a day, a project, a shelf), none for the rows above the first.
+        const head = next.slice(0, i).findLast(sectionHead);
+        const at = head ? out.findIndex((x) => x.key === head.key) : -1;
+        if (!head || at >= 0) {
+            // The end of that heading's rows: before the next heading, or its Show more.
+            const end = out.findIndex((x, j) => j > at && (sectionHead(x) || x.kind === "more"));
+            out.splice(end < 0 ? out.length : end, 0, add);
+            return;
         }
-        return "id" in e && !ids.has(e.id) && requiredSession(live.get(e.id)!, activeId) ? [e] : [];
+        // A heading the held list hasn't got: it comes with its row, before the next heading it has.
+        const later = new Set(next.slice(i + 1).filter(sectionHead).map((x) => x.key));
+        const before = out.findIndex((x) => later.has(x.key));
+        out.splice(before < 0 ? out.length : before, 0, head, add);
     });
-    return [...pinned, ...kept, ...added];
+    // A day or an open project whose last row went (deleted, archived) goes with it, as listedOnce has it.
+    return out.filter((e, i) => !((e.kind === "day" || e.kind === "project") && !e.collapsed) || /card|row|run/.test(out[i + 1]?.kind ?? ""));
 }
+
+/** What starts a part of the list: a day's or a project's heading, or a shelf's. */
+const sectionHead = (e: SidebarEntry) => e.kind === "day" || e.kind === "project" || e.kind === "snoozed" || e.kind === "settled" || e.kind === "archived";
 
 /**
  * The layout as the rail draws it: a session pinned under Needs you isn't listed a second time in its own place

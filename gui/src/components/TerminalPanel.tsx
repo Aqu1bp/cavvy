@@ -1,11 +1,11 @@
-import { batch, createEffect, createMemo, createSignal, For, lazy, on, onCleanup, Show } from "solid-js";
+import { batch, createEffect, createMemo, createSignal, For, lazy, on, onCleanup, Show, untrack } from "solid-js";
 import { ChevronDown, Maximize2, Minimize2, Play, Plus, TerminalIcon, X } from "lucide-solid";
 import "../styles/terminal.css";
 import { app, connOn, reportError, rpc, toast } from "../state/app";
 import { RpcError, type Rpc } from "../lib/rpc";
 import { machine } from "../lib/platform";
 import { prefs, setPrefs } from "../state/prefs";
-import { setTerminalLogin, terminalActions, terminalOpen, setTerminalOpen, setSettingsTab, terminalMax, setTerminalMax, setTerminalShown, setTerminalDrag, shellLayout, panelHold, type SetupRun } from "../state/ui";
+import { homeLogin, setHomeLogin, setTerminalLogin, terminalActions, terminalOpen, setTerminalOpen, setSettingsTab, terminalMax, setTerminalMax, setTerminalShown, setTerminalDrag, shellLayout, panelHold, type SetupRun } from "../state/ui";
 import { frameDrag } from "../lib/drag";
 import { basename, tildify } from "../lib/format";
 import { loadTabs, restoreTabs, saveTabs, TerminalClosures } from "../lib/terminal";
@@ -112,12 +112,13 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean; on?: string; 
         setSelected(tab.id);
     };
     // A click on a project script: its own tab, shown, with the command typed into its shell.
-    const runScript = (cwd: string, script: { id: string; name: string }, setup?: SetupRun) => {
+    const runScript = (cwd: string, script: { id: string; name: string }, setup?: SetupRun): void => {
         // A new worktree's setup run that can't start: the worktree is there, and the script can be run by hand.
-        const cant = (why: string, plain: string) => (setup ? toast(`Setup script “${script.name}” didn't run: ${why} Run it from the project scripts menu.`, "warn") : toast(plain, "error"));
-        if (!restored()) return cant("terminal tabs are reconnecting.", "Terminal tabs are reconnecting. Try again in a moment.");
-        if (conn() !== "open") return cant("not connected to Cavvy server.", `Not connected to Cavvy server, so “${script.name}” can't start.`);
-        if (full()) return cant(`${MAX_TABS} terminals are open in this window.`, `${MAX_TABS} terminals are open, counting other projects. Close one to run “${script.name}”.`);
+        // Run tries it again as a plain script run: then a failure says why.
+        const cant = (plain: string): void => (setup ? toast("Setup script didn't run", "warn", { label: "Run", run: () => runScript(cwd, script) }) : toast(plain, "error"));
+        if (!restored()) return cant("Terminal tabs are reconnecting. Try again in a moment.");
+        if (conn() !== "open") return cant(`Not connected to Cavvy server, so “${script.name}” can't start.`);
+        if (full()) return cant(`${MAX_TABS} terminals are open, counting other projects. Close one to run “${script.name}”.`);
         const id = crypto.randomUUID();
         // The session's: a sign-in tab of the window's own machine no longer holds the view.
         setTerminalLogin(false);
@@ -135,7 +136,7 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean; on?: string; 
         const tab: Tab = { id, terminal: id, cwd: app.hello?.homeDir ?? "/", number: next++, login: { provider, accountId, name, server, ...(install ? { install } : {}) } };
         terminalAsked();
         // Shown though a session of another machine is in view: the sign-in is this one's (App.tsx).
-        setTerminalLogin(true);
+        setTerminalLogin({ on: p.on });
         setTabs((all) => [...all, tab]);
         setSelected(tab.id);
         setSettingsTab(undefined);
@@ -171,6 +172,16 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean; on?: string; 
         onCleanup(() => {
             if (terminalActions.loginAccount === loginAccount) delete terminalActions.loginAccount;
             if (terminalActions.installCli === installCli) delete terminalActions.installCli;
+        });
+    }
+    // The user's own computer's, in a window on a server: a sign-in or install asked for there from Settings
+    // (SubscriptionGrid.tsx) opens here once this panel can take it.
+    if (p.on === "") {
+        createEffect(() => {
+            const ask = homeLogin();
+            if (!ask || !restored() || conn() !== "open") return;
+            setHomeLogin(undefined);
+            untrack(() => loginAccount(ask.provider, ask.accountId, ask.name, ask.server, ask.install));
         });
     }
     // Opening the panel starts a shell where there's none; going to another project with it open doesn't.

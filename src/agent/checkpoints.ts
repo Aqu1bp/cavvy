@@ -295,6 +295,14 @@ export class FileHistory {
         return p;
     }
 
+    /** Cavvy wrote `abs` itself (a rewind putting it back, rewind-files.ts): `data` null, it removed it. */
+    noteWrote(abs: string, data: Buffer | null) {
+        this.load();
+        const path = canonical(abs);
+        // Only for files it keeps history of: what it last wrote tells their outside changes apart.
+        if (this.lastWrite.has(path) || this.recs.some((r) => r.path === path)) this.append({ t: "wrote", path, hash: data && sha256(data) });
+    }
+
     /**
      * Every file this session changed, as it was before the first change:
      * `hash` null means it didn't exist; a skip record means no copy was saved.

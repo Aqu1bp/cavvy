@@ -7,13 +7,13 @@ import { randomBytes } from "crypto";
 import { lstatSync, realpathSync, statSync } from "fs";
 import { isAbsolute, join, relative, resolve, sep } from "path";
 import { getKey } from "../auth/credentials";
-import { projectConfigSummary, trustedByUser } from "../config/trust";
+import { othersCode, projectConfigSummary, trustedByUser } from "../config/trust";
 import { committedExternalImports, MAX_FILES, type TreeFile } from "../agent/memory";
 import { PERMISSION_MODES } from "../permissions/modes";
 import { clientFor, type ProviderListing } from "../providers/models";
 import { formatPrice } from "../providers/pricing";
 import { readsPdf } from "../providers/files";
-import { getProvider, type ProviderDef } from "../providers/registry";
+import { getProvider, readAgentConfig, type ProviderDef } from "../providers/registry";
 import { modelRef, parseModelRef, type AttachedPart, type FilePart, type ImagePart, type ModelInfo } from "../providers/types";
 import { redact } from "../util/redact";
 import { isInside } from "../util/files";
@@ -129,7 +129,11 @@ function lexists(path: string): boolean {
 
 /** Claude Code and Codex run on the user's plan, Ollama and LM Studio on this machine; anything else is billed per token (when in doubt, too). */
 export async function billingOf(def: ProviderDef | undefined): Promise<Billing> {
-    if (def?.auth === "cli") return "plan";
+    // One started with variables of its own may be sent to a paid API (a router): counted as one, to ask first.
+    if (def?.auth === "cli") {
+        const cfg = readAgentConfig(def.id);
+        return cfg?.env || cfg?.secretEnv ? "api" : "plan";
+    }
     // A keyed loopback proxy can forward to paid APIs. Only unkeyed custom
     // providers qualify as local, even when their key is optional.
     if (def?.local && !(def.custom && await getKey(def.id))) return "local";
@@ -352,6 +356,11 @@ export function treeReader(main: string, commit: string, top: string): ((path: s
  * configuration, the user decides first (one question, nothing created yet).
  */
 async function configTrust(host: RunHost, home: string, main: string, committed: () => Promise<string[]>): Promise<"trusted" | "declined" | "none"> {
+    // Started from someone else's code (a fork's pull request) the user hasn't trusted: the new worktrees hold it too.
+    if (othersCode(home)) {
+        if (host.declined(home)) return "declined";
+        throw new RpcError(`The new worktrees will have a fork's code, which can run commands on your machine (Git hooks). Trust ${home}, or open them without its configuration.`, "needs_project_trust", home);
+    }
     // The folder they all go in (or one above it): trusting one sibling worktree says nothing about new ones.
     if (trustedByUser(join(main, WORKTREES_DIR))) return "trusted";
     if (host.declined(home) || host.declined(main)) return "declined";

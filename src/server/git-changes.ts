@@ -22,7 +22,7 @@ import { gitArgv, gitEnv, REPO_VARS } from "../util/git";
 import { redact } from "../util/redact";
 import { coalesce, type Slot } from "./coalesce";
 import { fileDiff, MAX_DIFF_INPUT, textOf } from "./diffs";
-import type { GitChangesInfo, GitFileDiff, GitScope } from "./protocol";
+import type { GitChangesInfo, GitFileDiff, GitLogEntry, GitScope } from "./protocol";
 import { RpcError } from "./rpc-error";
 
 /** Files listed in one reply; the rest are counted. */
@@ -818,16 +818,20 @@ const inflight = new Map<string, Slot<GitChangesInfo>>();
  * `pin`: read `cwd` (a work tree's root, links resolved) with this Git dir and as this work tree,
  * whatever its config says (another worktree, checked by session-worktrees.ts).
  */
-export function gitChanges(cwd: string, req: { scope: GitScope; base?: string; path?: string; turnId?: number }, snapshots?: TurnSnapshots, pin?: { gitDir: string }): Promise<GitChangesInfo> {
-    if (pin) return coalesce(inflight, JSON.stringify([cwd, pin.gitDir, req.scope, req.base, req.path]), () => pinned.run({ workTree: cwd, gitDir: pin.gitDir }, () => collect(cwd, req)));
-    return coalesce(inflight, JSON.stringify([cwd, snapshots?.dir, req.scope, req.base, req.path, req.turnId]), async () => {
+export type GitChangesRequest = { scope: GitScope; base?: string; path?: string; turnId?: number; commit?: string } & DiffOptions;
+
+export function gitChanges(cwd: string, req: GitChangesRequest, snapshots?: TurnSnapshots, pin?: { gitDir: string }): Promise<GitChangesInfo> {
+    const how = { ignoreWhitespace: req.ignoreWhitespace || undefined, full: (req.full && req.path !== undefined) || undefined };
+    const run = () => (req.scope === "commit" ? collectCommit(cwd, req, how) : collect(cwd, req, how));
+    if (pin) return coalesce(inflight, JSON.stringify([cwd, pin.gitDir, req.scope, req.base, req.path, req.commit, how]), () => pinned.run({ workTree: cwd, gitDir: pin.gitDir }, run));
+    return coalesce(inflight, JSON.stringify([cwd, snapshots?.dir, req.scope, req.base, req.path, req.turnId, req.commit, how]), async () => {
         if (req.scope === "turn" || req.scope === "last-turn") {
-            if (snapshots) return snapshots.changes(req);
+            if (snapshots) return snapshots.changes({ scope: req.scope, turnId: req.turnId, path: req.path, ...how });
             const top = await git(cwd, ["rev-parse", "--show-toplevel"]);
             return { ...notRepo(req.scope, "No snapshot was recorded for this turn."), repo: top.code === 0, incomplete: true, snapshotAvailable: false, notes: ["No snapshot was recorded for this turn."] };
         }
-        const result = await collect(cwd, req);
-        return { ...result, turns: snapshots?.list().map(({ id, prompt, startedAt, endedAt }) => ({ id, prompt, startedAt, endedAt })) };
+        const result = await run();
+        return { ...result, turns: snapshots?.shown().map(({ id, prompt, startedAt, endedAt }) => ({ id, prompt, startedAt, endedAt })) };
     });
 }
 
@@ -835,21 +839,18 @@ function notRepo(scope: GitScope, reason: string): GitChangesInfo {
     return { repo: false, reason, scope, files: [], added: 0, removed: 0, tracked: true, bases: [], more: 0 };
 }
 
-async function collect(cwd: string, req: { scope: GitScope; base?: string; path?: string }): Promise<GitChangesInfo> {
-    const deadline = Date.now() + DEADLINE_MS;
-    const inTime = () => {
-        if (Date.now() > deadline) throw tooLong();
-    };
+/** The work tree's root, as git (or the pin) spells it; or why there's none to read. */
+async function repoRoot(cwd: string, scope: GitScope, deadline: number): Promise<string | GitChangesInfo> {
     let top: GitOut;
     try {
         top = await git(cwd, ["rev-parse", "--show-toplevel"], { deadline });
     } catch (e) {
         if (e instanceof RpcError) throw e;
-        return notRepo(req.scope, "Git isn't available, so this shows the edits Cavvy made.");
+        return notRepo(scope, "Git isn't available, so this shows the edits Cavvy made.");
     }
     if (top.code !== 0 || !top.out.length) {
         const reason = /dubious ownership/.test(top.err) ? "Git won't read this folder because another user owns it, so this shows the edits Cavvy made." : "This folder isn't a Git repository, so this shows the edits Cavvy made.";
-        return notRepo(req.scope, reason);
+        return notRepo(scope, reason);
     }
     // A folder's name can end in a newline; only git's own is taken off.
     let root = trimNl(top.out);
@@ -860,6 +861,17 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
         if (!samePath(root, pin.workTree)) throw new RpcError("Git doesn't see this worktree where it was checked.", "not_found");
         root = pin.workTree;
     }
+    return root;
+}
+
+async function collect(cwd: string, req: { scope: GitScope; base?: string; path?: string }, how: DiffOptions = {}): Promise<GitChangesInfo> {
+    const deadline = Date.now() + DEADLINE_MS;
+    const inTime = () => {
+        if (Date.now() > deadline) throw tooLong();
+    };
+    const found = await repoRoot(cwd, req.scope, deadline);
+    if (typeof found !== "string") return found;
+    const root = found;
     const [head, branch, format, config, refs] = await Promise.all([
         git(root, ["rev-parse", "-q", "--verify", "HEAD^{commit}"], { deadline }),
         git(root, ["symbolic-ref", "-q", "HEAD"], { deadline }),
@@ -1188,7 +1200,7 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
         if (rest.length) for (const [oid, b] of await blobs(root, rest, deadline)) have.set(oid, b);
         return have;
     });
-    const files = await render(listed, { root, wt, shown, single: req.path !== undefined, deadline, eolOf, indexOid: (path) => staged.get(path)?.oid, indexEols, readBlobs });
+    const files = await render(listed, { root, wt, shown, single: req.path !== undefined, deadline, eolOf, indexOid: (path) => staged.get(path)?.oid, indexEols, readBlobs, diff: how });
     let added = 0;
     let removed = 0;
     for (const f of files) {
@@ -1209,6 +1221,105 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
         more,
         ...(untracked.cut ? { moreAtLeast: true } : {}),
     };
+}
+
+// ---------------------------------------------------------------------------
+// Commits
+
+/** Commits listed for the review pane's Commit view. */
+const MAX_COMMITS = 100;
+const LOG_FORMAT = "--format=%H%x1f%P%x1f%an%x1f%ct%x1f%s";
+/** A commit as the request names it: its id, or a prefix of it. */
+const COMMIT_ID = /^[0-9a-f]{4,64}$/i;
+
+/** `git log` that runs nothing: no signature checks (gpg), no pager, no colour. */
+const logArgs = (n: number, rev: string) => ["-c", "log.showSignature=false", "log", "-z", "--no-color", "--no-show-signature", `-n${n}`, LOG_FORMAT, rev, "--"];
+
+function parseLog(buf: Buffer): GitLogEntry[] {
+    return records(buf.length && buf[buf.length - 1] !== 0 ? Buffer.concat([buf, Buffer.from([0])]) : buf).flatMap((rec) => {
+        const [sha, parents, author, time, ...subject] = rec.replace(/^\n/, "").split("\x1f");
+        if (!sha || !/^[0-9a-f]+$/.test(sha)) return [];
+        return [{ sha, parents: parents ? parents.split(" ").length : 0, author: redact(author ?? ""), time: Number(time) * 1000 || 0, subject: redact(subject.join("\x1f")) }];
+    });
+}
+
+/** HEAD's recent commits, newest first: only when the review pane's commit list is opened. */
+export async function gitLog(cwd: string, pin?: { gitDir: string }): Promise<{ commits: GitLogEntry[]; more: boolean }> {
+    const run = async () => {
+        const deadline = Date.now() + DEADLINE_MS;
+        const root = await repoRoot(cwd, "commit", deadline);
+        if (typeof root !== "string") throw new RpcError(root.reason ?? "This folder isn't a Git repository.", "invalid");
+        const r = await git(root, logArgs(MAX_COMMITS + 1, "HEAD"), { deadline, maxBytes: 4 * 1024 * 1024 });
+        // No commits yet: an empty list.
+        if (r.code !== 0) return { commits: [], more: false };
+        const all = parseLog(r.out);
+        return { commits: all.slice(0, MAX_COMMITS), more: all.length > MAX_COMMITS };
+    };
+    return pin ? pinned.run({ workTree: cwd, gitDir: pin.gitDir }, run) : run();
+}
+
+/** One commit against its first parent (a root commit, against nothing): read from git's objects alone, nothing on disk. */
+async function collectCommit(cwd: string, req: { scope: GitScope; path?: string; commit?: string }, how: DiffOptions): Promise<GitChangesInfo> {
+    const deadline = Date.now() + DEADLINE_MS;
+    const inTime = () => {
+        if (Date.now() > deadline) throw tooLong();
+    };
+    if (req.commit !== undefined && !COMMIT_ID.test(req.commit)) throw new RpcError("That isn't a commit id.", "invalid");
+    const found = await repoRoot(cwd, req.scope, deadline);
+    if (typeof found !== "string") return found;
+    const root = found;
+    const [log, branch, head, format] = await Promise.all([
+        git(root, logArgs(1, `${req.commit ?? "HEAD"}^{commit}`), { deadline }),
+        git(root, ["symbolic-ref", "-q", "HEAD"], { deadline }),
+        git(root, ["rev-parse", "-q", "--verify", "HEAD^{commit}"], { deadline }),
+        git(root, ["rev-parse", "--show-object-format"], { deadline }),
+    ]);
+    const commit = log.code === 0 ? parseLog(log.out)[0] : undefined;
+    if (!commit) throw new RpcError(req.commit === undefined ? "This branch has no commits yet." : "That commit isn't in this repository.", "not_found");
+    const algo: Algo = format.code === 0 && trimNl(format.out) === "sha256" ? "sha256" : "sha1";
+    // Its first parent, from the commit itself: `<sha>^` would fail for a root commit.
+    const parents = await git(root, ["rev-parse", "-q", "--verify", `${commit.sha}^1`], { deadline });
+    const parent = commit.parents && parents.code === 0 ? trimNl(parents.out) : EMPTY_TREE[algo];
+    // Raw output: modes and ids of the paths that differ. No patch, so no diff driver or textconv runs.
+    const raw = await git(root, ["diff-tree", "-r", "-z", "--no-renames", "--no-abbrev", "--no-ext-diff", "--no-textconv", parent, commit.sha], { deadline });
+    if (raw.code !== 0 || raw.cut) throw new RpcError("Git couldn't read that commit.");
+    const changes: Change[] = [];
+    const recs = records(raw.out);
+    for (let i = 0; i + 1 < recs.length; i += 2) {
+        const m = /^:(\d{6}) (\d{6}) ([0-9a-f]+) ([0-9a-f]+) ([A-Z])/.exec(recs[i]!);
+        if (!m) continue;
+        const path = recs[i + 1]!;
+        const old: Entry = { mode: m[1]!, oid: m[3]! };
+        const now: Entry = { mode: m[2]!, oid: m[4]! };
+        // `indexed`: the new side is a blob too (render reads it from git, not from disk).
+        if (m[5] === "A") changes.push({ path, change: "added", now, kind: kindOf(now.mode), indexed: true });
+        else if (m[5] === "D") changes.push({ path, change: "deleted", old, kind: kindOf(old.mode) });
+        else changes.push({ path, change: m[5] === "T" || kindOf(old.mode) !== kindOf(now.mode) ? "typechange" : "modified", old, now, kind: kindOf(now.mode) ?? kindOf(old.mode), indexed: true });
+    }
+    const wt = new WorkTree(root, algo, true, inTime, deadline);
+    await blobSizes(root, changes.flatMap((c) => [c.old, c.now].filter((e): e is Entry => !!e)), deadline);
+    await findRenames(changes, wt, false, inTime);
+    changes.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+    const here = canonical(cwd);
+    const shown = (rel: string) => relative(here, join(root, rel)) || ".";
+    let listed = changes;
+    let more = 0;
+    if (req.path !== undefined) {
+        const want = isAbsolute(req.path) ? relative(here, join(canonical(dirname(req.path)), basename(req.path))) || "." : req.path;
+        listed = changes.filter((c) => shown(c.path) === want).slice(0, 1);
+    } else if (changes.length > MAX_FILES) {
+        listed = changes.slice(0, MAX_FILES);
+        more = changes.length - MAX_FILES;
+    }
+    const files = await render(listed, { root, wt, shown, single: req.path !== undefined, deadline, eolOf: () => undefined, indexOid: () => undefined, diff: how });
+    let added = 0;
+    let removed = 0;
+    for (const f of files) {
+        added += f.added;
+        removed += f.removed;
+    }
+    const branchName = branch.code === 0 ? trimNl(branch.out).replace(/^refs\/heads\//, "") : undefined;
+    return { repo: true, scope: "commit", files, added, removed, tracked: true, head: { branch: branchName, sha: head.code === 0 ? trimNl(head.out) : undefined }, bases: [], more, commit };
 }
 
 /**
@@ -1330,9 +1441,20 @@ export interface RenderContext {
     indexOid: (path: string) => string | undefined;
     indexEols?: Map<string, boolean>;
     readBlobs?: (oids: string[], deadline: number) => Promise<Map<string, Buffer>>;
+    /** How the diffs are made: whitespace-only changes left out; `full`, a file asked for by itself with every line as context. */
+    diff?: DiffOptions;
 }
 
-export async function render(listed: Change[], { root, wt, shown, single, deadline, eolOf, indexOid, indexEols = new Map<string, boolean>(), readBlobs }: RenderContext): Promise<GitFileDiff[]> {
+export interface DiffOptions {
+    ignoreWhitespace?: boolean;
+    full?: boolean;
+}
+/** Lines of a file sent whole (DiffOptions.full): the context the review pane shows between and around hunks. */
+const FULL_LINES = 20_000;
+
+export async function render(listed: Change[], { root, wt, shown, single, deadline, eolOf, indexOid, indexEols = new Map<string, boolean>(), readBlobs, diff = {} }: RenderContext): Promise<GitFileDiff[]> {
+    const full = diff.full && single;
+    const how = { ignoreWhitespace: diff.ignoreWhitespace, ...(full ? { context: Number.MAX_SAFE_INTEGER, maxLines: FULL_LINES } : {}) };
     const wanted = new Map<string, number>();
     const readable = (e?: Entry): e is Entry => !!e && (isFileMode(e.mode) || e.mode === SYMLINK) && (e.size ?? 0) <= MAX_DIFF_INPUT;
     for (const c of listed) {
@@ -1422,8 +1544,10 @@ export async function render(listed: Change[], { root, wt, shown, single, deadli
         const mode = eolOf(c.path);
         const converted = raw && !c.indexed && convertsEol(mode, { binary: mode === "auto" && gitSeesBinary(raw) }, ix === undefined ? null : mode === "auto" ? indexHasCrlf(ix, olds, indexEols) : undefined);
         const a = after ? redact(converted ? after.text.replace(/\r\n/g, "\n") : after.text) : null;
-        const d = fileDiff(path, b, a);
+        const d = fileDiff(path, b, a, how);
         const out: GitFileDiff = { ...base, ...d, status: base.status };
+        // The new side's length, so the lines after the last hunk can be asked for (DiffOptions.full).
+        if (d.hunks.length && a !== null) out.lines = lineCount(a);
         if (c.old && c.now && c.old.mode !== c.now.mode && isFileMode(c.old.mode) && isFileMode(c.now.mode) && !d.hunks.length) out.note = `Mode changed ${c.old.mode} → ${c.now.mode}`;
         // Where it was is in its heading (the review's file row): what the empty diff says is why it's empty.
         else if (c.change === "renamed" && !d.hunks.length) out.note = "Contents unchanged";
@@ -1436,6 +1560,13 @@ export async function render(listed: Change[], { root, wt, shown, single, deadli
         files.push(out);
     }
     return files;
+}
+
+/** Lines in a text, as the diff splits it: a last line without a newline counts. */
+function lineCount(text: string): number {
+    let n = 0;
+    for (let i = text.indexOf("\n"); i >= 0; i = text.indexOf("\n", i + 1)) n++;
+    return text.length && !text.endsWith("\n") ? n + 1 : n;
 }
 
 type Side = { text: string; bytes: number; link?: true; raw?: Buffer } | { note: string } | { later: true };

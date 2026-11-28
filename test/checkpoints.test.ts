@@ -61,7 +61,7 @@ function scripted(script: Record<string, Call[]>) {
     };
 }
 
-function setup(proj: string, script: Record<string, Call[]>, opts: { mode?: PermissionMode; classifier?: unknown; queue?: string[]; approvePlan?: boolean } = {}) {
+function setup(proj: string, script: Record<string, Call[]>, opts: { mode?: PermissionMode; classifier?: unknown; queue?: string[]; approvePlan?: boolean; trusted?: boolean } = {}) {
     const session = Session.create(proj, { system: "test system" });
     const settings = { autoCompact: false } as any;
     const state: ToolState = { cwd: proj, projectRoot: proj, fileState: new Map(), todos: [], shells: new Map() };
@@ -77,10 +77,11 @@ function setup(proj: string, script: Record<string, Call[]>, opts: { mode?: Perm
         mode: { get: () => mode, set: (m) => (mode = m) },
         toolState: state,
         host: { emit() {}, ui: { approvePlan: async () => ({ approved: opts.approvePlan ?? false, mode: "bypassPermissions" }) }, drainQueued: () => opts.queue?.splice(0) ?? [] },
+        ...(opts.trusted ? { trusted: () => true } : {}),
     });
     const run = (text: string) => agent.run([{ type: "text", text }], { signal: new AbortController().signal, display: text });
     const history = state.fileHistory!;
-    return { session, state, agent, run, history };
+    return { session, state, agent, run, history, trusted: Boolean(opts.trusted) };
 }
 
 /** The checkpoint of the prompt with this text. */
@@ -751,6 +752,7 @@ describe("/rewind command", () => {
             editor: { set: (t: string) => (input = t) },
             print: (l: string[]) => printed.push(...l.map((x) => stripAnsi(x))),
             notice: (m: string) => printed.push(m),
+            init: { trusted: s.trusted },
             showDialog: async (d: any) => {
                 shown.push(d);
                 const answer = answers.shift();
@@ -781,7 +783,9 @@ describe("/rewind command", () => {
         const header = f.shown[1].header.map((l: string) => stripAnsi(l)).join("\n");
         expect(header).toContain("restore a.txt");
         expect(header).toContain("delete  b.txt");
-        expect(header).toContain("shell commands aren't tracked");
+        expect(header).toContain("shell commands aren't undone");
+        // The GUI's buttons, without hints.
+        expect(f.shown[1].list.items.map((i: any) => [stripAnsi(i.label), i.description])).toEqual([["Restore both", undefined], ["Conversation only", undefined], ["Code only", undefined], ["Cancel", undefined]]);
         expect(readFileSync(a, "utf-8")).toBe("1\n");
         expect(existsSync(b)).toBe(false);
         expect(rewindTargets(s.session.messages).map((t) => t.text)).toEqual(["one"]);
@@ -931,5 +935,42 @@ describe("/rewind command", () => {
         const f = fakeApp(s, proj, []);
         await rewindCommand(f.app);
         expect(f.printed.join("\n")).toContain("summarized by /compact");
+    });
+
+    test("in a trusted Git project, what a shell command changed is restored too, and /rewind undo puts it back", async () => {
+        const proj = project();
+        const { gitArgv, gitEnv } = await import("../src/util/git");
+        const env = gitEnv();
+        for (const k of Object.keys(env)) if (k.startsWith("GIT_")) delete env[k];
+        expect(Bun.spawnSync(gitArgv(["init", "-q"]), { cwd: proj, env: { ...env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } }).exitCode).toBe(0);
+        writeFileSync(join(proj, "kept.txt"), "before\n");
+        const bash = (command: string): Call => ({ name: "Bash", input: { command, description: "change files" } });
+        const s = setup(proj, { one: [], two: [bash("echo shell > shell.txt && echo changed > kept.txt")] }, { trusted: true });
+        await s.run("one");
+        await s.run("two");
+        await s.agent.turnSnapshots!.settled();
+        expect(readFileSync(join(proj, "shell.txt"), "utf-8")).toBe("shell\n");
+        const f = fakeApp(s, proj, [pickLabel("two"), pickValue("code")]);
+        await rewindCommand(f.app);
+        expect(stripAnsi(f.shown[0].list.items.find((i: any) => stripAnsi(i.label) === "two").description)).toBe("2 files changed");
+        const plan = f.shown[1].header.map(stripAnsi).join("\n");
+        expect(plan).toContain("2 files changed since then:");
+        expect(plan).not.toContain("shell commands aren't undone");
+        expect(existsSync(join(proj, "shell.txt"))).toBe(false);
+        expect(readFileSync(join(proj, "kept.txt"), "utf-8")).toBe("before\n");
+        expect(f.printed).toContain("Undo it with /rewind undo");
+        // The conversation stays.
+        expect(rewindTargets(s.session.messages).map((t) => t.text)).toEqual(["one", "two"]);
+
+        // The first row of /rewind is the Undo, until it's used.
+        const g = fakeApp(s, proj, [pickValue(-1)]);
+        await rewindCommand(g.app);
+        expect(stripAnsi(g.shown[0].list.items[0].label)).toBe("Undo the last file restore");
+        expect(readFileSync(join(proj, "shell.txt"), "utf-8")).toBe("shell\n");
+        expect(readFileSync(join(proj, "kept.txt"), "utf-8")).toBe("changed\n");
+        const h = fakeApp(s, proj, []);
+        await rewindCommand(h.app, "undo");
+        expect(h.printed).toContain("There's no file restore to undo.");
+        await s.agent.turnSnapshots!.stop();
     });
 });

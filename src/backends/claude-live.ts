@@ -30,6 +30,7 @@ import { backendMatcher, claudeCodeHookOutput, type HookEvent } from "../agent/h
 import type { AgentEvent, TurnEndReason } from "../agent/agent";
 import { formatSkill } from "../agent/skills";
 import { accountEnv } from "../providers/accounts";
+import { cliEnv } from "../providers/agent-env";
 import { claudeMemoryDirectory } from "./claude-memory";
 import { claudeCodeWindow } from "../providers/anthropic-models";
 import { signInAdvice } from "./account-login";
@@ -2023,6 +2024,7 @@ export class ClaudeConnection implements CliConnection {
                 header: typeof q?.header === "string" ? q.header : undefined,
                 options: (Array.isArray(q?.options) ? q.options : []).map((o: any) => ({ label: String(o?.label ?? ""), description: typeof o?.description === "string" ? o.description : undefined })),
                 multiSelect: Boolean(q?.multiSelect),
+                attach: true,
             }));
             const answers = await this.host.askQuestions(questions);
             if (!answers) return { behavior: "deny", message: "The user dismissed the question without answering.", interrupt: true };
@@ -2045,12 +2047,15 @@ export class ClaudeConnection implements CliConnection {
         const { name, input } = toCavvy(String(req.tool_name ?? ""), raw);
         const reason = typeof req.decision_reason === "string" && req.decision_reason.trim() ? req.decision_reason : undefined;
         const agentType = typeof req.agent_id === "string" ? this.agentTypes.get(req.agent_id) : undefined;
+        // Its sub-agent asks (agent_id, its task's id): by its task, as the sub-agent's card names it.
+        const asker = typeof req.agent_id === "string" ? (this.agentLabels.get(this.agentOfTask.get(req.agent_id) ?? "") ?? agentType) : undefined;
         // One of a background sub-agent's (its task is running in the background): not the turn's to withdraw.
         const background = typeof req.agent_id === "string" && this.tasks.get(req.agent_id)?.status === "running";
         liveDebug("claude", "permission", { tool: name, between: !this.cur, agent: req.agent_id });
         // Asked while it runs in its own bypass mode: not Cavvy's to wave through (a hook of the user's said to ask).
         const ownBypassAsk = this.cliMode === "bypassPermissions";
-        const a = await this.host.permission({ toolName: name, input, title: titleFor(name, input), reason, callId: typeof req.tool_use_id === "string" ? req.tool_use_id : undefined, ...(agentType ? { agentType } : {}), ...(background ? { background: true } : {}), ...(ownBypassAsk ? { ownBypassAsk } : {}) });
+        // Asked in its own mode, which decided this needs the user (BackendPermission.ownMode).
+        const a = await this.host.permission({ toolName: name, input, title: titleFor(name, input), reason, callId: typeof req.tool_use_id === "string" ? req.tool_use_id : undefined, ownMode: true, ...(agentType ? { agentType } : {}), ...(asker ? { asker } : {}), ...(background ? { background: true } : {}), ...(ownBypassAsk ? { ownBypassAsk } : {}) });
         if (a.allow && a.mode) this.cliMode = MODES[a.mode];
         if (a.allow) return { behavior: "allow", updatedInput: a.updatedInput ?? raw, ...(a.mode ? { updatedPermissions: [{ type: "setMode", mode: MODES[a.mode], destination: "session" }] } : {}) };
         return { behavior: "deny", message: a.message, interrupt: a.stop };
@@ -2079,7 +2084,7 @@ class ClaudeCliAdapter implements AgentCliAdapter {
 
     spawn(cfg: SpawnConfig): SpawnSpec {
         const bin = requireCli(this.def.id, CLAUDE_CLI);
-        const env = accountEnv(this.def.id, cfg.accountId, cfg.cwd);
+        const env = cliEnv(this.def.id, cfg.accountId, cfg.cwd);
         const t = cfg as BackendTurn;
         const { pluginDir } = claudeSkills(this.def.id, t);
         const agentsPath = cfg.agents && Object.keys(cfg.agents).length && !cfg.readOnly ? agentsFileFor(cfg.agents) : undefined;

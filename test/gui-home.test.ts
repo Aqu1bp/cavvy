@@ -130,13 +130,13 @@ test("a short column shows fewer rows; Show all is there only when it lists more
     expect(short.shown).toEqual([1]);
     expect(short.text).toContain("Show all 3");
     expect(cli([session("a")], [source()], 0).rows()).toHaveLength(0);
-    // Everything shows, and nothing is in Cavvy or left out: no Show all.
+    // Everything shows, and nothing is left out: no Show all (one already in Cavvy isn't listed there either).
     expect(cli([session("a"), session("b")]).text).not.toContain("Show all");
     expect(cli([session("a")], [source({ more: 2 })]).text).toContain("Show all 1");
-    expect(cli([session("a"), session("h", { cavvyId: "s1" })]).text).toContain("Show all 1");
+    expect(cli([session("a"), session("h", { cavvyId: "s1" })]).text).not.toContain("Show all");
 });
 
-test("Show all lists every one to import, then those already in Cavvy (Open), and what isn't listed", async () => {
+test("Show all lists every one to import, and what isn't listed; none already in Cavvy", async () => {
     const r = cli(
         [session("a", { updatedAt: Date.now() - 30 * MIN }), session("b", { updatedAt: Date.now() - 2 * MIN }), session("h", { cavvyId: "s9", title: "Already here" })],
         [source({ more: 1, moreInCavvy: 2 }), source({ source: "codex", name: "Codex", more: 3 })],
@@ -148,14 +148,15 @@ test("Show all lists every one to import, then those already in Cavvy (Open), an
     expect(dialog.props.title).toBe("Continue from your terminal");
     const body = text(dialog.children);
     expect(body).toStartWith("Claude Code and Codex sessions started in cavvy.");
+    expect(body).not.toContain("Already here");
     const items = byClass(dialog, "button", "cl-item");
-    expect(items.map((i) => text(byClass(i, "span", "cl-act")))).toEqual(["Import", "Import", "Open"]);
+    expect(items.map((i) => text(byClass(i, "span", "cl-act")))).toEqual(["Import", "Import"]);
     expect(text(items[0]!)).toContain("Session b");
-    expect(text(byClass(dialog, "div", "cl-sub"))).toBe("Already in Cavvy");
-    expect(byClass(dialog, "div", "cl-note").map(text)).toEqual(["2 more already in Cavvy not shown", "1 more Claude Code session not shown", "3 more Codex sessions not shown"]);
-    items[2]!.props.onClick();
+    expect(byClass(dialog, "div", "cl-sub")).toEqual([]);
+    expect(byClass(dialog, "div", "cl-note").map(text)).toEqual(["1 more Claude Code session not shown", "3 more Codex sessions not shown"]);
+    items[1]!.props.onClick();
     await Bun.sleep(0);
-    expect(r.continued).toEqual(["h"]);
+    expect(r.continued).toEqual(["a"]);
 });
 
 // ---- The strip, the placeholder and the cards ------------------------------------------------------
@@ -359,8 +360,8 @@ function picker(cwd: string, listed: { path: string; on?: string; worktrees: unk
     const WorktreePicker = componentCode("WorktreePicker", {
         node, Show, For, createSignal, React: { Fragment: "Fragment" },
         createResource: () => [Object.assign(() => listed, { loading }), { refetch: stub }],
-        Check: "Check", ChevronDown: "ChevronDown", FolderGit2: "FolderGit2", GitBranch: "GitBranch", Plus: "Plus", Trash2: "Trash2",
-        app: { conn: "open" }, homeOn: () => on, rpcFor: () => ({}),
+        Check: "Check", ChevronDown: "ChevronDown", FolderGit2: "FolderGit2", GitBranch: "GitBranch", GitPullRequest: "GitPullRequest", Plus: "Plus", Trash2: "Trash2",
+        app: { conn: "open" }, homeOn: () => on, rpcFor: () => ({}), openGit: stub,
         openProject: async (path: string) => void opened.push(path),
         requestComposerFocus: stub, tildify: (p: string) => p,
         // The dialogs are fetched when first wanted (lazy): each stands in as the name its loader picks.
@@ -379,10 +380,10 @@ test("the worktree picker never offers another project's worktrees while this on
     // This folder's own, kept while it lists them again: still there.
     const same = picker("/work/a", a, true);
     const items = byClass(elements(same.tree, "Popover"), "button", "menu-item");
-    expect(items.map(text)).toEqual(["main/work/a · main checkout", "fix/work/a-wt", "New worktree…"]);
+    expect(items.map(text)).toEqual(["main/work/a · main checkout", "fix/work/a-wt", "New worktree…", "Work on a pull request…"]);
     // Home moved to the same path on another machine, its listing not back yet: nothing of this computer's folder.
     expect(elements(elements(picker("/work/a", a, true, "box").tree, "Popover")[0]!, "button")).toHaveLength(0);
-    expect(byClass(elements(picker("/work/a", { ...a, on: "box" }, true, "box").tree, "Popover"), "button", "menu-item")).toHaveLength(3);
+    expect(byClass(elements(picker("/work/a", { ...a, on: "box" }, true, "box").tree, "Popover"), "button", "menu-item")).toHaveLength(4);
 });
 
 // ---- The limit pill ---------------------------------------------------------------------------------

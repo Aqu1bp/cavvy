@@ -30,7 +30,7 @@ export function groupCounts(entries: readonly SidebarEntry[]): Map<string, numbe
             group = e.key;
             // A folded project counts the sessions folded under it.
             counts.set(group, e.collapsed ? e.ids?.length ?? 0 : 0);
-        } else if (e.kind === "settled" || e.kind === "archived" || e.kind === "needs") group = undefined;
+        } else if (e.kind === "settled" || e.kind === "snoozed" || e.kind === "archived" || e.kind === "needs") group = undefined;
         else if (group && (e.kind === "card" || e.kind === "row")) counts.set(group, counts.get(group)! + 1);
         else if (group && e.kind === "run") counts.set(group, counts.get(group)! + e.ids.length);
     }

@@ -45,6 +45,23 @@ export function modelName(m: { name?: string; id: string }): string {
     return paren && ID_LIKE.test(paren[2]!) ? paren[1]! : full;
 }
 
+/** What a saved model that can't be found is called: its provider was removed or turned off. Never its id. */
+const UNAVAILABLE_MODEL = "Unavailable model";
+
+/**
+ * A saved model's ref ("provider:model") as the user knows it, from the listed models: its name and its provider's, the
+ * model id alone for one its provider doesn't list (typed by hand), or `unavailable` when its provider isn't there.
+ */
+export function refLabel(ref: string, models: readonly ProviderModels[]): { name: string; provider?: string; unavailable?: true } {
+    const at = ref.indexOf(":");
+    const provider = at > 0 ? ref.slice(0, at) : "";
+    const g = models.find((x) => x.provider === provider);
+    const m = g?.models.find((x) => x.ref === ref);
+    if (m) return { name: modelName(m), provider: g!.providerName };
+    if (g) return { name: ref.slice(at + 1), provider: g.providerName };
+    return { name: UNAVAILABLE_MODEL, unavailable: true };
+}
+
 /** The model a session (or the next one) uses: what the server says, else the listed model with that ref. */
 function resolve(current: ModelSummary | undefined, ref: string | undefined, models: ProviderModels[]): ModelSummary | undefined {
     return current ?? models.flatMap((g) => g.models).find((m) => m.ref === ref);
@@ -94,7 +111,7 @@ const FAST_BUSY = "Change speed after this response finishes";
  * account. A model with neither effort nor fast mode opens straight on the models. `effort`, `fast`: the session's,
  * or the next one's. `busy`: a reply is under way, when speed can't change.
  */
-export function ModelPicker(p: ComposerMenu & { /** The session it's for: its machine's models are offered. */ sessionId?: string; current?: ModelSummary; currentRef?: string; compare?: CompareOption; effort?: EffortLevel; fast?: boolean; busy?: boolean }) {
+export function ModelPicker(p: ComposerMenu & { /** The session it's for: its machine's models are offered. */ sessionId?: string; /** A side chat's: the model picked is for it alone, not the one new sessions start with. */ ownOnly?: boolean; current?: ModelSummary; currentRef?: string; compare?: CompareOption; effort?: EffortLevel; fast?: boolean; busy?: boolean }) {
     let anchor: HTMLButtonElement | undefined;
     let sliderEl: HTMLDivElement | undefined;
     let modelRow: HTMLButtonElement | undefined;
@@ -125,7 +142,9 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
     // The accounts of the machine the session is on: another machine's session opened here has that machine's.
     const away = () => awayMachine(p.sessionId) !== undefined;
     const accountInfo = (provider = currentProvider()) => providersFor(p.sessionId).find((p) => p.id === provider)?.agentCli;
-    const selectedAccount = (provider = currentProvider()) => p.sessionId ? handleFor(p.sessionId)?.view.state.accounts?.[provider ?? ""] ?? "default" : accountInfo(provider)?.defaultAccount ?? "default";
+    /** The session whose model, effort, speed and account it sets: the one it's for, else the one shown (none on Home). */
+    const target = () => p.sessionId ?? app.activeId;
+    const selectedAccount = (provider = currentProvider()) => target() ? handleFor(target()!)?.view.state.accounts?.[provider ?? ""] ?? "default" : accountInfo(provider)?.defaultAccount ?? "default";
     const accountChoices = (provider = currentProvider()) => accountInfo(provider)?.accounts ?? [{ id: "default", name: "Default" }];
     const missingAccount = (provider = currentProvider()) => !accountChoices(provider).some((a) => a.id === selectedAccount(provider));
     const showAccounts = (provider = currentProvider()) => !!accountInfo(provider) && (accountChoices(provider).length > 1 || missingAccount(provider));
@@ -145,7 +164,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
         setShownEffort(() => id);
         const n = ++effortPicks;
         // Refused (disconnected, say): back to the level in force, so picking it again sends again.
-        void setEffort(id).then((ok) => {
+        void setEffort(id, target()).then((ok) => {
             if (!ok && n === effortPicks) setShownEffort(() => p.effort);
         });
     };
@@ -159,6 +178,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
         requestAnimationFrame(() => {
             input?.focus();
             list?.querySelector(".mr.sel")?.scrollIntoView({ block: "nearest" });
+            filtersEl?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest", inline: "nearest" });
             measureFilters();
         });
     };
@@ -175,18 +195,23 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
             .map((g) => ({ ...g, models: g.models.filter((m) => !m.deprecated || m.ref === currentRef()) }))
             .filter((g) => g.models.length || g.status === "error"),
     );
-    const providerName = (id: string) => models().find((g) => g.provider === id)?.providerName ?? id;
+    // A provider that's gone (an instance removed) by the name the session has for it, never its id.
+    const providerName = (id: string) => models().find((g) => g.provider === id)?.providerName ?? (p.current?.provider === id ? p.current.providerName : undefined) ?? UNAVAILABLE_MODEL;
+    /** The model can't run (its provider was removed or turned off): the chip says so rather than naming it. */
+    const unavailable = () => Boolean(p.current?.unavailable) || (!p.current && Boolean(currentRef()) && models().length > 0 && !currentModel() && Boolean(refLabel(currentRef()!, models()).unavailable));
     /** The model and whose it is: Claude Code's Opus and the Anthropic API's both read "Opus 5.5" on the chip. */
     const chipName = () => {
-        const name = currentModel()?.name ?? currentRef() ?? "Model";
+        if (unavailable()) return p.current?.providerName ? `${UNAVAILABLE_MODEL} · ${p.current.providerName}` : UNAVAILABLE_MODEL;
+        const name = currentModel()?.name ?? (currentRef() ? refLabel(currentRef()!, models()).name : "Model");
         const provider = currentProvider();
         return provider ? `${name} · ${providerName(provider)}` : name;
     };
     /** On the chip, the name alone: what an alias resolves to, "(claude-opus-5-5)", is in the list and the tooltip. */
     const chipModel = () => {
+        if (unavailable()) return UNAVAILABLE_MODEL;
         const m = currentModel();
         if (m) return modelName(m).replace(/^claude[- ]/i, "");
-        return currentRef() ? currentRef()!.split(":").slice(1).join(":") : "No model";
+        return currentRef() ? refLabel(currentRef()!, models()).name : "No model";
     };
     const favorites = createMemo(() => {
         const all = new Map(groups().flatMap((g) => g.models.map((m) => [m.ref, m] as const)));
@@ -224,7 +249,13 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
         if (picks().length >= MAX_COMPARE) return toast(`Up to ${MAX_COMPARE} models at once`, "warn");
         setComparePicks([...picks(), ref]);
     };
-    const toggleCompare = () => setComparePicks(multi() ? undefined : currentRef() ? [currentRef()!] : []);
+    const toggleCompare = () => setComparePicks(multi() ? undefined : currentRef() && !unavailable() ? [currentRef()!] : []);
+    // A provider removed or turned off: its models leave the picks too, rather than staying as names that can't run.
+    createEffect(on(models, (ms) => {
+        const c = comparePicks();
+        const kept = c && ms.length ? c.filter((r) => !refLabel(r, ms).unavailable) : c;
+        if (kept && kept.length !== c!.length) setComparePicks(kept);
+    }, { defer: true }));
 
     // The provider whose heading has its accounts: a CLI provider, in its own list.
     const acctProvider = () => (!q() && filter() !== FAVORITES && accountInfo(filter()) && accountInfo(filter())!.multiAccount !== false ? filter() : undefined);
@@ -242,8 +273,8 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
         return [[title, accountDetail({ ...a, plan: undefined })].filter(Boolean).join(" · "), limits].filter(Boolean).join(". ") || undefined;
     };
     const pickAccount = (provider: string, a: { id: string }) => {
-        const needed = Boolean(app.activeId && handleFor(app.activeId)?.view.state.accountNeeded === provider);
-        if (sendsAccountPick(a.id, selectedAccount(provider), { missing: missingAccount(provider), needed })) void setAccount(provider, a.id);
+        const needed = Boolean(target() && handleFor(target()!)?.view.state.accountNeeded === provider);
+        if (sendsAccountPick(a.id, selectedAccount(provider), { missing: missingAccount(provider), needed })) void setAccount(provider, a.id, target());
     };
     const addAccount = (provider: string) => {
         p.setOpen(false);
@@ -256,6 +287,12 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
         if (!f) return;
         setEdges(`${f.scrollLeft > 2 ? "more-l" : ""} ${f.scrollLeft + f.clientWidth < f.scrollWidth - 2 ? "more-r" : ""}`);
     };
+    /** The chosen filter, scrolled into the row's view. */
+    const revealFilter = () =>
+        requestAnimationFrame(() => {
+            filtersEl?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest", inline: "nearest" });
+            measureFilters();
+        });
     /** Opens or closes the heading's list of accounts; from the keyboard, focus goes into it (to the session's one) or back to its button. */
     const openAccounts = (open: boolean, focus: boolean) => {
         setAcctOpen(open);
@@ -263,12 +300,6 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
         const to = open ? (acctEl?.querySelector(".mp-acct-it.on") ?? acctEl?.querySelector(".mp-acct-it")) : acctEl?.querySelector(".mp-acct-btn");
         (to as HTMLElement | null | undefined)?.focus();
     };
-    /** The chosen filter, scrolled into the row's view. */
-    const revealFilter = () =>
-        requestAnimationFrame(() => {
-            filtersEl?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest", inline: "nearest" });
-            measureFilters();
-        });
 
     createEffect(
         on(
@@ -301,6 +332,8 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
         setSel(0);
         revealFilter();
     };
+    // The row's fades follow the tabs when they change.
+    createEffect(on(() => (p.open && view() === "models" ? groups().map((g) => g.providerName).join("\0") : undefined), (names) => names !== undefined && requestAnimationFrame(measureFilters), { defer: true }));
     const filterIds = () => [FAVORITES, ...groups().map((g) => g.provider)];
     // Another list's heading starts with its accounts closed.
     createEffect(on(acctProvider, () => setAcctOpen(false), { defer: true }));
@@ -308,7 +341,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
     const choose = (m: ModelSummary) => {
         if (multi()) return togglePick(m.ref);
         p.setOpen(false);
-        void setModel(m.ref);
+        void setModel(m.ref, target(), !p.ownOnly);
     };
     const onKey = (e: KeyboardEvent) => {
         if (isMod(e) && /^[1-9]$/.test(e.key)) {
@@ -550,7 +583,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
     return (
         <>
             {/* Keep the trigger mounted when Compare changes so Menu can restore focus. */}
-            <button ref={anchor} class={`pick model ${multi() ? "on" : ""} ${p.open ? "open" : ""}`} aria-haspopup="dialog" aria-expanded={p.open} onClick={() => p.setOpen(!p.open)} title={multi() ? picks().map((r) => resolve(undefined, r, models())?.name ?? r).join(", ") || "Pick 2 to 4 models" : withShortcut([chipName(), showAccounts() ? accountName() : undefined, reasoning() && effortOf(effort()) ? `${effortOf(effort())!.label} effort` : undefined, fastOn() ? "fast mode" : undefined].filter(Boolean).join(" · "), "chat:modelPicker")}>
+            <button ref={anchor} class={`pick model ${multi() ? "on" : ""} ${p.open ? "open" : ""}`} aria-haspopup="dialog" aria-expanded={p.open} onClick={() => p.setOpen(!p.open)} title={multi() ? picks().map((r) => refLabel(r, models()).name).join(", ") || "Pick 2 to 4 models" : withShortcut([chipName(), showAccounts() ? accountName() : undefined, reasoning() && effortOf(effort()) ? `${effortOf(effort())!.label} effort` : undefined, fastOn() ? "fast mode" : undefined].filter(Boolean).join(" · "), "chat:modelPicker")}>
                 <Show when={multi()} fallback={
                     <>
                         {/* Fast mode: its bolt first, ahead of the provider's mark and the name. */}
@@ -559,7 +592,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                                 <Zap size={13} stroke-width={2} />
                             </span>
                         </Show>
-                        <Show when={currentProvider()}>{(id) => <ProviderIcon id={id()} name={providerName(id())} size={15} />}</Show>
+                        <Show when={!unavailable() && currentProvider()}>{(id) => <ProviderIcon id={id()} name={providerName(id())} size={15} />}</Show>
                         <span class="truncate">{chipModel()}</span>
                         {/* How hard it thinks, after its name, a step quieter: "Opus 5.5 xhigh". */}
                         <Show when={effortWord()}>{(w) => <span class="lbl pick-eff">{w()}<span class="sr-only"> effort</span></span>}</Show>
@@ -567,7 +600,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                             <span class="sr-only">, fast mode on</span>
                         </Show>
                         {/* The icon is hidden from assistive tech, so the provider is named for it here. */}
-                        <Show when={currentProvider()}>{(id) => <span class="sr-only">, {providerName(id())}</span>}</Show>
+                        <Show when={!unavailable() && currentProvider()}>{(id) => <span class="sr-only">, {providerName(id())}</span>}</Show>
                         {/* The account isn't named here (the tooltip does), except when it's gone: nothing runs until another is picked. */}
                         <Show when={showAccounts() && missingAccount()}><span class="pick-acct truncate"> · Removed account</span></Show>
                     </>
@@ -595,7 +628,8 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                 anchor={() => anchor}
                 onClose={() => p.setOpen(false)}
                 placement={p.placement ?? "top"}
-                width={view() === "effort" ? 288 : 340}
+                // One width for both views: at 288 the effort's heading cut a name like "Default (recommended)" short.
+                width={340}
                 maxHeight={460}
                 minHeight={view() === "effort" ? 0 : 200}
                 class={`mp ${view() === "effort" ? "mp-effort" : ""}`}
@@ -606,7 +640,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                     <div class="mpe">
                         <div class="mpe-h">
                             <Show when={fastOk()}>
-                                <button class={`mpe-fast ${fastOn() ? "on" : ""}`} aria-pressed={fastOn()} aria-label="Fast mode" disabled={p.busy} title={p.busy ? FAST_BUSY : FAST_TIP} onClick={() => void setFastMode(!p.fast)}>
+                                <button class={`mpe-fast ${fastOn() ? "on" : ""}`} aria-pressed={fastOn()} aria-label="Fast mode" disabled={p.busy} title={p.busy ? FAST_BUSY : FAST_TIP} onClick={() => void setFastMode(!p.fast, target())}>
                                     <Zap size={15} stroke-width={2} />
                                 </button>
                             </Show>
@@ -644,9 +678,11 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                             <Settings2 size={13} />
                         </button>
                     </div>
-                    {/* Whose models are listed: the favourites or one provider's, as plain words (a wheel scrolls them sideways).
-                        At the row's end, the listed provider's account, where it's a subscription with accounts. */}
+                    {/* Whose models are listed: the favourites or one provider's, as plain words, in one row that scrolls sideways
+                        (a swipe, a wheel, or the arrow at an edge with more past it); a name is whole on hover. At the row's end,
+                        the listed provider's account, where it's a subscription with accounts. */}
                     <div class="mp-bar">
+                        <div class="mp-fwrap">
                         <div
                             class={`mp-filters ${edges()}`}
                             ref={filtersEl}
@@ -670,7 +706,7 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                                         role="tab"
                                         aria-selected={filter() === g.provider}
                                         aria-label={g.provider === currentProvider() ? `${g.providerName}, current model` : undefined}
-                                        title={g.status === "error" ? (g.error ?? "Couldn't list this provider's models") : g.status === "cached" ? "The provider didn't answer; this is the last list it gave" : undefined}
+                                        title={g.status === "error" ? (g.error ?? "Couldn't list this provider's models") : g.status === "cached" ? "Last known list: the provider didn't answer" : g.providerName}
                                         onClick={(e) => (show(g.provider), e.detail && input?.focus())}
                                     >
                                         <ProviderIcon id={g.provider} name={g.providerName} size={14} />
@@ -678,6 +714,21 @@ export function ModelPicker(p: ComposerMenu & { /** The session it's for: its ma
                                     </button>
                                 )}
                             </For>
+                        </div>
+                        <For each={[-1, 1] as const}>
+                            {(dir) => (
+                                <Show when={edges().includes(dir < 0 ? "more-l" : "more-r")}>
+                                    <button
+                                        class={`mp-more ${dir < 0 ? "l" : "r"}`}
+                                        tabIndex={-1}
+                                        aria-label={dir < 0 ? "Earlier providers" : "More providers"}
+                                        onClick={() => filtersEl?.scrollBy({ left: dir * Math.max(80, filtersEl.clientWidth - 60), behavior: "smooth" })}
+                                    >
+                                        {dir < 0 ? <ChevronLeft size={13} /> : <ChevronRight size={13} />}
+                                    </button>
+                                </Show>
+                            )}
+                        </For>
                         </div>
                         {/* Rebuilt only when the list changes, so the accounts list (and focus in it) survives an update. */}
                         <Show when={acctProvider()} keyed>

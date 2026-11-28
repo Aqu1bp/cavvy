@@ -4,6 +4,7 @@
 import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { listAccounts } from "../providers/accounts";
+import { baseCli } from "./defs";
 
 /** Each file as last read, by its stamp: it's asked for each session's state, which changes all through a turn. */
 const read = new Map<string, { stamp: string; value: Record<string, unknown> | undefined }>();
@@ -156,7 +157,7 @@ function readSetting(provider: "claude-code" | "codex", accountId: string, proje
         return undefined;
     }
     if (!folder) return undefined;
-    return provider === "claude-code" ? claudeCompactWindow(folder, project, models) : codexCompactLimit(folder);
+    return baseCli(provider) === "claude-code" ? claudeCompactWindow(folder, project, models) : codexCompactLimit(folder);
 }
 
 /** For tests: read the files again. */

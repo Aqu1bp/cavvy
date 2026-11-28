@@ -92,6 +92,29 @@ const notices = (events: AgentEvent[]) => events.flatMap((e) => (e.type === "not
 const once = { outcome: { outcome: "selected", optionId: "once" } };
 const reject = { outcome: { outcome: "selected", optionId: "reject" } };
 
+describe("OpenCode that waits out a refusal", () => {
+    test("its log line on stderr says why the turn waits, its own session's reply only; Stop ends it", async () => {
+        const { events, run } = await makeAgent();
+        const stop = new AbortController();
+        const done = run("[[stall]]", stop.signal);
+        for (let i = 0; i < 200 && !events.some((e) => e.type === "retry"); i++) await Bun.sleep(20);
+        await Bun.sleep(100);
+        expect(events.filter((e) => e.type === "retry")).toEqual([
+            { type: "retry", attempt: 1, delayMs: 0, reason: "Free usage limit reached. Free models work in OpenCode (https://opencode.ai); subscribe to OpenCode Go to keep going: https://opencode.ai/go", keep: true },
+        ]);
+        expect(logLines()[0].argv).toContain("--print-logs");
+        stop.abort();
+        await done;
+    });
+
+    test("one that goes on after the wait: what it said before stays, and the wait is over", async () => {
+        const { events, run } = await makeAgent();
+        await run("[[stall:resume]]");
+        const kinds = events.flatMap((e) => (e.type === "retry" ? ["retry"] : e.type === "activity" && !e.text ? ["resumed"] : e.type === "text" ? [`text:${e.text}`] : []));
+        expect(kinds).toEqual(["text:Before", "retry", "resumed", "text: after"]);
+    });
+});
+
 describe("OpenCode's asks, by Cavvy's mode", () => {
     test("default: a write asks the user; their yes is allow_once, and the row waits on the call", async () => {
         const a = await makeAgent({ ask: () => ({ allow: true }) });
@@ -159,7 +182,7 @@ describe("OpenCode's asks, by Cavvy's mode", () => {
         expect(answers()).toEqual([once, reject]);
     });
 
-    test("a yes to a change covers that change only: not the file's delete or move, nor other content for it", () => {
+    test("a yes to a change covers that change only: not the same change again, the file's delete or move, nor other content for it", () => {
         const checker = new PermissionChecker(() => ({}), cwd);
         const file = join(cwd, "a.txt");
         const ask = (toolCall: any) => {
@@ -174,15 +197,15 @@ describe("OpenCode's asks, by Cavvy's mode", () => {
         const bare = ask({ kind: "edit", rawInput: { file_path: file, old_string: "a", new_string: "b" } });
         expect(bare.r).toMatchObject({ toolName: "Edit", input: { file_path: file } });
         bare.approve();
-        expect(bare.decision()).toBe("allow");
+        expect(bare.decision()).toBe("ask");
         expect(ask(deleted).decision()).toBe("ask");
         expect(ask(moved).decision()).toBe("ask");
-        // One that does: the same content again is remembered; other content asks again.
+        // One that does: the same content again asks again, as does other content.
         const one = ask(diff("one"));
         expect(one.r).toMatchObject({ toolName: "Write", input: { file_path: file, content: "one" } });
         expect(one.decision()).toBe("ask");
         one.approve();
-        expect(ask(diff("one")).decision()).toBe("allow");
+        expect(ask(diff("one")).decision()).toBe("ask");
         expect(ask(diff("two")).decision()).toBe("ask");
         expect(ask({ kind: "edit", rawInput: { file_path: file, content: "two" } }).decision()).toBe("ask");
         expect(ask(deleted).decision()).toBe("ask");
@@ -345,7 +368,7 @@ describe("the server's lists", () => {
             expect(oc).toMatchObject({ kind: "agent", configured: true, agentCli: { installed: true, signIn: "opencode auth login", plan: "OpenCode", multiAccount: false, planLimits: false, defaultAccount: "default" } });
             expect(providers.find((p) => p.id === "codex").agentCli).toMatchObject({ multiAccount: true, planLimits: true });
             const accounts = await engine.handle(client, "accounts.list", { provider: "opencode", refresh: true });
-            expect(accounts).toEqual([expect.objectContaining({ id: "default", name: "Default", signedIn: true, description: expect.stringContaining("OpenCode 0.0.0-fake") })]);
+            expect(accounts).toEqual([expect.objectContaining({ id: "default", name: "Default", signedIn: true, description: "OpenCode, signed in (1 provider)" })]);
             await (engine as any).checkPlans();
             await expect(engine.handle(client, "accounts.add", { provider: "opencode", id: "x", name: "X" })).rejects.toThrow(/Invalid account provider/);
         } finally {

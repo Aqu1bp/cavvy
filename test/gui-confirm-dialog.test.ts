@@ -132,6 +132,7 @@ for (const outcome of ["success", "error", "refresh error"] as const) {
             // The machine the row is on (state/providers-at.ts): where it calls, and what's read again after a change.
             useProvidersAt: () => ({ link: { call: (...args: unknown[]) => { calls.push(args); return request.promise; } }, changed: () => refresh.promise }),
             toast: (message: string) => messages.push(message), reportError: (e: unknown) => errors.push(e),
+            resetToast: () => {},
         });
         let dispose!: () => void;
         solid.createRoot((d: () => void) => {

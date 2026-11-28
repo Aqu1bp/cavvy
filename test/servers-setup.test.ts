@@ -731,7 +731,7 @@ esac`;
             expect(r.out).not.toContain("No agent CLI is installed");
             expect(await cavvy("servers", "login", "box")).toEqual({ code: 1, out: "", err: "Signing in needs a terminal.\n" });
             expect(await cavvy("servers", "login", "box", "nope")).toMatchObject({ code: 1, err: expect.stringMatching(/^No CLI called nope\. There are: claude-code, codex/) });
-            expect(await cavvy("servers", "login", "box", "codex")).toEqual({ code: 1, out: "", err: "Codex isn't installed on box. Install the Codex CLI (npm install -g @openai/codex)\n" });
+            expect(await cavvy("servers", "login", "box", "codex")).toEqual({ code: 1, out: "", err: "Codex isn't installed on box. Install the Codex CLI (curl -fsSL https://chatgpt.com/codex/install.sh | sh)\n" });
         });
 
         test("login: the CLI's own sign-in has this terminal, and then the CLI is turned on there", async () => {

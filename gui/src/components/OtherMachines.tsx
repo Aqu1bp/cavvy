@@ -18,8 +18,8 @@ import { focused, machine, notify } from "../lib/platform";
 import { RpcError } from "../lib/rpc";
 import { orderSessions } from "../lib/session-order";
 import { prefs } from "../state/prefs";
-import { freeRail } from "../state/ui";
-import { activate, app, forgetSession, markSeenAll, others, reportError, rpc, setApp, upsertSession } from "../state/app";
+import { freeRail, splitActions } from "../state/ui";
+import { activate, app, forgetSession, leaveSession, markSeenAll, others, reportError, rpc, setApp, upsertSession } from "../state/app";
 
 /** The servers as this computer's Cavvy last described them, by name. */
 const servers = new Map<string, MachineOverview>();
@@ -89,6 +89,7 @@ function relist() {
 /** One session of another machine changed. */
 function put(s: SessionSummary) {
     if (!app.sessionsLoaded || !mayTake(listed(s.id), machine, s.machine)) return;
+    hidden.delete(s.id);
     far.set(s.id, s.machine);
     seen([s]);
     upsertSession(s);
@@ -110,9 +111,37 @@ function unlist(id: string, at: string | undefined) {
     seen([], [id]);
 }
 
+/**
+ * Deleted here while its machine was away (src/servers/watch.ts): its row goes, and Undo still reaches that machine,
+ * but what's kept of it here (a draft) stays until the machine has deleted it too, or refused to (the row comes back).
+ */
+const hidden = new Map<string, string | undefined>();
+function hide(id: string, at: string | undefined) {
+    if (!far.has(id) || far.get(id) !== at) return;
+    // One of the window's own machine's has that id now: it's not that one that's meant.
+    if (listed(id)?.machine === machine) return;
+    far.delete(id);
+    left(id, at);
+    hidden.set(id, at);
+    batch(() => {
+        // Open in the window: its pane of a split closes, else the window goes Home (in a folder worked out while
+        // its row is still there), as for any delete.
+        if (!splitActions.leave?.(id)) leaveSession(id);
+        setApp("sessions", (l) => l.filter((s) => s.id !== id));
+        setApp("archived", (l) => l.filter((s) => s.id !== id));
+    });
+}
+
 /** One session of another machine is gone from it. */
 function drop(id: string, at: string | undefined) {
-    if (!far.has(id) || far.get(id) !== at) return;
+    if (hidden.get(id) === at) hidden.delete(id);
+    // Not in the list (hidden here as it was deleted while its machine was away, or since then the window was
+    // reloaded): gone for good now, so what's kept of it, a draft, goes too. Not one of the window's own machine's.
+    if (!far.has(id)) {
+        if (!listed(id)) forgetSession(id);
+        return;
+    }
+    if (far.get(id) !== at) return;
     far.delete(id);
     left(id, at);
     const now = listed(id);
@@ -246,6 +275,9 @@ export function watchOthers(hereName: string) {
             } else if (e.unlisted) {
                 m.sessions = m.sessions.filter((x) => x.id !== e.unlisted);
                 unlist(e.unlisted, e.name);
+            } else if (e.hidden) {
+                m.sessions = m.sessions.filter((x) => x.id !== e.hidden);
+                hide(e.hidden, e.name);
             }
         } else if (e.type === "servers.notify") tell(e);
         else if (home && e.type === "sessions.upsert") {

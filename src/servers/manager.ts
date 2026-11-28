@@ -34,15 +34,28 @@ function readKept(name: string): unknown {
         return undefined;
     }
 }
-function writeKept(name: string, sessions: unknown[]) {
+function writeKept(name: string, sessions: unknown[], file = keptFile(name)) {
     try {
         ensureDir(join(cavvyHome(), "servers"));
-        const tmp = `${keptFile(name)}.tmp`;
+        const tmp = `${file}.tmp`;
         writeFileSync(tmp, JSON.stringify(sessions), { mode: 0o600 });
-        renameSync(tmp, keptFile(name));
+        renameSync(tmp, file);
     } catch {
         // Not kept this time: listed again once it's reached.
     }
+}
+/** The changes made to a server's sessions here while it couldn't be reached, not sent yet (watch.ts PendingChange). */
+const pendingFile = (name: string) => join(cavvyHome(), "servers", `${encodeURIComponent(name)}.pending.json`);
+function readPending(name: string): unknown {
+    try {
+        return existsSync(pendingFile(name)) ? JSON.parse(readFileSync(pendingFile(name), "utf8")) : undefined;
+    } catch {
+        return undefined;
+    }
+}
+function writePending(name: string, changes: unknown[]) {
+    if (!changes.length) return void rmSync(pendingFile(name), { force: true });
+    writeKept(name, changes, pendingFile(name));
 }
 
 export interface ServerProgress {
@@ -152,9 +165,11 @@ export class ServerLinks {
         const names = new Set(listServers().map((s) => s.name));
         for (const [name, w] of this.watches) {
             if (names.has(name)) continue;
+            w.forget();
             w.stop();
             this.watches.delete(name);
             rmSync(keptFile(name), { force: true });
+            rmSync(pendingFile(name), { force: true });
             this.o.onOverview?.({ name, state: "removed", sessions: [] });
         }
         for (const name of names) {
@@ -171,6 +186,7 @@ export class ServerLinks {
                 peers: this.o.peers && ((op, params) => this.o.peers!(name, op, params)),
                 retryMs: this.o.watchRetryMs,
                 kept: { read: () => readKept(name), write: (sessions) => writeKept(name, sessions) },
+                pending: { read: () => readPending(name), write: (changes) => writePending(name, changes) },
             });
             this.watches.set(name, w);
             w.start();
@@ -183,7 +199,7 @@ export class ServerLinks {
      * Asks a server's Cavvy for something a session's row offers (rename, pin, archive, delete and the like), for a
      * window that isn't on that server. Only those: anything else is done in a window that's on it.
      */
-    async relay(name: string, method: string, params: Record<string, unknown>): Promise<{ worktree: true } | null> {
+    async relay(name: string, method: string, params: Record<string, unknown>): Promise<{ worktree: true } | { unsaved: true } | { title: string } | null> {
         const known = method === RELAYED_ARCHIVE_OFFER ? RELAYED_ARCHIVE_OFFER : RELAYED_SESSION_METHODS.find((m) => m === method);
         if (!known) throw new Error("Open the session to do that.");
         const id = params.id;
@@ -191,16 +207,25 @@ export class ServerLinks {
         const w = this.watches.get(name);
         if (!w) throw new Error(`${name} isn't one of this Cavvy's servers.`);
         // Each with what it takes and nothing else (archiving never removes a worktree from here), and nothing of
-        // what the server answers is passed on: these answer nothing.
+        // what the server answers is passed on, but the two flags and the new title below.
         const sent =
             known === "session.rename" ? { id, title: typeof params.title === "string" ? params.title.slice(0, 300) : "" }
             : known === "session.pin" ? { id, pinned: params.pinned === true }
             : known === "session.settle" ? { id, settled: params.settled === true }
             : known === "session.archive" ? { id, archived: params.archived === true }
+            : known === "session.neverSettle" ? { id, on: params.on === true }
+            : known === "session.snooze" ? { id, until: typeof params.until === "number" && Number.isFinite(params.until) ? params.until : null }
             : { id };
         const answer = await w.call(known, sent);
         // Only that it has one: where it is and what removing it would take are that machine's to ask about.
         if (known === RELAYED_ARCHIVE_OFFER) return answer && typeof answer === "object" && (answer as { worktree?: unknown }).worktree ? { worktree: true } : null;
+        // A delete there that had nothing to put in its trash: no Undo here either.
+        if (known === "session.delete") return answer && typeof answer === "object" && (answer as { unsaved?: unknown }).unsaved === true ? { unsaved: true } : null;
+        // The title it was given there, for the row's toast and its Undo here.
+        if (known === "session.regenerateTitle") {
+            const title = answer && typeof answer === "object" ? (answer as { title?: unknown }).title : undefined;
+            return typeof title === "string" ? { title: title.slice(0, 300) } : null;
+        }
         return null;
     }
 
@@ -631,8 +656,10 @@ export class ServerLinks {
         const w = this.watches.get(name);
         const leaving = getServer(name)?.sync === true && w?.overview().state === "connected" ? w : undefined;
         if (leaving) {
+            leaving.forget();
             this.watches.delete(name);
             rmSync(keptFile(name), { force: true });
+            rmSync(pendingFile(name), { force: true });
             this.o.onOverview?.({ name, state: "removed", sessions: [] });
         }
         const entry = removeServer(name);

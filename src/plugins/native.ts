@@ -8,6 +8,7 @@ import { existsSync, lstatSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join, resolve } from "path";
 import { writeJson, type HookConfig, type Settings } from "../config/settings";
 import { loadPlugins } from "./loader";
+import { baseCli } from "../backends/defs";
 
 /**
  * The backend that loads plugins itself. Codex reads the same format but only
@@ -15,7 +16,7 @@ import { loadPlugins } from "./loader";
  * as does every API provider. Its MCP servers come only from its own config,
  * so a plugin's servers reach it only when the plugin is installed in Codex too.
  */
-export const loadsPluginsNatively = (provider: string | undefined) => provider === "claude-code";
+export const loadsPluginsNatively = (provider: string | undefined) => baseCli(provider) === "claude-code";
 
 /**
  * Claude Code runs this plugin command (or skill) itself: it has the plugins

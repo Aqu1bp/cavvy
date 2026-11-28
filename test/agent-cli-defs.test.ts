@@ -14,7 +14,7 @@ import { loadsPluginsNatively } from "../src/plugins/native";
 
 test("CLAUDE_CLI and CODEX_CLI are the defs' CLI info", () => {
     expect(CLAUDE_CLI).toMatchObject({ command: "claude", product: "Claude Code", install: "Install Claude Code (https://code.claude.com/docs/en/setup)", signIn: "claude auth login" });
-    expect(CODEX_CLI).toMatchObject({ command: "codex", product: "Codex", install: "Install the Codex CLI (npm install -g @openai/codex)", signIn: "codex login" });
+    expect(CODEX_CLI).toMatchObject({ command: "codex", product: "Codex", install: "Install the Codex CLI (curl -fsSL https://chatgpt.com/codex/install.sh | sh)", signIn: "codex login" });
     expect(vendorOf("claude-code")).toBe("Anthropic");
     expect(vendorOf("codex")).toBe("OpenAI");
 });

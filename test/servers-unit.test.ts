@@ -691,7 +691,7 @@ describe("signing a CLI in where the browser is on another machine", () => {
 });
 
 describe("what the terminal says", () => {
-    const all = { clis: [{ id: "claude-code", product: "Claude Code", installed: true, signedIn: true, install: "Install Claude Code (https://code.claude.com/docs/en/setup)", signIn: "claude auth login" }, { id: "codex", product: "Codex", installed: false, install: "Install the Codex CLI (npm install -g @openai/codex)", signIn: "codex login" }], git: true, gh: { installed: true, signedIn: true }, browser: true, memMb: 2000 };
+    const all = { clis: [{ id: "claude-code", product: "Claude Code", installed: true, signedIn: true, install: "Install Claude Code (https://code.claude.com/docs/en/setup)", signIn: "claude auth login" }, { id: "codex", product: "Codex", installed: false, install: "Install the Codex CLI (curl -fsSL https://chatgpt.com/codex/install.sh | sh)", signIn: "codex login" }], git: true, gh: { installed: true, signedIn: true }, browser: true, memMb: 2000 };
 
     test("a server with everything says nothing; each thing missing is one line the user can act on", () => {
         expect(checkLines("box", all, { service: true })).toEqual([]);
@@ -699,7 +699,7 @@ describe("what the terminal says", () => {
             "It won't start Cavvy again after a reboot. To fix that, run on it: sudo loginctl enable-linger dev",
             "No agent CLI is installed there (Claude Code, Codex). Models with an API key work without one.",
             "  Install Claude Code (https://code.claude.com/docs/en/setup)",
-            "  Install the Codex CLI (npm install -g @openai/codex)",
+            "  Install the Codex CLI (curl -fsSL https://chatgpt.com/codex/install.sh | sh)",
             "git isn't installed there.",
             "The GitHub CLI isn't installed there: pull requests need it.",
             "No Chrome there: the Browser tool needs one.",
@@ -736,7 +736,7 @@ describe("what the terminal says", () => {
         };
         const check = readCheck(JSON.stringify(said))!;
         expect(check.clis).toEqual([
-            { id: "codex", product: "Codex", installed: true, signedIn: false, on: false, install: "Install the Codex CLI (npm install -g @openai/codex)", signIn: "codex login" },
+            { id: "codex", product: "Codex", installed: true, signedIn: false, on: false, install: "Install the Codex CLI (curl -fsSL https://chatgpt.com/codex/install.sh | sh)", signIn: "codex login" },
             { id: "claude-code", product: "Claude Code", installed: true, signedIn: true, on: undefined, install: "Install Claude Code (https://code.claude.com/docs/en/setup)", signIn: "claude auth login" },
         ]);
         expect(checkLines("box", check)).toEqual(["Codex isn't signed in there: cavvy servers login box"]);
