@@ -19,7 +19,7 @@ const asked: { q: string; answer: (ms: { turnId: string; part: string; n: number
 let cleared = 0;
 const FindBar = componentCode("FindBar", {
     createEffect, createMemo, createSignal, on, onCleanup, onMount, untrack, node, Show: "Show",
-    ChevronLeft: "i", ChevronRight: "i", Search: "i", X: "i",
+    ChevronUp: "i", ChevronDown: "i", X: "i",
     allMatches, clearPaint() {}, MAX_MATCHES: 999, paintMatches() {}, revealInBoxes() {}, textRanges: () => [],
     FAR: "data-far", findFocus: () => 0, findQuery, setFindOpen() {}, setFindQuery, setFindReveal: (r?: { turnId: string }) => reveals.push(r?.turnId),
     requestAnimationFrame: (f: () => void) => setTimeout(f, 0),
