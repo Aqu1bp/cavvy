@@ -358,7 +358,8 @@ export function Header(p: { handle?: SessionHandle; title?: string }) {
                                 <ShieldAlert size={12} /> Untrusted
                             </span>
                         </Show>
-                        <Menu label="Session actions" class="menu" open={menuOpen()} anchor={() => moreBtn} onClose={close} align="end" width={225}>
+                        {/* 244 holds its longest items whole: Find in conversation with its keys, Open project in Finder (reveal). */}
+                        <Menu label="Session actions" class="menu" open={menuOpen()} anchor={() => moreBtn} onClose={close} align="end" width={244}>
                             <For
                                 each={[
                                     { icon: Pencil, label: "Rename", run: () => void (close(), setEditing(true)) },
