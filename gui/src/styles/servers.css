@@ -1,82 +1,216 @@
 /* Servers (components/Servers.tsx): the list of machines, adding one, and the cover while a window reaches its server. */
-.server-row {
+
+/* ---- Shared: fields, a host's key, progress, what went wrong ---- */
+/* A dialog whose steps differ in height hangs from a fixed top edge, so it doesn't re-centre. */
+.dialog-backdrop.top:has(> .server-dialog) {
+    padding-top: 21vh;
+}
+
+/* A step that only asks: its title and line, then the buttons. */
+.server-dialog .dialog-body:empty {
+    display: none;
+}
+
+.server-dialog:has(> .dialog-body:empty) .dialog-head {
+    padding-bottom: calc(18 * var(--sp));
+}
+
+.fp {
+    margin: 0;
+    border-radius: var(--radius-md);
+    background: var(--well);
+    box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.fp-row {
+    display: flex;
+    align-items: baseline;
+    gap: calc(12 * var(--sp));
+    min-width: 0;
+    padding: calc(7 * var(--sp)) calc(12 * var(--sp));
+}
+
+.fp-row + .fp-row {
+    border-top: 1px solid var(--line);
+}
+
+.fp-row dt {
+    flex: none;
+    width: calc(60 * var(--sp));
+    overflow: hidden;
+    font-size: calc(12 * var(--sp));
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    color: var(--fg-3);
+}
+
+.fp-row dd {
+    min-width: 0;
+    margin: 0;
+    font-size: calc(11 * var(--sp));
+    overflow-wrap: anywhere;
+    user-select: text;
+}
+
+.progress {
+    display: flex;
+    flex-direction: column;
+    gap: calc(10 * var(--sp));
+    padding: calc(2 * var(--sp)) 0 calc(4 * var(--sp));
+}
+
+.progress-top {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    min-width: 0;
+    color: var(--fg-2);
+}
+
+.progress-top .spinner {
+    color: var(--accent);
+}
+
+.progress-text {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.progress-pct {
+    flex: none;
+    min-width: calc(34 * var(--sp));
+    font-size: calc(12 * var(--sp));
+    text-align: right;
+    color: var(--fg-3);
+}
+
+.progress-bar {
+    position: relative;
+    display: block;
+    flex: 1;
+    height: calc(4 * var(--sp));
+    overflow: hidden;
+    border-radius: calc(2 * var(--sp));
+    background: var(--press);
+}
+
+.progress-bar > i {
+    position: absolute;
+    inset: 0 auto 0 0;
+    border-radius: inherit;
+    background: var(--accent);
+}
+
+.progress-inline {
+    display: flex;
+    align-items: center;
+    gap: calc(10 * var(--sp));
+    height: calc(20 * var(--sp));
+}
+
+.problem-line {
+    margin: 0;
+    padding: calc(8 * var(--sp)) calc(10 * var(--sp));
+    border-radius: var(--radius-md);
+    background: var(--danger-soft);
+    font-size: calc(12 * var(--sp));
+    line-height: 1.5;
+    color: var(--danger);
+    overflow-wrap: anywhere;
+    user-select: text;
+}
+
+.server-said {
+    margin: 0;
+    color: var(--fg-2);
+    overflow-wrap: anywhere;
+    user-select: text;
+}
+
+.lacks,
+.cover-list {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    border-radius: var(--radius-md);
+    box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.lacks li {
+    padding: calc(8 * var(--sp)) calc(12 * var(--sp));
+    font-size: calc(12.5 * var(--sp));
+    color: var(--fg-2);
+}
+
+.lacks li + li {
+    border-top: 1px solid var(--line);
+}
+
+/* ---- The machine menu: this computer, the servers with their own buttons, adding one ---- */
+.machine-menu .menu-ico svg {
+    color: var(--accent-text);
+}
+
+.machine-row {
     display: flex;
     align-items: center;
     gap: calc(2 * var(--sp));
 }
 
-.server-dialog {
-    display: flex;
-    flex-direction: column;
-    gap: calc(12 * var(--sp));
-    padding: calc(20 * var(--sp));
+.machine-row > .menu-item {
+    flex: 1;
+    width: auto;
+    min-width: 0;
 }
 
-.server-dialog h2 {
-    font-size: 1.05rem;
+.machine-name {
+    flex: 1;
+    min-width: 0;
 }
 
-.server-dialog form {
-    display: flex;
-    flex-direction: column;
-    gap: calc(10 * var(--sp));
+.machine-cost {
+    flex: none;
+    font-size: calc(12 * var(--sp));
+    color: var(--fg-3);
 }
 
-.server-dialog label {
-    display: flex;
-    flex-direction: column;
-    gap: calc(4 * var(--sp));
-    font-size: 0.86rem;
-    color: var(--fg-2);
-}
-
-/* Kept in sync with this machine: the Machines menu's sync switch, on. */
-.server-sync-on {
-    color: var(--accent);
-}
-
-.server-actions {
-    display: flex;
+/* A row's buttons, in a column of their own so the names line up. */
+.machine-acts {
+    display: inline-flex;
+    flex: none;
     justify-content: flex-end;
-    gap: calc(8 * var(--sp));
-    margin-top: calc(4 * var(--sp));
+    gap: 1px;
+    width: calc(74 * var(--sp));
 }
 
-.server-working {
-    display: flex;
-    align-items: center;
-    gap: calc(8 * var(--sp));
-    color: var(--fg-2);
+.machine-acts .hb {
+    color: var(--fg-3);
 }
 
-.server-key {
-    padding: calc(8 * var(--sp)) calc(10 * var(--sp));
-    border: 0.5px solid var(--line);
-    border-radius: calc(8 * var(--sp));
-    overflow-wrap: anywhere;
-    user-select: text;
+.machine-acts .hb:hover {
+    color: var(--fg);
 }
 
-.server-problem {
-    display: flex;
-    flex-direction: column;
-    gap: calc(4 * var(--sp));
-    overflow-wrap: anywhere;
-    user-select: text;
+/* Kept in sync with this machine: the sync button, on. */
+.machine-acts .machine-sync-on {
+    color: var(--accent-text);
 }
 
-.server-lacks {
-    margin: 0;
-    padding-left: calc(18 * var(--sp));
-    display: flex;
-    flex-direction: column;
-    gap: calc(4 * var(--sp));
-    font-size: 0.86rem;
-    color: var(--fg-2);
-}
 
+/* ---- The cover: this window's server isn't ready ---- */
 .server-cover {
-    display: contents;
+    display: flex;
+    flex: 1;
+    align-self: stretch;
+    align-items: center;
+    justify-content: center;
+    min-height: 0;
+    padding: calc(32 * var(--sp)) calc(32 * var(--sp)) 10vh;
+    overflow: auto;
+    text-align: left;
 }
 
 /* Over a window that had been on its server, when getting back needs the user. */
@@ -87,13 +221,74 @@
     background: var(--sheet);
 }
 
-.server-cover .server-actions {
-    justify-content: center;
+.cover-card {
+    width: calc(500 * var(--sp));
+    max-width: 100%;
+    border-radius: var(--radius-lg);
+    background: var(--card);
+    box-shadow: var(--card-shadow), inset 0 0 0 1px var(--line), 0 6px 20px -10px rgba(0, 0, 0, 0.12);
 }
 
-.server-cover .server-key,
-.server-cover .server-problem {
-    max-width: calc(520 * var(--sp));
+.cover-head {
+    display: flex;
+    align-items: flex-start;
+    gap: calc(10 * var(--sp));
+    padding: calc(16 * var(--sp)) calc(20 * var(--sp)) 0;
+}
+
+.cover-icon {
+    display: inline-flex;
+    flex: none;
+    margin-top: calc(2 * var(--sp));
+    color: var(--fg-2);
+}
+
+.cover-icon.failed {
+    color: var(--danger);
+}
+
+.cover-icon .spinner {
+    color: var(--accent);
+}
+
+.cover-title {
+    flex: 1;
+    min-width: 0;
+    margin: 0;
+    font-size: calc(14.5 * var(--sp));
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    line-height: calc(20 * var(--sp));
+    overflow-wrap: anywhere;
+}
+
+.cover-body {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: calc(10 * var(--sp));
+    min-height: calc(34 * var(--sp));
+    padding: calc(14 * var(--sp)) calc(20 * var(--sp)) calc(18 * var(--sp)) calc(46 * var(--sp));
+}
+
+.cover-text {
+    margin: 0;
+    color: var(--fg-2);
+}
+
+.cover-foot {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    margin-top: calc(14 * var(--sp));
+    padding: calc(12 * var(--sp)) calc(16 * var(--sp)) calc(12 * var(--sp)) calc(12 * var(--sp));
+    border-top: 1px solid var(--line);
+    border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+    background: color-mix(in srgb, var(--rail-float) 60%, var(--card));
+}
+
+.cover-body + .cover-foot {
+    margin-top: 0;
 }
 
 /* The servers that can't be reached as they are, between the sidebar's list and its foot (components/OtherMachines.tsx). */
@@ -151,13 +346,3 @@
 .server-row-word[data-tone="amber"] {
     color: var(--warn);
 }
-
-
-/* What a rented server costs, beside its name. */
-.server-cost {
-    flex: none;
-    font-size: 0.857rem;
-    color: var(--fg-3);
-    font-variant-numeric: tabular-nums;
-}
-

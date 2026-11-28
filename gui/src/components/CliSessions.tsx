@@ -100,16 +100,15 @@ export function CliSessions(p: { cwd: string; rows?: number }) {
 
     /** A row of "Show all". */
     const item = (s: CliSessionInfo) => (
-        <button class="cl-item" disabled={busy() === s.id} title={s.recent ? STILL_OPEN : undefined} onClick={() => act(s)}>
-            <span class="cli-pv"><ProviderIcon id={s.source} name={name(s)} size={16} /></span>
-            <span class="cl-main">
-                <span class="truncate">{s.title}</span>
-                <span class="cli-meta">
-                    {name(s)} · {(now(), agoText(s.updatedAt))} · {count(s)}
-                    <Show when={s.recent}> · <span class="cli-live">Still open in a terminal</span></Show>
-                </span>
+        <button class="cl-item" disabled={busy() === s.id} title={`${name(s)} · ${(now(), agoText(s.updatedAt))} · ${count(s)}`} onClick={() => act(s)}>
+            <span class="cli-pv"><ProviderIcon id={s.source} name={name(s)} size={15} /></span>
+            <span class="cli-main">
+                <span class="cl-title truncate">{s.title}</span>
+                <Show when={busy() === s.id} fallback={<Show when={s.recent}><span class="cli-meta"><span class="cli-live" title={STILL_OPEN}>Still open in a terminal</span></span></Show>}>
+                    <span class="cli-meta">Importing…</span>
+                </Show>
             </span>
-            <span class="cl-act">{enabled(s) ? "Import" : "Turn on in Settings"}</span>
+            <span class={enabled(s) ? "btn sm cl-act" : "cli-off cl-act"}>{enabled(s) ? "Import" : "Turn on in Settings"}</span>
         </button>
     );
 
@@ -127,15 +126,27 @@ export function CliSessions(p: { cwd: string; rows?: number }) {
                 </section>
             </Show>
             {/* Outside the section: open, it stays while the list reloads (or fails to). */}
-            <Dialog open={all()} onClose={() => setAll(false)} title="Continue from your terminal" width={520} class="cli-dialog" footer={<button class="btn secondary" onClick={() => setAll(false)}>Done</button>}>
+            <Dialog
+                open={all()}
+                onClose={() => setAll(false)}
+                title="Continue from your terminal"
+                width={540}
+                class="cli-dialog"
+                footer={
+                    <div class="dialog-actions">
+                        <For each={more()}>{(m) => <div class="cl-note">{m.more} more {m.name} {m.more === 1 ? "session" : "sessions"} not shown</div>}</For>
+                        <span class="grow" />
+                        <button class="btn" onClick={() => setAll(false)}>Done</button>
+                    </div>
+                }
+            >
                 <div class="cl-list">
                     <Show when={list.loading || sessions().length}>
                         <For each={fresh()}>{item}</For>
                     </Show>
                     <Show when={!list.loading && !sessions().length}>
-                        <div class="cl-note">Couldn't list terminal sessions.</div>
+                        <p class="cl-none">Couldn't list terminal sessions.</p>
                     </Show>
-                    <For each={more()}>{(m) => <div class="cl-note">{m.more} more {m.name} {m.more === 1 ? "session" : "sessions"} not shown</div>}</For>
                 </div>
             </Dialog>
         </>

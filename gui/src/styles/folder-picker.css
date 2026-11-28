@@ -1,0 +1,72 @@
+/* ---- Open a project folder (FolderPicker): a path bar over the folders, no padding of its own ---- */
+.dialog.fpick .dialog-head {
+    padding-bottom: calc(13 * var(--sp));
+    border-bottom: 1px solid var(--line);
+}
+
+.dialog.fpick .dialog-body {
+    gap: 0;
+    padding: 0;
+}
+
+.fpick-bar {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: calc(2 * var(--sp));
+    padding: calc(8 * var(--sp)) calc(12 * var(--sp));
+    border-bottom: 1px solid var(--line);
+}
+
+.fpick-bar .icon-btn:disabled {
+    opacity: 0.35;
+    background: none;
+}
+
+.fpick-path {
+    flex: 1;
+    height: calc(28 * var(--sp));
+    margin-left: calc(6 * var(--sp));
+    border-radius: var(--radius-sm);
+}
+
+.fpick-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    height: calc(284 * var(--sp));
+    padding: calc(6 * var(--sp));
+    overflow-y: auto;
+}
+
+.fpick-row {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: calc(9 * var(--sp));
+    height: calc(30 * var(--sp));
+    padding: 0 calc(9 * var(--sp));
+    border-radius: var(--radius-sm);
+    transition: background 0.1s;
+}
+
+.fpick-row:hover {
+    background: var(--hover);
+}
+
+.fpick-row > svg {
+    flex: none;
+    color: var(--fg-3);
+}
+
+.fpick-empty {
+    margin: auto;
+    color: var(--fg-3);
+}
+
+.fpick-at {
+    flex: 1;
+    min-width: 0;
+    font-size: calc(12 * var(--sp));
+    color: var(--fg-3);
+}

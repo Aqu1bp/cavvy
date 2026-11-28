@@ -17,6 +17,7 @@ import { chooseFolder, openProject } from "../state/actions";
 import { requestComposerFocus, setFolderPickerOpen, setupObscured, terminalActions } from "../state/ui";
 import { Dialog } from "./ui/Dialog";
 import { Spinner } from "./ui/bits";
+import "../styles/worktree-dialogs.css";
 
 export type Field = "branch" | "base" | "location" | "general";
 
@@ -57,6 +58,8 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
     const [branch, setBranch] = createSignal("");
     const [base, setBase] = createSignal(r.base);
     /** Follows the branch name until edited. */
+    // One New worktree dialog at a time: its form, for the Create button in the foot.
+    const formId = "new-worktree-form";
     const [folder, setFolder] = createSignal<string>();
     /** A folder elsewhere the user chose to create it in. */
     const [parent, setParent] = createSignal<string>();
@@ -185,8 +188,32 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
     };
 
     return (
-        <Dialog open onClose={close} title="New worktree" width={540}>
+        <Dialog
+            open
+            onClose={close}
+            title="New worktree"
+            subtitle="A new branch, in a folder of its own."
+            width={520}
+            footer={
+                <div class="dialog-actions">
+                    <Show when={busy()}>
+                        <span class="wt-busy">
+                            <Spinner size={13} />
+                            Checking out files…
+                        </span>
+                    </Show>
+                    <span class="grow" />
+                    <button type="button" class="btn" disabled={busy()} onClick={close}>
+                        Cancel
+                    </button>
+                    <button type="submit" form={formId} class="btn primary" disabled={busy() || trusting() || note().kind === "loading" || !branch().trim() || !name()}>
+                        Create
+                    </button>
+                </div>
+            }
+        >
             <form
+                id={formId}
                 class="wt-form"
                 onSubmit={(e) => {
                     e.preventDefault();
@@ -213,12 +240,13 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
                     <label class="wt-label" for="wt-folder">
                         Location
                     </label>
-                    {/* The folder's name, in full; the whole path it makes is said once, below. */}
-                    <input id="wt-folder" class="input mono" spellcheck={false} autocomplete="off" maxLength={255} disabled={busy()} value={name()} onInput={(e) => setFolder(e.currentTarget.value)} aria-invalid={Boolean(errorFor("location"))} />
-                    <span class="wt-path mono" title={target()}>
-                        {target()}
-                    </span>
-                    <span class="wt-hint">
+                    {/* The folder it goes in, then its own name: together, the whole path. */}
+                    <div class="wt-location" title={target()}>
+                        <span class="wt-dir mono truncate">{tildify(dir().replace(/\/+$/, ""), app.hello?.homeDir)}/</span>
+                        <input id="wt-folder" class="input mono wt-folder" placeholder="folder" spellcheck={false} autocomplete="off" maxLength={255} disabled={busy()} value={name()} onInput={(e) => setFolder(e.currentTarget.value)} aria-invalid={Boolean(errorFor("location"))} />
+                    </div>
+                    <span class="wt-location-foot">
+                        <Show when={errorFor("location")}>{(m) => <span class="wt-error">{m()}</span>}</Show>
                         <Show
                             when={parent()}
                             fallback={
@@ -232,7 +260,6 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
                             </button>
                         </Show>
                     </span>
-                    <Show when={errorFor("location")}>{(m) => <span class="wt-error">{m()}</span>}</Show>
                 </div>
                 <Show when={errorFor("general")}>
                     {(m) => (
@@ -253,10 +280,10 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
                 <Show when={runs()}>
                     {(n) => (
                         <div class="wt-setup">
-                            <span>
+                            <p class="wt-setup-text">
                                 The setup script <strong>{n().script.name}</strong> runs once it's created:
-                            </span>
-                            <pre class="wt-setup-command mono">{n().script.command}</pre>
+                            </p>
+                            <pre class="wt-setup-cmd mono">{n().script.command}</pre>
                             <label class="check-row">
                                 <input type="checkbox" checked={skipSetup()} disabled={busy()} onChange={(e) => setSkipSetup(e.currentTarget.checked)} />
                                 <span>Don't run it this time</span>
@@ -267,13 +294,13 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
                 <Show when={untrusted()}>
                     {(n) => (
                         <div class="wt-setup">
-                            <span>
-                                The setup script <strong>{n().script.name}</strong> won't run: you haven't trusted this repository.
-                            </span>
-                            <pre class="wt-setup-command mono">{n().script.command}</pre>
-                            <span class="wt-hint">Trusting it also turns on its .cavvy settings, hooks and MCP servers.</span>
+                            <p class="wt-setup-text">
+                                Not trusted, so <strong>{n().script.name}</strong> won't run.
+                            </p>
+                            <pre class="wt-setup-cmd mono">{n().script.command}</pre>
+                            <span class="wt-hint">Trusting also turns on its settings, hooks and MCP servers.</span>
                             <div>
-                                <button type="button" class="btn secondary sm" disabled={busy() || trusting()} onClick={() => void trustRepository(n().main)}>
+                                <button type="button" class="btn sm" disabled={busy() || trusting()} onClick={() => void trustRepository(n().main)}>
                                     {trusting() ? <Spinner size={12} /> : "Trust this repository"}
                                 </button>
                             </div>
@@ -283,22 +310,10 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
                 <Show when={unreadable()}>
                     {(n) => (
                         <div class="wt-setup">
-                            <span>The project scripts couldn't be read, so no setup script will run. {n().message}</span>
+                            <p class="wt-setup-text">Couldn't read the project scripts: no setup script runs. {n().message}</p>
                         </div>
                     )}
                 </Show>
-                <div class="dialog-actions">
-                    <Show when={busy()}>
-                        <span class="muted small">Checking out files…</span>
-                    </Show>
-                    <span class="grow" />
-                    <button type="button" class="btn ghost" disabled={busy()} onClick={close}>
-                        Cancel
-                    </button>
-                    <button type="submit" class="btn primary" disabled={busy() || trusting() || note().kind === "loading" || !branch().trim() || !name()}>
-                        {busy() ? <Spinner size={12} /> : "Create"}
-                    </button>
-                </div>
             </form>
         </Dialog>
     );
@@ -307,17 +322,14 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
 /** The ignored files and folders Git would delete with a worktree: removal waits for the user to agree to exactly these. */
 export function IgnoredFiles(p: { names: string[]; total: number }) {
     return (
-        <div class="rw-confirm wt-ignored">
-            <AlertTriangle size={14} />
-            <div>
-                <div>These ignored {p.total === 1 ? "file would" : "files and folders would"} be deleted with it:</div>
-                <ul class="mono">
-                    <For each={p.names}>{(n) => <li>{n}</li>}</For>
-                </ul>
+        <div class="wt-del">
+            <p class="wt-del-head">Ignored {p.total === 1 ? "file" : "files"} Git would delete</p>
+            <ul>
+                <For each={p.names}>{(n) => <li class="mono">{n}</li>}</For>
                 <Show when={p.total > p.names.length}>
-                    <div>and {p.total - p.names.length} more.</div>
+                    <li>and {p.total - p.names.length} more</li>
                 </Show>
-            </div>
+            </ul>
         </div>
     );
 }
@@ -370,17 +382,16 @@ export function RemoveWorktreeDialog(p: { request: RemoveWorktreeRequest; onClos
         }
     };
     return (
-        <Dialog open onClose={close} title="Remove this worktree?" subtitle={<span class="mono">{tildify(w.path, app.hello?.homeDir)}</span>} width={500}>
+        <Dialog open onClose={close} title="Remove this worktree?" subtitle={<span class="mono wt-sub-path">{tildify(w.path, app.hello?.homeDir)}</span>} width={500}>
             <p class="wt-confirm">
                 <Show when={w.branch} fallback="Its commit stays in the repository.">
-                    Branch <span class="mono">{w.branch}</span> is kept.
+                    Branch <code class="mono">{w.branch}</code> is kept.
                 </Show>
+                <Show when={!w.exists}> Its folder is already gone.</Show>
             </p>
-            <p class="muted small">
-                <Show when={w.exists} fallback="Its folder is already gone.">
-                    Uncommitted changes stop the removal. Ignored files, like .env, are listed before they're deleted.
-                </Show>
-            </p>
+            <Show when={w.exists}>
+                <p class="wt-hint">Uncommitted changes stop the removal.</p>
+            </Show>
             <Show when={ignored()}>{(i) => <IgnoredFiles names={i().names} total={i().total} />}</Show>
             <Show when={error()}>
                 {(m) => (
@@ -397,7 +408,7 @@ export function RemoveWorktreeDialog(p: { request: RemoveWorktreeRequest; onClos
             </Show>
             <div class="dialog-actions">
                 <span class="grow" />
-                <button class="btn ghost" disabled={busy()} onClick={close}>
+                <button class="btn" disabled={busy()} onClick={close}>
                     Cancel
                 </button>
                 <Show
