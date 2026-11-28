@@ -99,7 +99,9 @@
 /* The servers that can't be reached as they are, between the sidebar's list and its foot (components/OtherMachines.tsx). */
 .sidebar .others {
     flex: none;
-    padding: 0 calc(8 * var(--sp)) calc(4 * var(--sp));
+    margin: 0 calc(-10 * var(--sp));
+    padding: calc(4 * var(--sp)) calc(8 * var(--sp));
+    border-top: 1px solid var(--line);
 }
 
 .sidebar .others:empty {
@@ -108,41 +110,38 @@
 
 .others .om-h {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     gap: calc(8 * var(--sp));
     width: 100%;
-    padding: calc(4 * var(--sp)) calc(8 * var(--sp));
-    border: 0;
+    height: calc(32 * var(--sp));
+    padding: 0 calc(8 * var(--sp));
     border-radius: calc(6 * var(--sp));
-    background: none;
-    color: var(--rail-fg-2);
-    font: inherit;
-    font-size: 0.786rem;
-    font-weight: 600;
+    color: var(--rail-fg);
+    font-weight: 500;
     text-align: left;
-    cursor: pointer;
 }
 
 .others .om-h:hover {
-    color: var(--rail-fg);
+    background: var(--rail-hover);
+}
+
+.others .om-h > svg {
+    flex: none;
+    color: var(--fg-3);
 }
 
 .others .om-n {
     flex: none;
+    margin-left: auto;
+    color: var(--danger);
+    font-size: 0.857rem;
     font-weight: 400;
 }
 
-.others .om-h:focus-visible {
-    outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
-    outline-offset: -2px;
+.others .om-n.warn {
+    color: var(--warn);
 }
 
-/* The server a set-aside or archived session is on, after its title (the sidebar's rows: components/Sidebar.tsx). */
-.slim-at {
-    flex: none;
-    font-size: 0.786rem;
-    color: color-mix(in srgb, var(--rail-fg-2) 72%, transparent);
-}
 
 /* What a rented server costs, beside its name. */
 .server-cost {

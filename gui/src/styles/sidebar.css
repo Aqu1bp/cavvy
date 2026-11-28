@@ -1,13 +1,8 @@
-/* ---- Rail: the sessions, straight on the window glass ------------------
-   No surface of its own: a hairline (shell.css) is all that parts it from
-   the work. From the top: the line level with the traffic lights (its few
-   tools at the far end), New session and Search, the list, the footer.
-
-   Every row in it is one shape: the words from the headings' edge, then at
-   the far end a glyph when there's news (needs you, working, unread,
-   failed, pinned) and when it last moved. Listed by date, a session's
-   second line is its project. The open one is a soft fill. Headings are
-   plain words, never smaller than what they head. */
+/* ---- Rail: the sessions, on the window's ground --------------------------
+   From the top: the line level with the traffic lights (its few tools at the
+   far end), New session and Search, the list, the servers out of reach, the
+   footer. A row: how it's doing (a glyph), its title and when, and under it
+   what it runs on. The open one is a raised card. No row animates. */
 
 .sidebar {
     /* The rail's width: it fills .win-rail's track (shell.css), which keeps it while the column opens and closes. */
@@ -18,23 +13,18 @@
     position: relative;
     min-height: 0;
     min-width: 0;
-    padding: 0 calc(10 * var(--sp)) calc(6 * var(--sp));
+    padding: 0 calc(10 * var(--sp));
     color: var(--rail-fg);
     background: transparent;
-    font-size: 0.964rem;
+    font-size: 0.929rem;
     line-height: 1.4;
     user-select: none;
     -webkit-user-select: none;
-    /* Where a row's glyph slot starts, and how wide it is: headings and the footer line up with it. */
-    --row-pad: calc(8 * var(--sp));
-    --lead-w: calc(16 * var(--sp));
-    --lead-gap: calc(8 * var(--sp));
-    /* How far a session's title sits in from the headings: none by date, under the project's name by project. */
-    --indent: 0px;
+    /* The needs-you dot: brighter than --warn, the amber's text colour. */
+    --dot-warn: color-mix(in srgb, var(--warn) 55%, #f5a623);
 }
 
-/* Narrow windows: the shell floats the rail over the work (data-rail="overlay" on an ancestor).
-   From the window's edge (shell.css): rounded on its open side only. */
+/* Narrow windows: the shell floats the rail over the work (data-rail="overlay" on an ancestor). */
 [data-rail="overlay"] .sidebar {
     padding-top: var(--win-pad);
     border-radius: 0 var(--r-card) var(--r-card) 0;
@@ -43,9 +33,7 @@
 }
 
 .sidebar .hb {
-    border-radius: var(--radius-sm);
     color: var(--fg-2);
-    transition: transform 80ms;
 }
 
 .sidebar .hb:hover:not(:disabled),
@@ -55,13 +43,7 @@
     color: var(--rail-fg);
 }
 
-.sidebar .hb:active:not(:disabled) {
-    transform: scale(0.94);
-}
-
-/* On the window's top line (--top-line, tokens.css) with the traffic lights
-   and the title bar: the rail starts --win-pad down, so this row is twice the
-   rest of the way tall. The buttons end at the rail's far edge. */
+/* On the window's top line (--top-line, tokens.css) with the traffic lights and the title bar. */
 .side-top {
     display: flex;
     align-items: center;
@@ -71,13 +53,12 @@
     flex: none;
 }
 
-/* Its buttons are the frame's: the traffic lights' size at any text size. */
 .side-top .hb {
     width: 28px;
     height: 28px;
 }
 
-/* The app's mark, where there are no traffic lights (the svg's own 20px, the frame's like the buttons). */
+/* The app's mark, where there are no traffic lights. */
 .side-top .brand {
     flex: none;
     border-radius: 25%;
@@ -89,46 +70,57 @@
 .side-nav {
     display: flex;
     flex-direction: column;
-    gap: 1px;
+    gap: calc(6 * var(--sp));
     flex: none;
-    margin-bottom: calc(10 * var(--sp));
+    padding: calc(2 * var(--sp)) 0 calc(10 * var(--sp));
 }
 
 .nav-row {
     display: flex;
     align-items: center;
-    gap: var(--lead-gap);
+    gap: calc(7 * var(--sp));
     width: 100%;
     min-width: 0;
     height: calc(32 * var(--sp));
-    padding: 0 var(--row-pad);
+    padding: 0 calc(8 * var(--sp)) 0 calc(10 * var(--sp));
     border-radius: var(--r-row);
+    background: var(--hover);
+    color: var(--fg-3);
+    text-align: left;
+    /* Its width decides whether the keys show (below). */
+    container-type: inline-size;
+}
+
+.nav-row:hover {
+    background: var(--press);
+}
+
+/* New session: the one raised control in the rail. */
+.nav-row.new {
+    gap: calc(8 * var(--sp));
+    height: calc(34 * var(--sp));
+    background: var(--raised);
+    box-shadow: var(--card-shadow), 0 0 0 1px var(--ctl-stroke);
     color: var(--rail-fg);
     font-weight: 500;
-    text-align: left;
-    transition: background 140ms;
-    /* Its width decides whether the shortcut shows (below). */
-    container-type: inline-size;
+}
+
+.nav-row.new:hover {
+    background: linear-gradient(var(--hover) 0 0), var(--raised);
 }
 
 .nav-row > svg {
     flex: none;
-    width: var(--lead-w);
-    height: var(--lead-w);
-    color: var(--rail-fg-2);
+    color: var(--fg-3);
+}
+
+.nav-row.new > svg {
+    color: var(--rail-fg);
 }
 
 .nav-row > .truncate {
     flex: 1;
     min-width: 0;
-}
-
-.nav-row:hover {
-    background: var(--rail-hover);
-}
-
-.nav-row:active {
-    background: var(--press);
 }
 
 .nav-row:focus-visible,
@@ -137,27 +129,18 @@
 .slim.more:focus-visible,
 .shelf-toggle:focus-visible,
 .settled-head:focus-visible,
-.day-head:focus-visible {
+.day-head:focus-visible,
+.others .om-h:focus-visible {
     outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
     outline-offset: -2px;
 }
 
-/* The row's shortcut: there while you point at it, so the rail at rest is only words. */
 .side-kbd {
-    flex: none;
-    font: 500 0.821rem/1 var(--font-ui);
-    color: var(--fg-3);
-    white-space: nowrap;
-    opacity: 0;
-    transition: opacity 140ms;
+    display: inline-flex;
+    gap: calc(2 * var(--sp));
 }
 
-.nav-row:hover .side-kbd,
-.nav-row:focus-visible .side-kbd {
-    opacity: 1;
-}
-
-/* A narrow sidebar at a large text size: the shortcut gives way rather than run into the words (it's in the tooltip). */
+/* A narrow sidebar at a large text size: the keys give way rather than run into the words (they're in the tooltip). */
 @container (width < 9em) {
     .side-kbd {
         display: none;
@@ -170,13 +153,11 @@
     flex: 1;
     min-height: 0;
     overflow-y: auto;
-    margin: 0 calc(-4 * var(--sp));
-    padding: 0 calc(4 * var(--sp)) calc(12 * var(--sp));
+    margin: 0 calc(-10 * var(--sp));
+    padding: 0 calc(6 * var(--sp)) calc(12 * var(--sp));
     display: flex;
     flex-direction: column;
     scrollbar-width: none;
-    /* Both edges fade: a row scrolled half out isn't cut through its words. */
-    mask-image: linear-gradient(transparent, #000 10px, #000 calc(100% - 16px), transparent);
 }
 
 .side-list::-webkit-scrollbar {
@@ -187,24 +168,18 @@
     flex: none;
 }
 
-/* Nothing in the list: one quiet line where the first day's heading goes, and a retry at its end when loading failed. */
+/* Nothing in the list: a quiet line in the middle, and a retry under it when loading failed. */
 .side-empty {
     display: flex;
+    flex-direction: column;
     align-items: center;
-    justify-content: space-between;
-    gap: calc(8 * var(--sp));
-    min-height: calc(26 * var(--sp));
-    padding: 0 calc(4 * var(--sp)) 0 var(--row-pad);
-    font-size: 0.929rem;
-    font-weight: 500;
-    white-space: nowrap;
+    gap: calc(10 * var(--sp));
+    padding: calc(48 * var(--sp)) calc(20 * var(--sp));
     color: var(--fg-3);
+    font-size: 0.893rem;
 }
 
-/* ---- Headings: a day, a project, Needs you, Settled, Archived -----------
-   Plain words over their rows, starting where the rows' glyphs do, never
-   smaller or dimmer than the rows' second line. A count, where there is one,
-   a step quieter. */
+/* ---- Headings: Needs you, a day, a project, a run, Snoozed, Settled, Archived ---- */
 
 .day-head,
 .shelf {
@@ -213,12 +188,13 @@
     align-items: center;
     gap: calc(6 * var(--sp));
     flex: none;
-    min-height: calc(26 * var(--sp));
-    margin-top: calc(16 * var(--sp));
-    padding: 0 var(--row-pad);
-    font-size: 0.929rem;
-    font-weight: 600;
-    color: var(--fg-2);
+    min-height: calc(28 * var(--sp));
+    margin-top: calc(6 * var(--sp));
+    padding: 0 calc(8 * var(--sp)) 0 calc(6 * var(--sp));
+    border-radius: calc(6 * var(--sp));
+    color: var(--fg-3);
+    font-size: 0.857rem;
+    font-weight: 500;
     text-align: left;
 }
 
@@ -228,130 +204,102 @@
     margin-top: 0;
 }
 
-.shelf > svg {
+.day-head:hover,
+.settled-head:hover,
+.shelf-toggle:hover {
+    color: var(--rail-fg);
+}
+
+.needs-head {
+    padding-left: calc(9 * var(--sp));
+    color: var(--warn);
+}
+
+.shelf > svg,
+.day-head > svg {
     flex: none;
 }
 
-.shelf .n {
-    font-weight: 500;
+.sidebar .n {
+    font-weight: 400;
     font-variant-numeric: tabular-nums;
     color: var(--fg-3);
 }
 
 .shelf-btn {
-    display: inline-flex;
-    align-items: center;
+    display: inline-grid;
+    place-items: center;
     flex: none;
     height: calc(22 * var(--sp));
     margin-left: auto;
     padding: 0 calc(8 * var(--sp));
-    margin-right: calc(-4 * var(--sp));
-    border-radius: var(--pill);
-    color: var(--rail-fg-2);
+    border-radius: calc(6 * var(--sp));
+    background: var(--raised);
+    box-shadow: inset 0 0 0 1px var(--line-strong);
+    color: var(--rail-fg);
     font-size: 0.857rem;
     font-weight: 500;
 }
 
 .shelf-btn:hover {
-    background: var(--rail-hover);
-    color: var(--rail-fg);
+    background: linear-gradient(var(--hover) 0 0), var(--raised);
 }
 
-/* A project's New session: at the heading's end while you point at it. */
+/* A project's New session, at its heading's end. */
 .shelf-btn.add {
     position: absolute;
     right: calc(4 * var(--sp));
     top: 50%;
-    width: calc(22 * var(--sp));
+    width: calc(24 * var(--sp));
+    height: calc(24 * var(--sp));
     padding: 0;
-    margin: calc(-11 * var(--sp)) 0 0;
-    justify-content: center;
-    opacity: 0;
+    margin-top: calc(-12 * var(--sp));
+    background: none;
+    box-shadow: none;
+    color: var(--fg-3);
 }
 
-.shelf:hover .shelf-btn.add,
-.shelf-btn.add:focus-visible {
-    opacity: 1;
-}
-
-.settled-head,
-.day-head {
-    width: 100%;
-    border-radius: var(--r-row);
-    transition: color 140ms;
-}
-
-.day-head {
-    transition: color 140ms, margin-bottom 180ms var(--ease);
-}
-
-/* Folded days stacked: one list of headings, not each its own gap. On the folded one, so it closes as its rows
-   go (the side list is a flex column: margins add, they don't collapse). */
-.day-head[aria-expanded="false"] {
-    margin-bottom: calc(-14 * var(--sp));
-}
-
-/* The last day folded: Settled keeps a heading's gap below it. */
-.day-head[aria-expanded="false"] + .settled-gap {
-    margin-top: calc(14 * var(--sp));
-}
-
-.day-head .wait-dot {
-    width: calc(6 * var(--sp));
-    height: calc(6 * var(--sp));
-}
-
-.settled-head:hover,
-.day-head:hover {
+.shelf-btn.add:hover {
+    background: var(--rail-hover);
     color: var(--rail-fg);
 }
 
-/* The fold's chevron: after the words, there while you point at the heading (or it's folded, so it says why
-   nothing is under it). */
-/* Settled sits at the foot of the list: the gap above it takes what room is left, and is a heading's gap at least. */
-.settled-gap {
-    flex: 1 0 calc(16 * var(--sp));
-}
-
-.side-list > .settled-head {
-    margin-top: 0;
-}
-
-/* Open, it points down at its rows; folded, along the heading. */
+/* Folded, the chevron points along the heading; open, down at its rows. */
 .settled-chev {
     flex: none;
-    opacity: 0;
+    order: -1;
     transform: rotate(90deg);
-    transition: transform var(--dur-fast), opacity 140ms;
+    transition: transform var(--dur-fast);
 }
 
 .settled-chev.closed {
     transform: none;
-    opacity: 0.8;
 }
 
-.settled-head:hover .settled-chev,
-.day-head:hover .settled-chev,
-.shelf-toggle:hover .settled-chev,
-:is(.settled-head, .day-head, .shelf-toggle):focus-visible .settled-chev {
-    opacity: 1;
+/* Snoozed and Settled sit at the foot of the list, under a rule: the gap above takes what room is left. */
+.settled-gap {
+    flex: 1 0 calc(10 * var(--sp));
 }
 
-/* Grouped by project, a heading folds its sessions under it (and unfolds
-   them), like Settled. It reads as the first row of its group: a folder in
-   the glyph slot (open or shut), the name at the rows' size, so the titles
-   under it start where the name does. Its New session shows at its end on
-   hover. */
+.side-list > .settled-head {
+    width: 100%;
+    margin-top: 0;
+}
+
+.settled-gap + .settled-head {
+    margin-top: calc(6 * var(--sp));
+}
+
+.settled-gap + .settled-head::before {
+    content: "";
+    position: absolute;
+    inset: calc(-6 * var(--sp)) 0 auto;
+    border-top: 1px solid var(--line);
+}
+
+/* A project: its folder, then its name in the code face; the + always there. */
 .project-head {
-    min-height: calc(32 * var(--sp));
-    margin-top: calc(14 * var(--sp));
-    font-size: inherit;
-    font-weight: 500;
-    color: var(--rail-fg);
-}
-
-.project-head .lead {
-    color: var(--fg-3);
+    padding: 0;
 }
 
 .shelf-toggle {
@@ -361,38 +309,77 @@
     align-items: center;
     gap: calc(6 * var(--sp));
     align-self: stretch;
-    margin: 0 calc(-1 * var(--row-pad));
-    padding: 0 calc(30 * var(--sp)) 0 var(--row-pad);
-    border-radius: var(--r-row);
+    padding: 0 calc(30 * var(--sp)) 0 calc(6 * var(--sp));
+    border-radius: calc(6 * var(--sp));
     color: inherit;
     font: inherit;
     text-align: left;
-    transition: color 140ms;
 }
 
-.shelf-toggle:hover {
-    color: var(--rail-fg);
+.project-head .truncate {
+    color: var(--fg-2);
+    font-family: var(--font-mono);
+    font-size: 0.821rem;
+    letter-spacing: -0.01em;
 }
 
-.project-head .shelf-toggle {
-    gap: var(--lead-gap);
-    transition: background 140ms;
+.project-head .lead {
+    width: auto;
+    color: var(--fg-3);
 }
 
-.project-head .shelf-toggle:hover {
-    background: var(--rail-hover);
+/* A session in a folded heading needs you. */
+.sidebar .wait-dot {
+    flex: none;
+    width: calc(6 * var(--sp));
+    height: calc(6 * var(--sp));
+    border-radius: 50%;
+    background: var(--dot-warn);
 }
 
-.project-head .wait-dot {
-    margin-left: calc(2 * var(--sp));
+/* A run: one prompt's sessions, a row per model, on a rule. */
+.run-group {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    flex: none;
+    gap: 1px;
+    margin: calc(2 * var(--sp)) 0;
 }
 
-/* Folded projects one after another read as a list. */
-.project-head.folded + .project-head {
-    margin-top: 0;
+.run-group::before {
+    content: "";
+    position: absolute;
+    left: calc(17 * var(--sp));
+    top: calc(30 * var(--sp));
+    bottom: calc(2 * var(--sp));
+    border-left: 1.5px solid var(--line);
 }
 
-/* ---- A session: what it's about, a glyph when there's news, when --------- */
+.run-group > :not(.run-head) {
+    margin-left: calc(23 * var(--sp));
+}
+
+.run-head {
+    display: flex;
+    align-items: center;
+    gap: calc(7 * var(--sp));
+    min-width: 0;
+    height: calc(28 * var(--sp));
+    padding: 0 calc(10 * var(--sp)) 0 calc(11 * var(--sp));
+    color: var(--fg-2);
+}
+
+.run-head svg {
+    flex: none;
+    color: var(--fg-3);
+}
+
+.run-head .truncate {
+    flex: 1;
+}
+
+/* ---- A session ----------------------------------------------------------- */
 
 .card,
 .slim {
@@ -401,7 +388,6 @@
     margin-bottom: 1px;
     border-radius: var(--r-row);
     color: var(--rail-fg);
-    transition: background 140ms;
 }
 
 .card:hover,
@@ -411,188 +397,184 @@
     background: var(--rail-hover);
 }
 
-/* The open one: a soft fill. */
+/* The open one: raised off the rail. */
 .card.cur,
 .slim.cur {
-    background: color-mix(in srgb, var(--fg) 11%, transparent);
-    box-shadow: inset 0 0 0 0.5px var(--line-strong);
+    background: var(--rail-sel);
+    box-shadow: var(--card-shadow), 0 0 0 1px var(--rail-sel-stroke);
 }
 
-/* Picked for a bulk action (Shift- or ⌘-click): an accent-tinted row, apart
-   from the open session's; a check in an accent disc for its glyph. */
+/* In a split, the one beside the open one: a faint fill. */
+.card.beside,
+.slim.beside {
+    background: var(--hover);
+}
+
+/* Picked for a bulk action (Shift- or ⌘-click): tinted with the accent, a ticked box for its glyph. */
 .card.picked,
 .slim.picked {
     background: var(--accent-soft);
-    box-shadow: inset 0 0 0 0.5px var(--accent-border);
+    box-shadow: none;
 }
 
-.card.picked:hover,
-.slim.picked:hover {
-    background: color-mix(in srgb, var(--accent) 17%, transparent);
-}
-
-.card.cur.picked,
-.slim.cur.picked {
-    box-shadow: inset 0 0 0 1px var(--accent-border);
-}
-
-/* The title from the headings' edge; how it's doing (the glyph), then when, at the far end. */
 .card-hit,
 .slim-hit {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto;
-    column-gap: calc(8 * var(--sp));
-    align-items: center;
+    display: flex;
+    align-items: flex-start;
+    gap: calc(9 * var(--sp));
     width: 100%;
     min-width: 0;
     min-height: calc(32 * var(--sp));
-    padding: 0 var(--row-pad) 0 calc(var(--row-pad) + var(--indent));
+    padding: calc(7 * var(--sp)) calc(10 * var(--sp)) calc(7 * var(--sp)) calc(9 * var(--sp));
     border-radius: var(--r-row);
     text-align: left;
     color: inherit;
 }
 
-/* Listed by date: two lines, the title over its project and what it runs on. By project, the heading says
-   where: one line. */
-[data-group="date"] .card:not(.needs-row) .card-hit {
-    grid-template-rows: auto auto;
-    row-gap: calc(3 * var(--sp));
-    min-height: calc(54 * var(--sp));
-    padding: calc(8 * var(--sp)) calc(10 * var(--sp)) calc(9 * var(--sp)) calc(var(--row-pad) + var(--indent) + 2 * var(--sp));
+.tx {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    flex: 1;
+    min-width: 0;
 }
 
-[data-group="date"] .card:not(.needs-row) {
-    border-radius: calc(var(--r-row) + 2 * var(--sp));
+.ln {
+    display: flex;
+    align-items: baseline;
+    gap: calc(8 * var(--sp));
+    min-width: 0;
 }
 
-[data-group="date"] .card:not(.needs-row) .t {
-    font-size: 1rem;
-}
-
-/* The actions take the time's place on the top line; what it runs on stays below. */
-[data-group="date"] .card:not(.needs-row) .sess-acts {
-    bottom: auto;
-    top: calc(5 * var(--sp));
-    right: calc(6 * var(--sp));
-}
-
-.card-hit > .t,
+.card .t,
 .slim-hit > .truncate {
-    grid-column: 1;
-    grid-row: 1;
-}
-
-.card-hit > .lead,
-.slim-hit > .lead {
-    grid-column: 2;
-    grid-row: 1;
-}
-
-.card-hit > .end {
-    grid-column: 3;
-    grid-row: 1;
-}
-
-/* Nothing to say: no glyph, and no room kept for one. */
-.sidebar :is(.card-hit, .slim-hit) > .lead:not(:has(*)) {
-    display: none;
-}
-
-/* Archive and More take the time's place while you point at the row: the glyph gives way with it. */
-.card:not(.needs-row):is(:hover, :focus-within, .menu-open) .card-hit > .lead {
-    visibility: hidden;
-}
-
-/* By project, a project's sessions sit under its name, as in a tree; Settled's don't. */
-.side-list[data-group="project"] > .project-head ~ [data-session-row] {
-    --indent: calc(var(--lead-w) + var(--lead-gap));
-}
-
-.side-list[data-group="project"] > .settled-head ~ [data-session-row] {
-    --indent: 0px;
-}
-
-.card .sub {
-    display: none;
-    grid-column: 1 / -1;
-    grid-row: 2;
+    flex: 1;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    font-weight: 450;
+    line-height: calc(18 * var(--sp));
+}
+
+.card.cur .t,
+.card.unread .t {
+    font-weight: 550;
+}
+
+/* When, or how it's doing when that's news: at the title line's end. */
+.card .end,
+.slim .t {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(4 * var(--sp));
+    flex: none;
+    color: var(--fg-3);
     font-size: 0.821rem;
-    line-height: 1.3;
-    color: var(--fg-3);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
 }
 
-[data-group="date"] .card .sub {
-    display: block;
-    grid-column: 1 / 3;
-    font-size: 0.893rem;
+:is(.end, .slim .t) > svg {
+    align-self: center;
+    color: var(--fg-4);
 }
 
-.card .prov {
-    display: none;
-}
-
-/* What it runs on: there while you point at the row, with its actions. */
-[data-group="date"] .card .prov {
-    display: grid;
-    grid-column: 3;
-    grid-row: 2;
-    justify-self: end;
-    color: var(--fg-3);
-    opacity: 0;
-    transition: opacity 120ms;
-}
-
-[data-group="date"] .card:is(:hover, :focus-within, .menu-open) .prov {
-    opacity: 1;
-}
-
-[data-density="compact"] :is(.card-hit, .slim-hit) {
-    min-height: calc(28 * var(--sp));
-}
-
-/* ---- How it's doing: the glyph at the start of a row ----------------------- */
-
-.sidebar .lead {
-    display: grid;
-    place-items: center;
-    width: var(--lead-w);
-    height: var(--lead-w);
-    flex: none;
-}
-
-/* Needs you: by a heading, sessions under it wait on you. */
-.sidebar .wait-dot {
-    width: calc(8 * var(--sp));
-    height: calc(8 * var(--sp));
-    border-radius: 50%;
-    background: var(--warn);
-    box-shadow: 0 0 0 3px var(--warn-bg);
-    flex: none;
-}
-
-/* How a row is doing, at its end, in place of its time (RowEnd). Still: a word that only changes by the minute. */
 .sidebar .when.working {
     color: var(--working);
 }
 
 .sidebar .when.done {
     color: var(--ok);
+    font-weight: 500;
 }
 
 .sidebar .when.stopped {
     color: var(--danger);
+    font-weight: 500;
 }
 
 .sidebar .when.waiting {
     color: var(--warn);
 }
 
-.sidebar .lead-pin {
+/* What it runs on: the provider's mark, then the project (by date) or the model (by project). */
+.card .sub,
+.needs-row .m {
+    display: flex;
+    align-items: center;
+    gap: calc(6 * var(--sp));
+    min-width: 0;
     color: var(--fg-3);
+    font-size: 0.857rem;
+    line-height: calc(16 * var(--sp));
+    white-space: nowrap;
+}
+
+.card .sub > .provider-icon,
+.card .sub > .provider-mono {
+    flex: none;
+    filter: grayscale(1);
+    opacity: 0.8;
+}
+
+.needs-row.waiting .m {
+    color: var(--warn);
+    font-weight: 500;
+}
+
+/* ---- How it's doing: the glyph at a row's start -------------------------- */
+
+.sidebar .lead {
+    display: grid;
+    place-items: center;
+    flex: none;
+    width: calc(16 * var(--sp));
+    height: calc(18 * var(--sp));
+}
+
+.rst {
+    display: grid;
+    place-items: center;
+}
+
+.rst.k-working {
+    color: var(--accent);
+}
+
+.rst.k-done {
+    color: var(--ok);
+}
+
+.rst.k-failed {
+    color: var(--danger);
+}
+
+.rst.k-stopped {
+    color: var(--fg-3);
+}
+
+.rst.k-needs,
+.rst.k-new,
+.rst.k-idle {
+    width: calc(8 * var(--sp));
+    height: calc(8 * var(--sp));
+    border-radius: 50%;
+    background: var(--dot-warn);
+}
+
+.rst.k-new {
+    background: var(--ok);
+}
+
+.rst.k-idle {
+    background: none;
+    box-shadow: inset 0 0 0 1.5px var(--fg-4);
+}
+
+/* Settled, snoozed or archived: done with, so a step quieter. */
+.slim .rst {
+    color: var(--fg-4);
 }
 
 .sidebar .st.pick {
@@ -600,98 +582,51 @@
     place-content: center;
     width: calc(14 * var(--sp));
     height: calc(14 * var(--sp));
-    border-radius: 50%;
+    border-radius: calc(4 * var(--sp));
     background: var(--accent);
     color: var(--accent-ink);
 }
 
-/* ---- The words, and when ---------------------------------------------------- */
+/* ---- Hover: Archive and More take the time's place ------------------------ */
 
-.card .t,
-.slim-hit > .truncate {
-    min-width: 0;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.card .t {
-    font-weight: 500;
-}
-
-.card.unread .t {
-    font-weight: 600;
-}
-
-/* Settled or archived: done with, so a step quieter. */
-.slim:not(.cur) .slim-hit > .truncate {
-    color: var(--rail-fg-2);
-}
-
-.slim:hover .slim-hit > .truncate {
-    color: var(--rail-fg);
-}
-
-/* Working in the background: it can recede, without fading below AA. */
-.card.rec .t {
-    color: var(--rail-fg-2);
-}
-
-.card.rec:hover .t {
-    color: var(--rail-fg);
-}
-
-.card .end,
-.slim .t {
-    display: flex;
-    align-items: center;
-    font-size: 0.857rem;
-    color: var(--fg-3);
-    font-variant-numeric: tabular-nums;
-    white-space: nowrap;
-}
-
-/* Archive and More take the time's place while you point at the row. */
 .sess-acts,
 .slim-acts {
     position: absolute;
-    top: 0;
-    bottom: 0;
+    top: calc(4 * var(--sp));
     right: calc(4 * var(--sp));
     display: flex;
-    align-items: center;
+    gap: 1px;
     opacity: 0;
     pointer-events: none;
-    transition: opacity 120ms;
 }
 
-.card:hover .sess-acts,
-.card:focus-within .sess-acts,
-.card.menu-open .sess-acts,
-.slim:hover .slim-acts,
-.slim:focus-within .slim-acts,
-.slim.menu-open .slim-acts {
+.card:is(:hover, :focus-within, .menu-open) .sess-acts,
+.slim:is(:hover, :focus-within, .menu-open) .slim-acts {
     opacity: 1;
     pointer-events: auto;
 }
 
-/* Hidden, it keeps the room the actions over it take, so a long title ends before them, not under them. */
-.card:hover .end,
-.card:focus-within .end,
-.card.menu-open .end {
+/* Hidden, it keeps the room the actions take, so a long title ends before them, not under them. */
+.card:not(.needs-row):is(:hover, :focus-within, .menu-open) .end,
+.slim:not(.snz):is(:hover, :focus-within, .menu-open) .t {
     visibility: hidden;
-    min-width: calc(44 * var(--sp));
+    min-width: calc(46 * var(--sp));
 }
 
-/* Over the title, its text where the title's was. */
+/* Snoozed: when it wakes stays in sight, beside More (the one action over it). */
+.slim.snz:is(:hover, :focus-within, .menu-open) .t {
+    padding-right: calc(24 * var(--sp));
+}
+
+/* ---- Renaming: the title in place, a field around it ---------------------- */
+
 .card-rename {
     position: absolute;
-    left: calc(var(--row-pad) + var(--indent) - 6 * var(--sp));
+    left: calc(30 * var(--sp));
     right: calc(6 * var(--sp));
     top: calc(5 * var(--sp));
 }
 
-/* The field is see-through: what it covers at the row's end goes, hovered or not. */
 .card.renaming .end,
 .card.renaming .sess-acts {
     visibility: hidden;
@@ -701,63 +636,41 @@
     content: "\200b";
 }
 
-/* ---- Needs you: pinned above the list until answered -------------------
-   Every session waiting on you but the open one (its request is in front of
-   you). The same row, with what it asks under its title; each keeps its own
-   row below. One answered while the rail holds still says how it's doing
-   now until it goes. */
+.sess-rename {
+    flex: 1;
+    width: 100%;
+    min-width: 0;
+    height: calc(22 * var(--sp));
+    padding: 0 calc(4 * var(--sp));
+    border: 0;
+    border-radius: calc(4 * var(--sp));
+    background: var(--card);
+    color: var(--rail-fg);
+    box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+    font: inherit;
+    font-weight: 500;
+}
+
+.sess-rename:focus {
+    outline: none;
+}
+
+.slim > .sess-rename {
+    margin: calc(3 * var(--sp)) calc(8 * var(--sp)) calc(3 * var(--sp)) calc(30 * var(--sp));
+}
+
+/* ---- Needs you: pinned above the list until answered ---------------------- */
 
 .needs-g {
     flex: none;
 }
 
-.needs-row {
-    animation: needs-in 420ms var(--spring);
-}
-
-.needs-hit {
-    row-gap: 0;
-    padding-top: calc(6 * var(--sp));
-    padding-bottom: calc(7 * var(--sp));
-}
-
-/* What it asks, under the title, from where the title starts. */
-.needs-row .m {
-    grid-column: 1 / -1;
-    display: flex;
-    min-width: 0;
-    margin-top: 1px;
-    font-size: 0.857rem;
-    color: var(--fg-3);
-}
-
-.needs-row.waiting .m {
-    color: var(--warn);
-}
-
 /* No actions take the time's place here. */
-.needs-row:hover .end,
-.needs-row:focus-within .end {
-    visibility: visible;
-    min-width: 0;
-}
-
 .needs-row.renaming .end {
     visibility: hidden;
 }
 
-@keyframes needs-in {
-    from {
-        opacity: 0;
-        transform: translateY(-6px) scale(0.98);
-    }
-}
-
-[data-motion="instant"] .needs-row {
-    animation: none;
-}
-
-/* ---- Settled and archived rows -------------------------------------------- */
+/* ---- Settled, snoozed and archived: one line --------------------------------- */
 
 .slim {
     display: flex;
@@ -766,8 +679,20 @@
 
 .slim-hit {
     flex: 1;
-    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: calc(9 * var(--sp));
+    min-height: calc(30 * var(--sp));
+    padding-top: calc(5 * var(--sp));
+    padding-bottom: calc(5 * var(--sp));
     padding-right: calc(4 * var(--sp));
+}
+
+.slim-hit > .truncate {
+    color: var(--rail-fg-2);
+}
+
+.slim:is(:hover, .cur) .slim-hit > .truncate {
+    color: var(--rail-fg);
 }
 
 .slim-end {
@@ -775,103 +700,103 @@
     display: grid;
     place-items: center end;
     flex: none;
-    min-width: calc(34 * var(--sp));
     align-self: stretch;
-    padding-right: var(--row-pad);
+    padding-right: calc(10 * var(--sp));
 }
 
-.slim:hover .t,
-.slim:focus-within .t,
-.slim.menu-open .t {
-    visibility: hidden;
-    min-width: calc(44 * var(--sp));
+.slim-acts {
+    top: 50%;
+    right: calc(4 * var(--sp));
+    transform: translateY(-50%);
 }
 
-/* Snoozed: when it wakes stays in sight, beside More (the one action over it). */
-.slim.snz:hover .t,
-.slim.snz:focus-within .t,
-.slim.snz.menu-open .t {
-    visibility: visible;
-    min-width: 0;
-    padding-right: calc(24 * var(--sp));
-}
-
-/* "Show 20 more": a row of the list, quieter. */
-.slim.more {
-    display: flex;
-    gap: var(--lead-gap);
-    width: 100%;
-    min-height: calc(30 * var(--sp));
-    padding: 0 var(--row-pad);
+/* The server it's on: a tag after its title. */
+.slim-at {
+    flex: none;
+    padding: 0 calc(5 * var(--sp));
+    border-radius: calc(4 * var(--sp));
+    background: var(--hover);
     color: var(--fg-3);
-    font-size: 0.893rem;
-    text-align: left;
+    font-size: 0.786rem;
+    line-height: calc(16 * var(--sp));
 }
 
-.slim.more > .lead {
-    display: none;
+/* "Show 20 more": under its rows, quieter. */
+.slim.more {
+    align-self: flex-start;
+    margin: calc(2 * var(--sp)) 0 calc(2 * var(--sp)) calc(34 * var(--sp));
+    padding: calc(3 * var(--sp)) 0;
+    color: var(--fg-3);
+    font-size: 0.857rem;
 }
 
 .slim.more:hover {
+    background: none;
     color: var(--rail-fg);
 }
 
-.slim > .sess-rename {
-    margin: 0 calc(8 * var(--sp)) 0 calc(var(--row-pad) + var(--indent) - 6 * var(--sp));
+/* ---- Several picked: the selection bar under the list -------------------- */
+
+.rail-sel {
+    display: flex;
+    align-items: center;
+    gap: 1px;
+    flex: none;
+    margin: 0 calc(-2 * var(--sp)) calc(8 * var(--sp));
+    padding: calc(4 * var(--sp)) calc(4 * var(--sp)) calc(4 * var(--sp)) calc(10 * var(--sp));
+    border-radius: var(--r-row);
+    background: var(--ctl-strong);
+    box-shadow: var(--pop-shadow);
+    color: var(--fg);
 }
 
-/* Renaming edits the title in place: the same type and spot, a quiet field around it, not a box over the row. */
-.sess-rename {
+.rail-sel-n {
     flex: 1;
-    width: 100%;
     min-width: 0;
-    height: calc(22 * var(--sp));
-    padding: 0 calc(6 * var(--sp));
-    border-radius: calc(6 * var(--sp));
-    border: 0;
-    background: color-mix(in srgb, var(--rail-fg) 7%, transparent);
-    color: var(--rail-fg);
-    box-shadow: inset 0 0 0 1px var(--accent-border);
-    font: inherit;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 0.893rem;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
 }
 
-.sess-rename:focus {
-    outline: none;
+.sidebar .rail-sel .hb:hover:not(:disabled) {
+    background: var(--hover);
 }
 
-/* ---- Footer: the plans' usage, and Settings ----------------------------
-   One row, the gear's height, however many plans are signed in: a gauge per
-   plan, its mark in a thin ring that fills as its fullest window does, then
-   the figure. No fills or pills: near a limit the ring and figure turn amber
-   (75%), then red (90%, and at the limit). Nothing reported yet: an empty
-   ring, no figure. Lean on purpose: four fit beside the gear at the default
-   width. Short of room (a narrow or floating rail), the % signs go first;
-   only what still doesn't fit folds into "+N" (Sidebar.tsx PlanRow, lib/rail.ts
-   planFit). The row opens the detail card. */
+.sidebar .rail-sel .rail-sel-del {
+    color: var(--danger);
+}
+
+/* ---- Footer: the plans' usage, the update, Settings ---------------------- */
 
 .side-foot {
     display: flex;
     align-items: center;
     gap: calc(2 * var(--sp));
-    height: calc(40 * var(--sp));
     flex: none;
+    height: calc(46 * var(--sp));
+    margin: 0 calc(-10 * var(--sp));
+    padding: 0 calc(8 * var(--sp));
+    border-top: 1px solid var(--line);
 }
 
+/* One gauge per plan: its mark in a ring that fills as its fullest window does, then the figure; amber near a
+   limit, red at it. Short of room the % signs go first, then plans fold into "+N" (PlanFooter.tsx). */
 .side-foot .plans {
     position: relative;
     flex: 1;
     min-width: 0;
-    height: calc(32 * var(--sp));
+    height: calc(30 * var(--sp));
     display: flex;
     align-items: center;
-    gap: calc(12 * var(--sp));
-    /* The first gauge is centred under the rows' glyphs (their 16px slot starts 8px in). */
-    padding: 0 calc(4 * var(--sp)) 0 calc(6 * var(--sp));
-    border-radius: var(--r-row);
+    gap: calc(10 * var(--sp));
+    padding: 0 calc(8 * var(--sp)) 0 calc(6 * var(--sp));
+    border-radius: calc(6 * var(--sp));
     overflow: hidden;
-    color: var(--rail-fg-2);
+    color: var(--fg-2);
     text-align: left;
-    transition: background 140ms;
 }
 
 .side-foot .plans:hover,
@@ -879,20 +804,13 @@
     background: var(--rail-hover);
 }
 
-.side-foot .plans:focus-visible {
-    outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
-    outline-offset: -2px;
-}
-
 .pl {
-    --pl-ink: var(--rail-fg-2);
-    --pl-arc: color-mix(in srgb, var(--rail-fg) 62%, transparent);
+    --pl-ink: var(--fg-2);
+    --pl-arc: var(--fg-2);
     display: inline-flex;
     align-items: center;
-    gap: calc(5 * var(--sp));
+    gap: calc(6 * var(--sp));
     flex: none;
-    height: calc(24 * var(--sp));
-    padding: 0 calc(2 * var(--sp));
     color: var(--pl-ink);
     font-size: 0.857rem;
     font-weight: 500;
@@ -904,7 +822,6 @@
     display: none;
 }
 
-/* The gauge: the mark centred in its ring. */
 .pl-g {
     position: relative;
     display: grid;
@@ -920,39 +837,29 @@
     width: 100%;
     height: 100%;
     fill: none;
-    stroke-width: 1.75;
+    stroke-width: 1.5;
 }
 
 .pl-track {
-    stroke: color-mix(in srgb, var(--rail-fg) 14%, transparent);
+    stroke: var(--line-strong);
 }
 
 .pl-arc {
     stroke: var(--pl-arc);
     stroke-linecap: round;
-    transition: stroke-dasharray 400ms ease, stroke 200ms;
 }
 
-.pl-g > .provider-icon,
-.pl-g > .provider-mono {
+.pl-g > :is(.provider-icon, .provider-mono) {
     width: calc(11 * var(--sp));
     height: calc(11 * var(--sp));
-    /* A one-colour mark (Codex) keeps the rail's ink: only the ring and figure say how near a limit it is. */
     color: var(--rail-fg);
 }
 
-.pl-v {
-    flex: none;
-}
-
 .pl-v small {
-    margin-left: 0.5px;
     font-size: 0.714rem;
-    font-weight: 500;
     opacity: 0.7;
 }
 
-/* Short of room, the % signs go before any plan folds into "+N". */
 .side-foot .plans.tight {
     gap: calc(7 * var(--sp));
 }
@@ -964,7 +871,7 @@
 /* A plan on its own adds the window: "62% 5-hour", "100% · resets Mon". */
 .pl-w {
     font-weight: 400;
-    opacity: 0.8;
+    color: var(--fg-3);
 }
 
 .pl.warn {
@@ -977,15 +884,14 @@
     --pl-arc: var(--danger);
 }
 
-/* Figures from a while ago (the gauge has no room to say "as of"; its tooltip and the card do). */
 .pl.stale :is(.pl-v, .pl-arc) {
     opacity: 0.55;
 }
 
 .pl.more {
     padding: 0 calc(6 * var(--sp));
-    color: var(--rail-fg-2);
-    background: color-mix(in srgb, var(--rail-fg) 7%, transparent);
+    border-radius: calc(4 * var(--sp));
+    background: var(--hover);
 }
 
 /* Nothing folded: kept only to be measured, out of the row and unseen. */
@@ -995,37 +901,27 @@
     pointer-events: none;
 }
 
-/* The detail, inside the rail: every plan, each window with its bar and how full it is, and under them when it
-   resets. The popovers' own colour, made opaque: the rows it covers don't show through its figures. */
+/* The detail: every plan, each window with its bar and how full it is, and under it when it resets. */
 .popover.plans-card {
-    background: linear-gradient(var(--ctl-strong) 0 0), var(--sheet);
+    padding: calc(6 * var(--sp)) calc(4 * var(--sp));
+    background: var(--ctl-strong);
 }
 
-/* One grid per plan, its rows on it (subgrid): the names' column is as wide as its longest ("Weekly Fable"), so none
-   is cut, and the bars of a plan still line up. */
 .pu-plan {
     display: grid;
-    grid-template-columns: minmax(calc(46 * var(--sp)), max-content) minmax(0, 1fr) minmax(calc(32 * var(--sp)), auto);
-    padding: calc(6 * var(--sp)) calc(10 * var(--sp)) calc(8 * var(--sp));
+    grid-template-columns: minmax(calc(52 * var(--sp)), max-content) minmax(0, 1fr) minmax(calc(34 * var(--sp)), auto);
+    column-gap: calc(10 * var(--sp));
+    margin: 0 calc(10 * var(--sp));
+    padding: calc(6 * var(--sp)) 0 calc(12 * var(--sp));
 }
 
-.pu-plan > .pu-h,
-.pu-plan > .pu-w.none,
-.pu-plan > .pu-note {
+.pu-plan > :is(.pu-h, .pu-w.none, .pu-note) {
     grid-column: 1 / -1;
 }
 
-/* Only a model's limit reached (Fable's): said under the plan's name, amber like its row. */
-.pu-note {
-    margin: calc(-2 * var(--sp)) 0 calc(4 * var(--sp));
-    padding-left: calc(21 * var(--sp));
-    font-size: 0.75rem;
-    line-height: calc(16 * var(--sp));
-    color: var(--warn);
-}
-
 .pu-plan + .pu-plan {
-    border-top: 0.5px solid var(--line);
+    padding-top: calc(12 * var(--sp));
+    border-top: 1px solid var(--line);
 }
 
 .pu-h {
@@ -1033,9 +929,8 @@
     align-items: center;
     gap: calc(7 * var(--sp));
     min-width: 0;
-    margin-bottom: calc(4 * var(--sp));
-    font-size: 0.893rem;
-    font-weight: 600;
+    margin-bottom: calc(6 * var(--sp));
+    font-weight: 500;
 }
 
 .pu-h > svg,
@@ -1046,9 +941,16 @@
 .pu-asof {
     margin-left: auto;
     flex: none;
+    color: var(--fg-3);
     font-size: 0.821rem;
     font-weight: 400;
+}
+
+/* Only a model's limit reached (Fable's): said under the plan's name. */
+.pu-note {
+    margin: calc(-2 * var(--sp)) 0 calc(6 * var(--sp)) calc(21 * var(--sp));
     color: var(--fg-3);
+    font-size: 0.857rem;
 }
 
 .pu-w {
@@ -1056,24 +958,19 @@
     grid-column: 1 / -1;
     grid-template-columns: subgrid;
     align-items: center;
-    column-gap: calc(8 * var(--sp));
-    padding-left: calc(21 * var(--sp));
-    font-size: 0.821rem;
-    line-height: calc(20 * var(--sp));
-    color: var(--fg-3);
-}
-
-.pu-w + .pu-w {
-    margin-top: calc(4 * var(--sp));
+    padding: calc(3 * var(--sp)) 0 calc(3 * var(--sp)) calc(21 * var(--sp));
+    font-size: 0.857rem;
+    color: var(--fg-2);
 }
 
 .pu-w.none {
     display: block;
+    color: var(--fg-3);
 }
 
 .pu-bar {
     height: calc(4 * var(--sp));
-    border-radius: var(--pill);
+    border-radius: var(--round);
     background: var(--press);
     overflow: hidden;
 }
@@ -1082,72 +979,52 @@
     display: block;
     height: 100%;
     border-radius: inherit;
-    background: color-mix(in srgb, var(--fg) 38%, transparent);
+    background: var(--fg-2);
 }
 
 .pu-w b {
     text-align: right;
-    font-weight: 600;
+    font-weight: 500;
     color: var(--fg);
     font-variant-numeric: tabular-nums;
 }
 
-/* Under the bar, from its start. */
 .pu-r {
     grid-column: 2 / -1;
-    margin-top: calc(-3 * var(--sp));
-    font-size: 0.75rem;
-    line-height: calc(16 * var(--sp));
-    color: var(--fg-3);
-    white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--fg-3);
+    font-size: 0.821rem;
+}
+
+.pu-w.warn :is(b, .pu-r) {
+    color: var(--warn);
 }
 
 .pu-w.warn .pu-bar i {
     background: var(--warn);
 }
 
-.pu-w.warn b {
-    color: var(--warn);
+.pu-w.danger b {
+    color: var(--danger);
 }
 
 .pu-w.danger .pu-bar i {
     background: var(--danger);
 }
 
-.pu-w.danger b {
-    color: var(--danger);
-}
-
-.plans-card > .menu-item {
-    margin-top: calc(2 * var(--sp));
-}
-
-/* Beside Settings while the desktop app has an update from main: just an icon,
-   whose look says how it stands. Ready: the accent, on a tint of it. Building or
-   restarting: a spinner, nothing to click. Failed: red, click to try again. */
+/* Beside Settings while there's an update: the icon in the accent; a ring as it downloads; red when it failed. */
 .side-foot .upd-btn {
     color: var(--accent-text);
-    background: color-mix(in srgb, var(--accent) 14%, transparent);
-}
-
-.side-foot .upd-btn:hover {
-    background: color-mix(in srgb, var(--accent) 22%, transparent);
 }
 
 .side-foot .upd-btn.busy {
-    background: transparent;
     cursor: default;
 }
 
 .side-foot .upd-btn.failed {
     color: var(--danger);
-    background: color-mix(in srgb, var(--danger) 13%, transparent);
-}
-
-.side-foot .upd-btn.failed:hover {
-    background: color-mix(in srgb, var(--danger) 20%, transparent);
 }
 
 /* ---- Settings: its sections take the list's place ---------------------- */
@@ -1241,73 +1118,4 @@
 
 .resize-handle:hover {
     background: linear-gradient(90deg, transparent 2px, var(--accent) 2px, var(--accent) 3px, transparent 3px);
-}
-
-/* ---- Several picked: the selection bar under the list ------------------
-   A card: how many, what can be done to all of them, and a way out. */
-
-.rail-sel {
-    display: flex;
-    align-items: center;
-    gap: calc(2 * var(--sp));
-    flex: none;
-    height: calc(40 * var(--sp));
-    margin: calc(6 * var(--sp)) 0 calc(6 * var(--sp));
-    padding: 0 calc(6 * var(--sp)) 0 calc(14 * var(--sp));
-    border-radius: var(--r-card);
-    color: var(--fg);
-    animation: rail-sel-in 280ms var(--spring);
-}
-
-.rail-sel-n {
-    flex: 1;
-    min-width: 0;
-    font-weight: 600;
-    font-variant-numeric: tabular-nums;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.sidebar .rail-sel .hb {
-    color: var(--fg-2);
-}
-
-.sidebar .rail-sel .hb:hover:not(:disabled) {
-    background: var(--hover);
-    color: var(--fg);
-}
-
-.sidebar .rail-sel .rail-sel-del:hover:not(:disabled) {
-    color: var(--danger);
-}
-
-.rail-sel .hb:focus-visible {
-    outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
-    outline-offset: -2px;
-}
-
-.rail-sel-sep {
-    flex: none;
-    width: 0.5px;
-    height: calc(18 * var(--sp));
-    margin: 0 calc(3 * var(--sp));
-    background: var(--line);
-}
-
-@keyframes rail-sel-in {
-    from {
-        opacity: 0;
-        transform: translateY(6px) scale(0.98);
-    }
-}
-
-[data-motion="instant"] .rail-sel {
-    animation: none;
-}
-
-/* In a split, the session beside the open one: a faint fill, no outline (that's the open one's). */
-.card.beside,
-.slim.beside {
-    background: color-mix(in srgb, var(--fg) 4%, transparent);
 }

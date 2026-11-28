@@ -6,7 +6,7 @@
 // them all, under Needs you, with what they ask, until answered.
 
 import { batch, createEffect, createMemo, createSignal, ErrorBoundary, For, lazy, Match, on, onCleanup, onMount, Show, Suspense, Switch, untrack, type JSX } from "solid-js";
-import { Archive, ArchiveRestore, Check, CheckCheck, ChevronsDownUp, ChevronRight, ChevronsUpDown, Folder, FolderOpen, FolderPlus, Layers, ListFilter, MoreHorizontal, PanelLeft, Pencil, Pin, PinOff, Plus, Search, Settings, SquarePen, Trash2, Undo2, X } from "lucide-solid";
+import { Archive, ArchiveRestore, Check, CheckCheck, ChevronsDownUp, ChevronRight, ChevronsUpDown, Folder, FolderOpen, FolderPlus, Layers, ListFilter, MoreHorizontal, PanelLeftClose, Pencil, Pin, PinOff, Plus, Search, Settings, Square, SquarePen, Trash2, Undo2, X } from "lucide-solid";
 import type { SessionSummary } from "@shared/protocol";
 import { activate, app, handleFor, isUnread, refreshSessions, reportError, warmFor } from "../state/app";
 import { archive, archiveSessions, chooseProject, deleteSessions, newSession, openProject, openWaiting, pin, rename, settle, settleSessions, toggleSidebar } from "../state/actions";
@@ -24,6 +24,7 @@ import { isDesktop, machine, os } from "../lib/platform";
 import { Menu } from "./ui/Menu";
 import { rowMenuKey } from "../lib/menu";
 import { ProviderIcon } from "./ui/ProviderIcon";
+import { modelName } from "../lib/model-name";
 import { Logo } from "./ui/bits";
 import { actionOf, keyText, shortcut, withShortcut } from "../state/keybindings";
 import { besideInFront, inSplit, setDraggedSession, SESSION_DRAG } from "../state/split";
@@ -165,18 +166,43 @@ function rowLabel(s: SessionSummary, unread: boolean, picked = false): string {
     return [s.run ? `${s.run.modelName} · ${s.title}` : s.title, s.machine && `on ${s.machine}`, s.status === "idle" && !s.making ? (unread ? (s.stopped ? "stopped, unread" : "unread") : undefined) : word, s.pinned ? "pinned" : undefined, picked ? "selected" : undefined].filter(Boolean).join(", ");
 }
 
-/** Just before a row's title: a check while it's picked, a pin when pinned. How it's doing is at its end (RowEnd). */
-function RowLead(p: { s: SessionSummary; picked?: boolean }) {
+/** A row's start: how it's doing (a still glyph: nothing in the rail animates), or a ticked box while it's picked. */
+function RowLead(p: { s: SessionSummary; picked?: boolean; unread?: boolean }) {
+    const kind = () => {
+        const s = p.s;
+        if (s.making || s.status === "running") return "working";
+        if (s.status === "waiting") return "needs";
+        if (s.status === "error") return "failed";
+        if (p.unread || s.woke) return s.stopped ? "stopped" : "new";
+        return s.messages > 0 ? (s.stopped ? "stopped" : "done") : "idle";
+    };
     return (
         <span class="lead" aria-hidden="true">
-            <Switch>
-                <Match when={p.picked}>
-                    <span class="st pick"><Check size={10} stroke-width={3.4} /></span>
-                </Match>
-                <Match when={p.s.pinned}>
-                    <Pin size={11} class="lead-pin" />
-                </Match>
-            </Switch>
+            <Show when={!p.picked} fallback={<span class="st pick"><Check size={10} stroke-width={3.4} /></span>}>
+                <span class={`rst k-${kind()}`}>
+                    <Switch>
+                        <Match when={kind() === "working"}>
+                            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
+                                <circle cx="8" cy="8" r="6" opacity="0.22" />
+                                <path d="M8 2a6 6 0 0 1 6 6" stroke-linecap="round" />
+                            </svg>
+                        </Match>
+                        <Match when={kind() === "done"}><Check size={14} stroke-width={2.4} /></Match>
+                        <Match when={kind() === "failed"}><X size={14} stroke-width={2.6} /></Match>
+                        <Match when={kind() === "stopped"}><Square size={9} fill="currentColor" stroke-width={0} /></Match>
+                    </Switch>
+                </span>
+            </Show>
+        </span>
+    );
+}
+
+/** The end of a row's first line: a pin when pinned, then RowEnd. */
+function RowMeta(p: { s: SessionSummary; unread: boolean }) {
+    return (
+        <span class="end">
+            <Show when={p.s.pinned}><Pin size={11} /></Show>
+            <RowEnd s={p.s} unread={p.unread} />
         </span>
     );
 }
@@ -194,6 +220,15 @@ function RowEnd(p: { s: SessionSummary; unread: boolean }) {
     const tone = () => (p.s.making || p.s.status === "running" ? "working" : p.s.status === "error" || word() === "Stopped" ? "stopped" : p.s.status === "waiting" ? "waiting" : word() ? "done" : "");
     // Snoozed: when it wakes.
     return <span class={`when ${tone()}`}>{word() ?? (isSnoozed(p.s) ? wakeTime(p.s.snoozedUntil!, now()) : (now(), since(p.s.updatedAt)))}</span>;
+}
+
+/** A shortcut as its keys, a box each ("⌘" "N"). */
+function NavKeys(p: { action: string }) {
+    return (
+        <Show when={shortcut(p.action)}>
+            {(k) => <span class="side-kbd" aria-hidden="true"><For each={k().split("+")}>{(key) => <kbd>{keyText(key)}</kbd>}</For></span>}
+        </Show>
+    );
 }
 
 /** The plans' chips and their card (PlanFooter.tsx): loaded a moment after the window, not with it. */
@@ -234,10 +269,14 @@ function NeedsRow(p: { s: SessionSummary; hold: (id: string, held: boolean) => v
     return (
         <div ref={el} data-needs-id={p.s.id} draggable={draggable(p.s, r.editing())} class={`needs-row card ${waiting() ? "waiting" : ""} ${current() ? "cur" : ""} ${beside(p.s.id) ? "beside" : ""} ${menu() ? "menu-open" : ""} ${r.editing() ? "renaming" : ""}`} onContextMenu={contextMenu} onKeyDown={contextKey}>
             <button class="card-hit needs-hit" onClick={() => p.pick.open(p.s.id)} aria-current={current() ? "page" : undefined} aria-label={`${title()}, ${line()}`} title={`${p.s.title}: ${line()}`}>
-                <RowLead s={p.s} />
-                <span class="t"><Show when={!r.editing()}>{title()}</Show></span>
-                <span class="end"><RowEnd s={p.s} unread={unread()} /></span>
-                <span class="m"><span class="truncate">{line()}</span></span>
+                <RowLead s={p.s} unread={unread()} />
+                <span class="tx">
+                    <span class="ln">
+                        <span class="t"><Show when={!r.editing()}>{title()}</Show></span>
+                        <RowMeta s={p.s} unread={unread()} />
+                    </span>
+                    <span class="m"><span class="truncate">{line()}</span></span>
+                </span>
             </button>
             <Show when={r.editing()}>
                 <div class="card-rename">{r.input()}</div>
@@ -281,6 +320,12 @@ function SessionCard(p: { s: SessionSummary; hold: (id: string, held: boolean) =
     const where = () => [p.s.machine && machineLabel(p.s.machine), p.s.projectName, usualBranch(branchOf(p.s)) ? undefined : branchOf(p.s)].filter(Boolean).join(" · ");
     const picked = () => p.pick.picked(p.s.id);
     const provider = () => modelOf(p.s)?.split(":")[0];
+    const sub = () => {
+        if (p.s.run) return branchOf(p.s) ?? p.s.projectName;
+        const ref = modelOf(p.s);
+        if (prefs.groupBy === "project" && ref) return modelName(ref);
+        return p.s.machine ? `${machineLabel(p.s.machine)} · ${p.s.projectName}` : p.s.projectName;
+    };
     return (
         <div
             ref={el}
@@ -290,17 +335,22 @@ function SessionCard(p: { s: SessionSummary; hold: (id: string, held: boolean) =
             onContextMenu={contextMenu} onKeyDown={contextKey}
         >
             <button class="card-hit" onClick={(e) => p.pick.click(e, p.s.id)} onDblClick={(e) => !e.shiftKey && !e.metaKey && !e.ctrlKey && r.setEditing(true)} aria-current={current() ? "page" : undefined} aria-label={rowLabel(p.s, unread(), picked())} title={`${p.s.title}\n${p.s.cwd}\n${where()}`}>
-                <RowLead s={p.s} picked={picked()} />
-                <span class="t">
-                    {/* A run's sessions all start from one prompt (the group's label): each says which model it is. */}
-                    <Show when={!r.editing()}>{p.s.run ? p.s.run.modelName : p.s.title}</Show>
+                <RowLead s={p.s} picked={picked()} unread={unread()} />
+                <span class="tx">
+                    <span class="ln">
+                        <span class="t">
+                            {/* A run's sessions all start from one prompt (the group's label): each says which model it is. */}
+                            <Show when={!r.editing()}>{p.s.run ? p.s.run.modelName : p.s.title}</Show>
+                        </span>
+                        <RowMeta s={p.s} unread={unread()} />
+                    </span>
+                    {/* Under the title, its provider's mark, then where it is: its project by date (by project, the heading says
+                        it), its model by project, its branch in a run (the title is its model). */}
+                    <span class="sub" aria-hidden="true">
+                        <Show when={provider()}>{(id) => <ProviderIcon id={id()} size={12} />}</Show>
+                        <span class="truncate">{sub()}</span>
+                    </span>
                 </span>
-                <span class="end">
-                    <RowEnd s={p.s} unread={unread()} />
-                </span>
-                {/* Its project, under the title, and what it runs on. Listed by date only: by project, the heading says it. */}
-                <span class="sub" aria-hidden="true">{p.s.machine ? `${machineLabel(p.s.machine)} · ${p.s.projectName}` : p.s.projectName}</span>
-                <Show when={provider()}>{(id) => <span class="prov" aria-hidden="true"><ProviderIcon id={id()} size={12} /></span>}</Show>
             </button>
             <span class="sess-acts" hidden={p.s.making}>
                 {/* A session waiting for you isn't archived from under its question. */}
@@ -349,7 +399,7 @@ function SessionRow(p: { s: SessionSummary; hold: (id: string, held: boolean) =>
                     aria-label={rowLabel(p.s, unread(), picked())}
                     title={`${p.s.title}\n${p.s.machine ? `${p.s.machine}: ` : ""}${p.s.cwd}\n${snoozed() ? `Wakes ${wakeTime(p.s.snoozedUntil!, now(), true)}` : `Updated ${(now(), ago(p.s.updatedAt))}`}`}
                 >
-                    <RowLead s={p.s} picked={picked()} />
+                    <RowLead s={p.s} picked={picked()} unread={unread()} />
                     <span class="truncate">{p.s.run ? `${p.s.run.modelName} · ${p.s.title}` : p.s.title}</span>
                     <Show when={p.s.machine}>
                         <span class="slim-at">{p.s.machine}</span>
@@ -357,6 +407,7 @@ function SessionRow(p: { s: SessionSummary; hold: (id: string, held: boolean) =>
                 </button>
                 <span class="slim-end">
                     <span class="t">
+                        <Show when={p.s.pinned}><Pin size={11} /></Show>
                         <RowEnd s={p.s} unread={unread()} />
                     </span>
                     <span class="slim-acts">
@@ -389,31 +440,30 @@ function SelectionBar(p: { count: number; plan: BulkPlan; act: (what: "settle" |
         <div class="rail-sel card-surface" role="toolbar" aria-label={`${n()} selected`} onKeyDown={p.onKeyDown}>
             <span class="rail-sel-n">{p.count} selected</span>
             <Show when={p.plan.settle.length}>
-                <button class="hb" title={withShortcut(`Settle ${sessionCount(p.plan.settle.length)}`, "sidebar:settleSelected")} aria-label={`Settle ${sessionCount(p.plan.settle.length)}`} onClick={() => p.act("settle")}>
-                    <CheckCheck size={15} />
+                <button class="hb sm" title={withShortcut(`Settle ${sessionCount(p.plan.settle.length)}`, "sidebar:settleSelected")} aria-label={`Settle ${sessionCount(p.plan.settle.length)}`} onClick={() => p.act("settle")}>
+                    <CheckCheck size={14} />
                 </button>
             </Show>
             <Show when={p.plan.unsettle.length}>
-                <button class="hb" title={withShortcut("Back in play", "sidebar:settleSelected")} aria-label={`Back in play: ${n()}`} onClick={() => p.act("settle")}>
-                    <Undo2 size={15} />
+                <button class="hb sm" title={withShortcut("Back in play", "sidebar:settleSelected")} aria-label={`Back in play: ${n()}`} onClick={() => p.act("settle")}>
+                    <Undo2 size={14} />
                 </button>
             </Show>
             <Show when={p.plan.archive.length}>
-                <button class="hb" title={withShortcut(`Archive ${sessionCount(p.plan.archive.length)}`, "sidebar:archiveSelected")} aria-label={`Archive ${sessionCount(p.plan.archive.length)}`} onClick={() => p.act("archive")}>
-                    <Archive size={15} />
+                <button class="hb sm" title={withShortcut(`Archive ${sessionCount(p.plan.archive.length)}`, "sidebar:archiveSelected")} aria-label={`Archive ${sessionCount(p.plan.archive.length)}`} onClick={() => p.act("archive")}>
+                    <Archive size={14} />
                 </button>
             </Show>
             <Show when={p.plan.restore.length}>
-                <button class="hb" title={withShortcut(`Restore ${n()}`, "sidebar:archiveSelected")} aria-label={`Restore ${n()}`} onClick={() => p.act("archive")}>
-                    <ArchiveRestore size={15} />
+                <button class="hb sm" title={withShortcut(`Restore ${n()}`, "sidebar:archiveSelected")} aria-label={`Restore ${n()}`} onClick={() => p.act("archive")}>
+                    <ArchiveRestore size={14} />
                 </button>
             </Show>
-            <button class="hb rail-sel-del" title={withShortcut(`Delete ${n()}`, "sidebar:deleteSelected")} aria-label={`Delete ${n()}`} onClick={() => p.act("delete")}>
-                <Trash2 size={15} />
+            <button class="hb sm rail-sel-del" title={withShortcut(`Delete ${n()}`, "sidebar:deleteSelected")} aria-label={`Delete ${n()}`} onClick={() => p.act("delete")}>
+                <Trash2 size={14} />
             </button>
-            <span class="rail-sel-sep" aria-hidden="true" />
-            <button class="hb" title="Clear selection (Esc)" aria-label="Clear selection" onClick={p.clear}>
-                <X size={15} />
+                        <button class="hb sm" title="Clear selection (Esc)" aria-label="Clear selection" onClick={p.clear}>
+                <X size={14} />
             </button>
         </div>
     );
@@ -433,7 +483,7 @@ export function SidebarTop(p: { tools?: JSX.Element }) {
             <span class="grow" />
             {p.tools}
             <button class="hb" title={withShortcut("Hide sidebar", "app:toggleSidebar")} aria-label="Hide sidebar" onClick={toggleSidebar}>
-                <PanelLeft size={16} />
+                <PanelLeftClose size={16} />
             </button>
         </div>
     );
@@ -492,10 +542,6 @@ export function Sidebar() {
     });
     let viewBtn: HTMLButtonElement | undefined;
     let listEl: HTMLElement | undefined;
-    let frame = 0;
-    const animations = new Set<Animation>();
-    /** Those that end rather than stop where they are when the rail holds still: fades, and the slides of a change asked for. */
-    const fades = new WeakSet<Animation>();
     const all = createMemo(() => [...app.sessions, ...app.archived]);
     const sessions = createMemo(() => new Map(all().map((s) => [s.id, s])));
     const settledCount = () => app.sessions.filter((s) => s.settled && !isSnoozed(s)).length;
@@ -523,67 +569,15 @@ export function Sidebar() {
     const layout = createMemo(() => listedOnce(heldLayout()));
     const entriesByKey = createMemo(() => new Map(layout().map((entry) => [entry.key, entry])));
     const counts = createMemo(() => groupCounts(layout()));
-    // Capture before Solid moves keyed rows; animate only after the new layout is painted.
+    // The rows' keys, the same array while the order holds. Rows take their new places at once: nothing in the rail
+    // slides or fades.
     const keys = createMemo<string[]>((previous) => {
         const next = layout().map((entry) => entry.key);
-        if (previous?.length === next.length && previous.every((key, i) => key === next[i])) return previous;
-        // The first list isn't a change, and one held under the pointer doesn't move. One let go (the user's own
-        // settle or pin, with the pointer still here) moves now, so it's decided now, not when the frame comes.
-        if (!previous || held()) return next;
-        // Let go for a change the user asked for (snoozing, a snooze's time come): its slides run to their end, held or not.
-        const asked = untrack(() => railFree() || manualLayout());
-        // Where each row and heading was, and in what shape (a card or a one-line row).
-        const before = new Map<string, { top: number; card: boolean }>();
-        for (const el of listEl?.querySelectorAll<HTMLElement>("[data-session-row], [data-head]") ?? [])
-            before.set(el.dataset.sessionRow ?? `head:${el.dataset.head}`, { top: el.getBoundingClientRect().top, card: Boolean(el.querySelector(".card")) });
-        for (const animation of animations) animation.cancel();
-        animations.clear();
-        cancelAnimationFrame(frame);
-        frame = requestAnimationFrame(() => {
-            if (prefs.motion === "instant" || matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-            const duration = prefs.motion === "smooth" ? 260 : 160;
-            const run = (el: HTMLElement, frames: Keyframe[]) => {
-                const animation = el.animate(frames, { duration, easing: "ease-out" });
-                animations.add(animation);
-                if ("opacity" in frames[0]! || asked) fades.add(animation);
-                animation.onfinish = () => animations.delete(animation);
-            };
-            for (const el of listEl?.querySelectorAll<HTMLElement>("[data-session-row], [data-head]") ?? []) {
-                const old = before.get(el.dataset.sessionRow ?? `head:${el.dataset.head}`);
-                // New here (a heading that comes with the first session under it, a row from another shelf's page): it fades in.
-                if (!old) {
-                    run(el, [{ opacity: 0 }, { opacity: 1 }]);
-                    continue;
-                }
-                const delta = old.top - el.getBoundingClientRect().top;
-                // A row that changed shape (a card settled into a one-line row, or back) fades into it near its new place.
-                const reshaped = el.dataset.sessionRow !== undefined && old.card !== Boolean(el.querySelector(".card"));
-                if (!delta && !reshaped) continue;
-                // A row that changes place by a slot slides there with its neighbours. One that jumps past others
-                // (a session that just moved to the top) fades in near its new place: sliding, it ran through the
-                // rows between, their words over each other.
-                const far = reshaped || Math.abs(delta) > el.offsetHeight * 1.5;
-                run(el, far ? [{ opacity: 0, transform: `translateY(${Math.sign(delta) * 6}px)` }, { opacity: 1, transform: "translateY(0)" }] : [{ transform: `translateY(${delta}px)` }, { transform: "translateY(0)" }]);
-            }
-        });
-        return next;
+        return previous?.length === next.length && previous.every((key, i) => key === next[i]) ? previous : next;
     });
     // Each session in its own place, pinned under Needs you or not: opening one mustn't change what next and previous step to.
     createEffect(() => setSidebarOrder(sidebarIds(heldLayout())));
-    createEffect(() => {
-        const pause = held();
-        for (const animation of animations) {
-            // Held, a slide stops where it is; a fade ends, so nothing is left half there. So does the slide of a change
-            // the user asked for: stopped, it left a row's gap above the rows it was moving up for as long as the pointer stayed.
-            if (pause) fades.has(animation) ? animation.finish() : animation.pause();
-            else animation.play();
-        }
-    });
-    onCleanup(() => {
-        cancelAnimationFrame(frame);
-        for (const animation of animations) animation.cancel();
-        setSidebarOrder(undefined);
-    });
+    onCleanup(() => setSidebarOrder(undefined));
     // A snoozed session waking (its time come, or it needs you) leaves Snoozed then, the pointer on the rail or not: the
     // user chose the time. The one on screen too: it was held in the shelf, where the rail had it, until the pointer left.
     createEffect(on(() => app.sessions.filter(isSnoozed).map((s) => s.id), (ids, was) => {
@@ -597,67 +591,18 @@ export function Sidebar() {
         allowLayout();
     };
 
-    // ---- Folding a project's sessions under its heading (grouped by project) ----
-    const EASE = "cubic-bezier(0.22, 1, 0.36, 1)"; // --ease
-    const foldMs = () => (prefs.motion === "instant" || matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : prefs.motion === "smooth" ? 260 : 180);
-    /** The row elements under a heading (a project's, a day's), in the layout as it is. */
-    const headRows = (head: string) => {
-        const entries = layout();
-        const start = entries.findIndex((e) => e.key === head);
-        const keys = new Set<string>();
-        for (let i = start + 1; start >= 0 && i < entries.length; i++) {
-            const e = entries[i]!;
-            if (e.kind !== "card" && e.kind !== "row" && e.kind !== "run") break;
-            keys.add(e.key);
-        }
-        return [...(listEl?.querySelectorAll<HTMLElement>("[data-session-row]") ?? [])].filter((el) => keys.has(el.dataset.sessionRow!));
-    };
+    // ---- Folding a project's sessions (grouped by project), or a day's, under its heading: at once ----
     const setFolded = (next: string[]) => {
         // An explicit change: it shows at once, under the pointer or with rows picked.
         allowLayout();
         setPrefs("collapsedProjects", next);
     };
-    // The heading being folded (its key): it says so at once, while its rows shrink away.
-    const [folding, setFolding] = createSignal<string>();
     const setDaysFolded = (next: DayLabel[]) => {
         allowLayout();
         setPrefs("foldedDays", next);
     };
-    /** Rows shrink away before they fold; unfolded, they grow back in. A project's (by its path) or a day's. */
-    const toggleFold = (cwd: string, day?: DayLabel) => {
-        const isFolded = () => (day ? prefs.foldedDays.includes(day) : prefs.collapsedProjects.includes(cwd));
-        const folding = !isFolded();
-        const ms = foldMs();
-        const head = day ? `day:${day}` : `project:${cwd}`;
-        const commit = () => (day ? setDaysFolded(toggleProject(prefs.foldedDays, day)) : setFolded(toggleProject(prefs.collapsedProjects, cwd)));
-        if (!ms) return commit();
-        const grow = (el: HTMLElement, from: number, to: number, opacity: [number, number]) => {
-            el.style.overflow = "hidden";
-            const animation = el.animate([{ height: `${from}px`, opacity: opacity[0] }, { height: `${to}px`, opacity: opacity[1] }], { duration: ms, easing: EASE, fill: folding ? "forwards" : "none" });
-            return { animation, done: animation.finished.catch(() => undefined).finally(() => { el.style.overflow = ""; }) };
-        };
-        // A few rows shrink away (and grow back) in place. A page of them would all squash at once and leave the
-        // list empty a moment: they go at once instead, and what takes their place fades in (the keys memo).
-        const FEW = 6;
-        if (folding) {
-            const rows = headRows(head);
-            if (!rows.length || rows.length > FEW) return commit();
-            setFolding(head);
-            const shrinking = rows.map((el) => grow(el, el.offsetHeight, 0, [1, 0]));
-            void Promise.all(shrinking.map((a) => a.done)).then(() => {
-                batch(() => {
-                    if (!isFolded()) commit();
-                    setFolding(undefined);
-                });
-                // Rows still shown (held by an open menu, say) get their height back.
-                for (const a of shrinking) a.animation.cancel();
-            });
-            return;
-        }
-        commit();
-        const rows = headRows(head);
-        if (rows.length <= FEW) for (const el of rows) grow(el, 0, el.offsetHeight, [0, 1]);
-    };
+    /** A project's (by its path) or a day's. */
+    const toggleFold = (cwd: string, day?: DayLabel) => (day ? setDaysFolded(toggleProject(prefs.foldedDays, day)) : setFolded(toggleProject(prefs.collapsedProjects, cwd)));
     const projectsInPlay = createMemo(() => [...new Set(app.sessions.filter((s) => !s.settled).map(projectOf))]);
     // Opening a session in a folded project (⌘K, a notification) unfolds it, so the open row shows.
     createEffect(on(() => [app.activeId, Boolean(app.activeId && sessions().has(app.activeId))] as const, ([id]) => {
@@ -832,15 +777,15 @@ export function Sidebar() {
             }
         >
             <div class="side-nav">
-                <button class="nav-row" title={withShortcut("New session", "app:newSession")} onClick={() => (setSettingsTab(undefined), newSession(app.homeCwd))}>
-                    <SquarePen size={16} />
+                <button class="nav-row new" title={withShortcut("New session", "app:newSession")} onClick={() => (setSettingsTab(undefined), newSession(app.homeCwd))}>
+                    <SquarePen size={15} />
                     <span class="truncate">New session</span>
-                    <Show when={shortcut("app:newSession")}>{(k) => <span class="side-kbd">{keyText(k())}</span>}</Show>
+                    <NavKeys action="app:newSession" />
                 </button>
-                <button class="nav-row side-search" title={withShortcut("Search sessions, messages and actions", "app:commandPalette")} onClick={() => setPaletteOpen(true)}>
-                    <Search size={16} />
+                <button class="nav-row side-search" title={withShortcut("Search", "app:commandPalette")} onClick={() => setPaletteOpen(true)}>
+                    <Search size={15} />
                     <span class="truncate">Search</span>
-                    <Show when={shortcut("app:commandPalette")}>{(k) => <span class="side-kbd">{keyText(k())}</span>}</Show>
+                    <NavKeys action="app:commandPalette" />
                 </button>
             </div>
 
@@ -897,7 +842,7 @@ export function Sidebar() {
                     }
                     if (kind === "project") {
                         const group = () => entry() as Extract<SidebarEntry, { kind: "project" }>;
-                        const open = () => !group().collapsed && folding() !== key;
+                        const open = () => !group().collapsed;
                         // Folded, a session in it that needs you still shows: the amber dot, on the heading.
                         const needsYou = () => !open() && (group().ids ?? []).some((id) => sessions().get(id)?.status === "waiting");
                         return <div class={`shelf project-head ${open() ? "" : "folded"}`} data-head={key}>
@@ -915,7 +860,7 @@ export function Sidebar() {
                         const day = () => entry() as Extract<SidebarEntry, { kind: "day" }>;
                         // Folded, a session under it that needs you still shows: the amber dot, as a project's heading does.
                         const needsYou = () => Boolean(day().collapsed) && (day().ids ?? []).some((id) => sessions().get(id)?.status === "waiting");
-                        const shut = () => Boolean(day().collapsed) || folding() === key;
+                        const shut = () => Boolean(day().collapsed);
                         return <button class="shelf day-head" data-head={key} aria-expanded={!shut()} onClick={() => toggleFold("", day().label)}>
                             <span>{day().label}</span>
                             <Show when={shut()}><span class="n">{day().ids?.length ?? app.sessions.filter((s) => !s.settled && dayOf(s, today()) === day().label).length}</span></Show>

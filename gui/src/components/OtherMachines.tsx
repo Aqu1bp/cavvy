@@ -10,6 +10,7 @@
 import { batch, createEffect, createRoot, For, on } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
 import { render } from "solid-js/web";
+import { Server } from "lucide-solid";
 import type { MachineOverview, ServerEvent, SessionSummary } from "@shared/protocol";
 import { listable, mayTake, otherRows, relisted, routeOf } from "../lib/machine-rows";
 import { home, switchMachine } from "../lib/machines";
@@ -175,8 +176,9 @@ function Trouble() {
         <For each={trouble.list}>
             {(m) => (
                 <button class="om-h" title={`Go to ${m.name}`} onClick={() => switchMachine(m.name)}>
+                    <Server size={15} />
                     <span class="truncate">{m.name}</span>
-                    <span class="om-n">{m.note}</span>
+                    <span class={`om-n ${m.note === NOTES["needs-you"] ? "warn" : ""}`}>{m.note}</span>
                 </button>
             )}
         </For>

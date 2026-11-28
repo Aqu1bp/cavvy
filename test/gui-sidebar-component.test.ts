@@ -75,10 +75,10 @@ function fixture(count = 60, o: { actionOf?: (e: KeyboardEvent, contexts: readon
         presets: [[solidPreset, { generate: "universal", moduleName: "test-renderer" }]], configFile: false, babelrc: false })!.code!;
     const js = new Bun.Transpiler({ loader: "ts" }).transformSync(compiled)
         .replace(/import \{ ([\w$]+) as ([\w$]+) \} from "test-renderer";/g, "const $2 = renderer.$1;");
-    const icons = Object.fromEntries(["Archive", "ArchiveRestore", "Check", "CheckCheck", "ChevronRight", "ChevronsDownUp", "ChevronsUpDown", "CircleAlert", "Download", "Folder", "FolderOpen", "FolderPlus", "Hand", "Layers", "ListFilter", "MessageSquareText", "MoreHorizontal", "PanelLeft", "Pencil", "Pin", "PinOff", "Plus", "Search", "Settings", "SquarePen", "Trash2", "Undo2", "X", "ProviderIcon", "Logo", "Spinner"].map((name) => [name, () => null]));
+    const icons = Object.fromEntries(["Archive", "ArchiveRestore", "Check", "CheckCheck", "ChevronRight", "ChevronsDownUp", "ChevronsUpDown", "CircleAlert", "Download", "Folder", "FolderOpen", "FolderPlus", "Hand", "Layers", "ListFilter", "MessageSquareText", "MoreHorizontal", "PanelLeft", "PanelLeftClose", "Pencil", "Pin", "PinOff", "Plus", "Search", "Settings", "Square", "SquarePen", "Trash2", "Undo2", "X", "ProviderIcon", "Logo", "Spinner"].map((name) => [name, () => null]));
     const extras: { ids: readonly string[]; plan?: railSelect.BulkPlan; clear?: () => void }[] = [];
     const RowExtras = Object.assign((p: (typeof extras)[number]) => (extras.push(p), null), { preload() {} });
-    const scope = { renderer, RowExtras, ...solid, ...order, ...format, ...rail, ...railSelect, ...icons, sessionStatus, rowMenuKey, updateView, createUpdateAction: () => ({ request() {}, pending: () => false, Confirm: () => null }), app, prefs,
+    const scope = { renderer, RowExtras, ...solid, ...order, ...format, ...rail, ...railSelect, ...icons, sessionStatus, rowMenuKey, updateView, modelName: (ref: string) => ref, createUpdateAction: () => ({ request() {}, pending: () => false, Confirm: () => null }), app, prefs,
         railSelection, setRailSelection, actionOf: o.actionOf ?? (() => undefined),
         settleSessions: bulk.settle, archiveSessions: bulk.archive, deleteSessions: bulk.deleteSessions,
         // Count work against layout keys, rather than timing a machine-dependent render.
@@ -180,7 +180,7 @@ test("rail rows: needs-you rows get an amber dot and no archive; others archive 
         const waiting = rowOf("Session 1");
         expect(String(waiting.props.class)).toContain("waiting");
         expect(waiting.querySelector().props["aria-label"]).toBe("Session 1, Needs approval");
-        // Its time, in amber: no dot, and no hand at the start of the row.
+        // Its time, in amber; no heading's dot, and no hand at the start of the row.
         expect(f.descendants(waiting).some((n) => n.props?.class === "when waiting")).toBe(true);
         expect(f.descendants(waiting).some((n) => n.props?.class === "wait-dot")).toBe(false);
         // Working and stopped say so where the time was; never both.
@@ -309,30 +309,20 @@ test("Needs you while the rail holds still: rows say how they're doing now, and 
     } finally { f.dispose(); }
 });
 
-test("FLIP respects instant/reduced motion and pauses under hover without snapping", () => {
+test("rows take their new places at once: nothing in the rail slides or fades, whatever the motion setting", () => {
     const f = fixture();
     try {
+        f.setMotion("quick");
         f.flushFrames();
         f.update("20", { updatedAt: 300 }); f.flushFrames();
-        expect(f.animations).toHaveLength(0);
-        f.setMotion("quick"); f.setReduced(true);
-        f.update("21", { updatedAt: 400 }); f.flushFrames();
-        expect(f.animations).toHaveLength(0);
-        f.setReduced(false);
         f.update("22", { updatedAt: 500 }); f.flushFrames();
-        expect(f.animations.length).toBeGreaterThan(0);
-        f.nav.props.onPointerEnter();
-        const moving = [...f.animations];
-        expect(moving.every((a) => a.paused && !a.cancelled)).toBe(true);
-        f.update("59", { status: "waiting" }); f.flushFrames();
-        expect(moving.every((a) => a.paused && !a.cancelled)).toBe(true);
-        f.nav.props.onPointerLeave(); f.flushFrames();
-        expect(moving.every((a) => a.cancelled)).toBe(true);
+        expect(f.ids.slice(0, 2)).toEqual(["22", "20"]);
+        expect(f.animations).toHaveLength(0);
     } finally { f.dispose(); }
 });
 
 
-test("a snoozed session waking leaves Snoozed at once, the one on screen too, with the pointer on the rail; its slide isn't stopped half way", async () => {
+test("a snoozed session waking leaves Snoozed at once, the one on screen too, with the pointer on the rail", async () => {
     const f = fixture(6);
     try {
         f.update("2", { snoozedUntil: 5_000_000 });
@@ -350,13 +340,10 @@ test("a snoozed session waking leaves Snoozed at once, the one on screen too, wi
         expect(f.ids).toEqual(["5", "0", "1", "2", "3", "4"]);
         await Promise.resolve();
         f.flushFrames();
-        const moving = f.animations.filter((a) => !a.cancelled);
-        expect(moving.length).toBeGreaterThan(0);
-        // The pointer moving on the rail holds it again: what was moving gets where it was going, not left with a gap.
+        // Nothing slides to get there.
+        expect(f.animations).toHaveLength(0);
         f.nav.props.onPointerLeave();
         f.nav.props.onPointerEnter();
-        expect(moving.some((a) => a.paused)).toBe(false);
-        expect(moving.every((a) => a.finished)).toBe(true);
         // And it holds still again.
         f.update("4", { updatedAt: 2000 });
         expect(f.ids).toEqual(["5", "0", "1", "2", "3", "4"]);
