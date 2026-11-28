@@ -342,7 +342,27 @@ describe("tasks.start", () => {
             expect(n.session.messageCount).toBe(0);
             expect(engine.runtimes.get(n.id)).toBe(n);
             expect(((await engine.handle(watcher, "sessions.list", {})) as { id: string }[]).some((x) => x.id === n.id)).toBe(true);
+            // Closed once no window shows it, and after a restart: still listed, and opened, the prompt is back in its box.
+            const reopen = async (e: typeof engine) => {
+                const got: any[] = [];
+                const w = { subs: new Set<string>(), send: (m: any) => m.type === "draft" && got.push(m) } as never;
+                e.clients.add(w);
+                expect(((await e.handle(w, "sessions.list", {})) as { id: string; title: string }[]).find((x) => x.id === n.id)).toMatchObject({ title: "Fix it" });
+                const snap = (await e.handle(w, "session.open", { id: n.id })) as SessionSnapshot;
+                expect(snap.state.id).toBe(n.id);
+                expect(got).toEqual([expect.objectContaining({ sessionId: n.id, text: "Fix it." })]);
+                await e.handle(w, "session.close", { id: n.id });
+                e.clients.delete(w);
+                await until(() => !e.runtimes.has(n.id));
+            };
+            await engine.handle(watcher, "session.close", { id: n.id });
+            await until(() => !engine.runtimes.has(n.id));
+            await reopen(engine);
             engine.clients.delete(watcher);
+            await engine.stop();
+            engine = new Engine({ listModels: async () => [] });
+            engine.clients.add(client);
+            await reopen(engine);
         } finally {
             delete o.taskVerdictMaxMs;
             writeFileSync(settings, was);
@@ -422,6 +442,11 @@ describe("tasks.start", () => {
             // A clean one at the commit it was left at is still gone on in.
             const kept = await call<StartTaskResult>("tasks.start", third);
             expect(kept.worktree).toEqual(after.worktree);
+            // The window's own path to one that's since been removed: a new one, not a failure Try again repeats.
+            git(repo, "worktree", "remove", "--force", kept.worktree!.path);
+            const fresh = await call<StartTaskResult>("tasks.start", { ...third, resume: kept.worktree!.path });
+            expect(fresh.failed?.code).toBe("blocked");
+            expect(fresh.worktree!.path).not.toBe(kept.worktree!.path);
         } finally {
             writeFileSync(settings, was);
         }

@@ -681,6 +681,29 @@ export class Session {
         this.write({ t: "goal", goal });
     }
 
+    /**
+     * On disk now, before any message: its first line, and what waited for one (its title). For a session kept with
+     * nothing said in it yet (a suggested task whose first prompt a hook refused, back in its composer). False when it
+     * can't be (not saved, released, or the write failed).
+     */
+    keepFile(): boolean {
+        if (!this.persist || this.released) return false;
+        if (!this.started) {
+            try {
+                ensureDir(projectStateDir(this.meta.cwd));
+                this.claim();
+                if (!existsSync(this.file)) {
+                    appendFileSync(this.file, redactedJson({ t: "meta", ...this.meta }) + "\n", { mode: 0o600 });
+                    chmodSync(this.file, 0o600);
+                }
+                this.started = true;
+            } catch {
+                return false;
+            }
+        }
+        return this.write();
+    }
+
     setTitle(title: string) {
         this.title = title;
         this.write({ t: "title", title });
