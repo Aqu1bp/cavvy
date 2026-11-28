@@ -9,15 +9,20 @@
 //
 // Timing and place follow the design's (Radix's Tooltip: delayDuration 450, skipDelayDuration 200;
 // side bottom, sideOffset 6, collisionPadding 8): it shows 450 ms after the pointer settles on the
-// element, or at once on keyboard focus, or at once when another hid less than 200 ms ago. It hides on
-// leave, blur, press, click, Esc and scroll, and when its element goes. Not for touch.
+// element, or at once on keyboard focus, or at once when another hid less than 200 ms ago. Keyboard focus is
+// focus that a Tab, Shift+Tab or an arrow just moved: not a click's, and not the app's own (a drawer opening on
+// its first button). It hides on leave, blur, press, click, Esc and scroll, when its element goes, and when its
+// element moves or changes size (a panel opening beside it, the window resized). Not for touch.
 
 import { For, Show, createRoot, onCleanup, onMount } from "solid-js";
-import { TIP_DELAY, TIP_SKIP, placeTip, splitTip } from "../../lib/tip";
+import { TIP_DELAY, TIP_SKIP, focusFromKeys, movesFocus, placeTip, sameBox, splitTip } from "../../lib/tip";
 
 export { tip } from "../../lib/tip";
 
-type Shown = { el: Element; box: HTMLElement; dispose: () => void; gone: MutationObserver };
+type Shown = { el: Element; box: HTMLElement; dispose: () => void; gone: MutationObserver; at: DOMRect; sized: ResizeObserver };
+
+/** What a transition moving an element's box changes: one of these on what holds the element moves it. */
+const MOVES = /^(?:transform|translate|scale|left|top|right|bottom|inset|width|height|margin|padding|grid-template)/;
 
 /** The tooltip runtime: mounted once (main.tsx); it adds the document's listeners and removes them on cleanup. */
 export function Tooltips() {
@@ -28,6 +33,8 @@ export function Tooltips() {
         let hiddenAt = -Infinity;
         /** The element a press landed on: it gets no tooltip until the pointer leaves it (as Radix does). */
         let pressed: Element | undefined;
+        /** When a key that moves focus (Tab, an arrow) was last pressed: focus that follows it is the keyboard's. */
+        let keyAt = -Infinity;
 
         const target = (n: EventTarget | null) => (n instanceof Element ? n.closest("[data-tip], [title], [data-tip-held]") : null);
 
@@ -76,6 +83,7 @@ export function Tooltips() {
             if (!shown) return;
             if (!keep) letGo();
             shown.gone.disconnect();
+            shown.sized.disconnect();
             shown.dispose();
             shown.box.remove();
             shown = undefined;
@@ -111,7 +119,15 @@ export function Tooltips() {
                 if (!el.isConnected) hide();
             });
             gone.observe(doc.body, { childList: true, subtree: true });
-            shown = { el, box, dispose, gone };
+            // It or what holds it resized (a panel opened beside it, the rail narrowed): it hides if that moved it.
+            const sized = new ResizeObserver(moved);
+            for (let n: Element | null = el; n && n !== doc.documentElement; n = n.parentElement) sized.observe(n);
+            shown = { el, box, dispose, gone, at: el.getBoundingClientRect(), sized };
+        }
+
+        /** Its element moved or changed size since it showed: it would point at the wrong place. */
+        function moved() {
+            if (shown && !sameBox(shown.el.getBoundingClientRect(), shown.at)) hide();
         }
 
         function place(el: Element, box: HTMLElement) {
@@ -145,7 +161,7 @@ export function Tooltips() {
         };
         const focusIn = (e: FocusEvent) => {
             const el = target(e.target);
-            if (el && el !== pressed && e.target instanceof Element && e.target.matches(":focus-visible")) show(el);
+            if (el && el !== pressed && focusFromKeys(keyAt, performance.now()) && e.target instanceof Element && e.target.matches(":focus-visible")) show(el);
         };
         const focusOut = (e: FocusEvent) => {
             const el = shown?.el ?? held?.el;
@@ -155,7 +171,15 @@ export function Tooltips() {
             }
         };
         const key = (e: KeyboardEvent) => {
+            if (movesFocus(e.key)) keyAt = performance.now();
             if (e.key === "Escape" && shown) hide(true);
+        };
+        /** Something that holds it starts sliding or resizing (a drawer, a panel): it goes at once. Other motion is checked once done. */
+        const motion = (e: TransitionEvent) => {
+            if (shown && e.target instanceof Element && e.target !== shown.el && e.target.contains(shown.el) && MOVES.test(e.propertyName)) hide();
+        };
+        const settled = (e: Event) => {
+            if (shown && e.target instanceof Node && e.target.contains(shown.el)) moved();
         };
         /** A scroll that moves the element hides its tooltip (as Radix's does); others leave it. */
         const scroll = (e: Event) => {
@@ -167,14 +191,17 @@ export function Tooltips() {
         const listeners: [string, (e: any) => void][] = [
             ["pointerover", over], ["pointerout", out], ["pointerdown", down], ["click", () => hide(true)],
             ["focusin", focusIn], ["focusout", focusOut], ["keydown", key], ["scroll", scroll],
+            ["transitionrun", motion], ["transitionend", settled], ["animationend", settled],
         ];
         for (const [type, fn] of listeners) doc.addEventListener(type, fn, on);
         const blur = () => hide();
         window.addEventListener("blur", blur);
+        window.addEventListener("resize", blur);
         onCleanup(() => {
             hide();
             for (const [type, fn] of listeners) doc.removeEventListener(type, fn, on);
             window.removeEventListener("blur", blur);
+            window.removeEventListener("resize", blur);
         });
     });
     return null;
