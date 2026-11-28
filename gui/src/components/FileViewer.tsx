@@ -4,7 +4,7 @@
 // images as images (a click opens the image viewer); what isn't text, or is too big, says so and offers the editor.
 
 import { batch, createEffect, createMemo, createResource, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, untrack } from "solid-js";
-import { AtSign, ChevronLeft, Copy, Hash, RefreshCw, SquareArrowOutUpRight, X } from "lucide-solid";
+import { ArrowLeft, AtSign, CircleAlert, Copy, Hash, RefreshCw, SquareArrowOutUpRight, X } from "lucide-solid";
 import type { FileContent } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
 import { rpc, toast } from "../state/app";
@@ -24,6 +24,7 @@ import { Markdown } from "./blocks/Markdown";
 import { ReviewResizer } from "./ReviewPane";
 import { Segmented, Spinner } from "./ui/bits";
 import "../styles/files.css";
+import "../styles/review.css";
 
 /** Rows drawn past the edges of the view, each way. */
 const OVER = 30;
@@ -187,20 +188,22 @@ export function FileViewer(p: { handle: SessionHandle }) {
         if (!addToChat(rel())) toast("No message box to add it to", "warn");
     };
     return (
-        <section class="review fv" aria-label="File viewer" onKeyDown={onKey}>
+        <section class="rv review fv" aria-label="File viewer" onKeyDown={onKey}>
             <Show when={shellLayout().inspector.mode === "dock"}>
                 <ReviewResizer />
             </Show>
-            <div class="rv-h">
-                <button class="hb rv-back" title={review()?.back ? "Back to the changes (Esc)" : prefs.panel ? "Back to the side panel (Esc)" : "Close (Esc)"} aria-label="Close file" onClick={closeReview}>
+            <header class="rv-bar">
+                <button class="icon-btn rv-back" title={review()?.back ? "Back to the changes (Esc)" : prefs.panel ? "Back to the side panel (Esc)" : "Close (Esc)"} aria-label="Close file" onClick={closeReview}>
                     <Show when={prefs.panel || review()?.back} fallback={<X size={16} />}>
-                        <ChevronLeft size={16} />
+                        <ArrowLeft size={16} />
                     </Show>
                 </button>
-                <div class="fv-title selectable" title={rel()}>
-                    <span class="fv-name">{nameOf(rel())}</span>
-                    <span class="fv-dir">{dirOf(rel()).replace(/\/$/, "")}</span>
-                </div>
+                <span class="path fv-title selectable" title={rel()}>
+                    <Show when={dirOf(rel())}>
+                        <span class="path-dir">{dirOf(rel())}</span>
+                    </Show>
+                    <span class="path-base">{nameOf(rel())}</span>
+                </span>
                 <span class="grow" />
                 <Show when={shown()?.kind === "text" && markdown()}>
                     <Segmented size="sm" label="Show Markdown" value={raw() ? "raw" : "rendered"} onChange={(v) => setRaw(v === "raw")} options={[{ value: "rendered", label: <>Rendered</> }, { value: "raw", label: <>Raw</> }]} />
@@ -209,14 +212,14 @@ export function FileViewer(p: { handle: SessionHandle }) {
                     <Show
                         when={lineOpen()}
                         fallback={
-                            <button class="hb" title="Go to line (Ctrl+G)" aria-label="Go to line" onClick={() => (setLineOpen(true), queueMicrotask(() => lineInput?.focus()))}>
-                                <Hash size={15} />
+                            <button class="icon-btn" title="Go to line (Ctrl+G)" aria-label="Go to line" onClick={() => (setLineOpen(true), queueMicrotask(() => lineInput?.focus()))}>
+                                <Hash size={14} />
                             </button>
                         }
                     >
                         <input
                             ref={lineInput}
-                            class="fv-line-in"
+                            class="input input-sm mono fv-line-in"
                             inputmode="numeric"
                             placeholder="Line"
                             aria-label="Line number"
@@ -232,29 +235,33 @@ export function FileViewer(p: { handle: SessionHandle }) {
                         />
                     </Show>
                 </Show>
-                <button class="hb" title="Open in editor" aria-label="Open in editor" disabled={unopenable()} onClick={editor}>
-                    <SquareArrowOutUpRight size={15} />
+                <button class="icon-btn" title="Open in editor" aria-label="Open in editor" disabled={unopenable()} onClick={editor}>
+                    <SquareArrowOutUpRight size={14} />
                 </button>
-                <button class="hb" title="Copy path" aria-label="Copy path" disabled={!shown()} onClick={() => void copyPath()}>
-                    <Copy size={15} />
+                <button class="icon-btn" title="Copy path" aria-label="Copy path" disabled={!shown()} onClick={() => void copyPath()}>
+                    <Copy size={14} />
                 </button>
-                <button class="hb" title="Add to chat" aria-label="Add to chat" disabled={unopenable()} onClick={toChat}>
-                    <AtSign size={15} />
+                <button class="icon-btn" title="Add to chat" aria-label="Add to chat" disabled={unopenable()} onClick={toChat}>
+                    <AtSign size={14} />
                 </button>
-                <button class="hb" title="Refresh" aria-label="Refresh" disabled={file.loading} onClick={() => setReloads((n) => n + 1)}>
-                    <Show when={file.loading} fallback={<RefreshCw size={15} />}>
+                <button class="icon-btn" title="Refresh" aria-label="Refresh" disabled={file.loading} onClick={() => setReloads((n) => n + 1)}>
+                    <Show when={file.loading} fallback={<RefreshCw size={14} />}>
                         <Spinner size={14} />
                     </Show>
                 </button>
-            </div>
+            </header>
             <div class="fv-body" aria-busy={file.loading}>
                 <Switch>
                     <Match when={file.state === "errored"}>
-                        <div class="fv-msg selectable" role="alert">{file.error instanceof Error ? file.error.message : String(file.error)}</div>
+                        <div class="rv-error selectable" role="alert">
+                            <CircleAlert size={18} />
+                            <p class="rv-error-title">Couldn't open the file</p>
+                            <p class="rv-error-detail">{file.error instanceof Error ? file.error.message : String(file.error)}</p>
+                        </div>
                     </Match>
                     <Match when={!shown() || (file.loading && shown()!.rel !== target()?.path && shown()!.path !== target()?.path)}>
-                        <div class="fv-msg">
-                            <Spinner size={16} />
+                        <div class="blank">
+                            <Spinner class="blank-spinner" />
                         </div>
                     </Match>
                     <Match when={shown()?.kind === "text" && markdown() && !raw() && shown()}>
@@ -272,8 +279,8 @@ export function FileViewer(p: { handle: SessionHandle }) {
                     </Match>
                     <Match when={shown()}>
                         {(f) => (
-                            <div class="fv-msg">
-                                <p>{f().kind === "large" ? `Too big to show (${sizeText(f().size)}).` : "Not a text file."}</p>
+                            <div class="blank">
+                                <p class="blank-title">{f().kind === "large" ? `Too big to show (${sizeText(f().size)}).` : "Not a text file."}</p>
                                 <button class="btn btn-sm" onClick={editor}>
                                     Open in editor
                                 </button>

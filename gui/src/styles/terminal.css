@@ -1,13 +1,17 @@
-/* ---- Terminal: the bottom row, under the conversation and the inspector: a darker pane of the same glass ---- */
+/* ---- Terminal: the row under the conversation and the side panel (the design's terminal.css) ----
+   Its place in the sheet's grid is here too (.terminal-panel); its tabs and screens (TerminalPanel, TerminalScreen). */
 
+/* The design's .terminal; named by its other class, as xterm's own element is .terminal too. */
 .terminal-panel {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    flex: none;
+    min-height: 0;
+    border-top: 1px solid var(--line);
+    background: var(--bg);
     grid-row: 2;
     grid-column: 1 / -1;
-    position: relative;
-    flex-direction: column;
-    min-height: 0;
-    background: var(--term-bg);
-    border-top: 1px solid var(--line);
     overflow: hidden;
 }
 
@@ -23,72 +27,68 @@
     border-top: 0;
 }
 
-.terminal-panel.max .terminal-resize {
+.terminal-panel.max .terminal-resizer {
     display: none;
 }
 
-/* Maximized, its toolbar is the window's top row: the title bar's height, so its tabs sit on the
-   traffic lights' line (--top-line), and clear of the lights where they're over the sheet (the rail
-   hidden, or a drawer), as the title bar is (header.css). The empty part moves the window. */
-.terminal-panel.max .terminal-toolbar {
-    height: calc(2 * (var(--top-line) - var(--win-pad, 8px)));
-}
-
-.app.tauri.os-macos.rail-off .terminal-panel.max .terminal-toolbar,
-.app.tauri.os-macos[data-rail="overlay"] .terminal-panel.max .terminal-toolbar {
-    padding-left: calc(92px - var(--win-pad, 8px));
-}
-
-.terminal-resize {
+.terminal-resizer {
     position: absolute;
-    top: 0;
+    top: -5px;
     left: 0;
     right: 0;
-    height: 6px;
+    height: 9px;
+    z-index: 20;
     cursor: row-resize;
-    z-index: 3;
     touch-action: none;
-}
-
-.terminal-resize::after {
-    content: "";
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    height: 1px;
-    background: var(--accent);
-    opacity: 0;
-    transition: opacity 150ms;
-}
-
-.terminal-resize:hover::after,
-.terminal-resize:focus-visible::after,
-.terminal-panel.dragging .terminal-resize::after {
-    opacity: 1;
-}
-
-.terminal-resize:focus-visible {
     outline: none;
 }
 
-.terminal-toolbar {
+.terminal-resizer::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 4px;
+    height: 1px;
+    background: transparent;
+    transition: background 0.15s, box-shadow 0.15s;
+}
+
+.terminal-resizer:hover::after,
+.terminal-resizer:focus-visible::after,
+.terminal-resizer[data-dragging]::after {
+    background: var(--accent);
+    box-shadow: 0 0 0 0.5px var(--accent);
+}
+
+.terminal-bar {
     display: flex;
     align-items: center;
     gap: calc(2 * var(--sp));
-    height: calc(38 * var(--sp));
-    padding: 0 calc(6 * var(--sp)) 0 calc(8 * var(--sp));
     flex: none;
-    font-size: 0.929rem;
+    height: calc(38 * var(--sp));
+    padding: 0 calc(8 * var(--sp)) 0 calc(10 * var(--sp));
+    border-bottom: 1px solid var(--line);
+    background: var(--bg-side);
 }
 
-.terminal-toolbar .hb {
-    border-radius: var(--pill);
+/* Maximized, its bar is the window's top row: the title bar's height, so its tabs sit on the
+   traffic lights' line (--top-line), and clear of the lights where they're over the sheet (the rail
+   hidden, or a drawer), as the title bar is (header.css). The empty part moves the window. */
+.terminal-panel.max .terminal-bar {
+    height: calc(2 * (var(--top-line) - var(--win-pad, 8px)));
+}
+
+.app.tauri.os-macos.rail-off .terminal-panel.max .terminal-bar,
+.app.tauri.os-macos[data-rail="overlay"] .terminal-panel.max .terminal-bar {
+    padding-left: calc(92px - var(--win-pad, 8px));
 }
 
 .terminal-tabs {
     display: flex;
+    align-items: center;
     gap: calc(2 * var(--sp));
+    flex: 1;
     min-width: 0;
     overflow-x: auto;
     scrollbar-width: none;
@@ -97,71 +97,126 @@
 .terminal-tab {
     display: inline-flex;
     align-items: center;
-    gap: calc(2 * var(--sp));
-    height: calc(28 * var(--sp));
-    padding: 0 calc(3 * var(--sp)) 0 calc(10 * var(--sp));
-    border-radius: var(--pill);
-    flex: none;
-    color: var(--fg-3);
-    font-weight: 500;
-    white-space: nowrap;
-    transition: background var(--dur-fast), color var(--dur-fast);
+    flex: 0 1 auto;
+    min-width: calc(76 * var(--sp));
+    max-width: calc(200 * var(--sp));
+    height: calc(26 * var(--sp));
+    padding-right: calc(4 * var(--sp));
+    border-radius: var(--radius-s);
+    color: var(--text-2);
+    transition: background 0.1s, color 0.1s;
 }
 
 .terminal-tab:hover {
-    background: var(--hover);
-    color: var(--fg-2);
+    background: color-mix(in srgb, var(--fill-2) 75%, transparent);
+    color: var(--text);
 }
 
-.terminal-tab.on {
-    background: var(--press);
-    color: var(--fg);
+.terminal-tab[data-active] {
+    background: var(--fill-2);
+    color: var(--text);
 }
 
-.terminal-tab > button[role="tab"] {
+[data-theme="light"] .terminal-tab[data-active] {
+    background: var(--surface);
+    box-shadow: var(--shadow-card);
+}
+
+.terminal-tab-main {
     display: inline-flex;
     align-items: center;
-    gap: calc(7 * var(--sp));
+    gap: calc(6 * var(--sp));
+    flex: 1;
+    min-width: 0;
     height: 100%;
-    color: inherit;
-    white-space: nowrap;
+    padding: 0 calc(4 * var(--sp)) 0 calc(8 * var(--sp));
+    border-radius: var(--radius-s);
+    font-size: calc(12.5 * var(--sp));
+    font-weight: 500;
 }
 
-.terminal-tab > button[role="tab"]:focus-visible {
-    outline-offset: 0;
-}
-
-.terminal-tab-icon {
+.terminal-tab-n {
     flex: none;
-    color: var(--fg-3);
+    margin-left: calc(-2 * var(--sp));
+    font-variant-numeric: tabular-nums;
 }
 
-.terminal-tab .terminal-tab-x {
-    width: calc(20 * var(--sp));
-    height: calc(20 * var(--sp));
-    opacity: 0;
+.terminal-tab-main svg {
+    flex: none;
+    color: var(--text-3);
 }
 
-.terminal-tab:hover .terminal-tab-x,
-.terminal-tab.on .terminal-tab-x,
-.terminal-tab-x:focus-visible {
-    opacity: 1;
+.terminal-tab[data-ended] .terminal-tab-main span {
+    color: var(--text-3);
+}
+
+.terminal-tab-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    width: calc(18 * var(--sp));
+    height: calc(18 * var(--sp));
+    border-radius: calc(4 * var(--sp));
+    color: var(--text-3);
+}
+
+.terminal-tab-close:hover {
+    background: var(--fill-3);
+    color: var(--text);
+}
+
+.terminal-new {
+    margin-left: calc(2 * var(--sp));
+    color: var(--text-3);
+}
+
+.terminal-new[data-disabled] {
+    opacity: 0.4;
+    cursor: default;
+}
+
+.terminal-new[data-disabled]:hover {
+    background: none;
+    color: var(--text-3);
 }
 
 .terminal-cwd {
-    margin-left: auto;
-    padding: 0 calc(8 * var(--sp));
-    max-width: 40%;
-    color: var(--fg-3);
-    font-family: var(--font-mono);
-    font-size: 0.821rem;
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 44%;
+    margin: 0 calc(8 * var(--sp));
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-3);
+    font-size: calc(11.5 * var(--sp));
 }
 
-.terminal-screen {
+.terminal-body {
+    display: flex;
     flex: 1;
     min-height: 0;
+    background: var(--code-bg);
+}
+
+.terminal-body .blank {
+    min-height: 0;
+}
+
+/* ---------- the screen: the emulator (xterm) and what's said under it ---------- */
+
+.tty {
+    position: relative;
+    flex: 1;
     flex-direction: column;
-    padding: calc(2 * var(--sp)) calc(6 * var(--sp)) calc(6 * var(--sp)) calc(14 * var(--sp));
+    min-width: 0;
+    overflow: auto;
+    padding: calc(10 * var(--sp)) calc(14 * var(--sp)) calc(12 * var(--sp));
+    font-family: var(--font-mono);
+    font-size: calc(12.5 * var(--sp));
+    line-height: 1.6;
+    cursor: text;
 }
 
 .terminal-emulator {
@@ -175,7 +230,7 @@
     height: 100%;
 }
 
-/* xterm paints its viewport black under the last row; here it has no ground, like its rows (TerminalPanel.tsx). */
+/* xterm paints its viewport black under the last row; here it has no ground, like its rows (TerminalScreen.tsx). */
 .terminal-emulator .xterm .xterm-viewport {
     background-color: transparent !important;
 }
@@ -191,12 +246,20 @@
     background-color: transparent !important;
 }
 
-.terminal-message {
+.tty-ended {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: calc(8 * var(--sp));
-    padding: calc(8 * var(--sp)) calc(14 * var(--sp));
-    color: var(--fg-3);
-    font-size: 0.857rem;
+    gap: calc(10 * var(--sp));
+    margin-top: calc(10 * var(--sp));
+    color: var(--text-3);
+    font-family: var(--font-ui);
+    font-size: calc(12.5 * var(--sp));
+}
+
+/* Where a link's tooltip hangs from: the pointer on the link (TerminalScreen). */
+.tty-tip {
+    position: absolute;
+    width: 1px;
+    height: calc(16 * var(--sp));
+    pointer-events: none;
 }

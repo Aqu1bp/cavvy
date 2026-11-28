@@ -39,7 +39,7 @@ export const TERMINAL_KEEP = 300;
 /** The inspector's width (its resizer). As wide as the conversation allows (a browser wants room), up to `INSPECTOR_MAX`. */
 export const INSPECTOR_MIN = 280;
 export const INSPECTOR_MAX = 1400;
-export const INSPECTOR_DEFAULT = 360;
+export const INSPECTOR_DEFAULT = 424;
 /** A wider inspector narrows with the window down to this; from here, a window too narrow for it floats it as before. */
 export const INSPECTOR_KEEP = 620;
 

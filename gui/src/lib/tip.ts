@@ -35,8 +35,13 @@ export function tip(label: string, keys?: string | string[]): { "data-tip": stri
 
 type Box = { left: number; top: number; right: number; bottom: number; width: number };
 
-/** Below the element, centred on it, 6 px away; above when there's no room below and room above; kept 8 px inside the window. */
-export function placeTip(r: Box, w: number, h: number, vw: number, vh: number): { left: number; top: number; side: "bottom" | "top" } {
+/** Below the element, centred on it, 6 px away; above when there's no room below and room above; kept 8 px inside the window.
+ *  `left` (a rail down the window's right edge): beside it, centred on it, unless there's no room there. */
+export function placeTip(r: Box, w: number, h: number, vw: number, vh: number, want?: "left"): { left: number; top: number; side: "bottom" | "top" | "left" } {
+    if (want === "left" && r.left - OFFSET - w >= PAD) {
+        const mid = (r.top + r.bottom) / 2 - h / 2;
+        return { left: Math.round(r.left - OFFSET - w), top: Math.round(Math.min(Math.max(mid, PAD), Math.max(PAD, vh - PAD - h))), side: "left" };
+    }
     const below = r.bottom + OFFSET;
     const side = below + h > vh - PAD && r.top - OFFSET - h >= PAD ? "top" : "bottom";
     const top = side === "top" ? r.top - OFFSET - h : below;

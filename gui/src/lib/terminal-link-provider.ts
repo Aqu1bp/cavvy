@@ -17,7 +17,8 @@ export interface LinkActions {
     openUrl(url: string): void;
     openFile(path: string, line?: number, col?: number): void;
     /** What a press on it does, said as the pointer rests on it. */
-    hint(link: TerminalLink, on: boolean): void;
+    /** `at`: the pointer on the link, where its tooltip shows. */
+    hint(link: TerminalLink, on: boolean, at?: MouseEvent): void;
 }
 
 /** One logical line (its wrapped rows joined) as text, with the cell each character is in. */
@@ -75,7 +76,7 @@ export function linkProvider(term: Terminal, act: LinkActions): ILinkProvider & 
                     if (l.kind === "url") act.openUrl(l.url);
                     else act.openFile(abs!, l.line, l.col);
                 },
-                hover: () => act.hint(l, true),
+                hover: (e) => act.hint(l, true, e),
                 leave: () => act.hint(l, false),
             });
             const asking = [...new Set(found.flatMap(({ l }) => (l.kind === "path" && !fresh(l.path) ? [l.path] : [])))];

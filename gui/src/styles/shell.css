@@ -31,7 +31,7 @@
 @property --rail-w {
     syntax: "<length>";
     inherits: false;
-    initial-value: 260px;
+    initial-value: 280px;
 }
 
 @property --insp-w {
@@ -439,10 +439,8 @@
     gap: 2px;
 }
 
-[data-lead] .insp-t,
-[data-lead] .rv-h,
-[data-lead] .br-bar,
-[data-lead] .sim-bar {
+[data-lead] .inspector-head,
+[data-lead] .rv-bar {
     padding-left: calc(92px - var(--win-pad, 8px) + 76px);
 }
 
@@ -467,6 +465,7 @@
     bottom: 0;
     width: 1px;
     background: var(--accent);
+    box-shadow: 0 0 0 0.5px var(--accent);
     opacity: 0;
     transition: opacity 150ms;
 }

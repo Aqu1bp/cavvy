@@ -246,10 +246,9 @@ function Floating(p: { title: string; host?: string; live: boolean; targetId: st
         >
             <div class="br-float-card" role="region" aria-label="The agent's browser">
                 <div class="br-float-head">
-                    <span class={`br-live ${p.live ? "on" : ""}`} title={p.live ? "The agent is using this page" : undefined} />
-                    <span class="br-float-title truncate" title={p.title}>{p.title}</span>
-                    <Show when={p.host}>{(host) => <span class="br-float-host truncate">{host()}</span>}</Show>
-                    <span class="grow" />
+                    <span class={`br-live ${p.live ? "on" : ""}`} role="img" aria-label={p.live ? "The agent is using this page" : undefined} title={p.live ? "The agent is using this page" : undefined} />
+                    <span class="br-float-title" title={p.title}>{p.title}</span>
+                    <Show when={p.host}>{(host) => <span class="br-float-host">{host()}</span>}</Show>
                     <button class="icon-btn icon-btn-sm" aria-label="Open in the side panel" title="Open in the side panel" onClick={showBrowser}>
                         <PanelRight size={14} />
                     </button>

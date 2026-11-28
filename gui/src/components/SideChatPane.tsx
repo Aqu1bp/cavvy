@@ -98,7 +98,9 @@ export default function SideChatPane(p: { handle: SessionHandle; views: ChatView
                     fallback={
                         <>
                             <Head />
-                            <div class="none sc-none">Its side chat is on {awayMachine(p.handle.id) || "this computer"}.</div>
+                            <div class="blank">
+                                <p class="blank-title">Its side chat is on {awayMachine(p.handle.id) || "this computer"}.</p>
+                            </div>
                         </>
                     }
                 >
@@ -108,8 +110,10 @@ export default function SideChatPane(p: { handle: SessionHandle; views: ChatView
                         fallback={
                             <>
                                 <Head />
-                                <div class="none sc-none">Ask about this session without adding to it.</div>
-                                <div class="sc-body">
+                                <div class="blank sc-none">
+                                    <p class="blank-title">Ask about this session without adding to it.</p>
+                                </div>
+                                <div class="sc-body sc-empty">
                                     <div class="stage">
                                         <Dock>
                                             <Composer aside={{ of: p.handle.id, open }} placeholder="Ask a question" />
@@ -130,11 +134,11 @@ export default function SideChatPane(p: { handle: SessionHandle; views: ChatView
 /** The pane's title line, as the panel's other views have, and what it can do. */
 function Head(p: { children?: JSX.Element }) {
     return (
-        <div class="insp-t sc-head">
-            <h2>Side chat</h2>
+        <header class="inspector-head sc-head">
+            <h2 class="inspector-title">Side chat</h2>
             <span class="grow" />
             {p.children}
-        </div>
+        </header>
     );
 }
 
@@ -193,12 +197,12 @@ function Chat(p: { parent: SessionHandle; id: string; views: ChatViews }) {
     return (
         <>
             <Head>
-                <button class="btn btn-sm sc-back" title="Attach the last answer, or what's selected, to your message" aria-label="Bring back" disabled={!answer()} onMouseDown={(e) => e.preventDefault()} onClick={bringBack}>
+                <button type="button" class="btn btn-sm sc-back" title="Attach the last answer, or what's selected, to your message" aria-label="Bring back" disabled={!answer()} onMouseDown={(e) => e.preventDefault()} onClick={bringBack}>
                     <CornerDownLeft size={13} />
                     <span class="sc-back-l">Bring back</span>
                 </button>
-                <button class="hb" title="Close side chat" aria-label="Close side chat" onClick={close}>
-                    <X size={15} />
+                <button type="button" class="icon-btn icon-btn-sm" title="Close side chat" aria-label="Close side chat" onClick={close}>
+                    <X size={14} />
                 </button>
             </Head>
             <div class="sc-body">

@@ -11,12 +11,12 @@
 // near the view have their diff drawn (lib/review-stack.ts), so a 300-file view opens like one file.
 
 import { batch, createEffect, createMemo, createResource, createSignal, For, lazy, on, onCleanup, onMount, Show, untrack } from "solid-js";
-import { Check, ChevronDown, ChevronLeft, ChevronRight, Columns2, Copy, FileText, FolderGit2, FolderOpen, GitCommitHorizontal, GitPullRequestArrow, MessageSquare, RefreshCw, Space, SquareArrowOutUpRight, X } from "lucide-solid";
+import { ArrowLeft, Check, ChevronDown, ChevronRight, CircleAlert, Columns2, Copy, FileText, FolderOpen, GitBranch, MessageSquare, RefreshCw, Rows2, Space, SquareArrowOutUpRight, X } from "lucide-solid";
 import type { FileDiff, GitFileDiff, GitScope, SessionWorktreeInfo } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
 import { app, reportError, revealsIn, rpc, toast } from "../state/app";
 import { prefs, setPrefs } from "../state/prefs";
-import { review, reviewSplit, setCommitRequest, setReview, setReviewDrag, setReviewSplit, shellLayout } from "../state/ui";
+import { panelFull, review, reviewSplit, setCommitRequest, setReview, setReviewDrag, setReviewSplit, shellLayout } from "../state/ui";
 import { frameDrag } from "../lib/drag";
 import { viewFile } from "../lib/file-view";
 import { changedOutside, commitUnavailable, fetchGitChanges, lastView, refreshGitChanges, sessionReadReady, useGitChanges, type ReviewScope } from "../state/changes";
@@ -24,7 +24,7 @@ import { editorName, openInEditor } from "../state/actions";
 import { copyText, revealPath } from "../lib/platform";
 import { plural, since } from "../lib/format";
 import { incompleteLine } from "../lib/turn-places";
-import { CHANGE_WORD, dirOf, nameOf, REVIEW_DEFAULT, REVIEW_STEP, reviewDragWidth, reviewWidthRange } from "../lib/inspector";
+import { dirOf, nameOf, REVIEW_DEFAULT, REVIEW_STEP, reviewDragWidth, reviewWidthRange } from "../lib/inspector";
 import { Counts, DiffView, type DiffComments } from "./blocks/DiffView";
 import { expand, gaps, shapeOf } from "../lib/diff-expand";
 import { buildComment } from "../lib/review-comments";
@@ -37,6 +37,7 @@ import { facts, rankedWorktrees, ReviewWorktreePicker, usable, workNamed, worktr
 import { followAgent, keepWorktree, ownOnScreen, pickScope, pickWorktree, requestWorktree, worktreeWork, type ReviewPlace, type WorktreeWork } from "../lib/worktree-work";
 import { Spinner } from "./ui/bits";
 import { Menu } from "./ui/Menu";
+import "../styles/review.css";
 
 /** Go to file and Search in project come with the reader (App.tsx loads this chunk at idle). */
 export { openFinder } from "./FileFinder";
@@ -61,20 +62,45 @@ function fileTag(f: Row): string | undefined {
     return changeOf(f) === "renamed" && f.from ? `Renamed from ${f.from}` : undefined;
 }
 
+/** A view's second line when Cavvy has nothing more particular to say (its base, the commit, why it can't be picked). */
+const BLURB: Record<ViewItem["scope"], string> = {
+    uncommitted: "The working tree against the last commit",
+    branch: "Everything since the branch left its base",
+    commit: "One commit's changes",
+    "last-turn": "What the latest prompt changed",
+    cavvy: "Only what Cavvy's edit tools changed",
+};
+
+/** Git's letter, the tile's tone, and the word: M, A, D as the design has them; R and T on the modified tone. */
+const KIND: Record<GitFileDiff["change"], [string, string, string]> = {
+    modified: ["M", "modified", "Modified"],
+    added: ["A", "added", "Added"],
+    untracked: ["A", "added", "New"],
+    deleted: ["D", "deleted", "Deleted"],
+    renamed: ["R", "modified", "Renamed"],
+    typechange: ["T", "modified", "Type changed"],
+};
+const kindOf = (f: Row) => KIND[changeOf(f)] ?? KIND.modified;
+
 /** Side by side, or unified, at the panel's width. */
 function SplitToggle() {
     return (
-        <button class="hb" aria-pressed={reviewSplit()} aria-label="Side by side" title={reviewSplit() ? "Unified" : "Side by side"} onClick={() => setReviewSplit(!reviewSplit())}>
-            <Columns2 size={15} />
-        </button>
+        <div class="segmented segmented-sm rv-layout" role="radiogroup" aria-label="Diff layout">
+            <button class="segmented-item" role="radio" aria-checked={!reviewSplit()} aria-label="Unified" title="Unified" onClick={() => setReviewSplit(false)}>
+                <Rows2 size={13} />
+            </button>
+            <button class="segmented-item" role="radio" aria-checked={reviewSplit()} aria-label="Side by side" title="Side by side" onClick={() => setReviewSplit(true)}>
+                <Columns2 size={13} />
+            </button>
+        </div>
     );
 }
 
 /** Lines that differ only in whitespace shown as unchanged, or not: remembered as a preference. */
 function WhitespaceToggle() {
     return (
-        <button class="hb" aria-pressed={prefs.reviewIgnoreWhitespace} aria-label="Ignore whitespace" title={prefs.reviewIgnoreWhitespace ? "Ignoring whitespace. Show whitespace changes" : "Ignore whitespace"} onClick={() => setPrefs("reviewIgnoreWhitespace", !prefs.reviewIgnoreWhitespace)}>
-            <Space size={15} />
+        <button class="icon-btn" classList={{ active: prefs.reviewIgnoreWhitespace }} aria-pressed={prefs.reviewIgnoreWhitespace} aria-label="Ignore whitespace" title={prefs.reviewIgnoreWhitespace ? "Ignoring whitespace. Show whitespace changes" : "Ignore whitespace"} onClick={() => setPrefs("reviewIgnoreWhitespace", !prefs.reviewIgnoreWhitespace)}>
+            <Space size={14} />
         </button>
     );
 }
@@ -188,11 +214,11 @@ function ViewMenu(p: {
         setOpen(false);
         run();
     };
-    const Radio = (r: { on: boolean; disabled?: string; title?: string; onPick: () => void; children: any }) => (
-        <button class="menu-item rv-vm-item" role="menuitemradio" aria-checked={r.on} aria-disabled={r.disabled ? "true" : undefined} title={r.disabled ?? r.title} onClick={() => !r.disabled && pick(r.onPick)}>
-            <span class="rv-vm-check">
+    const Radio = (r: { on: boolean; disabled?: string; title?: string; two?: boolean; onPick: () => void; children: any }) => (
+        <button class={r.two ? "menu-item menu-item-two" : "menu-item"} role="menuitemradio" aria-checked={r.on} aria-disabled={r.disabled ? "true" : undefined} title={r.disabled ?? r.title} onClick={() => !r.disabled && pick(r.onPick)}>
+            <span class="menu-check">
                 <Show when={r.on}>
-                    <Check size={14} stroke-width={2.2} />
+                    <Check size={14} />
                 </Show>
             </span>
             {r.children}
@@ -200,87 +226,81 @@ function ViewMenu(p: {
     );
     return (
         <>
-            <button ref={anchor} class="tb rv-view" aria-haspopup="menu" aria-expanded={open()} title="Which changes" onClick={() => setOpen(!open())}>
-                <Show when={p.away}>
+            <button ref={anchor} class="select rv-view" aria-haspopup="menu" aria-expanded={open()} aria-label="Which changes" title={p.away ? `${p.label} in ${p.away}` : "Which changes"} onClick={() => setOpen(!open())}>
+                <Show when={p.away} fallback={<span class="select-value">{p.label}</span>}>
                     {(b) => (
-                        <span class="wt" title={`Reading ${b()}`}>
-                            <FolderGit2 size={12} />
-                            <span>{b()}</span>
-                        </span>
+                        <>
+                            <GitBranch size={13} class="rv-view-icon" />
+                            <span class="select-value mono">{b()}</span>
+                        </>
                     )}
                 </Show>
-                <span class="lbl">{p.label}</span>
-                <ChevronDown size={12} class="chev" />
+                <ChevronDown size={13} class="select-caret" />
             </button>
-            <Menu label="Which changes" open={open()} anchor={() => anchor} onClose={() => setOpen(false)} placement="bottom" align="start" width={340} maxHeight={620}>
-                <div class="rv-vm">
-                    <div class="menu-label">Changes</div>
-                    <For each={p.menu.views}>
-                        {(v) => (
-                            <Radio on={v.on} disabled={v.disabled} onPick={() => p.onView(v.scope)}>
-                                <span class="menu-item-text">
-                                    <span class="menu-item-name">{v.label}</span>
-                                    <Show when={v.desc}>{(d) => <span class="menu-item-sub">{d()}</span>}</Show>
+            <Menu label="Which changes" class="menu-wide rv-view-menu" open={open()} anchor={() => anchor} onClose={() => setOpen(false)} placement="bottom" align="start" width={336} maxHeight={680}>
+                <div class="menu-label">Which changes</div>
+                <For each={p.menu.views}>
+                    {(v) => (
+                        <Radio on={v.on} disabled={v.disabled} two onPick={() => p.onView(v.scope)}>
+                            <span class="menu-item-text">
+                                <span class="menu-item-name">{v.label}</span>
+                                <span class="menu-item-sub">{v.disabled ?? v.desc ?? BLURB[v.scope]}</span>
+                            </span>
+                        </Radio>
+                    )}
+                </For>
+                <Show when={p.menu.turns.length}>
+                    <div class="menu-sep" />
+                    <div class="menu-label">Recorded turns</div>
+                    <For each={p.menu.turns}>
+                        {(t) => (
+                            <Radio on={t.on} disabled={t.disabled} title={`${t.prompt}\n${new Date(t.startedAt).toLocaleString()}`} onPick={() => p.onTurn(t.id)}>
+                                <span class="menu-item-name">
+                                    {t.label} · {t.prompt}
                                 </span>
+                                <span class="menu-item-note">{t.disabled ? "Unavailable" : since(t.startedAt) === "now" ? "Just now" : `${since(t.startedAt)} ago`}</span>
                             </Radio>
                         )}
                     </For>
-                    <Show when={p.menu.turns.length}>
-                        <div class="menu-sep" />
-                        <div class="menu-label">Recorded turns</div>
-                        <For each={p.menu.turns}>
-                            {(t) => (
-                                <Radio on={t.on} disabled={t.disabled} title={`${t.prompt}\n${new Date(t.startedAt).toLocaleString()}`} onPick={() => p.onTurn(t.id)}>
-                                    <span class="menu-item-text">
-                                        <span class="menu-item-name truncate">
-                                            {t.label} · {t.prompt}
-                                        </span>
-                                        <span class="menu-item-sub">{t.disabled ?? (since(t.startedAt) === "now" ? "Just now" : `${since(t.startedAt)} ago`)}</span>
-                                    </span>
-                                </Radio>
-                            )}
-                        </For>
-                    </Show>
-                    <Show when={p.worktreesShown}>
-                        <div class="menu-sep" />
-                        <div class="menu-label">Worktree</div>
-                        <Show when={!p.error} fallback={<div class="menu-note">{p.error}</div>}>
-                            <Show when={p.worktrees} fallback={<div class="menu-note">{p.loading ? "Loading worktrees…" : "No worktrees."}</div>}>
-                                <For each={shortList()}>
-                                    {(w) => {
-                                        const named = () => workNamed(work().get(w.path));
-                                        const who = () => {
-                                            const n = named();
-                                            if (!n.length) return facts(w);
-                                            return `${n[0]!.agent ? "Sub-agent" : "Session"}: ${n[0]!.text}${n.length > 1 ? ` · +${n.length - 1} more` : ""}`;
-                                        };
-                                        return (
-                                            <Radio on={isOn(w)} disabled={usable(w) ? undefined : facts(w)} title={`${w.path}${facts(w) ? `\n${facts(w)}` : ""}`} onPick={() => p.onWorktree(w.current ? undefined : w.path)}>
+                </Show>
+                <Show when={p.worktreesShown}>
+                    <div class="menu-sep" />
+                    <div class="menu-label">Worktree</div>
+                    <Show when={!p.error} fallback={<div class="menu-note">{p.error}</div>}>
+                        <Show when={p.worktrees} fallback={<div class="menu-note">{p.loading ? "Loading worktrees…" : "No worktrees."}</div>}>
+                            <For each={shortList()}>
+                                {(w) => {
+                                    const named = () => workNamed(work().get(w.path));
+                                    const name = () => (w.current ? "This session" : <span class="mono rv-menu-branch">{worktreeLabel(w)}</span>);
+                                    const who = () => {
+                                        const n = named();
+                                        if (!n.length) return facts(w);
+                                        return `${n[0]!.agent ? "Sub-agent" : "Session"}: ${n[0]!.text}${n.length > 1 ? ` · +${n.length - 1} more` : ""}`;
+                                    };
+                                    return (
+                                        <Radio on={isOn(w)} two={Boolean(who())} disabled={usable(w) ? undefined : facts(w)} title={`${w.path}${facts(w) ? `\n${facts(w)}` : ""}`} onPick={() => p.onWorktree(w.current ? undefined : w.path)}>
+                                            {/* The session's own: "This session", its branch beside it; another: its branch. */}
+                                            <Show when={who()} fallback={<span class="menu-item-name">{name()}</span>}>
                                                 <span class="menu-item-text">
-                                                    <span class="rv-wt-name">
-                                                        <span class="menu-item-name mono truncate">{worktreeLabel(w)}</span>
-                                                        <Show when={w.current}>
-                                                            <span class="rv-wt-self">This session</span>
-                                                        </Show>
-                                                    </span>
-                                                    <Show when={who()}>
-                                                        <span class="menu-item-sub truncate">{who()}</span>
-                                                    </Show>
+                                                    <span class="menu-item-name">{name()}</span>
+                                                    <span class="menu-item-sub">{who()}</span>
                                                 </span>
-                                            </Radio>
-                                        );
-                                    }}
-                                </For>
-                                <Show when={(p.worktrees?.length ?? 0) > shortList().length}>
-                                    <button class="menu-item rv-vm-item" role="menuitem" onClick={() => pick(() => setEvery(true))}>
-                                        <span class="rv-vm-check" />
-                                        <span class="menu-item-name">Every worktree… ({p.worktrees!.length})</span>
-                                    </button>
-                                </Show>
+                                            </Show>
+                                            <Show when={w.current}>
+                                                <span class="menu-item-note">{worktreeLabel(w)}</span>
+                                            </Show>
+                                        </Radio>
+                                    );
+                                }}
+                            </For>
+                            <Show when={(p.worktrees?.length ?? 0) > shortList().length}>
+                                <button class="menu-item" role="menuitem" onClick={() => pick(() => setEvery(true))}>
+                                    <span class="menu-item-name">Every worktree… ({p.worktrees!.length})</span>
+                                </button>
                             </Show>
                         </Show>
                     </Show>
-                </div>
+                </Show>
             </Menu>
             <ReviewWorktreePicker open={every()} anchor={() => anchor} onClose={() => setEvery(false)} value={p.value} worktrees={p.worktrees} loading={p.loading} error={p.error} work={p.work} onOpen={p.onOpen} onPick={p.onWorktree} />
         </>
@@ -306,49 +326,48 @@ function FilesMenu(p: { label: string; files: Row[]; more?: string; comments: (f
     };
     return (
         <>
-            <button ref={anchor} class="tb files" aria-haspopup="menu" aria-expanded={open()} title="Jump to a file" onClick={() => setOpen(!open())}>
-                <span class="lbl">{p.label}</span>
-                <ChevronDown size={12} class="chev" />
+            <button ref={anchor} class="select rv-files" aria-haspopup="menu" aria-expanded={open()} aria-label="Jump to a file" title="Jump to a file" onClick={() => setOpen(!open())}>
+                <span class="select-value">{p.label}</span>
+                <ChevronDown size={13} class="select-caret" />
             </button>
-            <Menu label="Files" open={open()} anchor={() => anchor} onClose={() => setOpen(false)} placement="bottom" align="end" width={320} maxHeight={560}>
-                <div class="rv-fl">
-                    <Show when={open()}>
-                        <For each={p.files}>
-                            {(f) => (
-                                <button class="menu-item rv-fl-item" role="menuitem" title={f.from ? `${f.from} → ${f.path}` : f.path} onClick={() => pick(() => p.onJump(f))}>
-                                    <span class="nm">
-                                        <b>{nameOf(f.path)}</b>
-                                        <span>{dirOf(f.path) || "./"}</span>
-                                    </span>
-                                    <Show when={CHANGE_WORD[changeOf(f)]}>{(w) => <span class={`fs-w ${changeOf(f)}`}>{w()}</span>}</Show>
-                                    <span class="aside">
-                                        <Show when={p.comments(f)}>
-                                            {(n) => (
-                                                <span class="cm" aria-label={plural(n(), "comment")}>
-                                                    <MessageSquare size={11} aria-hidden="true" />
-                                                    {n()}
-                                                </span>
-                                            )}
-                                        </Show>
-                                        <Stat added={f.added} removed={f.removed} />
-                                    </span>
-                                </button>
-                            )}
-                        </For>
-                    </Show>
-                    <Show when={p.more}>
-                        <div class="menu-note">{p.more}</div>
-                    </Show>
-                    <div class="menu-sep" />
-                    <div class="rv-fl-foot">
-                        <button class="btn btn-ghost btn-sm" role="menuitem" onClick={() => pick(() => p.onFoldAll(false))}>
-                            Show every file
-                        </button>
-                        <button class="btn btn-ghost btn-sm" role="menuitem" onClick={() => pick(() => p.onFoldAll(true))}>
-                            Fold every file
-                        </button>
-                    </div>
-                </div>
+            <Menu label="Files" class="menu-scroll rv-files-menu" open={open()} anchor={() => anchor} onClose={() => setOpen(false)} placement="bottom" align="start" width={400} maxHeight={560}>
+                <Show when={open()}>
+                    <For each={p.files}>
+                        {(f) => (
+                            <button class="menu-item" role="menuitem" title={f.from ? `${f.from} → ${f.path}` : f.path} onClick={() => pick(() => p.onJump(f))}>
+                                <span class="cfile-kind" data-kind={kindOf(f)[1]} aria-hidden="true">
+                                    {kindOf(f)[0]}
+                                </span>
+                                <span class="path menu-item-name">
+                                    <Show when={dirOf(f.path)}>
+                                        <span class="path-dir">{dirOf(f.path)}</span>
+                                    </Show>
+                                    <span class="path-base">{nameOf(f.path)}</span>
+                                </span>
+                                <span class="menu-item-note">{kindOf(f)[2]}</span>
+                                <Show when={p.comments(f)}>
+                                    {(n) => (
+                                        <span class="rv-file-comments" aria-label={plural(n(), "comment")}>
+                                            <MessageSquare size={12} aria-hidden="true" />
+                                            {n()}
+                                        </span>
+                                    )}
+                                </Show>
+                                <Stat added={f.added} removed={f.removed} />
+                            </button>
+                        )}
+                    </For>
+                </Show>
+                <Show when={p.more}>
+                    <div class="menu-note">{p.more}</div>
+                </Show>
+                <div class="menu-sep" />
+                <button class="menu-item" role="menuitem" onClick={() => pick(() => p.onFoldAll(false))}>
+                    <span class="menu-item-name">Show every file</span>
+                </button>
+                <button class="menu-item" role="menuitem" onClick={() => pick(() => p.onFoldAll(true))}>
+                    <span class="menu-item-name">Fold every file</span>
+                </button>
             </Menu>
         </>
     );
@@ -598,64 +617,70 @@ function FileCard(p: {
     };
     const one = createMemo(() => oneSided(shown()));
     const rows = () => stackRows(drawnDiff());
-    const ch = () => changeOf(p.file);
     const tag = () => fileTag(p.file);
+    const kind = () => kindOf(p.file);
     const toggle = (e: MouseEvent) => {
-        if ((e.target as Element).closest(".rf-act")) return;
+        if ((e.target as Element).closest(".rv-file-actions")) return;
         // Text picked in the header (its name, say) isn't a click on it.
         if (!document.getSelection()?.isCollapsed && selectionIn(e.currentTarget as Element)) return;
         p.onToggle(e.altKey);
     };
     return (
-        <section ref={el} class="rf" classList={{ closed: p.closed, instant: !foldsSmoothly(rows()) }} style={{ "--rows": rows(), "--held": held() ? `${held()}px` : undefined }} aria-label={p.file.path}>
-            <div class="rf-h" onClick={toggle}>
+        <section ref={el} class="cfile rv-file" classList={{ closed: p.closed, instant: !foldsSmoothly(rows()) }} style={{ "--rows": rows(), "--held": held() ? `${held()}px` : undefined }} aria-label={p.file.path}>
+            <div class="cfile-head" onClick={toggle}>
                 <button
-                    class="tog"
+                    class="cfile-toggle"
                     aria-expanded={!p.closed}
                     aria-label={`${p.closed ? "Show" : "Fold"} ${p.file.path}`}
-                    title={`${p.closed ? "Show" : "Fold"} (⌥-click: every file)`}
+                    title={`${p.file.from ? `${p.file.from} → ${p.file.path}` : p.file.path}\n${p.closed ? "Show" : "Fold"} (⌥-click: every file)`}
                     onClick={(e) => {
                         e.stopPropagation();
                         p.onToggle(e.altKey);
                     }}
                 >
-                    <ChevronRight size={14} />
-                </button>
-                <span class="path" title={p.file.from ? `${p.file.from} → ${p.file.path}` : p.file.path}>
-                    <b class="selectable">{nameOf(p.file.path)}</b>
-                    <Show when={dirOf(p.file.path) || tag()}>
-                        <span class="selectable">{[dirOf(p.file.path), tag()].filter(Boolean).join(" · ")}</span>
+                    <ChevronRight size={13} class="chev" data-open={!p.closed || undefined} />
+                    <span class="cfile-kind" data-kind={kind()[1]} aria-label={kind()[2]}>
+                        {kind()[0]}
+                    </span>
+                    <span class="path">
+                        <Show when={dirOf(p.file.path)}>
+                            <span class="path-dir">{dirOf(p.file.path)}</span>
+                        </Show>
+                        <span class="path-base">{nameOf(p.file.path)}</span>
+                    </span>
+                    <Show when={tag()}>
+                        <span class="rv-file-note">{tag()}</span>
                     </Show>
-                </span>
-                {/* "Renamed from …" says it already. */}
-                <Show when={ch() !== "renamed" || !tag() ? CHANGE_WORD[ch()] : undefined}>{(w) => <span class={`fs-w ${ch()}`}>{w()}</span>}</Show>
+                </button>
                 <Show when={p.count}>
                     {(n) => (
-                        <span class="cm" title={plural(n(), "comment")} aria-label={plural(n(), "comment")}>
+                        <span class="rv-file-comments" title={plural(n(), "comment")} aria-label={plural(n(), "comment")}>
                             <MessageSquare size={12} aria-hidden="true" />
                             {n()}
                         </span>
                     )}
                 </Show>
                 <Stat added={shown().added} removed={shown().removed} />
-                <Show when={p.onView}>
-                    <button class="open rf-act" title="View file" aria-label={`View ${p.file.path}`} onClick={() => p.onView!()}>
-                        <FileText size={14} />
+                <span class="rv-file-actions">
+                    <Show when={p.onView}>
+                        <button class="icon-btn icon-btn-sm" title="View file" aria-label={`View ${p.file.path}`} onClick={() => p.onView!()}>
+                            <FileText size={13} />
+                        </button>
+                    </Show>
+                    <button class="icon-btn icon-btn-sm" title="Copy path (⌥-click: full path)" aria-label={`Copy the path of ${p.file.path}`} onClick={(e) => p.onCopy(e.altKey)}>
+                        <Copy size={13} />
                     </button>
-                </Show>
-                <button class="open rf-act" title="Copy path (⌥-click: full path)" aria-label={`Copy the path of ${p.file.path}`} onClick={(e) => p.onCopy(e.altKey)}>
-                    <Copy size={13} />
-                </button>
-                <Show when={p.onOpen}>
-                    <button class="open rf-act" title={`Open in ${editorName() ?? "your editor"}`} aria-label={`Open ${p.file.path} in editor`} onClick={() => p.onOpen!()}>
-                        <SquareArrowOutUpRight size={14} />
-                    </button>
-                </Show>
-                <Show when={p.onReveal}>
-                    <button class="open rf-act" title="Reveal in Finder" aria-label={`Reveal ${p.file.path} in Finder`} onClick={() => p.onReveal!()}>
-                        <FolderOpen size={14} />
-                    </button>
-                </Show>
+                    <Show when={p.onOpen}>
+                        <button class="icon-btn icon-btn-sm" title={`Open in ${editorName() ?? "your editor"}`} aria-label={`Open ${p.file.path} in editor`} onClick={() => p.onOpen!()}>
+                            <SquareArrowOutUpRight size={13} />
+                        </button>
+                    </Show>
+                    <Show when={p.onReveal}>
+                        <button class="icon-btn icon-btn-sm" title="Reveal in Finder" aria-label={`Reveal ${p.file.path} in Finder`} onClick={() => p.onReveal!()}>
+                            <FolderOpen size={13} />
+                        </button>
+                    </Show>
+                </span>
             </div>
             <div class="rf-b">
                 <div class="rf-in" ref={body}>
@@ -663,8 +688,8 @@ function FileCard(p: {
                         <Show
                             when={!shown().deferred}
                             fallback={
-                                <div class="rv-empty rf-wait selectable">
-                                    <Show when={!full.loading && full()?.error} fallback={<Spinner size={16} />}>
+                                <div class="rf-wait selectable">
+                                    <Show when={!full.loading && full()?.error} fallback={<Spinner size={14} />}>
                                         {full()!.error}{" "}
                                         <button class="link-btn" onClick={() => void refetch()}>
                                             Try again
@@ -1079,14 +1104,14 @@ function DiffReader(p: { handle: SessionHandle }) {
     );
 
     return (
-        <section class="review" aria-label="Review changes">
+        <section class="rv review" data-full={panelFull() || undefined} aria-label="Review changes">
             <Show when={shellLayout().inspector.mode === "dock"}>
                 <ReviewResizer />
             </Show>
-            <div class="rv-h">
-                <button class="hb rv-back" title={prefs.panel ? "Back to the side panel (Esc)" : "Close (Esc)"} aria-label="Close review" onClick={() => setReview(undefined)}>
+            <header class="rv-bar">
+                <button class="icon-btn rv-back" title={prefs.panel ? "Back to the side panel (Esc)" : "Close (Esc)"} aria-label="Close review" onClick={() => setReview(undefined)}>
                     <Show when={prefs.panel} fallback={<X size={16} />}>
-                        <ChevronLeft size={16} />
+                        <ArrowLeft size={16} />
                     </Show>
                 </button>
                 <ViewMenu
@@ -1110,77 +1135,82 @@ function DiffReader(p: { handle: SessionHandle }) {
                 <Show when={shownScope() === "branch"}>
                     <BasePicker value={git()?.base?.ref ?? baseLabel() ?? git()?.defaultBase} current={git()?.base ? (git()!.base!.refToken ?? git()!.base!.ref) : (base() ?? git()?.defaultBaseToken ?? git()?.defaultBase)} bases={bases()} tokens={git()?.bases.length ? git()!.baseTokens : fallback()?.baseTokens} onPick={setBase} />
                 </Show>
-                <span class="grow" />
                 <Show when={files().length}>
                     <FilesMenu label={count()} files={files()} more={moreLabel()} comments={countOf} onJump={(f) => jumpTo(cardKey(f), true)} onFoldAll={(fold) => {
                         const top = stack.top();
                         if (fold && top && top.offsetTop < scroller.scrollTop) scroller.scrollTop = top.offsetTop;
                         setFold([...keys(), ...(asked()?.file ? [ASKED] : [])], fold);
                     }} />
+                </Show>
+                <span class="grow" />
+                <Show when={files().length}>
                     <span class="stat rv-total" title={`${count()}, +${view()?.added ?? 0} −${view()?.removed ?? 0} in all`}>
                         <Counts added={view()?.added} removed={view()?.removed} />
                     </span>
-                    <span class="sep" />
                 </Show>
                 <Show when={shownScope() !== "cavvy"}>
                     <WhitespaceToggle />
                 </Show>
                 <SplitToggle />
-                <button class="hb" title="Refresh" aria-label="Refresh" disabled={loading()} onClick={refresh}>
-                    <Show when={loading()} fallback={<RefreshCw size={15} />}>
+                <button class="icon-btn" title="Refresh" aria-label="Refresh" disabled={loading()} onClick={refresh}>
+                    <Show when={loading()} fallback={<RefreshCw size={14} />}>
                         <Spinner size={14} />
                     </Show>
                 </button>
-            </div>
+            </header>
             <div ref={scroller} class="insp-body rv-body" aria-busy={loading()}>
-                <Show when={away()}>
-                    <div class="rv-slim away selectable" role="status">
-                        <FolderGit2 size={14} />
-                        <span class="grow">
-                            Viewing <b>{awayBranch()}</b>, read-only.
-                        </span>
-                        <button class="link-btn" onClick={() => chooseWorktree(undefined)}>
-                            Back to this session
-                        </button>
-                    </div>
-                </Show>
-                {/* Mounted with Push (its dialog is PublishStatus's); its row shows in Branch view. */}
-                <Show when={git()?.repo && own()}>
-                    <div class="rv-pr selectable" classList={{ hidden: shownScope() !== "branch" }}>
-                        <PublishStatus handle={p.handle} request={publishRequest()} onClose={() => setPublishRequest(undefined)} />
-                    </div>
-                </Show>
-                <Show when={noRepo() && !away() && git()?.reason}>
-                    <div class="rv-slim selectable">{git()!.reason} Cavvy edits shows what its own tools changed.</div>
-                </Show>
-                <Show when={gone()}>
-                    {(w) => (
-                        <div class="rv-slim warn selectable" role="status">
-                            {w()} is gone. Showing this folder.
-                        </div>
-                    )}
-                </Show>
-                {/* A problem with the turn's snapshot, in one line; what Git or the snapshot said, on hover. */}
-                <Show when={shownScope() !== "cavvy" && (git()?.incomplete || git()?.notes?.length) ? incompleteLine(git()?.notes) : undefined}>
-                    {(line) => (
-                        <div class="rv-slim warn selectable" role="status" title={line().detail}>
-                            {git()?.incomplete ? line().text : (git()?.notes?.[0] ?? line().text)}
-                        </div>
-                    )}
-                </Show>
-                <Show when={askedFor() && !asked()?.file}>
-                    <div class="rv-slim selectable">
-                        <Show when={!unlisted.loading && asked()?.error} fallback={<Spinner size={14} />}>
-                            <span class="grow">
-                                {picked()?.path}: {asked()!.error}
+                <div class="rv-notes">
+                    <Show when={away()}>
+                        <div class="note selectable" role="status">
+                            <GitBranch size={13} />
+                            <span class="note-body">
+                                Viewing <code>{awayBranch()}</code>, read-only.
                             </span>
-                            <button class="link-btn" onClick={() => void refetchUnlisted()}>
-                                Try again
+                            <button class="link-btn" onClick={() => chooseWorktree(undefined)}>
+                                Back to this session
                             </button>
-                        </Show>
-                    </div>
-                </Show>
-                <div ref={listEl} class="rf-list">
+                        </div>
+                    </Show>
+                    {/* Mounted with Push (its dialog is PublishStatus's); its note shows in Branch view. */}
+                    <Show when={git()?.repo && own()}>
+                        <PublishStatus handle={p.handle} shown={shownScope() === "branch"} request={publishRequest()} onClose={() => setPublishRequest(undefined)} />
+                    </Show>
+                    <Show when={noRepo() && !away() && git()?.reason}>
+                        <div class="note selectable">
+                            <span class="note-body">{git()!.reason} Cavvy edits shows what its own tools changed.</span>
+                        </div>
+                    </Show>
+                    <Show when={gone()}>
+                        {(w) => (
+                            <div class="note selectable" data-tone="amber" role="status">
+                                <span class="note-body">
+                                    <code>{w()}</code> is gone. Showing this folder.
+                                </span>
+                            </div>
+                        )}
+                    </Show>
+                    {/* A problem with the turn's snapshot, in one line; what Git or the snapshot said, on hover. */}
+                    <Show when={shownScope() !== "cavvy" && (git()?.incomplete || git()?.notes?.length) ? incompleteLine(git()?.notes) : undefined}>
+                        {(line) => (
+                            <div class="note selectable" data-tone="amber" role="status" title={line().detail}>
+                                <span class="note-body">{git()?.incomplete ? line().text : (git()?.notes?.[0] ?? line().text)}</span>
+                            </div>
+                        )}
+                    </Show>
+                    <Show when={askedFor() && !asked()?.file}>
+                        <div class="note selectable">
+                            <Show when={!unlisted.loading && asked()?.error} fallback={<Spinner size={13} />}>
+                                <span class="note-body">
+                                    {picked()?.path}: {asked()!.error}
+                                </span>
+                                <button class="link-btn" onClick={() => void refetchUnlisted()}>
+                                    Try again
+                                </button>
+                            </Show>
+                        </div>
+                    </Show>
+                </div>
+                <div ref={listEl} class="rv-list">
                     {/* By the pick, not the file's object: fetched again, the same file updates in place. */}
                     <Show when={asked()?.file && JSON.stringify([own() ? null : shownRoot(), pickKey(picked()!)])} keyed>
                         {(k) => {
@@ -1202,30 +1232,31 @@ function DiffReader(p: { handle: SessionHandle }) {
                     <div class="rv-more">{moreLabel()}</div>
                 </Show>
                 <Show when={!files().length && !asked()?.file}>
-                    <div class="rv-empty selectable">
-                        <Show when={!error()} fallback={<ErrorNote error={error()!} base={base()} onReset={() => setBase(undefined)} />}>
-                            <Show when={view()} fallback={<Spinner size={16} />}>
-                                {empty()}
+                    <Show when={!error()} fallback={<ErrorNote error={error()!} base={base()} onReset={() => setBase(undefined)} />}>
+                        <div class="blank selectable">
+                            <Show when={view()} fallback={<Spinner class="blank-spinner" />}>
+                                <p class="blank-title">{empty()}</p>
                             </Show>
-                        </Show>
-                    </div>
+                        </div>
+                    </Show>
                 </Show>
             </div>
             <Show when={!noRepo() && own()}>
-                <div class="insp-foot">
+                <footer class="rv-foot">
+                    <span class="grow" />
                     <Show when={shownScope() === "uncommitted"}>
-                        <span class="grow" title={commitDisabled()}>
-                            <button class="btn btn-ghost" disabled={Boolean(commitDisabled())} onClick={() => setCommitRequest({ id: id(), paths: commitPaths() })}>
-                                <GitCommitHorizontal size={14} /> Commit…
+                        <span title={commitDisabled()}>
+                            <button class="btn" disabled={Boolean(commitDisabled())} onClick={() => setCommitRequest({ id: id(), paths: commitPaths() })}>
+                                Commit…
                             </button>
                         </span>
                     </Show>
-                    <span class="grow" title={commitUnavailable(p.handle)?.replace(/committing/g, "pushing")}>
+                    <span title={commitUnavailable(p.handle)?.replace(/committing/g, "pushing")}>
                         <button class="btn btn-primary" disabled={Boolean(commitUnavailable(p.handle))} onClick={() => setPublishRequest(id())}>
-                            <GitPullRequestArrow size={14} /> Push…
+                            Push…
                         </button>
                     </span>
-                </div>
+                </footer>
             </Show>
         </section>
     );
@@ -1233,14 +1264,15 @@ function DiffReader(p: { handle: SessionHandle }) {
 
 function ErrorNote(p: { error: string; base?: string; onReset: () => void }) {
     return (
-        <>
-            {p.error}
+        <div class="rv-error selectable" role="alert">
+            <CircleAlert size={18} />
+            <p class="rv-error-title">Couldn't read the changes</p>
+            <p class="rv-error-detail">{p.error}</p>
             <Show when={p.base}>
-                {" "}
-                <button class="link-btn" onClick={() => p.onReset()}>
+                <button class="btn btn-sm" onClick={() => p.onReset()}>
                     Compare with the main branch
                 </button>
             </Show>
-        </>
+        </div>
     );
 }

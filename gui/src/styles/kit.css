@@ -1030,7 +1030,7 @@ button.select[aria-expanded="true"] {
     color: var(--diff-del-text);
 }
 
-.path:not(.rf-h *) {
+.path {
     display: inline-flex;
     min-width: 0;
     font-family: var(--font-mono);
@@ -1413,6 +1413,7 @@ button.row:hover {
 }
 
 .blank-title {
+    margin: 0;
     color: var(--text-2);
     font-size: calc(13 * var(--sp));
 }

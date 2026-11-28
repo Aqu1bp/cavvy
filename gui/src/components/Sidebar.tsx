@@ -493,7 +493,7 @@ export function SidebarFrame(p: { children: any; class?: string; tools?: JSX.Ele
         <aside class={`sidebar ${isDesktop && os === "macos" ? "traffic" : ""} ${p.class ?? ""}`} aria-label="Sessions">
             <SidebarTop tools={p.tools} />
             {p.children}
-            <div class="resize-handle" onPointerDown={onResize} onDblClick={() => setPrefs("sidebarWidth", 260)} />
+            <div class="resize-handle" onPointerDown={onResize} onDblClick={() => setPrefs("sidebarWidth", 280)} />
         </aside>
     );
 }

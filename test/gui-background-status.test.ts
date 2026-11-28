@@ -109,7 +109,8 @@ test("a stop's toast says what stopped and what couldn't be", () => {
 
 test("the side panel lists background work in its Agents and Commands tabs, and the composer has no count of it", () => {
     const panel = readFileSync(new URL("../gui/src/components/RightPanel.tsx", import.meta.url), "utf8");
-    expect(panel).toContain('<WorkList handle={p.handle} tab="agents" rows={p.rows} />');
+    expect(panel).toContain('import("./BackgroundTasks")');
+    expect(readFileSync(new URL("../gui/src/components/BackgroundTasks.tsx", import.meta.url), "utf8")).toContain('<WorkList handle={p.handle} tab="agents" rows={p.rows} />');
     // The Commands tab, loaded when it's first shown.
     expect(panel).toContain('import("./CommandsPane")');
     expect(readFileSync(new URL("../gui/src/components/CommandsPane.tsx", import.meta.url), "utf8")).toContain('<WorkList handle={p.handle} tab="commands" rows={p.rows} />');
@@ -135,13 +136,14 @@ function renderList(tasks: BackgroundTaskInfo[], agents: AgentRun[] = [], tab: W
     const state = { backgroundTasks: tasks, shells: [] as never[], model: { provider: "claude-code" } };
     const List = componentCode("WorkList", {
         createSignal: (initial: unknown) => [() => initial, (v: unknown) => void sets.push(v)],
+        cleared: () => ({}), setCleared: () => {},
         createMemo: (f: () => unknown) => f,
         createEffect: (f: () => unknown) => void f(),
         loadAgentList: async () => {},
         For: (p: { each: unknown[]; children: (x: unknown) => unknown }) => p.each.map((x) => p.children(x)),
         Show: (p: { when: unknown; children: unknown; fallback?: unknown }) => (p.when ? (typeof p.children === "function" ? p.children(() => p.when) : p.children) : p.fallback),
         ConfirmDialog: (p: Record<string, any>) => ({ tag: "ConfirmDialog", props: p, children: [p.children] }),
-        Bot: "Bot", ChevronRight: "ChevronRight", Radar: "Radar", Terminal: "Terminal", Workflow: "Workflow",
+        Bot: "Bot", ChevronRight: "ChevronRight", Radar: "Radar", SquareTerminal: "SquareTerminal", Square: "Square", Workflow: "Workflow",
         AgentMark: (p: { provider?: string }) => ({ tag: "AgentMark", props: p, children: [] }),
         agentStep,
         app: { providers: [{ id: "claude-code", name: "Claude Code" }] },
@@ -193,32 +195,32 @@ test("the Agents tab: a row per agent with its runner and time, Stop on each tha
 });
 
 test("a sub-agent resumed with SendMessage is its run's row, which opens it; a task with no run to open doesn't look like it opens (#458)", () => {
-    const row = (r: ReturnType<typeof renderList>) => elements(r.tree, "div").filter((d) => String(d.props.class).startsWith("task "));
-    const hits = (r: ReturnType<typeof renderList>) => r.buttons.filter((b) => b.props.class === "task-hit");
+    const row = (r: ReturnType<typeof renderList>) => elements(r.tree, "div").filter((d) => d.props.class === "bg-row");
+    const hits = (r: ReturnType<typeof renderList>) => r.buttons.filter((b) => b.props.class === "bg-main");
     // As the server has it once Claude Code resumes the agent: the task it ran with, running again, named by its Agent call.
     const run: AgentRun = { id: "toolu_agent", turnId: "x", description: "Map auth", agentType: "general-purpose", status: "running", startedAt: 1000, toolCount: 2, tokens: 0, blocks: [], turnAfter: "b3" };
     const resumed = renderList([task({ id: "agent-1", toolUseId: "toolu_agent", startedAt: 8000 })], [run]);
     expect(resumed.text).toContain("Running1");
-    expect(row(resumed).map((d) => String(d.props.class).split(" ").includes("click"))).toEqual([true]);
+    expect(row(resumed)).toHaveLength(1);
     expect(hits(resumed).map((b) => b.props["aria-label"])).toEqual(["Open Map auth"]);
     hits(resumed)[0]!.props.onClick();
     expect(resumed.opened).toEqual(["toolu_agent"]);
-    // A task no run is known for (as a resume showed before #458): it can stop, but nothing opens, and it isn't styled as if it did.
+    // A task no run is known for (as a resume showed before #458): it can stop, but nothing opens, and it isn't a button.
     const loose = renderList([task({ id: "agent-1", toolUseId: "toolu_send" })], [{ ...run, status: "done", endedAt: 2000 }]);
-    const looseRow = row(loose).find((d) => !String(d.props.class).split(" ").includes("gone"))!;
-    expect(String(looseRow.props.class).split(" ")).not.toContain("click");
-    expect(hits(loose).filter((b) => b.props["aria-label"] === "Open Map auth")).toHaveLength(1);
+    const statics = elements(loose.tree, "span").filter((s) => s.props.class === "bg-main bg-static");
+    expect(statics).toHaveLength(1);
+    expect(hits(loose).map((b) => b.props["aria-label"])).toEqual(["Open Map auth"]);
     expect(stopsOf(loose).map((b) => b.props["aria-label"])).toEqual(["Stop sub-agent: Map auth"]);
     const css = readFileSync(new URL("../gui/src/styles/panel.css", import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
     const hovered = [...css.matchAll(/([^{}]+)\{([^}]*)\}/g)].filter(([, sel, body]) => /background:/.test(body!) && /:hover/.test(sel!)).flatMap(([, sel]) => sel!.split(",").map((x) => x.trim()));
-    expect(hovered.filter((s) => s.startsWith(".task.") && s.endsWith(":hover"))).toEqual([".task.click:hover"]);
+    expect(hovered.filter((s) => s.includes("bg-main") && s.endsWith(":hover"))).toEqual(["button.bg-main:hover"]);
 });
 
 test("no row has a tooltip that says what it shows", () => {
     const r = renderList([task({ id: "bash_1", provider: "cavvy", kind: "shell", label: "npm run dev" })], [], "commands");
     expect(r.text).toContain("Shell · Cavvy");
     const titled = (t: any): string[] => (Array.isArray(t) ? t.flatMap(titled) : t && typeof t === "object" ? [...(t.props?.title ? [String(t.props.title)] : []), ...titled(t.children)] : []);
-    expect(titled(elements(r.tree, "div").filter((d) => String(d.props.class).startsWith("task ")))).toEqual(["Stop"]);
+    expect(titled(elements(r.tree, "div").filter((d) => d.props.class === "bg-row"))).toEqual(["Stop"]);
 });
 
 test("with one task there's no Stop all, and one lost when Cavvy quit says so and has no Stop", () => {
@@ -236,17 +238,17 @@ test("finished ones stay under the running ones, in a fold closed while somethin
     expect(folded.text).toContain("Finished1");
     expect(folded.text).toContain("1 failed");
     // In the DOM, folded: the fold opens in place rather than being drawn when opened.
-    const fold = (r: ReturnType<typeof renderList>) => elements(r.tree, "div").find((d) => String(d.props.class).startsWith("fold-b"))!;
-    expect(fold(folded).props.class).toBe("fold-b ");
+    const fold = (r: ReturnType<typeof renderList>) => elements(r.tree, "div").filter((d) => d.props.class === "bg-rows").at(-1)!;
+    expect(fold(folded).props.hidden).toBe(true);
     expect(fold(folded).props.inert).toBe(true);
     expect(folded.text).toContain("Lint");
-    const divi = folded.buttons.find((b) => b.props.class === "divi")!;
+    const divi = folded.buttons.find((b) => b.props.class === "bg-fold")!;
     expect(divi.props["aria-expanded"]).toBe(false);
     divi.props.onClick();
     expect(folded.sets).toContain(true);
     // With nothing running it's open, each with its outcome and no Stop; Clear clears them.
     const open = renderList(finished, [], "agents");
-    expect(fold(open).props.class).toBe("fold-b open");
+    expect(fold(open).props.hidden).toBe(false);
     expect(open.text).toContain("Write docs");
     expect(open.text).toContain("Done · 3s");
     expect(stopsOf(open)).toEqual([]);

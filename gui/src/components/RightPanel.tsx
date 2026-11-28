@@ -6,8 +6,8 @@
 // don't go into it. Browser: the session's browser, watched and driven by hand (BrowserPane). Empty sections aren't
 // drawn. The plan and its steps are in the conversation (Composer, Activity).
 
-import { batch, createEffect, createMemo, createResource, createSignal, For, Match, on, onCleanup, Show, Switch, lazy } from "solid-js";
-import { Bot, Copy, FileDiff, FolderGit2, FolderOpen, GitBranch, Globe, Maximize2, MessageSquareText, Minimize2, Plug, Smartphone, SquarePen, Terminal } from "lucide-solid";
+import { batch, createEffect, createMemo, createResource, createSignal, Match, on, Show, Switch, lazy, type JSX } from "solid-js";
+import { Bot, Copy, FileDiff, FolderGit2, FolderOpen, GitBranch, Globe, Maximize2, MessageSquareText, Minimize2, Plug, Smartphone, SquarePen, SquareTerminal } from "lucide-solid";
 import type { ChangesInfo, GitFileDiff } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
 import { app, awayMachine, machineFor, reportError, revealsIn, rpc, toast } from "../state/app";
@@ -21,14 +21,13 @@ import { workingBranch } from "../lib/worktree-work";
 import { agentRows, backgroundOf, commandRows, rowLive, type WorkRow } from "../lib/background";
 import { tabName, type Change, type InspectorPane } from "../lib/inspector";
 import { Menu } from "./ui/Menu";
-import { Segmented } from "./ui/bits";
-import { uncleared, WorkList } from "./BackgroundTasks";
+import { uncleared } from "../lib/background-cleared";
 import { Transcript } from "./Transcript";
 import { Composer } from "./Composer";
 import { browserUnseen, loadBrowserState } from "../state/browser";
 import { loadSimulatorState, simulatorOffered, simulatorState, simulatorUnseen } from "../state/simulator";
 
-/** The folder the session works in: its actions, from the header's button (the path on hover). */
+/** The folder the session works in: its actions, from the rail's last button (the path on hover). */
 function WorkspaceButton(p: { handle: SessionHandle }) {
     let btn: HTMLButtonElement | undefined;
     const [menu, setMenu] = createSignal(false);
@@ -36,40 +35,45 @@ function WorkspaceButton(p: { handle: SessionHandle }) {
     const close = () => setMenu(false);
     return (
         <>
-            <button ref={btn} class="hb" aria-label="Workspace actions" aria-haspopup="menu" aria-expanded={menu()} title={tildify(st().cwd, app.hello?.homeDir)} onClick={() => setMenu(!menu())}>
+            <button ref={btn} class="rail-tab" data-state={menu() ? "open" : undefined} aria-label="Workspace actions" aria-haspopup="menu" aria-expanded={menu()} data-tip="Workspace" data-tip-side="left" onClick={() => setMenu(!menu())}>
                 <FolderGit2 size={16} />
             </button>
-            <Menu label="Workspace actions" open={menu()} anchor={() => btn} onClose={close} align="end" width={244}>
-                <div class="menu-label insp-ws" title={tildify(st().cwd, app.hello?.homeDir)}>
-                    <span class="truncate">{st().projectName}</span>
+            <Menu label="Workspace actions" open={menu()} anchor={() => btn} onClose={close} placement="top" align="end" width={280}>
+                <div class="ws-head" title={tildify(st().cwd, app.hello?.homeDir)}>
+                    <span class="ws-name truncate">{st().projectName}</span>
                     <Show when={st().branch}>
-                        <span class="insp-ws-br truncate" title="Git branch">
+                        <span class="ws-chip" title="Git branch">
                             <GitBranch size={12} />
-                            <span class="truncate">{st().branch}</span>
+                            <span class="mono truncate">{st().branch}</span>
                         </span>
                     </Show>
                     <Show when={st().workingIn}>
                         {(w) => (
-                            <span class="insp-ws-br truncate" title={`The agent works in the worktree ${tildify(w().path, app.hello?.homeDir)}`}>
+                            <span class="ws-chip" title={`The agent works in the worktree ${tildify(w().path, app.hello?.homeDir)}`}>
                                 <FolderGit2 size={12} />
                                 <span class="truncate">{workingBranch(w())}</span>
                             </span>
                         )}
                     </Show>
                 </div>
+                <div class="menu-sep" />
                 <Show when={revealsIn(st().id)}>
-                    <button role="menuitem" class="menu-item compact" onClick={() => (close(), void revealPath(st().cwd).catch(reportError))}>
-                        <FolderOpen size={14} /> Reveal in Finder
+                    <button role="menuitem" class="menu-item" onClick={() => (close(), void revealPath(st().cwd).catch(reportError))}>
+                        <FolderOpen size={14} />
+                        <span class="menu-item-name">Reveal in Finder</span>
                     </button>
                 </Show>
-                <button role="menuitem" class="menu-item compact" onClick={async () => (close(), (await copyText(st().cwd)) && toast(`Copied ${tildify(st().cwd, app.hello?.homeDir)}`, "success"))}>
-                    <Copy size={14} /> Copy folder path
+                <button role="menuitem" class="menu-item" onClick={async () => (close(), (await copyText(st().cwd)) && toast("Copied the folder path", "success"))}>
+                    <Copy size={14} />
+                    <span class="menu-item-name">Copy folder path</span>
                 </button>
-                <button role="menuitem" class="menu-item compact" onClick={() => (close(), newSession(st().cwd, machineFor(p.handle.id)))}>
-                    <SquarePen size={14} /> New session
+                <button role="menuitem" class="menu-item" onClick={() => (close(), newSession(st().cwd, machineFor(p.handle.id)))}>
+                    <SquarePen size={14} />
+                    <span class="menu-item-name">New session</span>
                 </button>
-                <button role="menuitem" class="menu-item compact" onClick={() => (close(), setMcpOpen({}))}>
-                    <Plug size={14} /> MCP servers
+                <button role="menuitem" class="menu-item" onClick={() => (close(), setMcpOpen({}))}>
+                    <Plug size={14} />
+                    <span class="menu-item-name">MCP servers</span>
                 </button>
             </Menu>
         </>
@@ -116,19 +120,11 @@ type FolderChanges = ReturnType<ReturnType<typeof useFolderChanges>>;
 /** The diff reader on these changes: git's uncommitted view, or (outside a repository) Cavvy's own record. */
 const openChanges = (c: FolderChanges, path?: string, token?: string) => openReview(path, c?.repo === false ? "cavvy" : "uncommitted", undefined, token);
 
-/** The Agents tab: every sub-agent once, and tasks given to other models. */
-function AgentsPane(p: { handle: SessionHandle; rows: WorkRow[] }) {
-    return (
-        <Show
-            when={p.rows.length || p.handle.view.agentsMore}
-            fallback={
-<div class="none">No agents yet</div>
-            }
-        >
-            <WorkList handle={p.handle} tab="agents" rows={p.rows} />
-        </Show>
-    );
-}
+/** Each view's name, at the head of its pane. */
+const TITLES: Record<InspectorPane, string> = { changes: "Changes", agents: "Agents", commands: "Commands", sidechat: "Side chat", browser: "Browser", simulator: "Simulator" };
+
+/** The Agents tab (BackgroundTasks.tsx), loaded when it's first shown, as the other panes are. */
+const AgentsPane = lazy(() => import("./BackgroundTasks").then((m) => ({ default: m.AgentsPane })));
 
 /** The Commands tab (CommandsPane), loaded when it's first shown. */
 const CommandsPane = lazy(() => import("./CommandsPane"));
@@ -156,6 +152,21 @@ function usePanelWork(handle: () => SessionHandle) {
     return { changes, agents, commands };
 }
 
+/** One of the rail's views: its icon, what runs there now (a count) or wants a look (a dot); its name is its tooltip. */
+function RailTab(p: { name: string; tip: string; active: boolean; count?: string | number; dot?: "accent" | "amber" | "red"; dotTitle?: string; onClick: () => void; children: JSX.Element }) {
+    return (
+        <button type="button" role="tab" class="rail-tab" aria-selected={p.active} aria-label={p.name} data-tip={p.tip} data-tip-side="left" onClick={p.onClick}>
+            {p.children}
+            <Show when={p.count}>
+                <span class="rail-count">{p.count}</span>
+            </Show>
+            <Show when={p.dot}>
+                <span class="rail-dot" data-tone={p.dot} title={p.dotTitle} />
+            </Show>
+        </button>
+    );
+}
+
 /**
  * The panel's views, as icons down its outer edge (first for the keyboard; panel.css puts it there): one look at any
  * width. A view's name is its tooltip, and the title of its pane. It stays beside the diff reader too (`reviewing`:
@@ -166,6 +177,7 @@ function PanelRail(p: { handle: SessionHandle; work: ReturnType<typeof usePanelW
     const running = (rows: readonly WorkRow[]) => rows.filter(rowLive).length;
     const asks = () => agents().some((r) => r.status === "waiting");
     const files = () => (changes()?.count ? `${changes()!.count.toLocaleString()}${changes()!.atLeast ? "+" : ""}` : undefined);
+    const current = () => (p.reviewing ? (review()?.file ? undefined : "changes") : inspectorPane());
     // Changes is the diff reader itself; the other icons are the panel's panes.
     const show = (pane: InspectorPane) => batch(() => {
         if (pane === "changes") return openChanges(changes());
@@ -173,123 +185,79 @@ function PanelRail(p: { handle: SessionHandle; work: ReturnType<typeof usePanelW
         setInspectorPane(pane);
         setPrefs("panel", true);
     });
+    const sideChat = () => p.handle.view.state.sideChat?.status;
     return (
-        <div class="insp-rail">
-            <Segmented
-                label="Side panel"
-                value={p.reviewing ? (review()?.file ? (undefined as never) : "changes") : inspectorPane()}
-                onChange={show}
-                options={[
-                    {
-                        value: "changes",
-                        get name() {
-                            return tabName("Changes", files() && `${files()} ${changes()!.count === 1 ? "file" : "files"}`);
-                        },
-                        title: "Changes",
-                        label: (
-                            <>
-                                <FileDiff class="seg-i" />
-                                <Show when={files()}>
-                                    <span class="ct files">{files()}</span>
-                                </Show>
-                            </>
-                        ),
-                    },
-                    {
-                        value: "agents",
-                        get name() {
-                            return tabName("Agents", running(agents()) > 0 && `${running(agents())} running`, asks() && "a sub-agent needs you");
-                        },
-                        title: "Agents",
-                        // A tab's count is what runs in it now, in the accent.
-                        label: (
-                            <>
-                                <Bot class="seg-i" />
-                                <Show when={running(agents())}>
-                                    <span class="ct live">{running(agents())}</span>
-                                </Show>
-                                <Show when={asks()}>
-                                    <span class="ct-dot" title="A sub-agent needs you" />
-                                </Show>
-                            </>
-                        ),
-                    },
-                    {
-                        value: "commands",
-                        get name() {
-                            return tabName("Commands", running(commands()) > 0 && `${running(commands())} running`);
-                        },
-                        title: "Commands",
-                        label: (
-                            <>
-                                <Terminal class="seg-i" />
-                                <Show when={running(commands())}>
-                                    <span class="ct live">{running(commands())}</span>
-                                </Show>
-                            </>
-                        ),
-                    },
-                    {
-                        value: "sidechat",
-                        get name() {
-                            const status = p.handle.view.state.sideChat?.status;
-                            return tabName("Side chat", status === "waiting" ? "it needs you" : status === "running" ? "working" : status === "error" && "it stopped with an error");
-                        },
-                        title: "Side chat",
-                        label: (
-                            <>
-                                <MessageSquareText class="seg-i" />
-                                {/* Working: the sidebar's working colour; waiting on you: the usual dot; failed: the error's. */}
-                                <Show when={p.handle.view.state.sideChat?.status}>
-                                    {(status) => <span class={`ct-dot ${status()}`} title={status() === "running" ? "Working" : status() === "waiting" ? "Needs you" : "Stopped with an error"} />}
-                                </Show>
-                            </>
-                        ),
-                    },
-                    {
-                        value: "browser",
-                        get name() {
-                            return tabName("Browser", browserUnseen(p.handle.id) && "the agent opened a page");
-                        },
-                        title: "Browser",
-                        label: (
-                            <>
-                                <Globe class="seg-i" />
-                                <Show when={browserUnseen(p.handle.id)}>
-                                    <span class="ct-dot" title="The agent opened a page" />
-                                </Show>
-                            </>
-                        ),
-                    },
-                    ...(simulatorOffered(p.handle.id)
-                        ? [
-                              {
-                                  value: "simulator" as const,
-                                  get name() {
-                                      return tabName("Simulator", simulatorUnseen(p.handle.id) && "the agent used it");
-                                  },
-                                  title: "Simulator",
-                                  label: (
-                                      <>
-                                          <Smartphone class="seg-i" />
-                                          <Show when={simulatorUnseen(p.handle.id)}>
-                                              <span class="ct-dot" title="The agent used the simulator" />
-                                          </Show>
-                                      </>
-                                  ),
-                              },
-                          ]
-                        : []),
-                ]}
-            />
-            <span class="grow" />
-            <button class="hb" aria-pressed={panelFull()} aria-label="Full screen" title={panelFull() ? "Exit full screen" : "Full screen"} onClick={() => setPanelFull(!panelFull())}>
+        <nav class="rail" role="tablist" aria-orientation="vertical" aria-label="Side panel">
+            <RailTab
+                name={tabName("Changes", files() && `${files()} ${changes()!.count === 1 ? "file" : "files"}`)}
+                tip={files() ? `Changes: ${files()} ${changes()!.count === 1 ? "file" : "files"}, +${changes()!.added.toLocaleString()} −${changes()!.removed.toLocaleString()}` : "Changes"}
+                active={current() === "changes"}
+                count={files()}
+                onClick={() => show("changes")}
+            >
+                <FileDiff size={16} />
+            </RailTab>
+            <RailTab
+                name={tabName("Agents", running(agents()) > 0 && `${running(agents())} running`, asks() && "a sub-agent needs you")}
+                tip="Agents"
+                active={current() === "agents"}
+                count={running(agents()) || undefined}
+                dot={asks() ? "amber" : undefined}
+                dotTitle="A sub-agent needs you"
+                onClick={() => show("agents")}
+            >
+                <Bot size={16} />
+            </RailTab>
+            <RailTab
+                name={tabName("Commands", running(commands()) > 0 && `${running(commands())} running`)}
+                tip="Commands"
+                active={current() === "commands"}
+                count={running(commands()) || undefined}
+                onClick={() => show("commands")}
+            >
+                <SquareTerminal size={16} />
+            </RailTab>
+            <RailTab
+                name={tabName("Side chat", sideChat() === "waiting" ? "it needs you" : sideChat() === "running" ? "working" : sideChat() === "error" && "it stopped with an error")}
+                tip="Side chat"
+                active={current() === "sidechat"}
+                // Working: the accent, as a working session's; waiting on you: amber; failed: red.
+                dot={sideChat() === "running" ? "accent" : sideChat() === "waiting" ? "amber" : sideChat() === "error" ? "red" : undefined}
+                dotTitle={sideChat() === "running" ? "Working" : sideChat() === "waiting" ? "Needs you" : "Stopped with an error"}
+                onClick={() => show("sidechat")}
+            >
+                <MessageSquareText size={16} />
+            </RailTab>
+            <RailTab
+                name={tabName("Browser", browserUnseen(p.handle.id) && "the agent opened a page")}
+                tip="Browser"
+                active={current() === "browser"}
+                dot={browserUnseen(p.handle.id) ? "accent" : undefined}
+                dotTitle="The agent opened a page"
+                onClick={() => show("browser")}
+            >
+                <Globe size={16} />
+            </RailTab>
+            <Show when={simulatorOffered(p.handle.id)}>
+                <RailTab
+                    name={tabName("Simulator", simulatorUnseen(p.handle.id) && "the agent used it")}
+                    tip="Simulator"
+                    active={current() === "simulator"}
+                    dot={simulatorUnseen(p.handle.id) ? "accent" : undefined}
+                    dotTitle="The agent used the simulator"
+                    onClick={() => show("simulator")}
+                >
+                    <Smartphone size={16} />
+                </RailTab>
+            </Show>
+            <span class="rail-sep" />
+            <button type="button" class="rail-tab" aria-pressed={panelFull()} aria-label={panelFull() ? "Exit full screen" : "Full screen"} data-tip={panelFull() ? "Exit full screen" : "Full screen"} data-tip-side="left" onClick={() => setPanelFull(!panelFull())}>
                 <Show when={panelFull()} fallback={<Maximize2 size={15} />}>
                     <Minimize2 size={15} />
                 </Show>
             </button>
             <WorkspaceButton handle={p.handle} />
-        </div>
+        </nav>
     );
 }
 
@@ -304,8 +272,8 @@ export function RightPanel(p: { handle: SessionHandle }) {
     createEffect(() => {
         if (inspectorPane() === "simulator" && simulatorState(p.handle.id)?.status === "unavailable") setInspectorPane("agents");
     });
-    // The panes with a title line; the browser's and the simulator's own bars say what they are.
-    const titled = () => (inspectorPane() === "browser" || inspectorPane() === "simulator" || inspectorPane() === "sidechat" ? undefined : inspectorPane());
+    // Each pane's name heads it, as a title line; the side chat's line has its own buttons (SideChatPane).
+    const titled = () => inspectorPane() !== "sidechat";
     return (
         <aside class="panel" aria-label="Session details">
             {/* The folder's changes (the Changes icon's count) are the one thing here fetched once the session is open:
@@ -315,44 +283,36 @@ export function RightPanel(p: { handle: SessionHandle }) {
                 <div class="insp-loading" aria-busy="true" hidden />
             </Show>
             <PanelRail handle={p.handle} work={work} />
-            <div class="insp-main">
-            <Show when={titled()}>
-                {(pane) => (
-                    <div class="insp-t">
-                        <h2>{pane()}</h2>
-                    </div>
-                )}
-            </Show>
-            <div class="insp-body panel-scroll" classList={{ "br-body": !titled() }}>
-                {/* A pane is made when its tab is chosen, and fades in then: not when what's in it changes. */}
-                <Switch>
-                    <Match when={inspectorPane() === "agents"}>
-                        <div class="pane">
+            <div class="inspector-main">
+                <Show when={titled()}>
+                    <header class="inspector-head">
+                        <h2 class="inspector-title">{TITLES[inspectorPane()]}</h2>
+                    </header>
+                </Show>
+                <div class="inspector-body insp-body" classList={{ "br-body": inspectorPane() === "browser" || inspectorPane() === "simulator" || inspectorPane() === "sidechat" }} role="tabpanel" aria-label={TITLES[inspectorPane()]}>
+                    {/* A pane is made when its tab is chosen: not when what's in it changes. */}
+                    <Switch>
+                        <Match when={inspectorPane() === "agents"}>
                             <AgentsPane handle={p.handle} rows={agents()} />
-                        </div>
-                    </Match>
-                    <Match when={inspectorPane() === "commands"}>
-                        <div class="pane">
+                        </Match>
+                        <Match when={inspectorPane() === "commands"}>
                             <CommandsPane handle={p.handle} rows={commands()} />
-                        </div>
-                    </Match>
-                    <Match when={inspectorPane() === "browser"}>
-                        <div class="pane">
-                            <BrowserPane handle={p.handle} />
-                        </div>
-                    </Match>
-                    <Match when={inspectorPane() === "sidechat"}>
-                        <div class="pane">
+                        </Match>
+                        <Match when={inspectorPane() === "browser"}>
+                            <div class="pane">
+                                <BrowserPane handle={p.handle} />
+                            </div>
+                        </Match>
+                        <Match when={inspectorPane() === "sidechat"}>
                             <SideChatPane handle={p.handle} views={{ Transcript, Composer }} />
-                        </div>
-                    </Match>
-                    <Match when={inspectorPane() === "simulator"}>
-                        <div class="pane">
-                            <SimulatorPane handle={p.handle} />
-                        </div>
-                    </Match>
-                </Switch>
-            </div>
+                        </Match>
+                        <Match when={inspectorPane() === "simulator"}>
+                            <div class="pane">
+                                <SimulatorPane handle={p.handle} />
+                            </div>
+                        </Match>
+                    </Switch>
+                </div>
             </div>
         </aside>
     );

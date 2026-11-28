@@ -5,7 +5,7 @@
 
 import { createEffect, createSignal, For, on, onCleanup, Show } from "solid-js";
 import { Dynamic } from "solid-js/web";
-import { ArrowUp, Bug, ChevronDown, Download, FlaskConical, Hammer, ListChecks, Pencil, Play, Plus, Trash2 } from "lucide-solid";
+import { ArrowUp, Bug, Check, ChevronDown, Download, FlaskConical, Hammer, ListChecks, Pencil, Play, Plus, Trash2 } from "lucide-solid";
 import { SCRIPT_ICONS, SCRIPT_LIMITS, type ProjectScript, type ProjectScripts as ScriptList, type ScriptIcon } from "@shared/protocol";
 import { app, connFor, reportError, rpcFor } from "../state/app";
 import type { Rpc } from "../lib/rpc";
@@ -225,58 +225,56 @@ function ScriptDialog(p: { cwd: string; link: Rpc; online: boolean; scripts: Pro
             setBusy(false);
         }
     };
-    const onKey = (e: KeyboardEvent) => {
-        if (e.key === "Enter" && !e.isComposing) (e.preventDefault(), void save());
-    };
     return (
         <Dialog
             open={!!p.editing}
             onClose={p.onClose}
-            width={480}
+            width={420}
             title={p.editing?.script ? "Edit script" : "Add script"}
+            subtitle="Runs in the session’s folder when you click it."
+            footer={
+                <>
+                    <button class="btn" onClick={p.onClose}>Cancel</button>
+                    <button type="submit" form="script-form" class="btn btn-primary" disabled={!ready() || !p.online}>
+                        {p.editing?.script ? "Save" : "Add script"}
+                    </button>
+                </>
+            }
         >
-            <label class="script-field">
-                <span class="script-field-label">Name</span>
-                <input class="input" value={name()} maxLength={SCRIPT_LIMITS.name} placeholder="dev" spellcheck={false} autofocus onInput={(e) => setName(e.currentTarget.value)} onKeyDown={onKey} />
-            </label>
-            <label class="script-field">
-                <span class="script-field-label">Command</span>
-                <input class="input mono" value={command()} maxLength={SCRIPT_LIMITS.command} placeholder="bun run dev" spellcheck={false} autocomplete="off" autocapitalize="off" onInput={(e) => setCommand(e.currentTarget.value)} onKeyDown={onKey} />
-            </label>
-            <div class="script-field">
-                <span class="script-field-label">Icon</span>
-                <div class="script-icons" role="group" aria-label="Icon">
-                    <For each={SCRIPT_ICONS}>
-                        {(id) => {
-                            return (
-                                <button class="hb" title={icon() === id ? `${ICONS[id].label} (click again for none)` : ICONS[id].label} aria-label={ICONS[id].label} aria-pressed={icon() === id} onClick={() => setIcon(icon() === id ? undefined : id)}>
-                                    <ScriptGlyph icon={id} size={15} />
-                                </button>
-                            );
-                        }}
-                    </For>
-                </div>
-            </div>
-            <div class="script-field">
-                <label class="check-row">
-                    <input type="checkbox" checked={setup()} onChange={(e) => setSetup(e.currentTarget.checked)} />
-                    <span>Run when a worktree is created</span>
+            <form id="script-form" class="script-form" onSubmit={(e) => (e.preventDefault(), void save())}>
+                <label class="field">
+                    <span class="field-label">Name</span>
+                    <input class="input" value={name()} maxLength={SCRIPT_LIMITS.name} placeholder="dev" spellcheck={false} autofocus onInput={(e) => setName(e.currentTarget.value)} />
                 </label>
-                <span class="script-field-hint">Only in projects you trust.</span>
-                <Show when={setup() && replaced()}>
-                    {(r) => <span class="script-field-hint">Replaces “{r().name}”.</span>}
+                <label class="field">
+                    <span class="field-label">Command</span>
+                    <input class="input mono" value={command()} maxLength={SCRIPT_LIMITS.command} placeholder="bun run dev" spellcheck={false} autocomplete="off" autocapitalize="off" onInput={(e) => setCommand(e.currentTarget.value)} />
+                </label>
+                <div class="field">
+                    <span class="field-label" id="script-icon-label">Icon</span>
+                    <div class="script-icons" role="radiogroup" aria-labelledby="script-icon-label">
+                        <For each={SCRIPT_ICONS}>
+                            {(id) => (
+                                <button type="button" role="radio" class="script-icon" aria-checked={(icon() ?? "play") === id} onClick={() => setIcon(id)}>
+                                    <ScriptGlyph icon={id} size={14} />
+                                    {ICONS[id].label}
+                                </button>
+                            )}
+                        </For>
+                    </div>
+                </div>
+                <div class="field">
+                    <label class="check">
+                        <input type="checkbox" checked={setup()} onChange={(e) => setSetup(e.currentTarget.checked)} />
+                        <span class="check-box" aria-hidden="true"><Check size={11} stroke-width={3} /></span>
+                        <span class="check-label">Run when a worktree is created</span>
+                    </label>
+                    <span class="field-hint">{setup() && replaced() ? `Replaces “${replaced()!.name}”. Only in projects you trust.` : "Only in projects you trust."}</span>
+                </div>
+                <Show when={error()}>
+                    <span class="field-hint field-error" role="alert">{error()}</span>
                 </Show>
-            </div>
-            <Show when={error()}>
-                <div class="script-field-error" role="alert">{error()}</div>
-            </Show>
-            <div class="dialog-actions">
-                <button class="btn" onClick={p.onClose}>Cancel</button>
-                <span class="grow" />
-                <button class="btn btn-primary" disabled={!ready() || !p.online} onClick={() => void save()}>
-                    {p.editing?.script ? "Save" : "Add script"}
-                </button>
-            </div>
+            </form>
         </Dialog>
     );
 }

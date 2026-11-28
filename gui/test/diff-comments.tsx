@@ -11,6 +11,7 @@ import "../src/styles/tokens.css";
 import "../src/styles/base.css";
 import "../src/styles/kit.css";
 import "../src/styles/transcript.css";
+import "../src/styles/review.css";
 
 const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 30));
 async function until(ok: () => unknown, ms = 1000) {
@@ -68,7 +69,7 @@ function pointer(type: string, el: HTMLElement, init: PointerEventInit = {}) {
     target.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, button: 0, clientX: r.left + 4, clientY: r.top + r.height / 2, ...init }));
 }
 async function type(root: HTMLElement, text: string) {
-    const ta = root.querySelector<HTMLTextAreaElement>(".dc-input")!;
+    const ta = root.querySelector<HTMLTextAreaElement>(".dc-box textarea")!;
     check(document.activeElement === ta, "the comment box takes focus as soon as it opens");
     ta.value = text;
     ta.dispatchEvent(new InputEvent("input", { bubbles: true }));
@@ -99,12 +100,12 @@ export async function checkDiffComments(root: HTMLElement) {
         pointer("pointerup", gutter(root, 4));
         await settle();
         let ta = await type(root, "  Rename b  ");
-        check(ta.closest(".dc-slot")?.previousElementSibling?.getAttribute("data-i") === "4", "the box sits under the clicked line");
+        check(ta.closest(".rv-after")?.previousElementSibling?.getAttribute("data-i") === "4", "the box sits under the clicked line");
         key(ta, "Enter", { ctrlKey: true, metaKey: true });
         await settle();
         check(s.list().length === 1 && s.list()[0]!.text === "Rename b" && s.list()[0]!.start.line === 3, "the comment is added, trimmed, on new line 3");
         check(JSON.stringify([s.list()[0]!.before, s.list()[0]!.after]) === JSON.stringify([["-const b = 1;", "+const a = 2;"], ["+const c = 2;", " }"]]), `it keeps two lines either side, from its hunk (${JSON.stringify([s.list()[0]!.before, s.list()[0]!.after])})`);
-        check(root.querySelectorAll(".dc-card").length === 1 && !root.querySelector(".dc-box"), "it shows as a card and the box closes");
+        check(root.querySelectorAll(".rv-comment:not(.dc-box)").length === 1 && !root.querySelector(".dc-box"), "it shows as a card and the box closes");
         check(document.activeElement === rows, "focus goes back to the diff");
 
         // Drag over several lines, past the hunk's end: the pick stays in its hunk.
@@ -153,10 +154,10 @@ export async function checkDiffComments(root: HTMLElement) {
         check(kb.start.side === "new" && kb.start.line === 1 && kb.end.side === "old" && kb.end.line === 3, `keyboard comment covers new 1 to old 3 (${JSON.stringify([kb.start, kb.end])})`);
 
         // Edit and delete from the card.
-        const card = root.querySelector<HTMLElement>(".dc-card")!;
+        const card = root.querySelector<HTMLElement>(".rv-comment:not(.dc-box)")!;
         card.querySelector<HTMLButtonElement>('[aria-label^="Edit comment"]')!.click();
         await settle();
-        ta = root.querySelector<HTMLTextAreaElement>(".dc-input")!;
+        ta = root.querySelector<HTMLTextAreaElement>(".dc-box textarea")!;
         check(ta.value === "Rename b" || ta.value === "From the keyboard", "editing starts from the comment's text");
         const before = ta.value;
         ta.value = `${before}!`;
@@ -179,7 +180,7 @@ export async function checkDiffComments(root: HTMLElement) {
         await settle();
         const left = s.list().at(-1)!;
         check(left.start.side === "old" && left.start.line === 3, "split view's left gutter comments on the old file");
-        check(root.querySelectorAll(".dc-card").length === 2, "split view shows the comments");
+        check(root.querySelectorAll(".rv-comment:not(.dc-box)").length === 2, "split view shows the comments");
         setSplit(false);
         await settle();
 
@@ -193,9 +194,9 @@ export async function checkDiffComments(root: HTMLElement) {
         for (const l of shifted.hunks[0]!.lines.slice(1)) if (l.b !== undefined) l.b++;
         setDiff(shifted);
         await settle();
-        let box = root.querySelector<HTMLTextAreaElement>(".dc-input");
+        let box = root.querySelector<HTMLTextAreaElement>(".dc-box textarea");
         check(box && box.value === "Half-written" && document.activeElement === box, "the box survives a refresh with its text and focus");
-        const under = () => box!.isConnected ? box!.closest(".dc-slot")?.previousElementSibling : root.querySelector(".dc-input")?.closest(".dc-slot")?.previousElementSibling;
+        const under = () => box!.isConnected ? box!.closest(".rv-after")?.previousElementSibling : root.querySelector(".dc-box textarea")?.closest(".rv-after")?.previousElementSibling;
         check(await until(() => under()?.textContent?.includes("const c = 2;")), `and stays under the same line after it moved (${under()?.outerHTML.slice(0, 200)})`);
         // Focus elsewhere: a refresh doesn't pull it back into the box.
         const outside = document.createElement("input");
@@ -203,7 +204,7 @@ export async function checkDiffComments(root: HTMLElement) {
         outside.focus();
         setDiff(structuredClone(shifted));
         await settle();
-        box = root.querySelector<HTMLTextAreaElement>(".dc-input");
+        box = root.querySelector<HTMLTextAreaElement>(".dc-box textarea");
         check(box && document.activeElement === outside, "a refresh doesn't steal focus from elsewhere");
         outside.remove();
         key(box, "Escape");
@@ -213,15 +214,15 @@ export async function checkDiffComments(root: HTMLElement) {
 
         // Changing a saved comment survives a refresh, and another window's write: its text and its focus,
         // even with a new comment open under the same line.
-        const savedCard = root.querySelector<HTMLElement>(".dc-slot .dc-card")!;
-        const savedRow = Number(savedCard.closest(".dc-slot")!.previousElementSibling!.getAttribute("data-i"));
+        const savedCard = root.querySelector<HTMLElement>(".rv-after .rv-comment:not(.dc-box)")!;
+        const savedRow = Number(savedCard.closest(".rv-after")!.previousElementSibling!.getAttribute("data-i"));
         pointer("pointerdown", gutter(root, savedRow));
         pointer("pointerup", gutter(root, savedRow));
         await settle();
         check(root.querySelector(".dc-box:not([data-edit])"), "a new comment opens under the commented line");
         savedCard.querySelector<HTMLButtonElement>('[aria-label^="Edit comment"]')!.click();
         await settle();
-        const editBox = () => root.querySelector<HTMLTextAreaElement>(".dc-box[data-edit] .dc-input");
+        const editBox = () => root.querySelector<HTMLTextAreaElement>(".dc-box[data-edit] textarea");
         check(editBox() && document.activeElement === editBox(), "Edit opens a focused box");
         editBox()!.value = "Changed, not saved";
         editBox()!.dispatchEvent(new InputEvent("input", { bubbles: true }));
@@ -237,7 +238,7 @@ export async function checkDiffComments(root: HTMLElement) {
         const escSave = key(save, "Escape");
         await settle();
         check(escSave.defaultPrevented && !editBox() && JSON.stringify(s.list().map((c) => c.text)) === savedTexts, "Esc on Save drops the edit and keeps the pane");
-        key(root.querySelector<HTMLTextAreaElement>(".dc-input")!, "Escape");
+        key(root.querySelector<HTMLTextAreaElement>(".dc-box textarea")!, "Escape");
         await settle();
 
         // The same line twice: a box open on one doesn't move to the other when its line is edited.
@@ -252,7 +253,7 @@ export async function checkDiffComments(root: HTMLElement) {
         twinEdited.hunks[0]!.lines[4]!.text = "return y;";
         setDiff(twinEdited);
         await settle();
-        check(!root.querySelector(".dc-input"), `the box closes rather than jump to the other copy (${root.querySelector(".dc-input")?.closest(".dc-slot")?.previousElementSibling?.getAttribute("data-i")})`);
+        check(!root.querySelector(".dc-box textarea"), `the box closes rather than jump to the other copy (${root.querySelector(".dc-box textarea")?.closest(".rv-after")?.previousElementSibling?.getAttribute("data-i")})`);
         // A box that closes on a refresh while focus is elsewhere doesn't stop the next one from taking it.
         setDiff(twin);
         await settle();
@@ -265,12 +266,12 @@ export async function checkDiffComments(root: HTMLElement) {
         setDiff(structuredClone(twinEdited));
         await settle();
         elsewhere.remove();
-        check(!root.querySelector(".dc-input"), "an unfocused box whose lines changed closes");
+        check(!root.querySelector(".dc-box textarea"), "an unfocused box whose lines changed closes");
         pointer("pointerdown", gutter(root, 1));
         pointer("pointerup", gutter(root, 1));
         await settle();
         await type(root, "Next one");
-        key(root.querySelector<HTMLTextAreaElement>(".dc-input")!, "Escape");
+        key(root.querySelector<HTMLTextAreaElement>(".dc-box textarea")!, "Escape");
         await settle();
         setDiff(small);
         await settle();
@@ -281,12 +282,12 @@ export async function checkDiffComments(root: HTMLElement) {
         for (const l of moved.hunks[0]!.lines.slice(1)) if (l.b !== undefined) l.b++;
         setDiff(moved);
         await settle();
-        check(!root.querySelector(".dc-outdated") && root.querySelectorAll(".dc-slot .dc-card").length === 2, "moved lines keep their comments");
+        check(!root.querySelector(".rv-orphans") && root.querySelectorAll(".rv-after .rv-comment:not(.dc-box)").length === 2, "moved lines keep their comments");
         const edited = structuredClone(moved);
         for (const l of edited.hunks[0]!.lines) if (l.t !== "ctx") l.text += " // edited";
         setDiff(edited);
         await settle();
-        check(root.querySelectorAll(".dc-outdated .dc-card.outdated").length === s.list().length && !root.querySelector(".dc-slot"), "comments whose lines changed are listed as outdated, not on other lines");
+        check(root.querySelectorAll(".rv-orphans .rv-comment[data-outdated]").length === s.list().length && !root.querySelector(".rv-after"), "comments whose lines changed are listed as outdated, not on other lines");
     } finally {
         dispose();
     }
@@ -338,12 +339,12 @@ export async function checkDiffComments(root: HTMLElement) {
         const drag = performance.now() - t1;
         await settle();
         check(scroller.querySelectorAll(".csel").length === 11, `the drag marks the lines picked (${scroller.querySelectorAll(".csel").length})`);
-        const ta = scroller.querySelector<HTMLTextAreaElement>(".dc-input")!;
+        const ta = scroller.querySelector<HTMLTextAreaElement>(".dc-box textarea")!;
         check(document.activeElement === ta, "the box takes focus");
         ta.value = "On a big diff";
         ta.dispatchEvent(new InputEvent("input", { bubbles: true }));
         // Scrolled far away while writing: the box stays drawn, text and focus kept.
-        const box = ta.closest(".dc-slot")!;
+        const box = ta.closest(".rv-after")!;
         scroller.scrollTop = 0;
         await until(() => scroller.querySelector(`[data-i="5"]`));
         await settle();
@@ -356,12 +357,12 @@ export async function checkDiffComments(root: HTMLElement) {
         await new Promise((r) => requestAnimationFrame(() => r(undefined)));
         const add = performance.now() - t2;
         check(scroller.querySelector(`[data-i="5000"]`) === kept, "adding a comment keeps the rows (no redraw)");
-        check(b.list().length === 1 && b.list()[0]!.start.line === 5000 && scroller.querySelectorAll(".dc-card").length === 1, "the comment shows on the big diff");
-        const anchoredUnder = () => scroller.querySelector(".dc-card")?.closest(".dc-slot")?.previousElementSibling?.getAttribute("data-i");
+        check(b.list().length === 1 && b.list()[0]!.start.line === 5000 && scroller.querySelectorAll(".rv-comment:not(.dc-box)").length === 1, "the comment shows on the big diff");
+        const anchoredUnder = () => scroller.querySelector(".rv-comment:not(.dc-box)")?.closest(".rv-after")?.previousElementSibling?.getAttribute("data-i");
         check(anchoredUnder() === "5010", `under its last line (${anchoredUnder()})`);
         // Away and back: drawn again under the same line.
         scroller.scrollTop = 0;
-        await until(() => !scroller.querySelector(".dc-card"));
+        await until(() => !scroller.querySelector(".rv-comment:not(.dc-box)"));
         await scrollTo(5010);
         check(anchoredUnder() === "5010", `back in view, the comment is under its line again (${anchoredUnder()})`);
 
@@ -393,7 +394,7 @@ export async function checkDiffComments(root: HTMLElement) {
 
         // A saved comment's button with the focus: its row stays drawn when the view leaves it.
         await scrollTo(5010);
-        const editBtn = scroller.querySelector<HTMLButtonElement>('.dc-card [aria-label^="Edit comment"]')!;
+        const editBtn = scroller.querySelector<HTMLButtonElement>('.rv-comment:not(.dc-box) [aria-label^="Edit comment"]')!;
         editBtn.focus();
         scroller.scrollTop = 0;
         await until(() => scroller.querySelector(`[data-i="5"]`));
@@ -415,7 +416,7 @@ export async function checkDiffComments(root: HTMLElement) {
             const before = ref.getBoundingClientRect().top;
             scroller.scrollTop -= 80;
             await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
-            sawTall ||= [...scroller.querySelectorAll(".dc-card")].some((c) => c.textContent?.includes("A tall comment.") && c.getBoundingClientRect().height > 200);
+            sawTall ||= [...scroller.querySelectorAll(".rv-comment:not(.dc-box)")].some((c) => c.textContent?.includes("A tall comment.") && c.getBoundingClientRect().height > 200);
             if (!ref.isConnected) continue;
             // Moved by what was scrolled, whatever the page did to hold it there.
             const off = Math.abs(ref.getBoundingClientRect().top - before - 80);

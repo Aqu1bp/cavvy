@@ -1,0 +1,483 @@
+/* ---- The Browser tab (BrowserPane, BrowserTools) and the Simulator tab's shared bits (SimulatorPane) ----
+   The design's browser chrome: the tabs, the bar with the address, "Agent is using this tab", then the page. The page
+   is a canvas the server's frames are drawn on, or (the desktop app) the tab's own view laid over .br-view. Loaded
+   with the panes; the floating browser and the desktop app's page views are browser.css. */
+
+/* The pane fills the panel's body: the page takes what the bars leave. */
+.insp-body.br-body {
+    padding: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+.br-body > .pane {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+}
+
+.br,
+.sim {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    min-width: 0;
+}
+
+.br-tabs {
+    display: flex;
+    align-items: center;
+    gap: calc(2 * var(--sp));
+    flex: none;
+    height: calc(40 * var(--sp));
+    padding: 0 calc(8 * var(--sp));
+    overflow-x: auto;
+    scrollbar-width: none;
+}
+
+.br-tab {
+    display: flex;
+    align-items: center;
+    flex: 0 1 calc(172 * var(--sp));
+    min-width: calc(72 * var(--sp));
+    height: calc(28 * var(--sp));
+    padding-right: calc(4 * var(--sp));
+    border-radius: var(--radius-s);
+    color: var(--text-2);
+    transition: background 0.12s, color 0.12s;
+}
+
+.br-tab:hover {
+    background: color-mix(in srgb, var(--fill-2) 75%, transparent);
+    color: var(--text);
+}
+
+.br-tab[data-on] {
+    background: var(--fill-2);
+    color: var(--text);
+}
+
+[data-theme="light"] .br-tab[data-on] {
+    background: var(--surface);
+    box-shadow: var(--shadow-card);
+}
+
+.br-tab-main {
+    display: flex;
+    align-items: center;
+    gap: calc(7 * var(--sp));
+    flex: 1;
+    min-width: 0;
+    height: 100%;
+    padding: 0 calc(4 * var(--sp)) 0 calc(9 * var(--sp));
+    border-radius: var(--radius-s);
+    font-size: calc(12.5 * var(--sp));
+    color: inherit;
+}
+
+.br-tab[data-on] .br-tab-main {
+    font-weight: 500;
+}
+
+.br-tab-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.br-tab-x {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    width: calc(18 * var(--sp));
+    height: calc(18 * var(--sp));
+    border-radius: calc(4 * var(--sp));
+    color: var(--text-3);
+}
+
+.br-tab-x:hover {
+    background: var(--fill-3);
+    color: var(--text);
+}
+
+.br-tabs > .icon-btn {
+    margin-left: calc(2 * var(--sp));
+}
+
+.br .icon-btn:disabled,
+.sim .icon-btn:disabled,
+.sim .select:disabled {
+    opacity: 0.38;
+    pointer-events: none;
+}
+
+.br-bar {
+    display: flex;
+    align-items: center;
+    gap: calc(2 * var(--sp));
+    flex: none;
+    padding: 0 calc(8 * var(--sp)) calc(8 * var(--sp));
+    border-bottom: 1px solid var(--line);
+}
+
+/* The address, and the fields of the strips under the bar (find, a page's size): one field look. */
+.br-addr,
+.br-field {
+    display: flex;
+    align-items: center;
+    gap: calc(6 * var(--sp));
+    flex: 1;
+    min-width: 0;
+    height: calc(28 * var(--sp));
+    margin-left: calc(4 * var(--sp));
+    padding: 0 calc(6 * var(--sp)) 0 calc(10 * var(--sp));
+    border-radius: var(--radius-s);
+    background: color-mix(in srgb, var(--fill-2) 70%, transparent);
+    transition: box-shadow 0.12s, background 0.12s;
+}
+
+.br-addr:focus-within,
+.br-field:focus-within {
+    background: var(--surface);
+    box-shadow: inset 0 0 0 1px var(--focus), 0 0 0 3px color-mix(in srgb, var(--focus) 18%, transparent);
+}
+
+.br-addr input,
+.br-field input {
+    flex: 1;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    background: none;
+    outline: none;
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: calc(12 * var(--sp));
+    text-overflow: ellipsis;
+}
+
+.br-addr input::placeholder,
+.br-field input::placeholder {
+    color: var(--text-3);
+    font-family: var(--font-ui);
+    font-size: calc(12.5 * var(--sp));
+}
+
+.br-addr input:disabled {
+    opacity: 0.5;
+}
+
+.br-who {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    flex: none;
+    height: calc(28 * var(--sp));
+    padding: 0 calc(14 * var(--sp));
+    border-bottom: 1px solid var(--line);
+    background: var(--fill-1);
+    color: var(--text-2);
+    font-size: calc(12 * var(--sp));
+    font-weight: 500;
+    white-space: nowrap;
+}
+
+/* Under the bar, from the page tools menu (BrowserTools.tsx): find in page, and the page's size and zoom. In the bar's
+   pattern: its buttons and a field as the address is, over a hairline. */
+.br-strip {
+    display: flex;
+    align-items: center;
+    gap: calc(2 * var(--sp));
+    flex: none;
+    min-height: calc(40 * var(--sp));
+    padding: calc(6 * var(--sp)) calc(8 * var(--sp));
+    border-bottom: 1px solid var(--line);
+    color: var(--text-2);
+    font-size: calc(12.5 * var(--sp));
+}
+
+.br-field {
+    margin-left: 0;
+    margin-right: calc(4 * var(--sp));
+}
+
+.br-field input {
+    font-family: var(--font-ui);
+    font-size: calc(12.5 * var(--sp));
+}
+
+.br-strip-ic {
+    flex: none;
+    color: var(--text-3);
+}
+
+/* The size and zoom: too narrow for one row, the zoom goes to a second. */
+.br-strip.br-size {
+    flex-wrap: wrap;
+    row-gap: calc(4 * var(--sp));
+    container-type: inline-size;
+}
+
+/* Too narrow for "Shown at 77%" beside the size and zoom: it's left out, so the strip stays one row and doesn't take
+   the page's height (which would change the figure, and leave a size typed again shown smaller than before). */
+@container (max-width: 400px) {
+    .br-strip-note:not(.refused),
+    .br-strip-note + .br-strip-count {
+        display: none;
+    }
+
+    /* What a side takes, said whole: on a row of its own under the size, while the side typed is refused. */
+    .br-strip-note.refused {
+        order: 1;
+        flex-basis: 100%;
+    }
+}
+
+/* The zoom and the way back to filling the pane, at the row's end: they wrap together. */
+.br-strip-end {
+    display: flex;
+    align-items: center;
+    gap: calc(2 * var(--sp));
+    flex: none;
+    margin-left: auto;
+}
+
+.br-strip input.br-side {
+    width: calc(56 * var(--sp));
+    min-width: calc(44 * var(--sp));
+    height: calc(28 * var(--sp));
+    flex: 0 1 auto;
+    padding: 0 calc(4 * var(--sp));
+    border: 0;
+    border-radius: var(--radius-s);
+    background: color-mix(in srgb, var(--fill-2) 70%, transparent);
+    outline: none;
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: calc(12 * var(--sp));
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+    transition: box-shadow 0.12s, background 0.12s;
+}
+
+.br-strip input.br-side:focus {
+    background: var(--surface);
+    box-shadow: inset 0 0 0 1px var(--focus), 0 0 0 3px color-mix(in srgb, var(--focus) 18%, transparent);
+}
+
+/* A side the page can't have, kept as typed. */
+.br-strip input.br-side[aria-invalid="true"] {
+    box-shadow: inset 0 0 0 1px var(--red);
+}
+
+.br-strip-x {
+    padding: 0 calc(3 * var(--sp));
+    color: var(--text-3);
+}
+
+/* After the size: how small it's drawn to fit, or what a side takes. The fit is the first thing to give way when the pane
+   is narrow: it never wraps the strip to a second row (which would take the page's height, and change the fit it reports). */
+.br-strip-note {
+    flex: 1 1 0;
+    min-width: 0;
+    padding-left: calc(6 * var(--sp));
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-3);
+    font-variant-numeric: tabular-nums;
+}
+
+.br-strip-note:not(.refused) {
+    text-align: right;
+}
+
+.br-strip-note.refused {
+    color: var(--red);
+}
+
+.br-strip-count,
+.br-strip-zoom {
+    flex: none;
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.br-strip-note + .br-strip-count {
+    padding-left: calc(4 * var(--sp));
+}
+
+.br-strip-label {
+    padding-left: calc(6 * var(--sp));
+    color: var(--text-2);
+}
+
+.br-strip-zoom {
+    min-width: calc(44 * var(--sp));
+    height: calc(24 * var(--sp));
+    padding: 0 calc(6 * var(--sp));
+    border-radius: var(--radius-s);
+    color: var(--text-2);
+    transition: background 0.12s, color 0.12s;
+}
+
+.br-strip-zoom:hover {
+    background: var(--fill-2);
+    color: var(--text);
+}
+
+.br-view {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+}
+
+/* A device's size, drawn smaller than the pane: the page on the pane's ground, as the simulator's device is. */
+.br-view[data-device] {
+    background: var(--bg-side);
+}
+
+/* The page has the keyboard: said on its edge, where it covers nothing. */
+.br-view:has(.br-keyboard:focus)::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 3;
+    box-shadow: inset 0 0 0 1.5px var(--focus);
+    pointer-events: none;
+}
+
+.br-canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    cursor: default;
+    outline: none;
+    transition: opacity 0.15s;
+}
+
+.br-status {
+    position: absolute;
+    top: calc(14 * var(--sp));
+    left: 50%;
+    z-index: 6;
+    display: inline-flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    height: calc(28 * var(--sp));
+    padding: 0 calc(11 * var(--sp)) 0 calc(9 * var(--sp));
+    border-radius: var(--radius-s);
+    background: var(--surface);
+    box-shadow: var(--shadow-pop);
+    color: var(--text-2);
+    font-size: calc(12.5 * var(--sp));
+    font-weight: 500;
+    white-space: nowrap;
+    pointer-events: none;
+    transform: translateX(-50%);
+}
+
+/* No picture yet: the page's ground, the note in its middle. Reconnecting: the last picture dimmed under the note. */
+.br-view[data-wait="load"] {
+    background: #fff;
+}
+
+.br-view[data-wait="load"] .br-status {
+    top: 50%;
+    transform: translate(-50%, -50%);
+}
+
+.br-view[data-wait="reconnect"] .br-canvas {
+    opacity: 0.3;
+}
+
+.br-fix {
+    margin: calc(-4 * var(--sp)) 0 0;
+    color: var(--text-3);
+    font-size: calc(12.5 * var(--sp));
+    max-width: 32ch;
+    overflow-wrap: anywhere;
+}
+
+/* A real editable focus target lets the OS deliver IME and dead-key compositions. */
+.br-keyboard {
+    position: absolute;
+    left: 0;
+    bottom: 0;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    border: 0;
+    opacity: 0;
+    resize: none;
+}
+
+/* ---- What a page asks for: a dropdown's options, an alert, a confirm, a prompt ----
+   Over the page's foot, which the desktop app's own page stops short of (lib/page-follow.ts reads .br-dialog). */
+
+.br-sheet {
+    position: absolute;
+    left: 50%;
+    bottom: calc(14 * var(--sp));
+    z-index: 7;
+    display: flex;
+    flex-direction: column;
+    width: min(calc(100% - 28 * var(--sp)), calc(300 * var(--sp)));
+    max-height: calc(100% - 28 * var(--sp));
+    padding: calc(5 * var(--sp));
+    border-radius: calc(10 * var(--sp));
+    background: var(--surface);
+    box-shadow: var(--shadow-pop);
+    transform: translateX(-50%);
+    animation: pop-in 0.13s var(--ease);
+}
+
+.br-sheet-label {
+    flex: none;
+    margin: 0;
+    padding: calc(6 * var(--sp)) calc(9 * var(--sp)) calc(4 * var(--sp));
+    color: var(--text-3);
+    font-size: calc(11.5 * var(--sp));
+    font-weight: 500;
+}
+
+.br-options {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+}
+
+.br-options .menu-item:focus-visible {
+    outline-offset: -2px;
+}
+
+.br-sheet-foot {
+    display: flex;
+    justify-content: flex-end;
+    gap: calc(6 * var(--sp));
+    flex: none;
+    margin: calc(5 * var(--sp)) calc(-5 * var(--sp)) calc(-5 * var(--sp));
+    padding: calc(8 * var(--sp));
+    border-top: 1px solid var(--line);
+}
+
+.br-ask-text {
+    margin: 0;
+    padding: calc(2 * var(--sp)) calc(9 * var(--sp)) calc(10 * var(--sp));
+    font-size: calc(13.5 * var(--sp));
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+}
+
+.br-ask .input {
+    margin: 0 calc(9 * var(--sp)) calc(10 * var(--sp));
+}
