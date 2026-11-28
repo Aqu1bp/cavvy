@@ -341,6 +341,11 @@
     padding-bottom: 12vh;
 }
 
+/* Paragraphs here are lines of a card, not prose: no margins of their own. */
+:where(.rv-error p, .rv-comment p, .rv .blank-title, .rv-wt-list .blank-title, .rv-picker-none, .rv-wt-foot, .commit-none) {
+    margin: 0;
+}
+
 .rv-error {
     display: flex;
     flex-direction: column;
