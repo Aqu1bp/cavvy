@@ -57,3 +57,37 @@
     margin: auto;
     color: var(--text-3);
 }
+
+/* New folder: a row at the list's top to name it in, and what went wrong under it. */
+.fpick-new {
+    display: flex;
+    flex-direction: column;
+    flex: none;
+}
+
+.fpick-naming {
+    background: var(--fill-1);
+    box-shadow: inset 0 0 0 1px var(--focus);
+}
+
+.fpick-name {
+    flex: 1;
+    min-width: 0;
+    height: calc(24 * var(--sp));
+    padding: 0;
+    border: 0;
+    background: none;
+    outline: none;
+    color: var(--text);
+    font: inherit;
+}
+
+.fpick-name::placeholder {
+    color: var(--text-3);
+}
+
+.fpick-error {
+    margin: calc(4 * var(--sp)) 0 calc(4 * var(--sp)) calc(33 * var(--sp));
+    color: var(--red);
+    font-size: calc(12 * var(--sp));
+}

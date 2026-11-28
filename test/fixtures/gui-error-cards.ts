@@ -327,8 +327,7 @@ test("a CLI row that can't connect says why on the row, copies the command, and 
         // Checking again, still not signed in: the row flashes again.
         button(r.root, "Check again")!.props.onClick();
         const check = buttons(r.root).find((b) => text(b).startsWith("Check"))!;
-        expect(all(check).some((n) => n.tag === "spinner")).toBe(true);
-        expect(text(check)).toBe("Checking");
+        expect(text(check)).toBe("Checking…");
         expect(check.props.disabled).toBe(true);
         await settle();
         expect(r.row().props["data-flash"]).toBe("b");

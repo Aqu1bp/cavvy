@@ -201,7 +201,7 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
                         <button class="btn btn-sm" disabled={busy()} onClick={() => login(single()!)}>Sign in</button>
                     </Show>
                     <Show when={installed() && !p.provider.configured && p.onConnect}>
-                        <button class="btn btn-sm" disabled={p.connecting} onClick={() => p.onConnect!()}>{p.connecting ? <Spinner size={12} /> : `Use my ${cli()?.plan ?? "plan"}`}</button>
+                        <button class="btn btn-sm" disabled={p.connecting} onClick={() => p.onConnect!()}>{p.connecting ? "Connecting…" : `Use my ${cli()?.plan ?? "plan"}`}</button>
                     </Show>
                     <Show when={installed()}>
                         <button ref={providerMenu} class="icon-btn icon-btn-sm" aria-label={`${p.provider.name} actions`} aria-haspopup="menu" aria-expanded={menu() === ""} onClick={() => setMenu(menu() === "" ? undefined : "")}><Ellipsis size={14} /></button>
@@ -272,7 +272,7 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
         </Show>
         <Dialog open={adding()} onClose={cancelAdd} title={`Add a ${p.provider.name} account`} width={420} footer={<>
             <button class="btn" type="button" disabled={busy()} onClick={cancelAdd}>Cancel</button>
-            <button class="btn btn-primary" type="submit" form={`${uid}-add`} disabled={busy()}>{busy() && <Spinner size={12} />}{busy() ? "Creating…" : "Create and sign in"}</button>
+            <button class="btn btn-primary" type="submit" form={`${uid}-add`} disabled={busy()}>{busy() ? "Creating…" : "Create and sign in"}</button>
         </>}>
             <form id={`${uid}-add`} class="dlg-form account-form" aria-label="Add account" noValidate aria-busy={busy()} onKeyDown={(e) => escape(e, cancelAdd)} onSubmit={(e) => { e.preventDefault(); void add(); }}>
                 <label class="field" for={`${uid}-name`}>

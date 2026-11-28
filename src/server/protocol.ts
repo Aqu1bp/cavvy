@@ -2818,6 +2818,8 @@ export interface Methods {
     "projects.forget": { params: { path: string }; result: null };
     "fs.mentions": { params: { cwd: string; query: string }; result: string[] };
     "fs.dirs": { params: { path: string }; result: { path: string; parent?: string; dirs: string[] } };
+    /** A new, empty folder `name` in the folder `path` (Open a project folder's New folder): its absolute path. */
+    "fs.mkdir": { params: { path: string; name: string }; result: { path: string } };
     /** The editors Cavvy knows, and the one chosen in settings. */
     "editors.list": { params: Record<string, never>; result: { editors: EditorInfo[]; selected?: string } };
     /**

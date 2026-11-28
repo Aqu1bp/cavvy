@@ -7,7 +7,6 @@ import type { SessionSummary } from "@shared/protocol";
 import { activate, app, handleFor } from "../state/app";
 import { runStatus } from "../lib/run-status";
 import { ProviderIcon } from "./ui/ProviderIcon";
-import { Spinner } from "./ui/bits";
 
 function state(s: SessionSummary) {
     return runStatus(handleFor(s.id)?.view.state.status ?? s.status, s.run?.outcome);
@@ -23,9 +22,9 @@ export function RunSwitcher(p: { id: string }) {
                 <For each={members()}>
                     {(s) => (
                         <button class="runs-item" role="tab" aria-selected={s.id === p.id} title={`${s.run!.modelName}: ${state(s).word}\n${s.cwd}`} onClick={() => s.id !== p.id && void activate(s.id)}>
-                            {/* Working: the spinner in place of its mark. Waiting on you or stopped: a glyph after its name. */}
+                            {/* Working: the rail's breathing dot in place of its mark. Waiting on you or stopped: a glyph after its name. */}
                             <Show when={state(s).tone === "running"} fallback={<ProviderIcon id={s.run!.model.split(":")[0]!} size={13} />}>
-                                <Spinner size={12} />
+                                <span class="status-working" aria-hidden="true" />
                             </Show>
                             <span class="runs-name">{s.run!.modelName}</span>
                             <Switch>

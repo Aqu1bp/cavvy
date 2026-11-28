@@ -169,6 +169,25 @@
     max-height: min(calc(480 * var(--sp)), var(--radix-popover-content-available-height, calc(480 * var(--sp))));
 }
 
+/* Cavvy: the models view is one height, so switching tabs, searching or a short list never moves its edges: ten
+   rows with the search, the tabs and their caption (414px), and Compare's foot (43px) where it has one. Rows scroll
+   inside. A shorter window caps it (the popover's max-height: the room there is), the same for as long as it's open. */
+.popover.mp-fixed {
+    display: flex;
+    flex-direction: column;
+    height: calc(414 * var(--sp));
+}
+
+.popover.mp-fixed.mp-has-foot {
+    height: calc(457 * var(--sp));
+}
+
+.mp-fixed > .mp-models {
+    flex: 1;
+    min-height: 0;
+    max-height: none;
+}
+
 .mp-search {
     display: flex;
     align-items: center;
@@ -293,6 +312,9 @@
     display: flex;
     align-items: center;
     border-radius: calc(6 * var(--sp));
+    /* Cavvy: OpenRouter lists hundreds; rows out of view skip layout and paint. */
+    content-visibility: auto;
+    contain-intrinsic-size: auto calc(30 * var(--sp));
 }
 
 .mp-item:is(:hover, .sel) {
@@ -458,7 +480,7 @@
     z-index: 2;
     width: max-content;
     max-width: calc(260 * var(--sp));
-    max-height: min(calc(220 * var(--sp)), calc((var(--mp-fit, 380) - 118) * var(--sp)));
+    max-height: calc(220 * var(--sp));
     overflow-y: auto;
 }
 

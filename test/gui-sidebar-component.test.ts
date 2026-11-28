@@ -169,7 +169,7 @@ test("actual sidebar pages projects and settled, transitions row type, and keeps
     } finally { f.dispose(); }
 });
 
-test("rail rows: needs-you rows get an amber dot and no archive; others archive on hover; open project headings carry no count", () => {
+test("rail rows: needs-you rows get an amber dot; on hover a row offers More alone (Archive is in it); open project headings carry no count", () => {
     const f = fixture(6);
     const rowOf = (title: string) => f.nodes.findLast((n) => (n.props.class === "srow" && n.props["data-session-id"] !== undefined) && n.querySelector()?.props.title?.startsWith(`${title}\n`));
     const buttons = (row: any) => f.descendants(row).filter((n) => n.tag === "button");
@@ -192,7 +192,8 @@ test("rail rows: needs-you rows get an amber dot and no archive; others archive 
         expect(buttons(waiting).some((n) => n.props.title === "Archive")).toBe(false);
         expect(buttons(waiting).some((n) => n.props.title === "More")).toBe(true);
         const idle = rowOf("Session 3");
-        expect(buttons(idle).some((n) => n.props.title === "Archive")).toBe(true);
+        expect(buttons(idle).some((n) => n.props.title === "Archive")).toBe(false);
+        expect(buttons(idle).some((n) => n.props.title === "More")).toBe(true);
         // Rows are buttons; the open one says so.
         expect(waiting.querySelector().props["aria-current"]).toBe("page");
         expect(idle.querySelector().props["aria-current"]).toBeUndefined();

@@ -8,7 +8,7 @@ import { Check, ChevronDown, FolderOpen, KeyRound, ShieldQuestion } from "lucide
 import type { ProviderInfo } from "@shared/protocol";
 import { app, homeOn, homeProjects, noModel, refreshProjects, reportError, rpcFor, serversUi } from "../state/app";
 import { chooseProject, connectCli, homeJumped, openProject, trustAndContinue } from "../state/actions";
-import { requestComposerFocus, setSettingsTab, shellLayout } from "../state/ui";
+import { homeHeld, requestComposerFocus, setHomeHeld, setSettingsTab, shellLayout } from "../state/ui";
 import { sp } from "../state/prefs";
 import { ago, basename, tildify } from "../lib/format";
 import { isElectron, isWindowShown, machine } from "../lib/platform";
@@ -61,6 +61,11 @@ function rowsFitting(column: { w: number; h: number }, cards: number): number {
 /** A plan's own name, short enough for the row of ways in: "Claude subscription" → "Claude". */
 const planName = (p: ProviderInfo) => (p.agentCli?.plan ?? p.name).replace(/\s+(subscription|plan|account)$/i, "");
 
+/** At most this long (ms) Home's first paint waits for what it shows: a folder with no answer yet is shown as it is. */
+const HOLD_MS = 400;
+/** Home first drawn later than this (ms into the page's life) isn't the window opening: it's never held. */
+const OPENING_MS = 5000;
+
 export function Home() {
     const [pickerOpen, setPickerOpen] = createSignal(false);
     /** The project chip: the recent-projects menu opens by it. */
@@ -85,6 +90,20 @@ export function Home() {
         if (app.homeCwd) forgetInspected(homeOn(), app.homeCwd);
         return inspectAgain();
     };
+    // The window's first Home is held (transparent: the message box still takes the keyboard) until it knows its folder,
+    // what that folder needs (the trust row in the message box, the hints under it) and whether there's a model, or
+    // HOLD_MS has passed: its first paint is then the final one. Before, each answer moved the message box (layout
+    // shift 0.011 at about 100 ms).
+    // Only as the window opens on it: Home come to later (a session shown first) is drawn at once.
+    if (homeHeld() && performance.now() > OPENING_MS) setHomeHeld(false);
+    if (homeHeld()) {
+        const done = () => setHomeHeld(false);
+        const cap = setTimeout(done, HOLD_MS);
+        onCleanup(() => clearTimeout(cap));
+        createEffect(() => {
+            if (app.conn === "open" && app.hello && app.modelsLoaded && app.homeCwd && !inspected.loading) done();
+        });
+    }
     // No folder (none chosen yet, or none on the machine Home came back to): what the last one was isn't this one's.
     const info = () => (app.homeCwd ? inspected() : undefined);
     // Claude Code / Codex on this computer that aren't turned on yet: the user's own plan, one click away.
@@ -207,7 +226,7 @@ export function Home() {
     );
 
     return (
-        <div class="home" classList={{ instant, "home-jumped": homeJumped() }}>
+        <div class="home" classList={{ instant, "home-jumped": homeJumped(), "home-held": homeHeld() }}>
             <div class="home-scroll" ref={scroller}>
                 <div class="home-stack" ref={stack}>
                     <section class="home-card card-surface card" aria-label="New session">

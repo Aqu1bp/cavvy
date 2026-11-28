@@ -11,7 +11,7 @@ import { meterOf, planTitle, windowTone } from "../lib/limits";
 import { costText, emptyText, liftsAt, rangeLabel, usd } from "../lib/usage-limits";
 import { scopedSummary } from "../lib/rail-plans";
 import { axisTicks, byAccount, pct, periodName, processed, share, sourceOf, SOURCES, type AccountTotal } from "../lib/usage";
-import { Segmented, Spinner } from "./ui/bits";
+import { Segmented } from "./ui/bits";
 import { ProviderIcon } from "./ui/ProviderIcon";
 const RANGES = [1, 7, 30, 90].map(v => ({ value: String(v), label: v === 1 ? "24h" : `${v}d` }));
 const VIEWS = [{ value: "cost", label: "Cost" }, { value: "tokens", label: "Tokens" }, { value: "limits", label: "Limits" }];
@@ -39,13 +39,10 @@ function Section(p: { title: string; sub?: JSX.Element; aside?: JSX.Element; id?
 }
 
 /** What a card shows when it has nothing: a line, a few words under it, and the way on. */
-function Blank(p: { title: string; busy?: boolean; role?: "status"; children?: JSX.Element }) {
+function Blank(p: { title: string; role?: "status"; children?: JSX.Element }) {
     return (
         <div class="card usage-blank" role={p.role}>
             <div class="blank">
-                <Show when={p.busy}>
-                    <Spinner size={14} class="blank-spinner" />
-                </Show>
                 <p class="blank-title">{p.title}</p>
                 {p.children}
             </div>
@@ -351,11 +348,11 @@ export function UsageView() {
             <Segmented label="Usage view" value={view()} options={VIEWS} onChange={setView} />
             <span class="grow" />
             <Show when={view() !== "limits"}><Segmented label="Usage time range" value={String(days())} options={RANGES} onChange={v => { if (Number(v) !== days()) setDays(Number(v) as UsageDays); }} /></Show>
-            <button class="icon-btn" data-tip="Refresh" aria-label={view() === "limits" ? "Refresh limits" : "Refresh usage"} disabled={loading()} onClick={() => void load()}><Show when={loading()} fallback={<RotateCw size={14} />}><Spinner size={14} /></Show></button>
+            <button class="icon-btn" data-tip="Refresh" aria-label={view() === "limits" ? "Refresh limits" : "Refresh usage"} disabled={loading()} onClick={() => void load()}><RotateCw size={14} /></button>
         </div>
         <Show when={error()}><div class="card usage-blank" role="alert"><div class="blank"><p class="blank-title">Couldn't read usage</p><p class="usage-blank-sub">{error()}</p><button class="btn btn-sm" onClick={() => void load()}>Try again</button></div></div></Show>
         <Show when={view() === "limits"} fallback={<>
-            <Show when={loading() && !data()}><Blank title="Loading usage…" busy role="status" /></Show>
+            <Show when={loading() && !data()}><Blank title="Loading usage…" role="status" /></Show>
             <Show when={!error() && data()}>{d => <>
                 <Show when={d().truncated}><div class="note" role="status"><Info size={14} /><span class="note-body">Only part of this range is counted: {d().truncated} A shorter range counts everything.</span></div></Show>
                 <Show when={d().waiting?.length && d().days === days()}><div class="note" role="status"><Info size={14} /><span class="note-body">Adding {d().waiting!.join(", ")}…</span></div></Show>

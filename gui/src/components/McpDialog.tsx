@@ -222,7 +222,7 @@ export function McpDialog() {
                 </button>
             }
         >
-            <Show when={list()} fallback={<div class="blank mcp-empty"><Spinner size={14} class="blank-spinner" /></div>}>
+            <Show when={list()} fallback={<div class="blank mcp-empty">Loading…</div>}>
                 <Show when={!list()!.trusted}>
                     <div class="mcp-banner">
                         <div class="note">
@@ -313,7 +313,7 @@ function Detail(p: DetailProps) {
     const asks = () => p.s.source === "project" && (p.s.approval?.state === "needs-approval" || p.s.approval?.state === "rejected");
     return (
         <div class="mcp-detail">
-            <Show when={!p.s.partial || p.s.command !== undefined || p.s.url !== undefined} fallback={<Spinner size={14} />}>
+            <Show when={!p.s.partial || p.s.command !== undefined || p.s.url !== undefined} fallback={<p class="dim">Loading…</p>}>
                 <Show when={asks()} fallback={<Info {...p} />}>
                     <Show when={p.s.approval?.state === "needs-approval"}>
                         <div class="note" data-tone="amber">

@@ -21,7 +21,6 @@ export interface ElectronBridge {
     reloadHeld?(): void;
     /** Shows and focuses the window (a notification clicked). */
     focusWindow(): void;
-    pickFolder(o: { defaultPath?: string; title: string }): Promise<string | null>;
     openExternal(url: string): Promise<void>;
     revealPath(path: string): Promise<void>;
     setTheme(scheme: "light" | "dark"): void;
@@ -192,17 +191,6 @@ export function forgetToken() {
     } catch {
         memoryToken = undefined;
     }
-}
-
-/** A native folder picker; undefined when there's none (the browser), so the GUI shows its own. */
-export async function pickFolder(defaultPath?: string, title = "Open a project folder"): Promise<string | null | undefined> {
-    // The folders are the server's: the system's own picker shows this computer's.
-    if (machine) return undefined;
-    if (electron) return electron.pickFolder({ defaultPath, title });
-    if (!isTauri) return undefined;
-    const { open } = await import("@tauri-apps/plugin-dialog");
-    const r = await open({ directory: true, multiple: false, defaultPath, title });
-    return typeof r === "string" ? r : null;
 }
 
 export async function openExternal(url: string) {
