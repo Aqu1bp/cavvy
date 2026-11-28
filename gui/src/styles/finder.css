@@ -1,0 +1,65 @@
+/* ---- Go to file and Search in project (FileFinder): the palette's shape (overlays.css) and its pieces. A file's
+   name with its folder dimmed, as the palette's rows end with their meta; a search's hits under file headers. */
+
+.finder .ff-tog {
+    width: calc(26 * var(--sp));
+    height: calc(26 * var(--sp));
+}
+
+.finder .ff-tog[aria-pressed="true"] {
+    background: var(--fill-2);
+    color: var(--text);
+    box-shadow: inset 0 0 0 1px var(--line-strong);
+}
+
+/* A file's header over its hits: the name, its folder, how many. */
+.ff-file {
+    display: flex;
+    align-items: baseline;
+    gap: calc(8 * var(--sp));
+    min-width: 0;
+}
+
+.ff-file .pal-meta {
+    flex: 1;
+    max-width: none;
+    font-weight: 400;
+}
+
+.ff-count {
+    flex: none;
+    color: var(--text-3);
+    font-size: calc(12 * var(--sp));
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+}
+
+.ff-hit .ff-ln {
+    flex: none;
+    width: calc(36 * var(--sp));
+    color: var(--text-3);
+    font: calc(11.5 * var(--sp)) / 1 var(--font-mono);
+    text-align: right;
+}
+
+.ff-hit .ff-pre {
+    white-space: pre;
+    font-family: var(--font-mono);
+    font-size: calc(12 * var(--sp));
+}
+
+/* Under the list: the count, then what the keys do on a row. */
+.ff-keys {
+    display: flex;
+    align-items: center;
+    gap: calc(12 * var(--sp));
+    flex: none;
+    margin-left: auto;
+    white-space: nowrap;
+}
+
+.ff-keys > span {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(5 * var(--sp));
+}
