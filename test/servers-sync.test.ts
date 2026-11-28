@@ -210,3 +210,40 @@ test("a server whose sync isn't on gets skills and commands only, as servers alw
     expect(paths.filter((p) => !/^\.(cavvy|claude)\/skills\/|^\.cavvy\/commands\//.test(p))).toEqual([]);
     expect(existsSync(join(server, ".cavvy/themes/basic-theme.json"))).toBe(false);
 });
+
+test("over the size limit, small skills and files go first and a big skill takes what's left", async () => {
+    // 24 files of 1 MB less a little: more than the 20 MB a sync carries, in a skill named to come first.
+    const big = join(claude, "skills", "aaa-big");
+    for (let i = 0; i < 24; i++) put(join(big, "assets", `${String(i).padStart(2, "0")}.bin`), "x".repeat(1024 * 1024 - 100));
+    put(join(big, "SKILL.md"), "---\nname: aaa-big\n---\nBig.");
+    // A few KB each, as a real skill is: more than the big one leaves when it goes first.
+    const pad = "y".repeat(5000);
+    put(join(claude, "skills", "zz-small", "SKILL.md"), `---\nname: zz-small\n---\nSmall.${pad}`);
+    put(join(iso.home, "commands", "zz-last.md"), `Last command.${pad}`);
+    put(join(claude, "CLAUDE.md"), `Claude rules, still.${pad}`);
+    try {
+        const mine = localSyncFiles();
+        for (const p of [".claude/skills/zz-small/SKILL.md", ".cavvy/commands/zz-last.md", ".claude/CLAUDE.md", ".claude/skills/aaa-big/SKILL.md"]) expect(mine.has(p)).toBe(true);
+        const bigSent = [...mine.keys()].filter((p) => p.startsWith(".claude/skills/aaa-big/assets/")).length;
+        expect(bigSent).toBeGreaterThan(15);
+        expect(bigSent).toBeLessThan(24);
+        expect([...mine.values()].reduce((n, f) => n + Buffer.from(f.data, "base64").length, 0)).toBeLessThanOrEqual(20 * 1024 * 1024);
+    } finally {
+        (await import("fs")).rmSync(big, { recursive: true });
+    }
+});
+
+test("a server whose sync isn't on gets skills first: what it doesn't take uses none of the room", async () => {
+    // Themes of 1 MB each, smaller than the skill: on their own they'd fill the room before it.
+    for (let i = 0; i < 22; i++) put(join(iso.home, "themes", `big-${i}.json`), "t".repeat(1024 * 1024 - 100));
+    for (const n of ["a", "b"]) put(join(iso.home, "skills", "two-mb", `${n}.md`), "s".repeat(1024 * 1024 - 100));
+    try {
+        sent.length = 0;
+        await syncTo(ask, { basic: true });
+        const paths = sent.filter((s) => s.method === "sync.apply").flatMap((s) => (s.params.files as { path: string }[]).map((f) => f.path));
+        expect(paths).toContain(".cavvy/skills/two-mb/a.md");
+        expect(paths).toContain(".cavvy/skills/two-mb/b.md");
+    } finally {
+        (await import("fs")).rmSync(join(iso.home, "themes"), { recursive: true });
+    }
+});
