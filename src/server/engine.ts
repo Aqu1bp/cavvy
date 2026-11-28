@@ -53,7 +53,7 @@ import { getKey, removeKey, setKey } from "../auth/credentials";
 import { detectKeyProvider, validateKey } from "../auth/detect";
 import { FileIndex } from "../ui/mentions";
 import { gitRoot, gitBranch } from "../util/git";
-import { createWorktreeWithHooks, currentBase, ignoredWaiting, listWorktrees, mainCheckoutOf, managedWorktreeOf, othersPresent, planRemoval, runRemoval, suggestBranch, taskBranch, unpushedReason, type Removal } from "./worktrees";
+import { createWorktreeWithHooks, currentBase, ignoredWaiting, listWorktrees, mainCheckoutOf, managedWorktreeOf, othersPresent, planRemoval, runGitAsync, runRemoval, suggestBranch, taskBranch, unpushedReason, type Removal } from "./worktrees";
 import { defaultPlanPath, implementPrompt, planTitle, slugify, writePlanFile } from "./plans";
 import { billingOf, parseRunRequest, startRun, type RunHost, type RunRecord } from "./runs";
 import { readRegular } from "./git-changes";
@@ -1919,6 +1919,20 @@ export class Engine {
         return { sessionId: known.session, title: label.title, cwd: label.cwd ?? "" };
     }
 
+    /**
+     * The worktree an earlier failed start of `key` made, to go on in: only while it's there with no changes in it and
+     * no session in it (open here, closing, or held by a terminal). Otherwise forgotten, and a start makes its own.
+     */
+    private async reusableTaskWorktree(key: string): Promise<string | undefined> {
+        const w = this.taskWorktrees.get(key);
+        if (!w) return undefined;
+        const folders = [...[...this.runtimes.values()].flatMap((r) => r.folders), ...[...this.closingIn.values()].flat(), ...heldSessionFolders()];
+        const clean = isDir(w.path) && !folders.some(within(w.path)) && (await runGitAsync(w.path, ["status", "--porcelain"], 10_000).catch(() => undefined).then((r) => r?.code === 0 && !r.timedOut && !r.stdout.trim()));
+        if (clean) return w.path;
+        this.taskWorktrees.delete(key);
+        return undefined;
+    }
+
     /** A model this machine has, and an effort it takes: refused (model_unavailable, effort_unavailable) before anything is made. */
     private async checkTaskModel(ref: string, effort: string | undefined): Promise<void> {
         let asked: ReturnType<typeof askedModel>;
@@ -1986,8 +2000,8 @@ export class Engine {
         const suggester = origin.machine ? undefined : this.runtimes.get(origin.session);
         const asked = optText(p.resume, "resume", 4096);
         // The window may have lost the worktree an earlier failed start made (a reload while it ran): this one remembers.
-        const remembered = !asked && p.worktree === true ? this.taskWorktrees.get(origin.key) : undefined;
-        const resume = asked ?? remembered?.path;
+        const remembered = !asked && p.worktree === true ? await this.reusableTaskWorktree(origin.key) : undefined;
+        const resume = asked ?? remembered;
         let made: { path: string; branch: string } | undefined;
         if (p.worktree === true || resume) {
             const top = gitRoot(cwd);

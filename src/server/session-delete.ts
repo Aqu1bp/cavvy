@@ -123,9 +123,14 @@ function removeTree(p: string, depth = 0) {
  * a suggested task's start made and then discarded (engine.ts). A session with a transcript is left alone.
  */
 export function removeUnsavedSession(dir: string, id: string) {
+    checkId(id);
+    // As a delete is (locateSession): a project's folder, and each piece in a folder inside the home (not through a link).
+    if (dirname(dir) !== paths.projectsDir() || !SLUG.test(basename(dir))) throw new RpcError(`Unexpected session folder ${dir}, so nothing was removed.`);
     const [transcript, ...rest] = pieces(dir, id);
     if (present(transcript!.live)) return;
-    for (const p of rest) if (present(p.live)) removeTree(p.live);
+    const gone = rest.filter((p) => present(p.live));
+    for (const p of gone) mustBeInHome(p.live);
+    for (const p of gone) removeTree(p.live);
     forgetFileHistory(join(dir, "file-history", id));
 }
 
