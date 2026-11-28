@@ -215,7 +215,11 @@
     --working: #2444c4;
     --warn: #7b4700;
     --warn-bg: rgba(217, 138, 11, 0.14);
+    /* A request card's edge and the dot of a line that waits on you; its hairline. Marks, not text. */
+    --warn-mark: #d98a0b;
+    --warn-line: #ecd4a0;
     --danger: #a02419;
+    --danger-line: #f1c4bd;
     /* Usage sources (data colours, not the accent): fixed whatever accent is picked, and checked for
        colour-blind separation as a set in each scheme (all pairs ΔE ≥ 9.2 light, 9.4 dark). */
     --src-claude: #eb6834;
@@ -311,7 +315,10 @@
     --working: #a6b7ff;
     --warn: #f0b04a;
     --warn-bg: rgba(240, 176, 74, 0.13);
+    --warn-mark: #f0b04a;
+    --warn-line: #574219;
     --danger: #ff8372;
+    --danger-line: #5c2a23;
     --src-claude: #d95926;
     --src-codex: #3987e5;
     --src-api: #199e70;
@@ -504,6 +511,8 @@
     --ok-soft: color-mix(in srgb, var(--ok) 11%, transparent);
     --plan-soft: color-mix(in srgb, var(--plan) 12%, transparent);
     --auto-soft: color-mix(in srgb, var(--auto) 12%, transparent);
+    /* A code block's or a card's header strip, a step off the well. */
+    --well-head: color-mix(in srgb, var(--fg) 3%, var(--well));
 }
 
 /* In dark, accent text and a hovered fill go lighter, not darker. */
