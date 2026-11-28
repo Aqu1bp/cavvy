@@ -35,7 +35,7 @@ const KEY: [file: string, selector: string, property: string, at14: string][] = 
     ["transcript.css", ".tool-line", "min-height", "26px"],
     ["transcript.css", ".acts-h", "min-height", "26px"],
     ["transcript.css", ".code-body", "padding", "10px 14px"],
-    ["overlays.css", ".pal-row", "min-height", "38px"],
+    ["overlays.css", ".pal-row", "min-height", "32px"],
     ["toasts.css", ".toast", "min-height", "36px"],
     ["terminal.css", ".terminal-tab", "height", "28px"],
     ["tokens.css", ":root", "--radius-sm", "6px"],
@@ -87,7 +87,7 @@ const FRAME: [file: string, selector: string, property: string, value: string][]
     ["tokens.css", ":root", "--r-sheet", "12px"],
     ["tokens.css", ":root", "--gutter", "8px"],
     ["shell.css", ".app", "--win-pad", "0px"],
-    ["header.css", ".header .hb", "height", "30px"],
+    ["header.css", ".header .hb", "height", "28px"],
     ["sidebar.css", ".side-top .hb", "width", "28px"],
     ["sidebar.css", ".side-top .hb", "height", "28px"],
     ["sidebar.css", ".resize-handle", "width", "6px"],
@@ -109,7 +109,7 @@ const SIZING = /^(width|height|min-width|min-height|max-width|max-height|padding
 /** Selectors whose sizes are the window's frame, or depend on it, by file. */
 const FRAME_RULES: Record<string, RegExp> = {
     "base.css": /^(html|::-webkit-scrollbar.*)$/,
-    "header.css": /^(\.header|\.header::before|\.header\.rail-off|\.header\.traffic\.rail-off|\[data-rail="overlay"\] \.header(\.traffic)?|\.bar-rail.*|\.header \.hb(\.diffchip)?|\.insp-lead \.(hb|has-wait(::after)?)|\.cap( \.sep)?)$/,
+    "header.css": /^(\.header|\.header::before|\.header\.rail-off|\.header\.traffic\.rail-off|\[data-rail="overlay"\] \.header(\.traffic)?|\.bar-rail.*|\.header \.hb|\.insp-lead \.(hb|has-wait(::after)?)|\.head-rail-btn\.has-wait::after|\.bar-end|\.head-tools( \.hb)?|\.head-changes)$/,
     // A floating or filling inspector is placed by lib/layout.ts's px (FLOAT_TOP, its gap, floatBottom).
     // Full screen with the sidebar hidden: the title bar's buttons and the rows after them clear the traffic lights.
     // The title bar over a session stops short of its scrollbar (its padding is the bar's, less the scrollbar's width).

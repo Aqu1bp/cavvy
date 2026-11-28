@@ -46,8 +46,8 @@ export function syncWords(s: GitSyncInfo | undefined): string {
 function Counts(p: { sync?: GitSyncInfo }) {
     return (
         <>
-            <Show when={p.sync?.ahead}>{(n) => <span class="br-n"><ArrowUp size={11} />{n()}</span>}</Show>
-            <Show when={p.sync?.behind}>{(n) => <span class="br-n"><ArrowDown size={11} />{n()}</span>}</Show>
+            <Show when={p.sync?.ahead}>{(n) => <span class="main-branch-n"><ArrowUp size={11} />{n()}</span>}</Show>
+            <Show when={p.sync?.behind}>{(n) => <span class="main-branch-n"><ArrowDown size={11} />{n()}</span>}</Show>
         </>
     );
 }
@@ -73,13 +73,13 @@ export function BranchChip(p: { handle: SessionHandle; branch: string }) {
     const words = () => syncWords(sync());
     return (
         <button
-            class="br br-btn"
+            class="main-branch"
             title={withShortcut(`${p.branch}${words() ? ` · ${words()}` : ""}. Switch branch`, "app:switchBranch")}
             aria-label={`Branch ${p.branch}${words() ? `, ${words()}` : ""}. Switch branch`}
             onClick={() => setGitDialog({ kind: "branch", cwd: st().cwd, sessionId: p.handle.id })}
         >
-            <GitBranch size={13} />
-            <span class="truncate">{p.branch}</span>
+            <GitBranch size={12} />
+            <span class="mono">{p.branch}</span>
             <Counts sync={sync()} />
         </button>
     );
@@ -317,9 +317,9 @@ function BranchDialog(p: { cwd: string; sessionId?: string; query?: string }) {
                 <Show when={busy() === "switch"}><Spinner size={13} class="muted" /></Show>
                 <kbd>Esc</kbd>
             </div>
-            <div class="br-sync">
-                <GitBranch size={14} />
-                <span class="br-sync-t truncate">
+            <div class="pal-bar">
+                <GitBranch size={14} class="pal-search" />
+                <span class="pal-bar-t truncate">
                     <b>{sync()?.branch ?? (sync()?.detached ? "Detached HEAD" : list()?.current ?? "")}</b>
                     <Show when={syncWords(sync())}>{(w) => <span class="muted"> · {w()}</span>}</Show>
                 </span>
@@ -330,7 +330,7 @@ function BranchDialog(p: { cwd: string; sessionId?: string; query?: string }) {
                     <Show when={busy() === "pull"} fallback={<ArrowDown size={14} />}><Spinner size={13} /></Show> Pull
                 </button>
             </div>
-            <Show when={note()}>{(n) => <div class={`br-note ${n().level}`} role={n().level === "info" ? "status" : "alert"}>{n().text}</div>}</Show>
+            <Show when={note()}>{(n) => <div class={`pal-msg ${n().level}`} role={n().level === "info" ? "status" : "alert"}>{n().text}</div>}</Show>
             <div class="pal-list" ref={listEl}>
                 <Show when={!list.loading || list()} fallback={<div class="pal-empty">Loading branches…</div>}>
                     <Show when={!list()?.error} fallback={<div class="pal-empty">{list()?.error}</div>}>
@@ -480,11 +480,11 @@ function PrDialog(p: { cwd: string; sessionId?: string; query?: string; start?: 
                 <kbd>Esc</kbd>
             </div>
             <Show when={busy() && busy() !== "sign-in"}>
-                <div class="br-note" role="status">Checking out {prNumber(busy()!) ? `#${prNumber(busy()!)}` : "the pull request"}…</div>
+                <div class="pal-msg" role="status">Checking out {prNumber(busy()!) ? `#${prNumber(busy()!)}` : "the pull request"}…</div>
             </Show>
             <Show when={failure()}>
                 {(f) => (
-                    <div class="br-note error br-fail" role="alert">
+                    <div class="pal-msg error" role="alert">
                         <span>{f().text}<Show when={f().code === "sign_in" && !signInSession()}> Run <code>gh auth login</code> in a terminal.</Show></span>
                         <Show when={f().code === "sign_in" && signInSession()}>
                             <button class="btn sm" disabled={Boolean(busy())} onClick={() => void signIn()}>Sign in to GitHub</button>

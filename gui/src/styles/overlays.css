@@ -447,8 +447,8 @@
     align-items: center;
     gap: calc(12 * var(--sp));
     width: 100%;
-    min-height: calc(38 * var(--sp));
-    padding: calc(5 * var(--sp)) calc(8 * var(--sp)) calc(5 * var(--sp)) calc(10 * var(--sp));
+    min-height: calc(32 * var(--sp));
+    padding: calc(3 * var(--sp)) calc(8 * var(--sp)) calc(3 * var(--sp)) calc(10 * var(--sp));
     border-radius: var(--radius-sm);
     text-align: left;
     color: var(--fg-2);
@@ -2177,43 +2177,55 @@
     color: var(--fg-3);
 }
 
-/* The branch dialog's line under its search: the branch, its upstream counts, Fetch and Pull. */
-.br-sync {
+/* Palette-shaped dialogs (branch, pull request, files): a strip under the search for what the list acts on (the
+   branch, its upstream, Fetch and Pull), and a line for what an action said. */
+.pal-bar {
     display: flex;
     align-items: center;
-    gap: calc(8 * var(--sp));
-    padding: calc(6 * var(--sp)) calc(12 * var(--sp));
-    border-top: 1px solid var(--line);
+    gap: calc(10 * var(--sp));
+    min-height: calc(40 * var(--sp));
+    padding: calc(4 * var(--sp)) calc(8 * var(--sp)) calc(4 * var(--sp)) calc(15 * var(--sp));
     border-bottom: 1px solid var(--line);
-    color: var(--fg-2);
+    background: var(--sheet-2);
+    color: var(--fg-3);
+    font-size: 0.893rem;
 }
 
-.br-sync-t {
+.pal-bar svg {
+    flex: none;
+}
+
+.pal-bar-t {
     flex: 1;
     min-width: 0;
 }
 
-.br-note {
-    padding: calc(7 * var(--sp)) calc(12 * var(--sp));
-    font-size: 0.893rem;
-    color: var(--fg-2);
-    border-bottom: 1px solid var(--line);
+.pal-bar-t b {
+    color: var(--fg);
+    font: 500 0.857rem var(--font-mono);
 }
 
-.br-note.warn {
-    color: var(--warn);
-}
-
-.br-note.error {
-    color: var(--danger);
-}
-
-.br-fail {
+.pal-msg {
     display: flex;
     align-items: center;
     gap: calc(10 * var(--sp));
+    min-height: calc(36 * var(--sp));
+    padding: calc(6 * var(--sp)) calc(8 * var(--sp)) calc(6 * var(--sp)) calc(15 * var(--sp));
+    border-bottom: 1px solid var(--line);
+    color: var(--fg-2);
+    font-size: 0.893rem;
+    line-height: 1.45;
 }
 
-.br-fail > span {
+.pal-msg > span {
     flex: 1;
+    min-width: 0;
+}
+
+.pal-msg.warn {
+    color: var(--warn);
+}
+
+.pal-msg.error {
+    color: var(--danger);
 }

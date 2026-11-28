@@ -95,29 +95,38 @@ export function ProjectScripts(p: { cwd: string; sessionId?: string }) {
 
     return (
         <>
-            <div ref={anchor} class={`script-split ${open() ? "open" : ""}`}>
+            <div ref={anchor} class="scripts" data-open={open() || undefined}>
                 <Show
                     when={main()}
                     fallback={
-                        <button class="hb" title="Project scripts" aria-label="Project scripts" aria-haspopup="menu" aria-expanded={open()} onClick={() => (open() ? close() : openMenu())}>
-                            <Play size={15} />
-                        </button>
+                        // None yet, and nothing to say about the file: adding one is all the menu would offer.
+                        <Show
+                            when={list() && !failed() && !list()!.setAside}
+                            fallback={
+                                <button class="scripts-run solo" title="Project scripts" aria-label="Project scripts" aria-haspopup="menu" aria-expanded={open()} onClick={() => (open() ? close() : openMenu())}>
+                                    <Play size={14} />
+                                </button>
+                            }
+                        >
+                            <button class="scripts-add" disabled={offline()} onClick={() => edit()}>
+                                <Plus size={14} /> Add script
+                            </button>
+                        </Show>
                     }
                 >
                     {(s) => (
                         <>
-                            <button class="hb script-split-main" title={`Run “${s().name}”: ${s().command}`} aria-label={`Run script ${s().name}`} disabled={offline()} onClick={() => run(s())}>
+                            <button class="scripts-run" title={`Run “${s().name}”: ${s().command}`} aria-label={`Run script ${s().name}`} disabled={offline()} onClick={() => run(s())}>
                                 <ScriptGlyph icon={s().icon} size={14} />
-                                <span class="script-split-label truncate">{s().name}</span>
                             </button>
-                            <button class="hb script-split-more" title="Project scripts" aria-label="Project scripts" aria-haspopup="menu" aria-expanded={open()} onClick={() => (open() ? close() : openMenu())}>
+                            <button class="scripts-more" title="Project scripts" aria-label="Project scripts" aria-haspopup="menu" aria-expanded={open()} onClick={() => (open() ? close() : openMenu())}>
                                 <ChevronDown size={13} />
                             </button>
                         </>
                     )}
                 </Show>
             </div>
-            <Popover open={open()} anchor={() => anchor} onClose={close} align="end" width={320} class="scripts-menu">
+            <Popover open={open()} anchor={() => anchor} onClose={close} align="end" width={284} class="scripts-menu">
                 <div class="menu-head">Project scripts</div>
                 <Show when={failed()}>
                     <div class="menu-note tone-err scripts-note">{failed()}</div>
@@ -125,61 +134,53 @@ export function ProjectScripts(p: { cwd: string; sessionId?: string }) {
                 <Show when={list()?.setAside}>
                     {(aside) => (
                         <div class="menu-note scripts-note" title={aside().file}>
-                            {aside().count === 1 ? "1 entry" : `${aside().count} entries`} in {tildify(aside().file, app.hello?.homeDir)} can't be used. Fix {aside().count === 1 ? "it" : "them"} in the file.
+                            {aside().count === 1 ? "1 broken entry" : `${aside().count} broken entries`} in {tildify(aside().file, app.hello?.homeDir)}
                         </div>
                     )}
                 </Show>
                 <Show when={list() && !scripts().length}>
                     <div class="menu-note scripts-note">
-                        Run commands like <code>bun run dev</code> or <code>npm test</code> in one click.
+                        Run <code>bun run dev</code> or <code>npm test</code> in one click.
                     </div>
                 </Show>
                 <For each={scripts()}>
                     {(s, i) => (
-                        <div class={`script-row ${confirming() === s.id ? "confirming" : ""}`}>
-                            <button class="menu-item compact script-run" title={`Run in a new terminal: ${s.command}`} disabled={offline()} onClick={() => run(s)}>
-                                <ScriptGlyph icon={s.icon} size={14} />
-                                <span class="menu-text">
-                                    <span class="script-name">
-                                        <span class="menu-label truncate">{s.name}</span>
+                        <Show
+                            when={confirming() === s.id}
+                            fallback={
+                                <div class="scripts-row">
+                                    <button class="scripts-row-main" title={s.command} disabled={offline()} onClick={() => run(s)}>
+                                        <span class="scripts-row-icon"><ScriptGlyph icon={s.icon} size={14} /></span>
+                                        <span class="scripts-row-name truncate">{s.name}</span>
                                         <Show when={s.runOnWorktreeCreate}>
-                                            <span class="dbadge script-badge" title="Runs in each worktree you create from Cavvy">Setup</span>
+                                            <span class="dbadge" title="Runs in each new worktree">Setup</span>
                                         </Show>
-                                    </span>
-                                    <span class="menu-desc mono truncate">{s.command}</span>
-                                </span>
-                            </button>
-                            <span class="script-acts">
-                                <Show
-                                    when={confirming() === s.id}
-                                    fallback={
-                                        <>
-                                            <Show when={i() > 0}>
-                                                <button class="hb sm" title="Move up" aria-label={`Move ${s.name} up`} disabled={offline()} onClick={() => void moveUp(i())}>
-                                                    <ArrowUp size={13} />
-                                                </button>
-                                            </Show>
-                                            <button class="hb sm" title="Edit" aria-label={`Edit ${s.name}`} disabled={offline()} onClick={() => edit(s)}>
-                                                <Pencil size={13} />
-                                            </button>
-                                            <button class="hb sm" title="Delete" aria-label={`Delete ${s.name}`} disabled={offline()} onClick={() => setConfirming(s.id)}>
-                                                <Trash2 size={13} />
-                                            </button>
-                                        </>
-                                    }
-                                >
-                                    <button class="btn danger sm" onClick={() => void remove(s)}>Delete</button>
-                                    <button class="btn ghost sm" onClick={() => setConfirming(undefined)}>Keep</button>
-                                </Show>
-                            </span>
-                        </div>
+                                    </button>
+                                    <button class="hb sm" title="Move up" aria-label={`Move ${s.name} up`} disabled={offline() || i() === 0} onClick={() => void moveUp(i())}>
+                                        <ArrowUp size={13} />
+                                    </button>
+                                    <button class="hb sm" title="Edit" aria-label={`Edit ${s.name}`} disabled={offline()} onClick={() => edit(s)}>
+                                        <Pencil size={13} />
+                                    </button>
+                                    <button class="hb sm" title="Delete" aria-label={`Delete ${s.name}`} disabled={offline()} onClick={() => setConfirming(s.id)}>
+                                        <Trash2 size={13} />
+                                    </button>
+                                </div>
+                            }
+                        >
+                            <div class="scripts-row scripts-row-confirm">
+                                <span class="scripts-confirm truncate">Delete “{s.name}”?</span>
+                                <button class="btn danger sm" ref={(el) => requestAnimationFrame(() => el.focus())} onClick={() => void remove(s)}>Delete</button>
+                                <button class="btn sm" onClick={() => setConfirming(undefined)}>Keep</button>
+                            </div>
+                        </Show>
                     )}
                 </For>
                 <Show when={list()}>
                     <Show when={scripts().length}>
                         <div class="menu-sep" />
                     </Show>
-                    <button class="menu-item compact" disabled={offline() || scripts().length >= SCRIPT_LIMITS.perProject} title={scripts().length >= SCRIPT_LIMITS.perProject ? `A project can have at most ${SCRIPT_LIMITS.perProject} scripts` : undefined} onClick={() => edit()}>
+                    <button class="menu-item compact" disabled={offline() || scripts().length >= SCRIPT_LIMITS.perProject} title={scripts().length >= SCRIPT_LIMITS.perProject ? `At most ${SCRIPT_LIMITS.perProject} scripts` : undefined} onClick={() => edit()}>
                         <Plus size={14} /> {scripts().length ? "Add script…" : "Add your first script…"}
                     </button>
                 </Show>
@@ -232,7 +233,6 @@ function ScriptDialog(p: { cwd: string; link: Rpc; online: boolean; scripts: Pro
             onClose={p.onClose}
             width={480}
             title={p.editing?.script ? "Edit script" : "Add script"}
-            subtitle="Runs in the session's folder when you click it."
         >
             <label class="script-field">
                 <span class="script-field-label">Name</span>
@@ -241,7 +241,6 @@ function ScriptDialog(p: { cwd: string; link: Rpc; online: boolean; scripts: Pro
             <label class="script-field">
                 <span class="script-field-label">Command</span>
                 <input class="input mono" value={command()} maxLength={SCRIPT_LIMITS.command} placeholder="bun run dev" spellcheck={false} autocomplete="off" autocapitalize="off" onInput={(e) => setCommand(e.currentTarget.value)} onKeyDown={onKey} />
-                <span class="script-field-hint">One line. Join commands with && or ;.</span>
             </label>
             <div class="script-field">
                 <span class="script-field-label">Icon</span>
@@ -262,11 +261,9 @@ function ScriptDialog(p: { cwd: string; link: Rpc; online: boolean; scripts: Pro
                     <input type="checkbox" checked={setup()} onChange={(e) => setSetup(e.currentTarget.checked)} />
                     <span>Run when a worktree is created</span>
                 </label>
-                <span class="script-field-hint">
-                    Only in projects you trust. You can skip it when creating a worktree.
-                </span>
+                <span class="script-field-hint">Only in projects you trust.</span>
                 <Show when={setup() && replaced()}>
-                    {(r) => <span class="script-field-hint">A project has one setup script: this replaces “{r().name}”.</span>}
+                    {(r) => <span class="script-field-hint">Replaces “{r().name}”.</span>}
                 </Show>
             </div>
             <Show when={error()}>
