@@ -34,15 +34,28 @@ function readKept(name: string): unknown {
         return undefined;
     }
 }
-function writeKept(name: string, sessions: unknown[]) {
+function writeKept(name: string, sessions: unknown[], file = keptFile(name)) {
     try {
         ensureDir(join(cavvyHome(), "servers"));
-        const tmp = `${keptFile(name)}.tmp`;
+        const tmp = `${file}.tmp`;
         writeFileSync(tmp, JSON.stringify(sessions), { mode: 0o600 });
-        renameSync(tmp, keptFile(name));
+        renameSync(tmp, file);
     } catch {
         // Not kept this time: listed again once it's reached.
     }
+}
+/** The changes made to a server's sessions here while it couldn't be reached, not sent yet (watch.ts PendingChange). */
+const pendingFile = (name: string) => join(cavvyHome(), "servers", `${encodeURIComponent(name)}.pending.json`);
+function readPending(name: string): unknown {
+    try {
+        return existsSync(pendingFile(name)) ? JSON.parse(readFileSync(pendingFile(name), "utf8")) : undefined;
+    } catch {
+        return undefined;
+    }
+}
+function writePending(name: string, changes: unknown[]) {
+    if (!changes.length) return void rmSync(pendingFile(name), { force: true });
+    writeKept(name, changes, pendingFile(name));
 }
 
 export interface ServerProgress {
@@ -155,6 +168,7 @@ export class ServerLinks {
             w.stop();
             this.watches.delete(name);
             rmSync(keptFile(name), { force: true });
+            rmSync(pendingFile(name), { force: true });
             this.o.onOverview?.({ name, state: "removed", sessions: [] });
         }
         for (const name of names) {
@@ -171,6 +185,7 @@ export class ServerLinks {
                 peers: this.o.peers && ((op, params) => this.o.peers!(name, op, params)),
                 retryMs: this.o.watchRetryMs,
                 kept: { read: () => readKept(name), write: (sessions) => writeKept(name, sessions) },
+                pending: { read: () => readPending(name), write: (changes) => writePending(name, changes) },
             });
             this.watches.set(name, w);
             w.start();
@@ -642,6 +657,7 @@ export class ServerLinks {
         if (leaving) {
             this.watches.delete(name);
             rmSync(keptFile(name), { force: true });
+            rmSync(pendingFile(name), { force: true });
             this.o.onOverview?.({ name, state: "removed", sessions: [] });
         }
         const entry = removeServer(name);

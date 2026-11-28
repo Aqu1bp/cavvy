@@ -10,6 +10,48 @@ import type { ConnectResult, MachineOverview, RELAYED_ARCHIVE_OFFER, RELAYED_SES
 import { openBoundedSocket, type BoundedSocket } from "./bounded-socket";
 import type { SyncRunResult } from "./sync-state";
 
+/** What a session's row offers that can be done here while the server can't be reached, and sent to it once it's back. */
+const QUEUED = ["session.rename", "session.pin", "session.settle", "session.archive", "session.neverSettle", "session.snooze", "session.delete"] as const;
+/** A change to a session there, made here while the server couldn't be reached: sent to it, in order, once it's back. */
+export interface PendingChange {
+    method: (typeof QUEUED)[number];
+    params: Record<string, unknown> & { id: string };
+}
+/** Changes waiting for a server that's away: only so many (the oldest go). */
+const MAX_PENDING = 1000;
+/** A change the server didn't take for a reason of this machine's (busy, slow): tried again this soon. */
+const PENDING_RETRY_MS = 5000;
+
+/** A pending change as written down, checked as it's read back. */
+function pendingChange(v: unknown): PendingChange | undefined {
+    const o = (v && typeof v === "object" ? v : {}) as { method?: unknown; params?: unknown };
+    const method = QUEUED.find((m) => m === o.method);
+    const params = o.params && typeof o.params === "object" && !Array.isArray(o.params) ? (o.params as Record<string, unknown>) : undefined;
+    if (!method || typeof params?.id !== "string" || !/^[\w.-]{1,120}$/.test(params.id)) return undefined;
+    return { method, params: params as PendingChange["params"] };
+}
+
+/** A session with a pending change made to it, as it will be once the server has it. */
+function changed(s: SessionSummary, c: PendingChange): SessionSummary {
+    const p = c.params;
+    switch (c.method) {
+        case "session.rename":
+            return typeof p.title === "string" && p.title.trim() ? { ...s, title: cut(p.title.trim(), 200) } : s;
+        case "session.pin":
+            return { ...s, pinned: p.pinned === true };
+        case "session.settle":
+            return { ...s, settled: p.settled === true };
+        case "session.archive":
+            return { ...s, archived: p.archived === true };
+        case "session.neverSettle":
+            return p.on === true ? { ...s, neverSettle: true } : { ...s, neverSettle: undefined };
+        case "session.snooze":
+            return typeof p.until === "number" && Number.isFinite(p.until) ? { ...s, snoozedUntil: p.until } : { ...s, snoozedUntil: undefined };
+        case "session.delete":
+            return s;
+    }
+}
+
 /** A call of a tool this machine lends, as the server sent it. */
 export interface LentCall {
     tool: string;
@@ -157,10 +199,19 @@ export class MachineWatch {
              * reached, though it couldn't be from the start.
              */
             kept?: { read: () => unknown; write: (sessions: SessionSummary[]) => void };
+            /** The changes made here while it couldn't be reached and not sent yet, kept from one run to the next. */
+            pending?: { read: () => unknown; write: (changes: PendingChange[]) => void };
         },
     ) {}
 
     start() {
+        if (this.o.pending && !this.pending.length) {
+            const rows = this.o.pending.read();
+            for (const v of Array.isArray(rows) ? rows.slice(-MAX_PENDING) : []) {
+                const c = pendingChange(v);
+                if (c) this.pending.push(c);
+            }
+        }
         if (this.o.kept && !this.sessions.size) {
             const rows = this.o.kept.read();
             for (const v of Array.isArray(rows) ? rows.slice(0, 2 * HEARD) : []) {
@@ -229,14 +280,88 @@ export class MachineWatch {
 
     /** Its sessions as last heard, archived ones among them, the most recent first. */
     overview(): MachineOverview {
-        return { name: this.name, state: this.state, sessions: [...this.sessions.values()].map((s) => this.shown(s)).sort((a, b) => b.updatedAt - a.updatedAt) };
+        return { name: this.name, state: this.state, sessions: [...this.sessions.values()].filter((s) => !this.deleting(s.id)).map((s) => this.shown(s)).sort((a, b) => b.updatedAt - a.updatedAt) };
+    }
+
+    /** Changes made here while the server couldn't be reached, oldest first: sent once it's back. */
+    private pending: PendingChange[] = [];
+    /** The one of those being sent now. */
+    private sending?: PendingChange;
+    private pendingTimer?: ReturnType<typeof setTimeout>;
+
+    /** Deleted here, and not yet there. */
+    private deleting(id: string): boolean {
+        return this.pending.some((c) => c.method === "session.delete" && c.params.id === id);
+    }
+
+    private savePending() {
+        this.o.pending?.write(this.pending);
+    }
+
+    /** A session's row as it is now said again: gone while it's being deleted. */
+    private reshow(id: string) {
+        const s = this.sessions.get(id);
+        if (!s) return;
+        this.say(this.deleting(id) ? { remove: id } : { session: this.shown(s) });
+    }
+
+    /** Done here at once, and sent to the server once it's back (or now, after those before it). */
+    private queue(c: PendingChange) {
+        // The last word on a thing stands: an earlier one not on its way yet is let go.
+        if (c.method !== "session.delete") this.pending = this.pending.filter((x) => x === this.sending || x.method !== c.method || x.params.id !== c.params.id);
+        this.pending.push(c);
+        if (this.pending.length > MAX_PENDING) this.pending.splice(this.pending[0] === this.sending ? 1 : 0, 1);
+        this.savePending();
+        this.reshow(c.params.id);
+        void this.flush();
+    }
+
+    /** The changes made while the server was away, sent in order: until one can't be, for a reason of this machine's. */
+    private async flush() {
+        if (this.sending || !this.isConnected()) return;
+        clearTimeout(this.pendingTimer);
+        while (this.pending.length && this.isConnected() && !this.stopped) {
+            const c = (this.sending = this.pending[0]!);
+            let took: boolean;
+            try {
+                await this.request(c.method, c.params, MAX_ANSWER);
+                took = true;
+            } catch (e) {
+                // Not now (it went away, it's busy): tried again later, in the same order.
+                if (!(e as { theirs?: boolean }).theirs) {
+                    this.sending = undefined;
+                    if (this.isConnected() && !this.stopped) {
+                        this.pendingTimer = setTimeout(() => void this.flush(), PENDING_RETRY_MS);
+                        (this.pendingTimer as { unref?: () => void }).unref?.();
+                    }
+                    return;
+                }
+                // Refused there (the session is gone, say): the row shows what the server has.
+                took = false;
+            }
+            this.sending = undefined;
+            this.pending = this.pending.filter((x) => x !== c);
+            this.savePending();
+            const id = c.params.id;
+            const s = this.sessions.get(id);
+            if (took && s) {
+                // What it is there now, without waiting to hear it: the row doesn't go back and forth.
+                if (c.method === "session.delete") this.sessions.delete(id);
+                else this.sessions.set(id, changed(s, c));
+                this.keepSoon();
+            }
+            if (!took || c.method !== "session.delete") this.reshow(id);
+        }
     }
 
     /** The sessions there that wait for the user's answer on this machine (it lends them a tool, and asks first). */
     private asking = new Set<string>();
 
     /** A session as the list shows it now. */
-    private shown(s: SessionSummary): SessionSummary {
+    private shown(heard: SessionSummary): SessionSummary {
+        // With the changes made here that the server doesn't have yet.
+        let s = heard;
+        for (const c of this.pending) if (c.params.id === s.id) s = changed(s, c);
         // While it isn't heard from, what it last said of a session at work would be a ring for news that isn't coming.
         if (this.state !== "connected" && this.state !== "connecting") return this.resting(s);
         // Waiting, though the server doesn't know it: it's this machine that asks.
@@ -285,6 +410,22 @@ export class MachineWatch {
      * that server. Its answer is passed on only if it's small; what went wrong, in a few of its words.
      */
     call(method: (typeof RELAYED_SESSION_METHODS)[number] | typeof RELAYED_ARCHIVE_OFFER, params: Record<string, unknown>): Promise<unknown> {
+        const id = typeof params.id === "string" ? params.id : "";
+        // Deleted here while the server was away, and brought back (Undo) before it was sent: it never goes.
+        const undone = method === "session.restore" ? this.pending.find((c) => c !== this.sending && c.method === "session.delete" && c.params.id === id) : undefined;
+        if (undone) {
+            this.pending = this.pending.filter((c) => c !== undone);
+            this.savePending();
+            this.reshow(id);
+            return Promise.resolve(null);
+        }
+        // A session listed here, while the server can't be reached (or there are changes before it still to send):
+        // done here now, and there once it's back. Archiving from here never removes a worktree, so there's nothing to ask first.
+        const queued = QUEUED.find((m) => m === method);
+        if ((queued || method === "session.archiveOffer") && this.sessions.has(id) && (!this.isConnected() || this.pending.length)) {
+            if (queued) this.queue({ method: queued, params: { ...params, id } });
+            return Promise.resolve(null);
+        }
         // A title is a model's answer there: it can take a CLI's start and a reply.
         return this.request(method, params, MAX_ANSWER, method === "session.regenerateTitle" ? 75_000 : undefined);
     }
@@ -431,6 +572,7 @@ export class MachineWatch {
         clearTimeout(this.installTimer);
         clearTimeout(this.timer);
         clearTimeout(this.keepTimer);
+        clearTimeout(this.pendingTimer);
         this.keepTimer = undefined;
         this.settleWs?.(false);
         this.settleWs = undefined;
@@ -568,6 +710,8 @@ export class MachineWatch {
                 const kinds = this.o.lends?.() ?? [];
                 if (kinds.length && this.o.lend) ws.send(JSON.stringify({ id: this.nextId++, method: "offers.set", params: { kinds, mode: (sentMode = (this.o.lendMode?.() ?? "default")) } }));
                 this.resync();
+                // What was changed here while it was away.
+                void this.flush();
                 if (this.o.peers) ws.send(JSON.stringify({ id: this.nextId++, method: "peers.hub", params: {} }));
                 return;
             }
@@ -594,7 +738,7 @@ export class MachineWatch {
                 if (!s) return;
                 this.sessions.delete(s.id);
                 this.sessions.set(s.id, s);
-                this.say({ session: this.shown(s) });
+                if (!this.deleting(s.id)) this.say({ session: this.shown(s) });
                 // Bounded, whatever the server sends.
                 this.bound(true);
                 this.keepSoon();
