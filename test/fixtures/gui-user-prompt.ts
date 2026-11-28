@@ -4,6 +4,7 @@ import * as solid from "../../gui/node_modules/solid-js/dist/solid.js";
 import { all, component, node, renderer, text, type Node } from "../helpers/gui-render";
 import { plural, promptTime, shortPrompt } from "../../gui/src/lib/format";
 import { linesLabel, linesPhrase, splitComments } from "../../gui/src/lib/review-comments";
+import { tip } from "../../gui/src/lib/tip";
 
 // The real UserPrompt (compiled from TurnView.tsx); icons, Copy and the image fetch are stand-ins.
 const source = readFileSync(new URL("../../gui/src/components/TurnView.tsx", import.meta.url), "utf8").replace(/^import [\s\S]*?;\n/gm, "");
@@ -25,7 +26,8 @@ const UserPrompt = component(source, "UserPrompt", {
     toast: (m: string) => toasts.push(m),
     setViewedImage: (v: (typeof viewed)[number]) => viewed.push(v),
     openReview() {},
-    CopyButton: (p: { label: string }) => { const n = node("copy"); n.props.label = p.label; return n; },
+    tip,
+    CopyButton: (p: { label: string; words?: string }) => { const n = node("copy"); n.props.label = p.label; n.props.words = p.words; return n; },
     BellRing: icon("bell"), Clock: icon("clock"), SquareTerminal: icon("terminal"), MessageSquareText: icon("comment"), FileText: icon("file"), RotateCcw: icon("rewind"),
 });
 
@@ -40,7 +42,7 @@ const mount = (turn: Record<string, unknown>, onRewind?: (i: number) => void) =>
 };
 const at = new Date(2026, 9, 22, 9, 41).getTime();
 
-test("your words: the bubble, then under it (outside it) the time, Copy and Rewind", () => {
+test("your words: the bubble, then under it (outside it) Copy and Rewind as icons, and no time", () => {
     const { row, dispose } = mount({ prompt: { text: "status?", index: 4 }, startedAt: at }, (i) => rewinds.push(i));
     expect(classOf(row)).toEqual(["msg-user"]);
     expect(kids(row).map((c) => classOf(c)[0])).toEqual(["bubble", "msg-actions"]);
@@ -52,11 +54,12 @@ test("your words: the bubble, then under it (outside it) the time, Copy and Rewi
     expect(text(bubble)).toBe("status?");
     const actions = kids(row)[1]!;
     expect(actions.props["data-find-skip"]).toBe(true);
-    const time = all(actions).find((n) => n.tag === "time")!;
-    expect(text(time)).toBe(promptTime(at));
-    expect(time.props.dateTime).toBe(new Date(at).toISOString());
+    expect(all(actions).some((n) => n.tag === "time")).toBe(false);
     expect(all(actions).find((n) => n.tag === "copy")?.props.label).toBe("Copy prompt");
+    expect(all(actions).find((n) => n.tag === "copy")?.props.words).toBeUndefined();
     const rewind = all(actions).find((n) => n.props["aria-label"] === "Rewind to before this prompt")!;
+    expect(rewind.props["data-tip"]).toBe("Rewind to before this prompt");
+    expect(text(rewind)).toBe("");
     rewind.props.onClick();
     expect(rewinds).toEqual([4]);
     dispose();
