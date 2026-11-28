@@ -12,6 +12,7 @@ import { checkCommandColumns } from "./command-columns";
 import { checkPaletteDelete } from "./palette-delete";
 import { checkDiffComments } from "./diff-comments";
 import { checkModelPicker } from "./model-picker";
+import { checkTooltips } from "./tooltips";
 import "../src/styles/tokens.css";
 import "../src/styles/base.css";
 import "../src/styles/kit.css";
@@ -260,8 +261,8 @@ async function checkStoppedLine() {
     }
 }
 
-run().then(() => checkNoticeDetails()).then(() => checkStoppedLine()).then(() => checkCommandFollow()).then(() => checkCommandColumns(root)).then(() => checkEditorFind(root)).then(() => checkPaletteDelete(root)).then(() => checkTranscriptScroll(root)).then(() => checkDiffComments(root)).then(() => checkModelPicker(root)).then(() => {
-    result.textContent = "PASS: live tool find; notice details; stopped line; command output follows; command columns; deferred file links and ranges; editor actions and find keys; deleted palette hits; transcript scroll; diff comments; model picker";
+run().then(() => checkNoticeDetails()).then(() => checkStoppedLine()).then(() => checkCommandFollow()).then(() => checkCommandColumns(root)).then(() => checkEditorFind(root)).then(() => checkPaletteDelete(root)).then(() => checkTranscriptScroll(root)).then(() => checkDiffComments(root)).then(() => checkModelPicker(root)).then(() => checkTooltips(root)).then(() => {
+    result.textContent = "PASS: live tool find; notice details; stopped line; command output follows; command columns; deferred file links and ranges; editor actions and find keys; deleted palette hits; transcript scroll; diff comments; model picker; tooltips";
     result.dataset.status = "passed";
 }).catch((error) => {
     result.textContent = String(error.stack ?? error);

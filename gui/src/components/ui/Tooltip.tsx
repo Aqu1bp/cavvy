@@ -29,7 +29,7 @@ export function Tooltips() {
         /** The element a press landed on: it gets no tooltip until the pointer leaves it (as Radix does). */
         let pressed: Element | undefined;
 
-        const target = (n: EventTarget | null) => (n instanceof Element ? n.closest("[data-tip], [title]") : null);
+        const target = (n: EventTarget | null) => (n instanceof Element ? n.closest("[data-tip], [title], [data-tip-held]") : null);
 
         /** The element whose native title is held back while it's pointed at or focused, so the system's tooltip doesn't show too. */
         let held: { el: Element; title: string; named: boolean; described: boolean } | undefined;
@@ -41,6 +41,8 @@ export function Tooltips() {
             const title = el.getAttribute("title");
             if (title === null) return el.getAttribute("data-tip") || undefined;
             el.removeAttribute("title");
+            // Still found as the element with the tooltip while its title is held.
+            el.setAttribute("data-tip-held", "");
             const labelled = el.hasAttribute("aria-label") || el.hasAttribute("aria-labelledby");
             const named = !labelled && !el.textContent?.trim();
             const described = !named && !el.hasAttribute("aria-describedby") && !el.hasAttribute("aria-description");
@@ -54,6 +56,7 @@ export function Tooltips() {
             if (!held) return;
             const { el, title, named, described } = held;
             held = undefined;
+            el.removeAttribute("data-tip-held");
             if (named) el.removeAttribute("aria-label");
             if (described) el.removeAttribute("aria-description");
             // Unless the app set a new one meanwhile.
