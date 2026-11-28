@@ -99,8 +99,15 @@ export interface SyncFile {
     exec?: boolean;
 }
 
-/** This machine's skills, commands, agents, memory, themes and keybindings that a server should have, by their path there. */
-export function localSyncFiles(): Map<string, SyncFile> {
+/** At most this many files looked at for a sync: well past what's sent (MAX_FILES), short of a folder that never ends. */
+const MAX_SCANNED = 10 * MAX_FILES;
+
+/**
+ * This machine's skills, commands, agents, memory, themes and keybindings that a server should have, by their path
+ * there. Over the limits (MAX_FILES, MAX_TOTAL), the smallest skills, agents and files go first: one big skill takes
+ * what's left rather than crowding out the rest. `only`: just the paths it matches.
+ */
+export function localSyncFiles(only?: RegExp): Map<string, SyncFile> {
     const out = new Map<string, SyncFile>();
     let total = 0;
     const takeFile = (path: string, dest: string) => {
@@ -118,7 +125,17 @@ export function localSyncFiles(): Map<string, SyncFile> {
             // unreadable or gone
         }
     };
-    const visit = (from: string, to: string, depth: number, top: boolean) => {
+    // Found first, by what each is part of: a skill or agent's folder, or a file of its own.
+    const groups = new Map<string, { size: number; files: { path: string; dest: string }[] }>();
+    let scanned = 0;
+    const found = (group: string, path: string, dest: string, size: number) => {
+        if (!syncablePath(dest) || (only && !only.test(dest)) || size > MAX_FILE || SECRET_NAME.test(basename(path))) return;
+        let g = groups.get(group);
+        if (!g) groups.set(group, (g = { size: 0, files: [] }));
+        g.size += size;
+        g.files.push({ path, dest });
+    };
+    const visit = (from: string, to: string, depth: number, group: string | undefined) => {
         let names: string[];
         try {
             names = readdirSync(from).sort();
@@ -127,26 +144,36 @@ export function localSyncFiles(): Map<string, SyncFile> {
         }
         for (const name of names) {
             const dest = `${to}/${name}`;
-            if (SKIP_DIR.has(name) || cliOwned(dest) || out.size >= MAX_FILES) continue;
+            if (SKIP_DIR.has(name) || cliOwned(dest) || scanned >= MAX_SCANNED) continue;
             const path = join(from, name);
             try {
                 const l = lstatSync(path);
                 // A link is followed only at the top (a skill or agent kept elsewhere), as the copy does.
-                if (l.isSymbolicLink() && !top) continue;
+                if (l.isSymbolicLink() && group !== undefined) continue;
                 const st = statSync(path);
                 if (st.isDirectory()) {
                     if (isProtectedCredentialPath(path)) continue;
-                    if (depth > 0) visit(path, dest, depth - 1, false);
+                    if (depth > 0) visit(path, dest, depth - 1, group ?? dest);
                     continue;
                 }
-                if (st.isFile()) takeFile(path, dest);
+                if (st.isFile()) {
+                    scanned++;
+                    found(group ?? dest, path, dest, st.size);
+                }
             } catch {
                 continue;
             }
         }
     };
-    for (const r of syncedRoots()) visit(r.from, r.to, 6, true);
-    for (const f of syncedSingleFiles()) takeFile(f.from, f.to);
+    for (const r of syncedRoots()) visit(r.from, r.to, 6, undefined);
+    for (const f of syncedSingleFiles()) {
+        try {
+            found(f.to, f.from, f.to, statSync(f.from).size);
+        } catch {
+            // not there
+        }
+    }
+    for (const g of [...groups.values()].sort((a, b) => a.size - b.size)) for (const f of g.files) takeFile(f.path, f.dest);
     return out;
 }
 
@@ -436,9 +463,8 @@ export interface SyncFilesResult {
  * changed and what's gone. `ask` is a call over the connection to it.
  */
 export async function syncTo(ask: (method: string, params: Record<string, unknown>) => Promise<unknown>, o: { basic?: boolean } = {}): Promise<SyncFilesResult> {
-    const all = localSyncFiles();
     // A server whose sync hasn't been turned on gets only what every server always had: skills and commands.
-    const mine = o.basic ? new Map([...all].filter(([p]) => BASIC_PATH.test(p))) : all;
+    const mine = localSyncFiles(o.basic ? BASIC_PATH : undefined);
     const theirs = await ask("sync.files", {});
     const given = theirs && typeof theirs === "object" ? (theirs as Record<string, unknown>) : {};
     const send = [...mine.values()].filter((f) => given[f.path] !== f.sha);
