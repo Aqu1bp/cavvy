@@ -33,6 +33,10 @@ export function WorktreePicker(p: { cwd: string; branch?: string }) {
     const label = (w: WorktreeInfo) => w.branch || (w.detached ? `Detached · ${w.head?.slice(0, 7) ?? "HEAD"}` : "Worktree");
     const main = () => here()?.worktrees.find((w) => w.main);
     const current = () => here()?.worktrees.find((w) => w.current);
+    const tilde = (w: WorktreeInfo) => tildify(w.path, app.hello?.homeDir);
+    // Under the branch: inside the main checkout, the path from there; else the whole path, from ~. The tooltip has the
+    // whole path where the row shows only part of it.
+    const shownPath = (w: WorktreeInfo) => (main() && w.path.startsWith(main()!.path + "/") ? w.path.slice(main()!.path.length + 1) : tilde(w));
     const toggle = () => {
         // Opened, it lists them again (one may have been made or removed elsewhere since), unless that's under way.
         if (!open() && !listing.loading) void refetch();
@@ -61,7 +65,7 @@ export function WorktreePicker(p: { cwd: string; branch?: string }) {
                         <div class="wt-list" role="listbox" aria-label="Worktrees">
                             <For each={here()?.worktrees}>
                                 {(w) => <div class="wt-row">
-                                    <button type="button" role="option" aria-selected={w.current} class="menu-item menu-item-two wt-item" disabled={!w.exists || w.prunable !== undefined} title={w.path} onClick={async () => {
+                                    <button type="button" role="option" aria-selected={w.current} class="menu-item menu-item-two wt-item" disabled={!w.exists || w.prunable !== undefined} title={shownPath(w) === tilde(w) ? undefined : tilde(w)} onClick={async () => {
                                         setOpen(false);
                                         await openProject(w.path, true);
                                         requestComposerFocus();
@@ -73,7 +77,7 @@ export function WorktreePicker(p: { cwd: string; branch?: string }) {
                                         <span class="menu-item-text">
                                             <span class={`menu-item-name ${w.branch ? "mono" : ""}`}>{label(w)}</span>
                                             <span class="menu-item-sub wt-path">
-                                                <span class="mono truncate">{main() && w.path.startsWith(main()!.path + "/") ? w.path.slice(main()!.path.length + 1) : tildify(w.path, app.hello?.homeDir)}</span>
+                                                <span class="mono truncate">{shownPath(w)}</span>
                                                 <Show when={w.main}><span class="wt-main">· main checkout</span></Show>
                                             </span>
                                             <Show when={!w.exists || w.prunable !== undefined || w.locked !== undefined}>
@@ -106,7 +110,6 @@ export function WorktreePicker(p: { cwd: string; branch?: string }) {
                     </Show>
                 </Show>
             </Show>
-            <p class="menu-foot">New sessions run in the selected folder.</p>
         </Popover>
         <Show when={creating()}>{(r) => <NewWorktreeDialog request={r()} onClose={() => setCreating(undefined)} />}</Show>
         <Show when={removing()}>{(r) => <RemoveWorktreeDialog request={r()} onClose={() => setRemoving(undefined)} />}</Show>

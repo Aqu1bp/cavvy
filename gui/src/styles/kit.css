@@ -695,16 +695,6 @@ button.menu-item:focus-visible {
     text-overflow: ellipsis;
 }
 
-.menu-foot {
-    margin: calc(5 * var(--sp)) calc(-5 * var(--sp)) calc(-5 * var(--sp));
-    padding: calc(8 * var(--sp)) calc(14 * var(--sp));
-    border-top: 1px solid var(--line);
-    background: var(--fill-1);
-    border-radius: 0 0 calc(10 * var(--sp)) calc(10 * var(--sp));
-    color: var(--text-3);
-    font-size: calc(12 * var(--sp));
-}
-
 /* ---- Dialogs (ui/Dialog.tsx) ---- */
 
 .overlay {

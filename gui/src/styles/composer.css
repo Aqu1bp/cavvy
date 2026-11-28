@@ -1081,11 +1081,33 @@ button.meter[aria-expanded="true"] {
     width: calc(404 * var(--sp));
 }
 
+/* Cavvy: in a short window the popover gets the room there is (its max-height) and the list gives way, scrolling
+   inside, so the heading and the actions under it stay in sight. */
+.popover.wt-menu {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.popover.wt-menu > * {
+    flex: none;
+}
+
 .wt-list {
     display: flex;
     flex-direction: column;
     max-height: calc(316 * var(--sp));
     overflow-y: auto;
+}
+
+.popover.wt-menu > .wt-list {
+    flex: 0 1 auto;
+    min-height: calc(46 * var(--sp));
+}
+
+/* The folder new sessions run in, lit as the design shows it when the menu opens. */
+.wt-item[aria-selected="true"] {
+    background: var(--fill-2);
 }
 
 .wt-row {
