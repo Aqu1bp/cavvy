@@ -105,7 +105,7 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
     // Unavailable, not disabled: the tooltip still says why, to the pointer and the keyboard.
     const compactTitle = () => (!state() ? "Available in a session" : busy() ? "Available when the reply finishes" : undefined);
     const compactItem = () => (
-        <button class="btn sm cx-compact" aria-disabled={busy() || undefined} title={compactTitle()} onClick={() => {
+        <button class="btn btn-sm ctx-compact" aria-disabled={busy() || undefined} title={compactTitle()} onClick={() => {
             if (busy() || !p.sessionId) return;
             close();
             void rpc.call("session.compact", { id: p.sessionId }).catch(reportError);
@@ -135,18 +135,16 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
                 fallback={
                     <Show when={near()}>
                         {(n) => (
-                            <span class="ctx-limit" role="status" aria-label={`${name()}: ${n().pct}% of ${n().window ?? "plan"} limit${n().resets ? `, resets ${n().resets}` : ""}`} title={n().resets ? `Resets ${n().resets}` : undefined}>
-                                <b class="num" aria-hidden="true">{n().pct}%</b>
-                                <span class="lbl" aria-hidden="true">of {n().window ?? "plan"} limit</span>
+                            <span class="meter meter-static num" data-tone={n().pct >= 90 ? "red" : n().pct >= 70 ? "amber" : undefined} role="status" aria-label={`${name()}: ${n().pct}% of ${n().window ?? "plan"} limit${n().resets ? `, resets ${n().resets}` : ""}`} title={n().resets ? `Resets ${n().resets}` : undefined}>
+                                <span aria-hidden="true">{n().pct}% of {n().window ?? "plan"} limit</span>
                             </span>
                         )}
                     </Show>
                 }
             >
                 {(st) => (
-                    <span class="ctx-limit" role="status" aria-label={`${name()}: ${stopWords()}`} title={st().resets ? `Resets ${st().resets}` : undefined}>
-                        <b aria-hidden="true">{st().window ? limitName(st().window!) : "Plan"}</b>
-                        <span class="lbl" aria-hidden="true">limit reached</span>
+                    <span class="meter meter-static" data-tone="amber" role="status" aria-label={`${name()}: ${stopWords()}`} title={st().resets ? `Resets ${st().resets}` : undefined}>
+                        <span aria-hidden="true">{st().window ? limitName(st().window!) : "Plan"} limit reached</span>
                     </span>
                 )}
             </Show>
@@ -156,7 +154,8 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
             <button
                 ref={btn}
                 type="button"
-                class={`ctx-btn tone-${tone()} ${open() ? "open" : ""}`}
+                class={`meter tone-${tone()}`}
+                data-tone={tone() === "danger" ? "red" : tone() === "warning" ? "amber" : undefined}
                 aria-haspopup="dialog"
                 aria-expanded={open()}
                 aria-controls={open() ? panelId : undefined}
@@ -167,41 +166,41 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
                 }}
             >
                 {/* Under the composer, in words: "4% context". */}
-                <span class="ctx-num num" aria-hidden="true">{shownPct() === undefined ? "Context" : `${shownPct()}% context`}</span>
+                <span class="num" aria-hidden="true">{shownPct() === undefined ? "Context" : `${shownPct()}% context`}</span>
             </button>
-            <Popover open={open()} anchor={() => btn} onClose={close} placement="top" align="start" width={width} class="ctx-card">
-                <div ref={panel} id={panelId} class="cx" role="dialog" aria-label="Context and session" tabIndex={-1}
+            <Popover open={open()} anchor={() => btn} onClose={close} placement="top" align="start" offset={6} width={width} class="menu ctx-card">
+                <div ref={panel} id={panelId} style={{ outline: "none" }} role="dialog" aria-label="Context and session" tabIndex={-1}
                     onFocusOut={(e) => {
                         const to = e.relatedTarget as Node | null;
                         if (to && !panel?.contains(to) && to !== btn) close();
                     }}>
-                    <div class="cx-title">Context and session</div>
+                    <div class="ctx-title">Context and session</div>
                     {/* A reached limit stops this session, so it's the one plan state said here, with the accounts to switch to. */}
                     <Show when={stop()}>{(st) => (
-                        <section class="cx-block" aria-label="Plan limit">
+                        <section class="ctx-block" aria-label="Plan limit">
                             {/* Named by the limit that stops this session, the one that lifts last: "Fable limit reached", "Weekly limit reached". */}
-                            <p class={`cx-limit ${st().credits ? "credits" : ""}`}>{`${st().window ? `${limitName(st().window!)} limit reached` : "Limit reached"}${st().credits ? ", using credits" : ""}`}</p>
-                            <div class="cx-line">
-                                <span class="cx-name">{name()}</span>
-                                <Show when={st().resets}>{(r) => <span class="cx-dim">Resets {r()}</span>}</Show>
+                            <p class={`ctx-limit ${st().credits ? "" : "stop"}`}>{`${st().window ? `${limitName(st().window!)} limit reached` : "Limit reached"}${st().credits ? ", using credits" : ""}`}</p>
+                            <div class="ctx-line">
+                                <span class="ctx-name">{name()}</span>
+                                <Show when={st().resets}>{(r) => <span class="ctx-dim">Resets {r()}</span>}</Show>
                             </div>
                             <Show when={p.sessionId}>
-                                <Show when={checking()}><span class="cx-dim" role="status">Checking accounts…</span></Show>
-                                <For each={alternatives()}>{(a) => <button class="btn sm cx-account" disabled={busy() || switching()} onClick={() => void switchTo(a.id)} title="Then send again">Use {a.name} account</button>}</For>
+                                <Show when={checking()}><span class="ctx-dim" role="status">Checking accounts…</span></Show>
+                                <For each={alternatives()}>{(a) => <button class="btn btn-sm ctx-account" disabled={busy() || switching()} onClick={() => void switchTo(a.id)} title="Then send again">Use {a.name} account</button>}</For>
                             </Show>
                         </section>
                     )}</Show>
                     {/* What the context holds, the bar under it, then the one thing to do. (What the session has used is
                         Settings → Usage's.) */}
-                    <section class="cx-block">
-                        <div class="cx-line">
-                            <h3 class="cx-name">Context</h3>
-                            <span class="cx-dim num" title={view().pct !== undefined ? fullWhy() : undefined}>
+                    <section class="ctx-block">
+                        <div class="ctx-line">
+                            <span class="ctx-name">Context</span>
+                            <span class="ctx-dim num" title={view().pct !== undefined ? fullWhy() : undefined}>
                                 {state() ? view().line : "Send a message first"}{view().pct !== undefined && autoOff() ? ", auto-compact off" : ""}
                             </span>
                         </div>
                         <Show when={view().pct !== undefined}>
-                            <span class={`cx-bar ${ctxTone()}`} aria-hidden="true"><i style={{ width: `${Math.max(0, Math.min(100, view().pct! * 100))}%` }} /></span>
+                            <span class={`bar ${ctxTone()}`} data-tone={ctxTone() === "danger" ? "red" : ctxTone() === "warning" ? "amber" : undefined} aria-hidden="true"><i style={{ width: `${Math.max(0, Math.min(100, view().pct! * 100))}%` }} /></span>
                         </Show>
                         {compactItem()}
                     </section>

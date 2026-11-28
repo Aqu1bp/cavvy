@@ -187,7 +187,7 @@ describe("the Steps strip (StepsTray.tsx, real Solid reactivity in an in-memory 
         };
         const source = readFileSync(new URL("../gui/src/components/StepsTray.tsx", import.meta.url), "utf8").replace(/^import .*;\n/gm, "");
         const compiled = transformSync(source, { filename: "StepsTray.tsx", parserOpts: { plugins: ["typescript", "jsx"] }, presets: [[solidPreset, { generate: "universal", moduleName: "test-renderer" }]], configFile: false, babelrc: false })!.code!;
-        const js = new Bun.Transpiler({ loader: "ts" }).transformSync(compiled).replace(/import \{ ([\w$]+) as ([\w$]+) \} from "test-renderer";/g, "const $2 = renderer.$1;").replace("export function StepsTray", "function StepsTray");
+        const js = new Bun.Transpiler({ loader: "ts" }).transformSync(compiled).replace(/import \{ ([\w$]+) as ([\w$]+) \} from "test-renderer";/g, "const $2 = renderer.$1;").replace(/^export function /gm, "function ");
         const noop = () => undefined;
         const deps = { ...solid, ...lib, renderer, ChevronRight: noop, X: noop, Popover: noop, requestAnimationFrame: noop };
         const StepsTray = new Function(...Object.keys(deps), `${js}; return StepsTray;`)(...Object.values(deps));

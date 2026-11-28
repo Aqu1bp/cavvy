@@ -1,6 +1,6 @@
 import { createEffect, createMemo, createSignal, createUniqueId, For, Match, on, onCleanup, onMount, Show, Switch, type JSX } from "solid-js";
 import { isMod, machine, mod } from "../lib/platform";
-import { ArrowUp, CornerDownRight, Database, FileText, Folder, KeyRound, ListEnd, Maximize2, Minimize2, Slash, Sparkles, SquareTerminal, Plus, X } from "lucide-solid";
+import { ArrowUp, CornerDownRight, Database, FileText, Folder, KeyRound, ListEnd, Maximize2, Minimize2, Slash, Sparkles, Square, SquareTerminal, Plus, X } from "lucide-solid";
 import type { CommandInfo, FollowUpMode, McpResourceInfo, PermissionModeId } from "@shared/protocol";
 import { app, awayMachine, connFor, handleFor, homeDraftKey, homeModeOf, homeSettings, modelsFor, reportError, rpc, rpcFor, serversUi, showSending, toast, wasDeleted } from "../state/app";
 import { far, interrupt, send, setMode } from "../state/actions";
@@ -794,7 +794,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     return (
         <div
             ref={root}
-            class={`composer v-${p.variant ?? "session"} ${p.aside ? "aside" : ""} ${shell() ? "shell" : ""} ${dragging() ? "dragging" : ""} ${working() ? "running" : ""} ${expanded() ? "expanded" : ""} ${expanded() || overflows() ? "expandable" : ""}`}
+            class={`composer-root v-${p.variant ?? "session"} ${p.aside ? "aside" : ""} ${shell() ? "shell" : ""} ${dragging() ? "dragging" : ""} ${working() ? "running" : ""} ${expanded() ? "expanded" : ""} ${expanded() || overflows() ? "expandable" : ""}`}
             onDragEnter={(e) => {
                 if (!e.dataTransfer?.types.includes("Files")) return;
                 dragDepth++;
@@ -829,8 +829,9 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
             >
                 {(a) => <InteractionTab sessionId={a().id} items={a().items} />}
             </Show>
+            <div class="composer-stack">
             <Show when={menuOpen()}>
-                <div class={`composer-menu ${menu().some((m) => m.kind !== "command") ? "files" : ""}`} ref={menuList} id={menuId} role="listbox" aria-label="Composer suggestions" aria-busy={menuStatus() === "loading"}>
+                <div class={`suggest menu ${menu().some((m) => m.kind !== "command") ? "files" : ""}`} ref={menuList} id={menuId} role="listbox" aria-label="Composer suggestions" aria-busy={menuStatus() === "loading"}>
                     <For each={menu()}>
                         {(item, i) => (
                             <button
@@ -838,7 +839,8 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                                 role="option"
                                 aria-selected={i() === menuSel()}
                                 tabIndex={-1}
-                                class={`cm-item ${i() === menuSel() ? "sel" : ""}`}
+                                class={`suggest-item ${i() === menuSel() ? "sel" : ""}`}
+                                data-active={i() === menuSel() || undefined}
                                 onMouseDown={(e) => {
                                     e.preventDefault();
                                     apply(item, true);
@@ -849,21 +851,19 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                                     <Match when={item.kind === "command" && item}>
                                         {(c) => (
                                             <>
-                                                <span class={`cm-icon ${c().cmd.skill ? "skill" : ""}`}>
-                                                    <Show when={c().cmd.skill} fallback={<Slash size={13} />}>
-                                                        <Sparkles size={13} />
-                                                    </Show>
-                                                </span>
-                                                <span class="cm-name mono">
+                                                <Show when={c().cmd.skill} fallback={<Slash size={13} class="suggest-icon" />}>
+                                                    <Sparkles size={13} class="suggest-icon" />
+                                                </Show>
+                                                <span class="suggest-name">
                                                     {c().mention ? "$" : ""}
                                                     {c().cmd.name}
-                                                    <Show when={c().cmd.args && !c().mention}>
-                                                        <span class="cm-args"> {c().cmd.args}</span>
-                                                    </Show>
                                                 </span>
+                                                <Show when={c().cmd.args && !c().mention}>
+                                                    <span class="suggest-args">{c().cmd.args}</span>
+                                                </Show>
                                                 {/* /compact and the like answer without the model: what's attached would be lost, so the server refuses it. */}
-                                                <Show when={c().cmd.noAttachments && !c().mention && attachments().length} fallback={<span class="cm-desc truncate">{c().cmd.description}</span>}>
-                                                    <span class="cm-desc cm-warn truncate">Doesn't take attachments: send them on their own</span>
+                                                <Show when={c().cmd.noAttachments && !c().mention && attachments().length} fallback={<span class="suggest-desc">{c().cmd.description}</span>}>
+                                                    <span class="suggest-desc warn">Send attachments on their own</span>
                                                 </Show>
                                             </>
                                         )}
@@ -871,22 +871,20 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                                     <Match when={item.kind === "resource" && item}>
                                         {(r) => (
                                             <>
-                                                <span class="cm-icon" title="MCP resource">
-                                                    <Database size={13} />
-                                                </span>
-                                                <span class="cm-name mono truncate">
+                                                <Database size={13} class="suggest-icon" aria-label="MCP resource" />
+                                                <span class="suggest-name truncate">
                                                     {r().res.server}:{r().res.uri}
                                                 </span>
-                                                <span class="cm-desc truncate">{r().res.title ?? (r().res.name !== r().res.uri ? r().res.name : r().res.description)}</span>
+                                                <span class="suggest-desc">{r().res.title ?? (r().res.name !== r().res.uri ? r().res.name : r().res.description)}</span>
                                             </>
                                         )}
                                     </Match>
                                     <Match when={item.kind === "file" && item}>
                                         {(f) => (
                                             <>
-                                                <span class="cm-icon">{f().path.endsWith("/") ? <Folder size={14} /> : <FileText size={14} />}</span>
-                                                <span class="cm-name truncate">{fileName(f().path)}</span>
-                                                <span class="cm-dir truncate">{fileDir(f().path)}</span>
+                                                {f().path.endsWith("/") ? <Folder size={13} class="suggest-icon" /> : <FileText size={13} class="suggest-icon" />}
+                                                <span class="suggest-name file truncate">{fileName(f().path)}</span>
+                                                <span class="suggest-desc">{fileDir(f().path)}</span>
                                             </>
                                         )}
                                     </Match>
@@ -895,7 +893,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                         )}
                     </For>
                     <Show when={menuStatus()}>
-                        <div class="cm-status" role="status">
+                        <div class="suggest-empty" role="status">
                             {menuStatus() === "loading" ? "Searching…" : menuStatus() === "empty" ? (searchedResources() ? "No matching files or resources" : "No matching files") : menuStatus() === "no-skills" ? (
                                 <>No skills yet. Add one as <span class="mono">&lt;name&gt;/SKILL.md</span> in <span class="mono">~/.cavvy/skills</span> or the project's <span class="mono">.cavvy/skills</span>.</>
                             ) : "Could not search files"}
@@ -949,7 +947,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                     </Show>
                 )}
             </Show>
-            <div class="composer-box card-surface" ref={box}>
+            <div class="composer-box card-surface" classList={{ composer: true }} data-dropping={dragging() || undefined} ref={box}>
                 <Show when={p.sessionId ? st()?.goal : undefined}>
                     {(goal) => <GoalTab sessionId={p.sessionId!} goal={goal()} />}
                 </Show>
@@ -972,18 +970,17 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                 <Show when={attachments().length}>
                     <AttachmentChips items={attachments()} readsPdf={readsPdf()} blocked={blocked()} onRemove={(i) => setAttachments((list) => list.filter((_, j) => j !== i))} onToText={toText} />
                 </Show>
-                <div class="composer-input">
+                <div class="composer-field" classList={{ marked: Boolean(marked()) }}>
                     <Show when={shell()}>
                         <span class="shell-badge" title="Runs in your shell; the model sees the output">
-                            <SquareTerminal size={14} />
+                            <SquareTerminal size={13} />
                         </span>
                     </Show>
-                    <div class="composer-field" classList={{ marked: Boolean(marked()) }}>
                         <Show when={marked()}>
                             {(m) => (
                                 <div ref={mirror} class="composer-mirror" aria-hidden="true">
-                                    <For each={m().pieces}>{(piece) => (piece.kind ? <span class={`ctok ${piece.kind}`}>{piece.text}</span> : piece.text)}</For>
-                                    <Show when={m().hint}>{(hint) => <span class="ctok-hint">{hint()}</span>}</Show>
+                                    <For each={m().pieces}>{(piece) => (piece.kind ? <span class={piece.kind === "skill" ? "hl-skill" : "hl-cmd"}>{piece.text}</span> : piece.text)}</For>
+                                    <Show when={m().hint}>{(hint) => <span class="hl-hint">{hint()}</span>}</Show>
                                     {/* A last line that's empty is a line in the textarea too. */}
                                     {"\u200b"}
                                 </div>
@@ -991,6 +988,8 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                         </Show>
                         <textarea
                             ref={ta}
+                            class="composer-input"
+                            data-shell={shell() || undefined}
                             rows={1}
                             style={{ "--column-h": columnHeight() }}
                             value={text()}
@@ -1023,7 +1022,6 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                             aria-controls={menuOpen() ? menuId : undefined}
                             aria-activedescendant={menu().length ? `${menuId}-${menuSel()}` : undefined}
                         />
-                    </div>
                 </div>
                 <div ref={bar} class="composer-bar">
                     <input
@@ -1038,11 +1036,11 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                             input.value = "";
                         }}
                     />
-                    <button class="cb" title="Attach files" aria-label="Attach files" onClick={() => fileInput?.click()}>
-                        <Plus size={17} />
+                    <button class="icon-btn bar-attach" title="Attach files" aria-label="Attach files" onClick={() => fileInput?.click()}>
+                        <Plus size={16} />
                     </button>
                     {pickers()}
-                    <span class="grow" />
+                    <span class="composer-spacer" />
                     <span class="send-wrap">
                     <Show when={sendHint()}>
                         {(rows) => (
@@ -1050,7 +1048,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                                 <For each={rows()}>
                                     {([key, what]) => (
                                         <span class="sh-row">
-                                            <kbd>{key}</kbd>
+                                            <kbd class="kbd">{key}</kbd>
                                             <span>{what}</span>
                                         </span>
                                     )}
@@ -1062,7 +1060,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                         when={canStop(st()) && !hasContent()}
                         fallback={
                             <button
-                                class={`send ${(runPicks()?.length ?? 0) >= 2 ? "wide" : ""} ${busy() ? `mid-${shown()}` : ""}`}
+                                class={`send-btn ${(runPicks()?.length ?? 0) >= 2 ? "send-wide" : ""} ${busy() ? `mid-${shown()}` : ""}`}
                                 disabled={connFor(p.sessionId) !== "open" || !canSend() || sending() || Boolean(runPicks() && runPicks()!.length < 2)}
                                 onClick={(e) => void submit(busy() && isMod(e))}
                                 title={connFor(p.sessionId) !== "open" ? "Not connected" : runPicks() ? "Each model gets a new worktree" : busy() ? undefined : withShortcut("Send", "chat:submit")}
@@ -1070,16 +1068,14 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                                 aria-label={runPicks() ? `Send to ${runPicks()!.length} models` : busy() ? (shown() === "steer" ? "Steer the current turn" : "Queue for after this turn") : "Send"}
                             >
                                 <Show when={(runPicks()?.length ?? 0) >= 2}><span>Send to {runPicks()!.length} models</span></Show>
-                                <Show when={busy()} fallback={shell() ? <SquareTerminal size={16} stroke-width={2.25} /> : <ArrowUp size={17} stroke-width={2.4} />}>
-                                    {shown() === "steer" ? <CornerDownRight size={16} stroke-width={2.4} /> : <ListEnd size={16} stroke-width={2.4} />}
+                                <Show when={busy()} fallback={shell() ? <SquareTerminal size={16} stroke-width={2.2} /> : <ArrowUp size={16} stroke-width={2.2} />}>
+                                    {shown() === "steer" ? <CornerDownRight size={16} stroke-width={2.2} /> : <ListEnd size={16} stroke-width={2.2} />}
                                 </Show>
                             </button>
                         }
                     >
-                        <button class="send stop" onClick={() => interrupt(p.sessionId)} aria-label={busy() ? "Stop" : "Pause the goal"} aria-keyshortcuts="Escape">
-                            <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
-                                <rect x="1" y="1" width="10" height="10" rx="2.5" fill="currentColor" />
-                            </svg>
+                        <button class="send-btn send-stop" onClick={() => interrupt(p.sessionId)} aria-label={busy() ? "Stop" : "Pause the goal"} aria-keyshortcuts="Escape">
+                            <Square size={11} fill="currentColor" stroke-width={0} />
                         </button>
                     </Show>
                     </span>
@@ -1087,17 +1083,18 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                 {/* Past its modest height the text scrolls: this opens it large (and closes it again). */}
                 <Show when={expanded() || overflows()}>
                     <button
-                        class="cb c-expand"
+                        class="icon-btn icon-btn-sm composer-expand"
                         title={withShortcut(expanded() ? "Collapse" : "Expand", "chat:expand")}
                         aria-label={expanded() ? "Collapse the message box" : "Expand the message box"}
                         onMouseDown={(e) => e.preventDefault()}
                         onClick={() => toggleExpanded()}
                     >
-                        <Show when={expanded()} fallback={<Maximize2 size={14} />}>
-                            <Minimize2 size={14} />
+                        <Show when={expanded()} fallback={<Maximize2 size={13} />}>
+                            <Minimize2 size={13} />
                         </Show>
                     </button>
                 </Show>
+            </div>
             </div>
             {/* How full the context is (Home: only a plan near its limit), a few quiet words under the card; then what Home puts at its far end. */}
             <div class="composer-under">

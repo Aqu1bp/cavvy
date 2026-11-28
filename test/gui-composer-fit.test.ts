@@ -20,10 +20,10 @@ test("it takes the fewest steps that fit, trying each in turn, and all of them w
 
 test("the styles carry out each step, and the column's width no longer hides the pickers' labels or chevrons", () => {
     const css = readFileSync(new URL("../gui/src/styles/composer.css", import.meta.url), "utf8");
-    for (const rule of ['[data-fit~="1"] .pick .lbl', '[data-fit~="2"] .pick .chev', '[data-fit~="3"] > .cb:first-of-type', '[data-fit~="4"] .pick.model:has(> svg:not(.chev), > .provider-mono) > .truncate'])
+    for (const rule of ['[data-fit~="1"] .bar-dim', '[data-fit~="2"] .bar-chev', '[data-fit~="3"] > .bar-attach', '[data-fit~="4"] .bar-btn.model:has(> svg:not(.bar-chev, .bar-fast), > .provider-icon, > .provider-mono) > .bar-main'])
         expect(css).toContain(`.composer-bar${rule}`);
-    expect(css).not.toContain(".composer .pick .lbl");
-    expect(css).not.toContain(".composer .pick .chev");
+    expect(css).not.toContain(".composer .bar-dim");
+    expect(css).not.toContain(".composer .bar-chev");
     // The context isn't on the row: nothing of it gives way there.
     expect(css).not.toContain('[data-fit~="5"]');
     // The account is on the chip only once it's removed, and goes with the model's name.

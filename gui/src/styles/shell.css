@@ -513,10 +513,7 @@
     top: calc(var(--bar-h) + 42 * var(--sp));
 }
 
-/* Pressed: a step darker, as the design's controls are (buttons: kit.css). */
-.send:active:not(:disabled) {
-    background: var(--ink-hover);
-}
+
 
 /* Dragging an edge: no easing behind the pointer. */
 body.resizing .win,

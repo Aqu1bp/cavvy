@@ -170,22 +170,23 @@ export function Home() {
     /** Under the composer, at its far end: the composer's prefixes. */
     const hints = (
         <Show when={app.homeCwd}>
-            <span class="home-hints">
-                <For each={HINTS}>
-                    {(h) => (
-                        // Pressed, it leaves the caret in the composer, where the prefix goes.
-                        <button
-                            title={h.starts && typed() ? `${h.title}: start a message with ${h.key}` : h.title}
-                            aria-disabled={h.starts && typed() ? "true" : undefined}
-                            onMouseDown={(e) => e.preventDefault()}
-                            onClick={() => (h.starts && filled() ? composer?.querySelector("textarea")?.focus() : typeInComposer(composer, h.key))}
-                        >
-                            <kbd>{h.key}</kbd>
-                            {h.word}
-                        </button>
-                    )}
-                </For>
-            </span>
+            <span class="grow" />
+            <For each={HINTS}>
+                {(h) => (
+                    // Pressed, it leaves the caret in the composer, where the prefix goes.
+                    <button
+                        type="button"
+                        class="hint-chip"
+                        title={h.starts && typed() ? `${h.title}: start a message with ${h.key}` : h.title}
+                        aria-disabled={h.starts && typed() ? "true" : undefined}
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => (h.starts && filled() ? composer?.querySelector("textarea")?.focus() : typeInComposer(composer, h.key))}
+                    >
+                        <kbd class="kbd">{h.key}</kbd>
+                        {h.word}
+                    </button>
+                )}
+            </For>
         </Show>
     );
 
@@ -193,7 +194,7 @@ export function Home() {
         <div class="home" classList={{ instant, "home-jumped": homeJumped() }}>
             <div class="home-scroll" ref={scroller}>
                 <div class="home-stack" ref={stack}>
-                    <section class="home-card card-surface" aria-label="New session">
+                    <section class="home-card card-surface card" aria-label="New session">
                         <h1 class="home-title">{!app.homeCwd ? "Choose a project to start" : modelMissing() ? "Connect a model to start" : "What should we work on?"}</h1>
                         {/* No model yet: the ways to connect one. A plan the user already has (Claude Code, Codex…) is one
                             click; a key is in Settings. */}
@@ -201,7 +202,7 @@ export function Home() {
                             <div class="home-connect" role="group" aria-label="Connect a model">
                                 <For each={clis()}>
                                     {(pr) => (
-                                        <button class="btn sm" title={`Use your ${pr.agentCli!.plan}`} disabled={connecting() === pr.id} onClick={async () => {
+                                        <button class="btn btn-sm" title={`Use your ${pr.agentCli!.plan}`} disabled={connecting() === pr.id} onClick={async () => {
                                             setConnecting(pr.id);
                                             await connectCli(pr);
                                             setConnecting(undefined);
@@ -211,7 +212,7 @@ export function Home() {
                                         </button>
                                     )}
                                 </For>
-                                <button class="btn sm" title="Anthropic, OpenAI, Gemini and more" onClick={() => setSettingsTab("providers")}>
+                                <button class="btn btn-sm" title="Anthropic, OpenAI, Gemini and more" onClick={() => setSettingsTab("providers")}>
                                     <KeyRound size={14} />
                                     API key
                                 </button>
@@ -226,9 +227,9 @@ export function Home() {
                         </Show>
                         <div class="home-row">
                             <span class="home-label">Project</span>
-                            <button class="home-pick" title={app.homeCwd ? "Choose another folder" : undefined} aria-haspopup="menu" aria-expanded={pickerOpen()} onClick={togglePicker}>
-                                <span class="truncate">{app.homeCwd ? basename(app.homeCwd) : "Choose a project"}</span>
-                                <ChevronDown size={13} class="chv" />
+                            <button class="select home-select" title={app.homeCwd ? "Choose another folder" : undefined} aria-haspopup="menu" aria-expanded={pickerOpen()} onClick={togglePicker}>
+                                <span class="select-value">{app.homeCwd ? basename(app.homeCwd) : "Choose a project"}</span>
+                                <ChevronDown size={13} class="select-caret" />
                             </button>
                         </div>
                         <Show when={app.homeCwd}>
@@ -254,18 +255,18 @@ export function Home() {
 
                     {/* A folder whose settings run commands: asked before the first message. */}
                     <Show when={needsTrust().length}>
-                        <section class="home-card home-trust card-surface" role="group" aria-label="Trust this folder">
-                            <h2>Do you trust this folder?</h2>
-                            <p>
-                                <b>{basename(app.homeCwd ?? "")}</b> has settings (
+                        <section class="home-card card-surface card home-trust" role="group" aria-label="Trust this folder">
+                            <h2 class="home-cli-title">Do you trust this folder?</h2>
+                            <p class="home-trust-text">
+                                {basename(app.homeCwd ?? "")} has settings (
                                 <For each={needsTrust()}>{(f, i) => <>{i() ? ", " : ""}<code>{f}</code></>}</For>
                                 ) that can run commands on {(homeOn() ?? machine) || "this computer"}.
                             </p>
-                            <div class="home-trust-acts">
-                                <button class="btn sm primary" onClick={async () => { await trustAndContinue(app.homeCwd!, true); void refetch(); void refreshProjects(); }}>
+                            <div class="home-trust-actions">
+                                <button class="btn btn-primary" onClick={async () => { await trustAndContinue(app.homeCwd!, true); void refetch(); void refreshProjects(); }}>
                                     Trust this folder
                                 </button>
-                                <button class="btn sm" onClick={async () => { await trustAndContinue(app.homeCwd!, false); void refetch(); }}>
+                                <button class="btn" onClick={async () => { await trustAndContinue(app.homeCwd!, false); void refetch(); }}>
                                     Open without them
                                 </button>
                             </div>
@@ -274,13 +275,13 @@ export function Home() {
 
                     {/* Only the edits' checks wait on it: asked once there's a model to make edits. */}
                     <Show when={askHere()}>
-                        <section class="home-card home-trust card-surface" role="group" aria-label="Trust this folder">
-                            <h2>Trust this folder to check edits?</h2>
-                            <div class="home-trust-acts">
-                                <button class="btn sm primary" onClick={() => void trust(true)}>
+                        <section class="home-card card-surface card home-trust" role="group" aria-label="Trust this folder">
+                            <h2 class="home-cli-title">Trust this folder to check edits?</h2>
+                            <div class="home-trust-actions">
+                                <button class="btn btn-primary" onClick={() => void trust(true)}>
                                     Trust this folder
                                 </button>
-                                <button class="btn sm" onClick={() => void trust(false)}>
+                                <button class="btn" onClick={() => void trust(false)}>
                                     Not now
                                 </button>
                             </div>
@@ -293,7 +294,7 @@ export function Home() {
                 </div>
             </div>
 
-            <div class="home-foot">
+            <div class="composer-wrap composer-wrap-home">
                 <div class="composer-col" ref={(el) => (composer = el)}>
                     <ErrorCards place="home" />
                     <Composer

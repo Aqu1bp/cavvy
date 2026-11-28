@@ -7,6 +7,12 @@ import { stepsKey, stepsLine, stepsStale } from "../lib/plan-chat";
 /** Each session's list as it stood when its strip was hidden (✕): it stays hidden until the list changes. */
 const [hiddenAt, setHiddenAt] = createSignal<Readonly<Record<string, string>>>({});
 
+/** Whether the session's Steps tray is up: the composer squares its card's top corners under it. */
+export function stepsTrayShown(sessionId: string, view: SessionView): boolean {
+    const todos = view.state.todos;
+    return todos.length > 0 && !view.state.interactions.length && hiddenAt()[sessionId] !== stepsKey(todos) && !stepsStale(todos, view.turns, view.earlier ?? 0);
+}
+
 /**
  * Steps: the agent's to-do list, as a tray on top of the composer (above Up next). One line: a ring that fills
  * as steps are done, "3 of 6", and the step under way. Clicked, the whole list opens in a menu above it, over the
@@ -19,7 +25,7 @@ export function StepsTray(p: { sessionId: string; view: SessionView }) {
     const key = createMemo(() => stepsKey(todos()));
     const working = () => p.view.state.busy;
     const line = createMemo(() => stepsLine(todos(), working()));
-    const shown = () => todos().length > 0 && !p.view.state.interactions.length && hiddenAt()[p.sessionId] !== key() && !stepsStale(todos(), p.view.turns, p.view.earlier ?? 0);
+    const shown = () => stepsTrayShown(p.sessionId, p.view);
     const listId = createUniqueId();
     let main: HTMLButtonElement | undefined;
     let list: HTMLDivElement | undefined;
