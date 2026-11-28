@@ -53,7 +53,7 @@ function fixture(count = 60, o: { actionOf?: (e: KeyboardEvent, contexts: readon
         createElement: (tag: string) => {
             const node: any = { tag, props: {}, dataset: {}, children: [] as any[], focus() {}, select() {},
                 closest: () => ["input", "textarea"].includes(tag) ? node : null,
-                querySelector: () => descendants(node).find((n) => /\b(card|slim)-hit\b/.test(String(n.props?.class))),
+                querySelector: () => descendants(node).find((n) => /\bsrow-main\b/.test(String(n.props?.class))),
                 getBoundingClientRect: () => ({ top: ids.indexOf(node.dataset.sessionRow) * 100 }),
                 querySelectorAll: () => ids.map((id) => nodes.findLast((n) => n.dataset.sessionRow === id)).filter(Boolean),
                 animate: () => { const a = { paused: false, cancelled: false, finished: false, pause() { this.paused = true; }, play() { this.paused = false; }, cancel() { this.cancelled = true; }, finish() { this.finished = true; } }; animations.push(a); return a; },
@@ -122,10 +122,10 @@ test("actual sidebar holds hover/menu/rename; open and waiting rows appear past 
         f.nav.props.onPointerLeave();
         expect(f.ids[0]).toBe("40");
         // Finished since last looked: "Done" in its time's place, not a glyph at the start.
-        expect(f.nodes.some((n) => n.props.class === "when done")).toBe(true);
+        expect(f.nodes.some((n) => (n.props.class === "srow-meta" && n.props["data-tone"] === "done"))).toBe(true);
         expect(f.nodes.some((n) => /(^| )(unread-dot|spin-ring|err-dot)( |$)/.test(String(n.props.class)))).toBe(false);
         expect(f.nodes.some((n) => String(n.props.class).startsWith("st "))).toBe(false);
-        const card = f.nodes.findLast((n) => String(n.props.class).startsWith("card "));
+        const card = f.nodes.findLast((n) => (n.props.class === "srow" && n.props["data-session-id"] !== undefined));
         f.contextMenu(card);
         const held = f.ids;
         f.update("50", { status: "waiting" });
@@ -157,7 +157,7 @@ test("actual sidebar pages projects and settled, transitions row type, and keeps
         f.nav.props.onPointerLeave();
         f.setSessions(f.sessions().map((s) => ({ ...s, settled: true, status: "idle" })));
         expect(f.ids).toHaveLength(25);
-        expect(f.nodes.some((n) => String(n.props.class).startsWith("slim "))).toBe(true);
+        expect(f.nodes.some((n) => n.props.class === "srow srow-slim")).toBe(true);
         f.setSettledOpen(false);
         expect(f.ids).toEqual([]);
         f.setActiveId("59");
@@ -171,23 +171,23 @@ test("actual sidebar pages projects and settled, transitions row type, and keeps
 
 test("rail rows: needs-you rows get an amber dot and no archive; others archive on hover; open project headings carry no count", () => {
     const f = fixture(6);
-    const rowOf = (title: string) => f.nodes.findLast((n) => String(n.props.class).startsWith("card ") && n.querySelector()?.props.title?.startsWith(`${title}\n`));
+    const rowOf = (title: string) => f.nodes.findLast((n) => (n.props.class === "srow" && n.props["data-session-id"] !== undefined) && n.querySelector()?.props.title?.startsWith(`${title}\n`));
     const buttons = (row: any) => f.descendants(row).filter((n) => n.tag === "button");
     try {
         // Open, so its request is in front of you and it keeps its own row (elsewhere it's under Needs you alone).
         f.update("1", { status: "waiting", waitingKind: "permission" });
         f.setActiveId("1");
         const waiting = rowOf("Session 1");
-        expect(String(waiting.props.class)).toContain("waiting");
+        expect(waiting.props["data-status"]).toBe("needs");
         expect(waiting.querySelector().props["aria-label"]).toBe("Session 1, Needs approval");
         // Its time, in amber; no heading's dot, and no hand at the start of the row.
-        expect(f.descendants(waiting).some((n) => n.props?.class === "when waiting")).toBe(true);
-        expect(f.descendants(waiting).some((n) => n.props?.class === "dot warn")).toBe(false);
+        expect(f.descendants(waiting).some((n) => (n.props?.class === "srow-meta" && n.props["data-tone"] === "needs"))).toBe(true);
+        expect(f.descendants(waiting).some((n) => (n.props?.class === "dot" && n.props["data-tone"] === "amber"))).toBe(false);
         // Working and stopped say so where the time was; never both.
         f.update("2", { status: "running", turnStartedAt: Date.now() - 9 * 60_000 });
         f.update("3", { status: "error" });
-        expect(f.descendants(rowOf("Session 2")).some((n) => n.props?.class === "when working")).toBe(true);
-        expect(f.descendants(rowOf("Session 3")).some((n) => n.props?.class === "when stopped")).toBe(true);
+        expect(f.descendants(rowOf("Session 2")).some((n) => (n.props?.class === "srow-meta" && n.props["data-tone"] === "working"))).toBe(true);
+        expect(f.descendants(rowOf("Session 3")).some((n) => (n.props?.class === "srow-meta" && n.props["data-tone"] === "failed"))).toBe(true);
         expect(f.descendants(waiting).some((n) => n.props?.class === "st waiting")).toBe(false);
         expect(buttons(waiting).some((n) => n.props.title === "Archive")).toBe(false);
         expect(buttons(waiting).some((n) => n.props.title === "More")).toBe(true);
@@ -205,7 +205,7 @@ test("rail rows: needs-you rows get an amber dot and no archive; others archive 
 test("Needs you: waiting sessions but the open one, pinned above the list, their one row; keys act on the pinned row", () => {
     let next: string | undefined;
     const f = fixture(6, { actionOf: () => next });
-    const group = () => f.nodes.findLast((n) => n.props.class === "needs-g");
+    const group = () => f.nodes.findLast((n) => n.props.class === "sgroup sgroup-needs");
     const pinned = () => f.nodes.filter((n) => n.props["data-needs-id"] !== undefined && f.descendants(group() ?? {}).includes(n));
     const text = (n: any) => f.descendants(n).map((c) => c.text ?? (typeof c.content === "string" || typeof c.content === "number" ? c.content : "")).join("");
     try {
@@ -218,7 +218,7 @@ test("Needs you: waiting sessions but the open one, pinned above the list, their
         expect(text(group())).toContain("Needs you");
         expect(text(pinned()[0])).toContain("Plan ready for review");
         // 3 is drawn there alone, not again as a card below; the open one (4) keeps its own row.
-        const cards = () => f.nodes.filter((n) => String(n.props.class).startsWith("card ") && f.descendants(f.nav).includes(n)).map((n) => n.props["data-session-id"]);
+        const cards = () => f.nodes.filter((n) => (n.props.class === "srow" && n.props["data-session-id"] !== undefined) && f.descendants(f.nav).includes(n)).map((n) => n.props["data-session-id"]);
         expect(cards()).not.toContain("3");
         expect(cards()).toContain("4");
         // The order (⌘-cycling) has each once.
@@ -239,7 +239,7 @@ test("Needs you: waiting sessions but the open one, pinned above the list, their
         key(f, "a", { target: { closest: (sel: string) => (sel.includes("data-needs-id") ? { dataset: { needsId: row.props["data-needs-id"] } } : null) } });
         expect(f.bulk.archive).toHaveBeenLastCalledWith(["3"], true);
         // Clicking it opens it.
-        click(f.descendants(row).find((n) => n.props.class === "card-hit srow-main"));
+        click(f.descendants(row).find((n) => n.props?.class === "srow-main"));
         expect(f.nodes.some((n) => n.props["aria-current"] === "page" && n.props.title?.startsWith("Session 3\n"))).toBe(true);
         // Answered: the group goes.
         f.update("3", { status: "idle" });
@@ -249,7 +249,7 @@ test("Needs you: waiting sessions but the open one, pinned above the list, their
     } finally { f.dispose(); }
 });
 
-const needsGroup = (f: ReturnType<typeof fixture>) => f.nodes.findLast((n) => n.props.class === "needs-g");
+const needsGroup = (f: ReturnType<typeof fixture>) => f.nodes.findLast((n) => n.props.class === "sgroup sgroup-needs");
 const pinnedRows = (f: ReturnType<typeof fixture>) => { const g = needsGroup(f); return g ? [...new Set(f.descendants(g))].filter((n) => n.props?.["data-needs-id"] !== undefined) : []; };
 const pinnedIds = (f: ReturnType<typeof fixture>) => pinnedRows(f).map((n) => n.props["data-needs-id"]);
 
@@ -262,7 +262,7 @@ test("Needs you's rows aren't picked: a ⌘- or Shift-click opens the session, i
         f.setCollapsedProjects(["/p/0"]);
         expect(f.ids).not.toContain("3");
         expect(pinnedIds(f)).toEqual(["3"]);
-        const hit = () => f.descendants(pinnedRows(f)[0]).find((n) => n.props?.class === "card-hit srow-main");
+        const hit = () => f.descendants(pinnedRows(f)[0]).find((n) => n.props?.class === "srow-main");
         f.setRailSelection({ ids: ["1", "2"], anchor: "1" });
         click(hit(), { metaKey: true });
         // Opened (its project unfolds to show it), the selection gone as a plain click leaves it.
@@ -290,14 +290,14 @@ test("Needs you while the rail holds still: rows say how they're doing now, and 
         f.update("4", { status: "waiting" });
         expect(pinnedIds(f)).toEqual(["3"]);
         const row = pinnedRows(f)[0];
-        expect(classes(row)).not.toContain("waiting");
+        expect(row.props["data-status"]).not.toBe("needs");
         expect(text(row)).toContain("Answered");
         expect(text(row)).not.toContain("Plan ready for review");
         expect(f.descendants(row).some((n) => n.props?.class === "st waiting")).toBe(false);
         // Let go: it reconciles at once.
         f.nav.props.onPointerLeave();
         expect(pinnedIds(f)).toEqual(["4"]);
-        expect(classes(pinnedRows(f)[0])).toContain("waiting");
+        expect(pinnedRows(f)[0].props["data-status"]).toBe("needs");
         // Rows picked hold the list, not the group: it follows who's waiting, and the order next and previous step
         // through stays as it was (each session in its own place, pinned or not).
         f.setRailSelection({ ids: ["0", "1"], anchor: "0" });
@@ -353,7 +353,7 @@ test("a snoozed session waking leaves Snoozed at once, the one on screen too, wi
 test("deleting a held row releases its lock without reading a removed summary", () => {
     const f = fixture();
     try {
-        const card = f.nodes.findLast((n) => String(n.props.class).startsWith("card "));
+        const card = f.nodes.findLast((n) => (n.props.class === "srow" && n.props["data-session-id"] !== undefined));
         f.contextMenu(card);
         const removed = f.ids.at(-1)!;
         f.setSessions(f.sessions().filter((s) => s.id !== removed));
@@ -369,10 +369,10 @@ test("archived Done leaves immediately under hover and restores the hold afterwa
     try {
         f.setArchived(f.sessions().slice(0, 2).map((s) => ({ ...s, id: `archive-${s.id}`, archived: true })));
         f.nodes.find((n) => n.props.title === "View options").props.onClick();
-        f.nodes.findLast((n) => n.props.class === "menu-item compact" && n.props.onClick?.toString().includes("setShowArchived")).props.onClick();
+        f.nodes.findLast((n) => n.props.class === "menu-item" && n.props.onClick?.toString().includes("setShowArchived")).props.onClick();
         expect(f.ids).toEqual(["archive-0", "archive-1"]);
         f.nav.props.onPointerEnter();
-        f.nodes.findLast((n) => n.props.class === "btn sm" && n.props.onClick?.toString().includes("setShowArchived")).props.onClick();
+        f.nodes.findLast((n) => n.props.class === "btn btn-sm" && n.props.onClick?.toString().includes("setShowArchived")).props.onClick();
         expect(f.ids).toHaveLength(25);
         expect(f.ids[0]).toBe("0");
         expect(f.ids).not.toContain("archive-0");
@@ -420,7 +420,7 @@ for (const view of ["date", "project"]) {
             expect(f.nodes.some((n) => n.props.class === "srun" && n.props["aria-label"] === "2 models: Fix the login redirect")).toBe(true);
             expect(f.nodes.some((n) => n.props.class === "srun-head" && n.props.title === run.label)).toBe(true);
             for (const name of ["Model A", "Model B"]) expect(f.nodes.some((n) => Array.isArray(n.content) ? n.content.includes(name) : n.content === name)).toBe(true);
-            const modelCard = f.nodes.findLast((n) => String(n.props.class).startsWith("card ") && n.querySelector()?.props.title?.startsWith("Session 30\n"));
+            const modelCard = f.nodes.findLast((n) => (n.props.class === "srow" && n.props["data-session-id"] !== undefined) && n.querySelector()?.props.title?.startsWith("Session 30\n"));
             f.contextMenu(modelCard);
             const held = f.ids;
             f.update("50", { status: "waiting", waitingKind: "permission" });
@@ -452,7 +452,7 @@ for (const layout of ["card", "settled", "archived"] as const) {
                     f.nodes.find((n) => n.props.title === "View options").props.onClick();
                     f.nodes.findLast((n) => n.props.onClick?.toString().includes("setShowArchived") && n.props.role === "menuitem").props.onClick();
                 }
-                const row = f.nodes.findLast((n) => String(n.props.class).startsWith(layout === "card" ? "card " : "slim ") && n.querySelector()?.props.title?.startsWith("Session 2\n"));
+                const row = f.nodes.findLast((n) => (layout === "card" ? (n.props.class === "srow" && n.props["data-session-id"] !== undefined) : n.props.class === "srow srow-slim") && n.querySelector()?.props.title?.startsWith("Session 2\n"));
                 expect(row).toBeDefined();
                 const hit = row.querySelector();
                 const more = f.descendants(row).find((n) => n.props?.["aria-haspopup"] === "menu");
@@ -513,7 +513,7 @@ test("sidebar waits for the first list and retains loaded state across reconnect
         expect(empty()).toBe("Loading sessions…");
         f.setSessionsLoaded(true);
         expect(empty()).toBe("Nothing archived");
-        f.nodes.findLast((n) => n.props.class === "btn sm" && n.props.onClick?.toString().includes("setShowArchived")).props.onClick();
+        f.nodes.findLast((n) => n.props.class === "btn btn-sm" && n.props.onClick?.toString().includes("setShowArchived")).props.onClick();
         expect(empty()).toBe("No sessions yet");
         for (const conn of ["connecting", "open"]) {
             f.setConn(conn);
@@ -590,8 +590,8 @@ const key = (f: ReturnType<typeof fixture>, k: string, extra: Record<string, unk
     f.nav.props.onKeyDown(e);
     return e;
 };
-const hitOf = (f: ReturnType<typeof fixture>, id: string) => f.nodes.findLast((n) => /\b(card|slim)-hit\b/.test(String(n.props.class)) && n.props.title?.startsWith(`Session ${id}\n`));
-const rowOf = (f: ReturnType<typeof fixture>, id: string) => f.nodes.findLast((n) => n.props["data-session-id"] === id && /^(card|slim) /.test(String(n.props.class)));
+const hitOf = (f: ReturnType<typeof fixture>, id: string) => f.nodes.findLast((n) => /\bsrow-main\b/.test(String(n.props.class)) && n.props.title?.startsWith(`Session ${id}\n`));
+const rowOf = (f: ReturnType<typeof fixture>, id: string) => f.nodes.findLast((n) => n.props["data-session-id"] === id && /^srow( srow-slim)?$/.test(String(n.props.class)));
 // The last bar made is the one showing (one shows while two or more are selected).
 const bar = (f: ReturnType<typeof fixture>) => f.nodes.findLast((n) => n.props.class === "selbar");
 const barButtons = (f: ReturnType<typeof fixture>) => [...new Set(f.descendants(bar(f)).filter((n) => n.tag === "button"))].map((n) => n.props["aria-label"]).sort();
@@ -609,8 +609,8 @@ for (const view of ["date", "project"]) {
             expect(f.railSelection().ids).toEqual(order.slice(1, 6));
             if (view === "project") expect(new Set(order.slice(1, 6).map((id) => Number(id) % 3)).size).toBeGreaterThan(1); // Under more than one heading.
             // Selected rows: an accent pill with a check for the glyph, and they say so.
-            expect(String(rowOf(f, order[2]!).props.class)).toContain("picked");
-            expect(String(rowOf(f, order[0]!).props.class)).not.toContain("picked");
+            expect(rowOf(f, order[2]!).props["data-picked"]).toBe(true);
+            expect(rowOf(f, order[0]!).props["data-picked"]).toBeUndefined();
             expect(f.descendants(rowOf(f, order[2]!)).some((n) => n.props?.class === "srow-pick")).toBe(true);
             expect(hitOf(f, order[2]!).props["aria-label"]).toEndWith(", selected");
             // The bar: how many, and what applies.
@@ -681,7 +681,7 @@ test("archived rows offer Restore and Delete; switching lists clears the selecti
         expect(barButtons(f)).toEqual(["Clear selection", "Delete 3 sessions", "Restore 3 sessions"]);
         f.descendants(bar(f)).find((n) => n.props?.["aria-label"] === "Restore 3 sessions").props.onClick();
         expect(f.bulk.archive).toHaveBeenLastCalledWith(["0", "1", "2"], false);
-        f.nodes.findLast((n) => n.props.class === "btn sm" && n.props.onClick?.toString().includes("setShowArchived")).props.onClick();
+        f.nodes.findLast((n) => n.props.class === "btn btn-sm" && n.props.onClick?.toString().includes("setShowArchived")).props.onClick();
         expect(f.railSelection().ids).toEqual([]);
     } finally { f.dispose(); }
 });
@@ -724,7 +724,7 @@ test("rail keys: select all, act on the selection (else the open row), Esc clear
 test("listed by date, a day's heading folds and unfolds its sessions, and says how many when folded", () => {
     const f = fixture(9);
     try {
-        const head = () => f.nodes.findLast((n) => n.props.class === "sgroup-toggle day");
+        const head = () => f.nodes.findLast((n) => (n.props.class === "sgroup-toggle" && String(n.props.onClick).includes('toggleFold("", day().label)')));
         expect(head()).toBeDefined();
         const label = f.descendants(head()).find((n) => n.content !== undefined && typeof n.content === "string")?.content;
         const before = f.ids.length;
@@ -738,7 +738,7 @@ test("listed by date, a day's heading folds and unfolds its sessions, and says h
         expect(f.foldedDays()).toEqual([]);
         expect(f.ids.length).toBe(before);
         // Every day folded: the headings and their counts, and no word that there are none.
-        for (const h of f.nodes.filter((n) => n.props.class === "sgroup-toggle day" && n.props["aria-expanded"])) h.props.onClick();
+        for (const h of f.nodes.filter((n) => (n.props.class === "sgroup-toggle" && String(n.props.onClick).includes('toggleFold("", day().label)')) && n.props["aria-expanded"])) h.props.onClick();
         expect(f.ids).toEqual([]);
         expect(f.descendants(f.nav).some((n) => n.props?.class === "sidebar-state")).toBe(false);
     } finally {
@@ -749,7 +749,7 @@ test("listed by date, a day's heading folds and unfolds its sessions, and says h
 // ---- Folding a project under its heading ----------------------------------
 
 const heading = (f: ReturnType<typeof fixture>, cwd: string) => f.nodes.findLast((n) => n.props.class === "sgroup-toggle" && n.props.title === cwd);
-const headRow = (f: ReturnType<typeof fixture>, cwd: string) => f.nodes.findLast((n) => String(n.props.class).startsWith("sgroup-head project-head") && f.descendants(n).includes(heading(f, cwd)));
+const headRow = (f: ReturnType<typeof fixture>, cwd: string) => f.nodes.findLast((n) => n.props.class === "sgroup-head" && f.descendants(n).includes(heading(f, cwd)));
 
 test("grouped by project, a heading folds and unfolds its sessions; its New session doesn't", () => {
     const f = fixture(9);
@@ -760,12 +760,12 @@ test("grouped by project, a heading folds and unfolds its sessions; its New sess
         heading(f, "/p/0").props.onClick();
         expect(f.collapsedProjects()).toEqual(["/p/0"]);
         expect(heading(f, "/p/0").props["aria-expanded"]).toBe(false);
-        expect(String(headRow(f, "/p/0").props.class)).toContain("folded");
+        expect(heading(f, "/p/0").props["aria-expanded"]).toBe(false);
         for (const id of inP0) expect(f.ids).not.toContain(id);
         // Folded, it still shows how many.
         expect(f.descendants(heading(f, "/p/0")).find((n) => n.props?.class === "sgroup-count").content).toBe(3);
         // The + starts a session there and leaves the fold alone.
-        const add = f.descendants(headRow(f, "/p/0")).find((n) => n.props?.class === "hb sm sgroup-add");
+        const add = f.descendants(headRow(f, "/p/0")).find((n) => n.props?.class === "icon-btn icon-btn-sm sgroup-add");
         add.props.onClick();
         expect(f.collapsedProjects()).toEqual(["/p/0"]);
         heading(f, "/p/0").props.onClick();
@@ -783,7 +783,7 @@ test("a folded project with a session that needs you shows the amber dot on its 
     try {
         f.setGroupBy("project");
         f.setCollapsedProjects(["/p/1"]);
-        const dot = () => f.descendants(heading(f, "/p/1")).some((n) => n.props?.class === "dot warn");
+        const dot = () => f.descendants(heading(f, "/p/1")).some((n) => (n.props?.class === "dot" && n.props["data-tone"] === "amber"));
         expect(dot()).toBe(false);
         f.update("4", { status: "waiting", waitingKind: "permission" });
         expect(dot()).toBe(true);
