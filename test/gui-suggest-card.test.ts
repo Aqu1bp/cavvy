@@ -79,7 +79,7 @@ test("each failure of tasks.start says what to do, on that machine", () => {
 // Start, against calls of the test's own
 
 const suggestion: SuggestionState = { id: "call-1", title: "Fix the flaky test", prompt: "It fails", why: "Saw it fail", at: 0, state: "pending" };
-const pick = (extra: Partial<StartPick> = {}): StartPick => ({ sessionId: "s1", from: { title: "Add SSO", mode: "acceptEdits", on: undefined }, suggestion, on: undefined, cwd: "/repo", title: "Fix the flaky test", prompt: "It fails", model: "codex:gpt-6", effort: "high", worktree: true, ...extra });
+const pick = (extra: Partial<StartPick> = {}): StartPick => ({ sessionId: "s1", from: { title: "Add SSO", on: undefined }, suggestion, on: undefined, cwd: "/repo", title: "Fix the flaky test", prompt: "It fails", model: "codex:gpt-6", effort: "high", worktree: true, ...extra });
 
 function calls(o: { claim?: Error; start?: (params: any) => unknown; link?: Error; after?: Error } = {}) {
     const log: unknown[] = [];
@@ -114,7 +114,9 @@ test("Start claims, starts on the target, then says it started: in that order", 
     expect(out.kind).toBe("started");
     expect(log.map((l) => (l as [string, any])[0] === "session.suggestion" ? `suggestion:${(l as any)[1].action}` : (l as any)[0])).toEqual(["suggestion:claim", "tasks.start", "suggestion:started"]);
     const start = (log[1] as [string, unknown, any])[2];
-    expect(start).toMatchObject({ cwd: "/repo", title: "Fix the flaky test", prompt: "It fails", model: "codex:gpt-6", effort: "high", worktree: true, mode: "acceptEdits", origin: { key: "s1#call-1", session: "s1", title: "Add SSO" } });
+    expect(start).toMatchObject({ cwd: "/repo", title: "Fix the flaky test", prompt: "It fails", model: "codex:gpt-6", effort: "high", worktree: true, origin: { key: "s1#call-1", session: "s1", title: "Add SSO" } });
+    // No mode: the target starts it in its folder's default.
+    expect("mode" in start).toBe(false);
     // The same machine as the suggesting session: neither names it.
     expect(start.origin.machine).toBeUndefined();
     const started = (log[2] as [string, any])[1].started;

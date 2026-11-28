@@ -5,7 +5,7 @@
 //
 // Machines are named as session rows name them (SessionSummary.machine): undefined, this computer; a server's name.
 
-import type { EffortLevel, GuiSettings, ModelSummary, ProviderModels, PermissionModeId, SuggestionStarted, SuggestionState, StartTaskParams, StartTaskResult } from "@shared/protocol";
+import type { EffortLevel, GuiSettings, ModelSummary, ProviderModels, SuggestionStarted, SuggestionState, StartTaskParams, StartTaskResult } from "@shared/protocol";
 import { activate, app, linkFor, machineOf, machinesInside, refreshModels, reportError, requestTrust, restoredFrom, rpc } from "./app";
 import { createStore } from "solid-js/store";
 import { machine, os } from "../lib/platform";
@@ -165,8 +165,8 @@ export const defaultsOf = (on: string | undefined) => settingsOn(awayKey(on));
 export interface StartPick {
     /** The suggesting session. */
     sessionId: string;
-    /** Its title, permission mode (the new session's is no freer), and machine. */
-    from: { title: string; mode: PermissionModeId; on: string | undefined };
+    /** Its title and machine. */
+    from: { title: string; on: string | undefined };
     suggestion: SuggestionState;
     on: string | undefined;
     cwd: string;
@@ -297,7 +297,6 @@ export async function startSuggestion(pick: StartPick, calls: StartCalls = windo
         prompt: pick.prompt,
         model: pick.model,
         ...(pick.effort ? { effort: pick.effort } : {}),
-        mode: pick.from.mode,
         ...(pick.worktree ? { worktree: true } : {}),
         ...(pick.resume ? { resume: pick.resume } : {}),
         origin: {

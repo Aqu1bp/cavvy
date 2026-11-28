@@ -140,7 +140,7 @@ const calls = (c: Client): StartCalls => ({
 });
 const pick = (id: string, s: SuggestionState, v: View, extra: Partial<StartPick> = {}): StartPick => ({
     sessionId: id,
-    from: { title: v.state.title ?? "", mode: v.state.mode, on: undefined },
+    from: { title: v.state.title ?? "", on: undefined },
     suggestion: s,
     on: undefined,
     cwd: v.state.cwd,
@@ -214,7 +214,7 @@ describe("a suggested task in a GUI session", () => {
         const v = a.view(id);
         const s = suggestions(v)[0]!;
         // As a window does it when the suggesting session is on a server ("box") and the task starts here.
-        const out = await startSuggestion(pick(id, s, v, { from: { title: v.state.title ?? "", mode: v.state.mode, on: "box" }, worktree: false }), calls(a));
+        const out = await startSuggestion(pick(id, s, v, { from: { title: v.state.title ?? "", on: "box" }, worktree: false }), calls(a));
         expect(out.kind).toBe("started");
         await a.until(id, (x) => suggestions(x)[0]?.state === "started", "started");
         expect(suggestions(a.view(id))[0]!.started!.machine).toMatch(/^This (Mac|computer)$/);
