@@ -68,7 +68,7 @@ test("the rail's edge: shown once a frame within 220-420, saved on release; a do
         world.listeners.pointerup!({});
         expect(saved).toEqual([["sidebarWidth", 330]]);
         handle.props.onDblClick();
-        expect(saved.at(-1)).toEqual(["sidebarWidth", 260]);
+        expect(saved.at(-1)).toEqual(["sidebarWidth", 280]);
         // A cancelled pointer ends the drag too.
         handle.props.onPointerDown({ button: 0, clientX: 260 });
         world.listeners.pointermove!({ clientX: 250 });

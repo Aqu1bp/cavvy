@@ -66,7 +66,7 @@
     --radius-2xl: calc(12 * var(--sp));
 
     --gutter: 8px;
-    --sidebar-w: 260px;
+    --sidebar-w: 280px;
     --panel-w: 280px;
     --review-w: 720px;
     --column-w: calc(736 * var(--sp));

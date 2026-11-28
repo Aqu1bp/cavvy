@@ -31,7 +31,7 @@
 @property --rail-w {
     syntax: "<length>";
     inherits: false;
-    initial-value: 260px;
+    initial-value: 280px;
 }
 
 @property --insp-w {

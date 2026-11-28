@@ -87,7 +87,7 @@ export const PREF_DEFAULTS: Prefs = {
     notifications: true,
     expandActivity: false,
     showThinking: true,
-    sidebarWidth: 260,
+    sidebarWidth: 280,
     terminalHeight: 260,
     reviewWidth: 720,
     reviewIgnoreWhitespace: true,
