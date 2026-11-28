@@ -46,7 +46,7 @@ import { APP_NAME } from "../config/name";
 import { approvalMeaning, McpApprovalError, visible } from "../mcp/approval";
 import { defaultMode, lendingMode, PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
 import { onServer } from "../servers/role";
-import { cachedListings, clientFor, defaultModelFrom, forgetClient, listAllModels, resolveModelInfo, smallModelFor, type ProviderListing } from "../providers/models";
+import { cachedListings, clientFor, cliProgram, defaultModelFrom, forgetClient, listAllModels, MODEL_LIST_TTL_MS, resolveModelInfo, smallModelFor, type ProviderListing } from "../providers/models";
 import { clearModelSettings, type ModelSetting } from "../providers/model-refs";
 import { allProviders, getProvider, providerLabel, readAgentConfig, readVertexConfig, saveAgentConfig, SEARCH_PROVIDERS } from "../providers/registry";
 import { WholeTurnsOnly } from "../backends/one-off";
@@ -225,6 +225,8 @@ const UNLOAD_AFTER_MS = 30_000;
 const SIDE_CHAT_UNDO_MS = 60_000;
 /** A plan reported or checked this recently isn't asked again (refreshLimits): a check costs Claude Code a process of its own for a few seconds. Changeable for tests. */
 export const limitTiming = { freshMs: 3 * 60_000 };
+/** How soon a model list that couldn't be listed again is tried again. */
+export const relistTiming = { retryMs: 30 * 60_000 };
 /** A plan check (Engine.refreshPlan): queued, then running; stopped by `abort`. */
 interface LimitJob {
     provider: string;
@@ -689,6 +691,7 @@ export class Engine {
         for (const pending of this.openingTerminals.values()) pending.cancelled = true;
         const terminalsStopped = this.terminals.stop();
         clearInterval(this.purgeTimer);
+        clearTimeout(this.relistTimer);
         this.alarm.stop();
         clearTimeout(this.shrinkTimer);
         this.stopKeybindings?.();
@@ -1064,6 +1067,7 @@ export class Engine {
                 const changed = key(l) !== key(this.listings);
                 this.listings = l;
                 this.listed = true;
+                this.listAgainWhenOld(l);
                 if (!changed) return l;
                 for (const r of this.runtimes.values()) r.refreshModelInfo();
                 this.broadcast({ type: "models.changed" });
@@ -1075,6 +1079,36 @@ export class Engine {
             });
         this.refreshing = p;
         return p;
+    }
+
+    private relistTimer?: ReturnType<typeof setTimeout>;
+    /** Each CLI's program as its models were last listed (cliProgram). */
+    private cliPrograms = new Map<string, string | undefined>();
+
+    /**
+     * Lists again when the oldest list in use is due (a server left running never asked otherwise, and showed the
+     * models of the day it started). One that couldn't be listed and shows an old list is tried again sooner.
+     */
+    private listAgainWhenOld(l: ProviderListing[]) {
+        clearTimeout(this.relistTimer);
+        for (const x of l) if (x.provider.auth === "cli") this.cliPrograms.set(x.provider.id, cliProgram(x.provider.id));
+        const listedAt = l.filter((x) => !x.provider.local && !x.provider.instanceOf && x.fetchedAt !== undefined).map((x) => x.fetchedAt!);
+        if (!listedAt.length || this.stopping) return;
+        const due = Math.min(...listedAt) + MODEL_LIST_TTL_MS - Date.now();
+        this.relistTimer = setTimeout(() => void this.refreshListings(), Math.min(MODEL_LIST_TTL_MS, Math.max(relistTiming.retryMs, due)));
+        this.relistTimer.unref?.();
+    }
+
+    /**
+     * A turn on `provider` ended: when its CLI is another program than the one that listed its models (it updated
+     * itself), its models are listed again.
+     */
+    cliUsed(provider: string) {
+        if (!this.listed || this.stopping || !this.cliPrograms.has(provider)) return;
+        const now = cliProgram(provider);
+        if (now === undefined || now === this.cliPrograms.get(provider)) return;
+        this.cliPrograms.set(provider, now);
+        void this.refreshListings();
     }
 
     private modelsList(): Promise<ProviderModels[]> {
@@ -2697,6 +2731,21 @@ export class Engine {
         if (JSON.stringify(next) === JSON.stringify(this.accountStatus.get(key))) return false;
         this.accountStatus.set(key, next);
         return true;
+    }
+
+    /**
+     * A turn stopped because its CLI's account isn't signed in (or its sign-in ran out): the account says so from now,
+     * until it's checked again (a sign-in, Settings). Its plan isn't asked about meanwhile.
+     */
+    cliSignedOut(provider: string, accountId: string) {
+        if (!agentCli(provider) || this.stopping) return;
+        const id = accountId || "default";
+        if (!this.hasAccount(provider, id)) return;
+        const key = `${provider}:${id}`;
+        const was = this.accountStatus.get(key);
+        if (was?.signedIn === false) return;
+        this.accountStatus.set(key, { ...was, signedIn: false, description: "not signed in" });
+        this.broadcast({ type: "models.changed" });
     }
 
     private accountProjects(): string[] {

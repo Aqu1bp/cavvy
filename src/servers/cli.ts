@@ -11,6 +11,7 @@ import { childEnv } from "../util/env";
 import { thisBuild, UNKNOWN_BUILD } from "./build";
 import { ServerLink, type LinkState } from "./connect";
 import type { HostCheck, HostStatus } from "./host";
+import { notUpdatedNote, updateAgentClis } from "./cli-update";
 import { ensureBuildThere, ServerBusy, setUpServer, type SetupProgress, type SetupResult } from "./install";
 import { LOGIN, LOGIN_EXIT, NOT_SET_UP, probeServer, REMOTE_CURRENT, REMOTE_DIR, remoteBuildDir } from "./remote";
 import { applyBuild, BOOT_TAKEN, bootCommand, NotSetUp, previousBuild, remoteCheck, remoteStatus, revokeOverSsh, serviceReport, stopRemote, UpdateFailed, type ServiceReport } from "./service";
@@ -464,6 +465,8 @@ async function update(args: string[]): Promise<number> {
     else if (r.kept) out(`${e.name} was left on its own version.`);
     else out(r.replaced ? `${e.name} is updated.` : `${e.name} is up to date.`);
     for (const line of serviceLines(e.name, r.service)) out(line);
+    const clis = notUpdatedNote(e.name, await updateAgentClis(e, { progress: progress() }));
+    if (clis) out(clis);
     return 0;
 }
 
